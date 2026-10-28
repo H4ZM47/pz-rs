@@ -38,6 +38,22 @@ pub struct StateCx<'a> {
     pub time_delta: f32,
     /// `IsoWorld.instance` (`None` until a game loads).
     pub world: &'a mut Option<IsoWorld>,
+    /// A native window close disposes the session without rebuilding the
+    /// script/Lua environment for a return to the main menu.
+    pub shutdown: bool,
+    /// A failed environment rebuild stops state transitions. The window
+    /// or headless caller reports the error after owners are retired.
+    pub error: &'a mut Option<crate::failure::EngineError>,
+    /// Models retired at the actual state-exit boundary. The window
+    /// releases their GPU resources after returning from the state call.
+    pub retired_models: &'a mut Vec<crate::world_models::WorldModels>,
+}
+
+impl StateCx<'_> {
+    /// Record the original owned fault and end the current phase immediately.
+    pub fn record_lua_failure(&mut self, operation: &'static str, fault: pz_kahlua::LuaError) {
+        crate::failure::record_first(self.error, crate::failure::EngineError::lua(operation, fault));
+    }
 }
 
 /// `zombie.gameStates.GameState`; every method defaults to the base
@@ -97,8 +113,10 @@ impl Default for GameStateMachine {
 impl GameStateMachine {
     /// `render()`.
     pub fn render(&mut self, cx: &mut StateCx<'_>, out: &mut DrawList) {
+        if self.stop_on_error(cx) { return; }
         if let Some(c) = self.current.clone() {
             c.borrow_mut().render(cx, out);
+            self.stop_on_error(cx);
         }
     }
 
@@ -123,6 +141,7 @@ impl GameStateMachine {
 
     /// `update()`.
     pub fn update(&mut self, cx: &mut StateCx<'_>) {
+        if self.stop_on_error(cx) { return; }
         if self.states.is_empty() {
             let Some(f) = self.force_next.take() else { return };
             self.states.push(f);
@@ -133,6 +152,7 @@ impl GameStateMachine {
             }
             if let Some(c) = self.current.clone() {
                 Self::enter(&c, cx);
+                if self.stop_on_error(cx) { return; }
             }
             self.firstrun = false;
         }
@@ -147,6 +167,7 @@ impl GameStateMachine {
             self.current = self.states.get(self.state_index).cloned();
             if let Some(c) = self.current.clone() {
                 Self::enter(&c, cx);
+                if self.stop_on_error(cx) { return; }
             }
         }
         let Some(current) = self.current.clone() else { return };
@@ -154,32 +175,40 @@ impl GameStateMachine {
         if let Some(f) = self.force_next.take() {
             println!("STATE: exit {}", current.borrow().class_name());
             current.borrow_mut().exit(cx);
+            if self.stop_on_error(cx) { return; }
             next = Some(f);
         } else {
             let action = current.borrow_mut().update(cx);
+            if self.stop_on_error(cx) { return; }
             match action {
                 StateAction::Continue => {
                     println!("STATE: exit {}", current.borrow().class_name());
                     current.borrow_mut().exit(cx);
+                    if self.stop_on_error(cx) { return; }
                     if let Some(y) = self.yield_stack.pop() {
                         println!("STATE: reenter {}", y.borrow().class_name());
                         self.current = Some(y.clone());
                         y.borrow_mut().reenter(cx);
+                        self.stop_on_error(cx);
                         return;
                     }
                     next = current.borrow_mut().redirect_state(cx);
+                    if self.stop_on_error(cx) { return; }
                 }
                 StateAction::Yield => {
                     println!("STATE: yield {}", current.borrow().class_name());
                     current.borrow_mut().yield_state(cx);
+                    if self.stop_on_error(cx) { return; }
                     self.yield_stack.push(current.clone());
                     next = current.borrow_mut().redirect_state(cx);
+                    if self.stop_on_error(cx) { return; }
                 }
                 StateAction::Remain => return,
             }
         }
         if let Some(n) = next {
             Self::enter(&n, cx);
+            if self.stop_on_error(cx) { return; }
             self.current = Some(n);
             return;
         }
@@ -188,9 +217,19 @@ impl GameStateMachine {
             let c = self.states[self.state_index].clone();
             self.current = Some(c.clone());
             Self::enter(&c, cx);
+            self.stop_on_error(cx);
             return;
         }
         self.current = None;
+    }
+
+    fn stop_on_error(&mut self, cx: &StateCx<'_>) -> bool {
+        if cx.error.is_none() { return false; }
+        self.current = None;
+        self.force_next = None;
+        self.yield_stack.clear();
+        self.looping = false;
+        true
     }
 }
 
@@ -244,8 +283,38 @@ mod tests {
         let mut lua = LuaManager::init(fs).unwrap();
         let launch = Launch { game_dir: std::env::temp_dir(), cache_dir: std::env::temp_dir(), start: Default::default() };
         let mut world = None;
-        let mut cx = StateCx { lua: &mut lua, launch: &launch, screen_w: 1, screen_h: 1, multiplier: 1.0, time_delta: 1.0 / 30.0, world: &mut world };
+        let mut retired_models = Vec::new();
+        let mut error = None;
+        let mut cx = StateCx { lua: &mut lua, launch: &launch, screen_w: 1, screen_h: 1, multiplier: 1.0, time_delta: 1.0 / 30.0, world: &mut world, shutdown: false, error: &mut error, retired_models: &mut retired_models };
         f(&mut cx);
+    }
+
+    #[test]
+    fn a_quit_requested_during_the_tick_retires_the_actual_world_models() {
+        with_cx(|cx| {
+            let mut world = IsoWorld::new(&cx.launch.game_dir, &cx.launch.cache_dir, cx.launch.cache_dir.join("pz-rs-retire-test"));
+            world.models = Some(crate::world_models::WorldModels::new(
+                &cx.launch.game_dir, cx.lua.fs.clone(), pz_lua_api::bind_render::textures(),
+            ));
+            *cx.world = Some(world);
+            let f = pz_kahlua::stdlib::load_string(
+                "Events.OnTickEvenPaused.Add(function() getCore():exitToMenu() end)",
+                Some("quit-during-tick"), cx.lua.thread.globals().clone(),
+            ).unwrap();
+            cx.lua.thread.call(&f, &[]).unwrap();
+            let ingame = state(crate::ingame::IngameState::default());
+            let mut states = GameStateMachine {
+                firstrun: false, states: vec![ingame.clone()], current: Some(ingame),
+                ..Default::default()
+            };
+            states.update(cx);
+            assert!(cx.world.is_none());
+            assert_eq!(cx.retired_models.len(), 1);
+            // This authored fixture has no installed scripts to rebuild.
+            // Retirement must still complete before the failure is reported.
+            assert_eq!(states.current_name(), None);
+            assert!(cx.error.is_some());
+        });
     }
 
     #[test]
@@ -290,3 +359,6 @@ mod tests {
         assert_eq!(log.borrow().join(", "), "Q enter, Q update");
     }
 }
+
+#[cfg(test)]
+mod failure_tests;

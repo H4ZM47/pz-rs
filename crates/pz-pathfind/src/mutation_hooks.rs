@@ -35,13 +35,14 @@ impl PathfindMutationHooks<'_> {
     /// the cell. Squares of chunks the pathfinder was not given are
     /// skipped (`loadedBits & 2`).
     pub fn square_changed(&mut self, cell: &IsoCell, sq: (i32, i32, i32)) {
-        let Some(square) = cell.get_grid_square(sq.0, sq.1, sq.2) else {
+        let Some(square_owner) = cell.get_grid_square(sq.0, sq.1, sq.2) else {
             return;
         };
+        let square = square_owner.borrow();
         let Ok(bits) = SquareBits::new(self.sprites, self.meta, cell, self.bits_hooks) else {
             return;
         };
-        self.service.square_changed(square, &bits);
+        self.service.square_changed(&square, &bits);
     }
 
     /// `PathfindNative.addChunkToWorld(chunk)` after `IsoChunk.setSquare`

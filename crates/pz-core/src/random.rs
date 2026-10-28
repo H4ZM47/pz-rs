@@ -220,6 +220,21 @@ impl LocationRng {
     }
 }
 
+/// `LocationRNG.instance`, the shared generator (`TileOverlays`,
+/// `ContainerOverlays`, ...), one per thread.
+pub mod location_rng {
+    use super::LocationRng;
+
+    thread_local! {
+        static INSTANCE: LocationRng = LocationRng::default();
+    }
+
+    /// Run `f` on `LocationRNG.instance`.
+    pub fn with_instance<R>(f: impl FnOnce(&LocationRng) -> R) -> R {
+        INSTANCE.with(f)
+    }
+}
+
 /// `zombie.core.skinnedmodel.population.OutfitRNG`: a per-thread
 /// [`LocationRng`] for outfit, hair and decal choices.
 pub mod outfit_rng {

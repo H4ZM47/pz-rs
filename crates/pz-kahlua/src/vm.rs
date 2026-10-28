@@ -39,7 +39,13 @@ pub struct LuaClosure {
 
 impl LuaClosure {
     pub fn new(prototype: Rc<Prototype>, env: TableRef) -> Rc<Self> {
-        Rc::new(LuaClosure { prototype, env: RefCell::new(env), upvalues: Vec::new(), debug_name: RefCell::new(None) })
+        Self::with_upvalues(prototype, env, Vec::new())
+    }
+
+    pub(crate) fn with_upvalues(prototype: Rc<Prototype>, env: TableRef, upvalues: Vec<UpValueRef>) -> Rc<Self> {
+        let closure = Rc::new(LuaClosure { prototype, env: RefCell::new(env), upvalues, debug_name: RefCell::new(None) });
+        crate::gc::register_closure(Rc::downgrade(&closure));
+        closure
     }
     /// `LuaClosure.toString`.
     pub fn describe(&self) -> String {
@@ -57,6 +63,25 @@ pub enum UpValue {
     /// Still on a coroutine stack at this absolute index.
     Open { coroutine: CoroutineRef, index: usize },
     Closed(Value),
+}
+
+impl UpValue {
+    /// A shared closed slot participating in conservative cycle collection.
+    /// Raw `Rc<RefCell<UpValue>>` construction remains supported, but its
+    /// outgoing references are opaque roots rather than traced slots.
+    pub fn closed(value: Value) -> UpValueRef {
+        Self::allocate(Self::Closed(value))
+    }
+
+    pub(crate) fn open(coroutine: CoroutineRef, index: usize) -> UpValueRef {
+        Self::allocate(Self::Open { coroutine, index })
+    }
+
+    fn allocate(value: Self) -> UpValueRef {
+        let upvalue = Rc::new(RefCell::new(value));
+        crate::gc::register_upvalue(Rc::downgrade(&upvalue));
+        upvalue
+    }
 }
 
 pub type CoroutineRef = Rc<RefCell<Coroutine>>;
@@ -150,7 +175,28 @@ pub struct NativeFunction {
 
 impl NativeFunction {
     pub fn new(name: &str, f: impl Fn(&mut NativeCall<'_>) -> LuaResult<usize> + 'static) -> Rc<Self> {
-        Rc::new(NativeFunction { name: Rc::from(name), f: Box::new(f) })
+        let native = Rc::new(NativeFunction { name: Rc::from(name), f: Box::new(f) });
+        crate::gc::register_native(Rc::downgrade(&native));
+        native
+    }
+
+    /// A reviewed explicit capture, held strongly by the runtime callable.
+    /// The capture-free function pointer cannot conceal additional Fn state;
+    /// collection traces its single backing Rc and that payload's own slots.
+    /// Ordinary `new` callbacks remain opaque and conservatively retained.
+    pub fn new_traced_capture<C: crate::gc::TracePayload>(
+        name: &str,
+        capture: C,
+        invoke: fn(&RefCell<C>, &mut NativeCall<'_>) -> LuaResult<usize>,
+    ) -> Rc<Self> {
+        let capture = crate::gc::traceable(capture);
+        let weak_capture = Rc::downgrade(&capture);
+        let native = Rc::new(NativeFunction {
+            name: Rc::from(name),
+            f: Box::new(move |call| invoke(&capture, call)),
+        });
+        crate::gc::register_traced_native(Rc::downgrade(&native), weak_capture);
+        native
     }
 }
 

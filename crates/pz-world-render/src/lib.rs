@@ -48,7 +48,7 @@ pub mod sprites;
 pub mod state_light;
 pub mod weather_mask;
 
-pub use fire_lights::{fireplace_input, FireLightLinks, HearthLink, LightLink};
+pub use fire_lights::{fireplace_input, FireLightLinks, HearthLink, LightLink, OwnedFireplaceInput};
 pub use hooks::{NoWorldHooks, WorldHooks};
 pub use invalidate::{check_changed_buildings, PendingRender, PuddleInputs, RenderInvalidation};
 pub use lighting::{
@@ -66,3 +66,6 @@ pub use settings::{
 pub use sprites::{GameTextures, NoTextures, SpriteCache, SpriteTextures};
 pub use state_light::{RenderSettings, StateLighting};
 pub use weather_mask::{master_region, WorldFxMask};
+
+/// Typed actual world/render boundary; absence stays distinct from host faults.
+pub use pz_entity::runtime_load::{HostResult, RuntimeHostError};

@@ -14,6 +14,8 @@
 //! touched squares' objects) and `items.txt`. Writes `rust_fire.txt` there
 //! and prints the first difference.
 
+use pz_world::fire::manager::fire_body;
+use pz_world::ObjectSlot;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -25,7 +27,7 @@ use pz_world::fire::{FireFrame, FireHooks, FireMutation, FireSettings, FireWorld
 use pz_world::isoregion::IsoRegions;
 use pz_world::save::chunk_file::{chunk_path, load_chunk};
 use pz_world::save::{NoSaveHooks, SaveCtx, SaveSettings, SaveTables};
-use pz_world::square_mutation::{DoorTables, NoMutationHooks};
+use pz_world::square_mutation::{DataProjectionMutationHooks, DoorTables, NoMutationHooks};
 use pz_world::{GameRand, IsoCell, IsoMetaGrid, IsoSpriteManager, SpriteTables};
 
 /// `java.util.Random`, counting generator steps.
@@ -293,7 +295,11 @@ fn main() {
     writeln!(out, "{}", java.lines().next().unwrap()).unwrap();
     let doors = DoorTables::from_jar(&jar).unwrap();
     let mut regions = IsoRegions::new(13);
-    let (mut mw, mut mp, mut mr) = (NoMutationHooks, NoMutationHooks, NoMutationHooks);
+    let (mut mw, mut mp, mut mr) = (
+        DataProjectionMutationHooks,
+        NoMutationHooks,
+        NoMutationHooks,
+    );
     let mut w = FireWorld {
         cell: &mut cell,
         meta: &meta,
@@ -341,8 +347,9 @@ fn main() {
         for &r in &mgr.fire_stack {
             touched.insert((r.x, r.y, r.z));
             let sq = w.cell.get_grid_square(r.x, r.y, r.z).unwrap();
-            let idx = sq.object_index(r.id).map_or(-1, |i| i as i32);
-            let f = mgr.fire(w.cell, r).unwrap();
+            let idx = sq.borrow().object_index(r.id).map_or(-1, |i| i as i32);
+            let f_owner = mgr.fire(w.cell, r).unwrap();
+            let f = fire_body(&f_owner);
             writeln!(
                 out,
                 "fire {},{},{} age={} life={} energy={} stage={} timer={} spread={}/{} idx={idx}",
@@ -391,15 +398,19 @@ fn main() {
                     let Some(sq) = ch.get_grid_square(x, y, z) else {
                         continue;
                     };
-                    if !sq.burnt_out && !touched.contains(&(sq.x, sq.y, sq.z)) {
+                    if !sq.borrow().burnt_out
+                        && !touched.contains(&(sq.borrow().x, sq.borrow().y, sq.borrow().z))
+                    {
                         continue;
                     }
                     let objs: Vec<String> = sq
+                        .borrow()
                         .objects
                         .iter()
+                        .map(ObjectSlot::borrow)
                         .map(|o| {
                             let n = o
-                                .sprite
+                                .sprite.tile_projection()
                                 .and_then(|s| w.sprites.sprites[s].name.clone())
                                 .unwrap_or_else(|| "null".into());
                             let class = o.kind.class_name();
@@ -411,16 +422,16 @@ fn main() {
                         })
                         .collect();
                     let sp = if sounds {
-                        format!(" sp={}", sq.special_objects.len())
+                        format!(" sp={}", sq.borrow().special_objects.len())
                     } else {
                         String::new()
                     };
                     squares.insert(format!(
                         "square {},{},{} burnt={}{sp} objs={}",
-                        sq.x,
-                        sq.y,
-                        sq.z,
-                        sq.burnt_out as u8,
+                        sq.borrow().x,
+                        sq.borrow().y,
+                        sq.borrow().z,
+                        sq.borrow().burnt_out as u8,
                         objs.join("|")
                     ));
                 }

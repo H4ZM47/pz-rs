@@ -1,6 +1,7 @@
 //! Barricades, thumpables, curtains, power and torches on hand-built
 //! squares (made-up values).
 
+use crate::ObjectSlot;
 use std::rc::Rc;
 
 use super::*;
@@ -99,11 +100,8 @@ impl World {
     fn put(&mut self, x: i32, y: i32, z: i32, indoor: bool) {
         let mut sq = IsoGridSquare::new(x, y, z);
         let id = sq.new_object_id();
-        sq.objects.push(IsoObject::new(
-            id,
-            ObjectKind::Object,
-            Some(self.m.named_map["floor"]),
-        ));
+        sq.objects
+            .push((IsoObject::new(id, ObjectKind::Object, Some(self.m.named_map["floor"]))).into());
         sq.have_roof = indoor;
         sq.recalc_properties(&self.m);
         let ch = self
@@ -111,14 +109,15 @@ impl World {
             .chunks
             .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
             .unwrap();
-        ch.set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some(sq));
+        ch.set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some((sq).into()));
     }
 
     fn add(&mut self, x: i32, y: i32, z: i32, sprite: &str, kind: ObjectKind) {
-        let sq = self.cell.get_grid_square_mut(x, y, z).unwrap();
+        let sq_owner = self.cell.get_grid_square_mut(x, y, z).unwrap();
+        let mut sq = sq_owner.borrow_mut();
         let id = sq.new_object_id();
         sq.objects
-            .push(IsoObject::new(id, kind, Some(self.m.named_map[sprite])));
+            .push((IsoObject::new(id, kind, Some(self.m.named_map[sprite]))).into());
         sq.special_objects.push(id);
     }
 
@@ -134,7 +133,7 @@ impl World {
         self.add(x, y, z, "floor", ObjectKind::Barricade(b));
     }
 
-    fn sq(&self, x: i32, y: i32, z: i32) -> &IsoGridSquare {
+    fn sq(&self, x: i32, y: i32, z: i32) -> crate::SquareRef {
         self.cell.get_grid_square(x, y, z).unwrap()
     }
 
@@ -202,22 +201,26 @@ fn barricades_on_both_sides() {
     let ws = w.state();
 
     let sq = w.sq(10, 11, 0);
-    let (same, opp) = ws.barricades_for(sq, true);
+    let (same, opp) = ws.barricades_for(&(sq).borrow(), true);
     assert!(same.is_none());
-    assert_eq!(opp.unwrap().num_planks(), 2);
-    assert!(ws.object_barricaded(sq, &sq.objects[1]));
+    assert_eq!(planks(&opp.unwrap()), 2);
+    assert!(ws.object_barricaded(&(sq).borrow(), &sq.borrow().objects[1].borrow()));
     // The open, barricaded door blocks the way north.
     let north = w.sq(10, 10, 0);
-    assert!(sq.is_door_blocked_to(Some(north), &w.cell, &ws));
-    assert!(!sq.is_door_blocked_to(Some(north), &w.cell, &NoSquareHooks));
+    assert!(sq
+        .borrow()
+        .is_door_blocked_to(Some(&(north).borrow()), &w.cell, &ws));
+    assert!(!sq
+        .borrow()
+        .is_door_blocked_to(Some(&(north).borrow()), &w.cell, &NoSquareHooks));
 
     let sq = w.sq(16, 12, 0);
-    let (same, opp) = ws.barricades_for(sq, false);
-    assert_eq!(same.unwrap().num_planks(), 3);
-    assert_eq!(opp.unwrap().num_planks(), 1);
+    let (same, opp) = ws.barricades_for(&(sq).borrow(), false);
+    assert_eq!(planks(&same.unwrap()), 3);
+    assert_eq!(planks(&opp.unwrap()), 1);
     // The floor object is not barricade-able.
-    assert!(!ws.object_barricaded(sq, &sq.objects[0]));
-    assert!(ws.object_barricaded(sq, &sq.objects[1]));
+    assert!(!ws.object_barricaded(&(sq).borrow(), &sq.borrow().objects[0].borrow()));
+    assert!(ws.object_barricaded(&(sq).borrow(), &sq.borrow().objects[1].borrow()));
 }
 
 #[test]
@@ -239,14 +242,16 @@ fn thumpable_doors_and_windows() {
     let ws = w.state();
     let sq = w.sq(12, 12, 0);
     // Open and not barricaded: not blocked.
-    assert!(!ws.thumpable_door_blocked(sq, EdgeFacing::NorthSouth));
-    assert!(!sq.is_door_blocked_to(Some(w.sq(12, 11, 0)), &w.cell, &ws));
+    assert!(!ws.thumpable_door_blocked(&(sq).borrow(), EdgeFacing::NorthSouth));
+    assert!(!sq
+        .borrow()
+        .is_door_blocked_to(Some(&(w.sq(12, 11, 0)).borrow()), &w.cell, &ws));
     // A thumpable that is not a door is never a blocked door; only the
     // window sprite has the window flag.
     let sq2 = w.sq(13, 12, 0);
-    assert!(!ws.thumpable_door_blocked(sq2, EdgeFacing::NorthSouth));
-    assert!(ws.object_is_window(&sq2.objects[1]));
-    assert!(!ws.object_is_window(&sq.objects[1]));
+    assert!(!ws.thumpable_door_blocked(&(sq2).borrow(), EdgeFacing::NorthSouth));
+    assert!(ws.object_is_window(&sq2.borrow().objects[1].borrow()));
+    assert!(!ws.object_is_window(&sq.borrow().objects[1].borrow()));
 
     // Closed: blocked on its own edge only.
     let mut w2 = World::new();
@@ -255,9 +260,11 @@ fn thumpable_doors_and_windows() {
     w2.add(12, 12, 0, "thump_wall", th(true, false));
     let ws2 = w2.state();
     let sq = w2.sq(12, 12, 0);
-    assert!(ws2.thumpable_door_blocked(sq, EdgeFacing::NorthSouth));
-    assert!(!ws2.thumpable_door_blocked(sq, EdgeFacing::EastWest));
-    assert!(sq.is_door_blocked_to(Some(w2.sq(12, 11, 0)), &w2.cell, &ws2));
+    assert!(ws2.thumpable_door_blocked(&(sq).borrow(), EdgeFacing::NorthSouth));
+    assert!(!ws2.thumpable_door_blocked(&(sq).borrow(), EdgeFacing::EastWest));
+    assert!(sq
+        .borrow()
+        .is_door_blocked_to(Some(&(w2.sq(12, 11, 0)).borrow()), &w2.cell, &ws2));
 
     // Open but barricaded from the other side: blocked.
     let mut w3 = World::new();
@@ -266,7 +273,7 @@ fn thumpable_doors_and_windows() {
     w3.add(12, 12, 0, "thump_wall", th(true, true));
     w3.barricade(12, 11, 0, IsoDirections::S, &[50]);
     let ws3 = w3.state();
-    assert!(ws3.thumpable_door_blocked(w3.sq(12, 12, 0), EdgeFacing::NorthSouth));
+    assert!(ws3.thumpable_door_blocked(&(w3.sq(12, 12, 0)).borrow(), EdgeFacing::NorthSouth));
 }
 
 #[test]
@@ -287,9 +294,12 @@ fn door_curtains() {
     );
     let ws = w.state();
     let sq = w.sq(9, 9, 0);
-    assert_eq!(ws.door_curtain(&sq.objects[0]), None);
-    assert_eq!(ws.door_curtain(&sq.objects[1]), None);
-    assert_eq!(ws.door_curtain(&sq.objects[2]), Some(true));
+    assert_eq!(ws.door_curtain(&sq.borrow().objects[0].borrow()), None);
+    assert_eq!(ws.door_curtain(&sq.borrow().objects[1].borrow()), None);
+    assert_eq!(
+        ws.door_curtain(&sq.borrow().objects[2].borrow()),
+        Some(true)
+    );
 }
 
 #[test]
@@ -306,35 +316,35 @@ fn generator_range_and_grid_power() {
         w.cell.chunks.get_mut(&c).unwrap().saved.generators = Some(vec![(12, 12, 0)]);
     }
     let ws = w.state();
-    assert!(ws.have_electricity(w.sq(12, 12, 0)));
+    assert!(ws.have_electricity(&(w.sq(12, 12, 0)).borrow()));
     // 4 tiles away: inside the 5-tile range; 5 tiles: on the edge.
-    assert!(ws.have_electricity(w.sq(16, 12, 0)));
-    assert!(ws.have_electricity(w.sq(17, 12, 0)));
+    assert!(ws.have_electricity(&(w.sq(16, 12, 0)).borrow()));
+    assert!(ws.have_electricity(&(w.sq(17, 12, 0)).borrow()));
     // One level up is in the vertical range, two is not.
-    assert!(ws.have_electricity(w.sq(12, 12, 1)));
-    assert!(!ws.have_electricity(w.sq(12, 12, 2)));
+    assert!(ws.have_electricity(&(w.sq(12, 12, 1)).borrow()));
+    assert!(!ws.have_electricity(&(w.sq(12, 12, 2)).borrow()));
     // Exterior squares only when the sandbox allows it.
-    assert!(ws.have_electricity(w.sq(13, 13, 0)));
+    assert!(ws.have_electricity(&(w.sq(13, 13, 0)).borrow()));
     let mut p = power();
     p.allow_exterior_generator = false;
     p.generator_tile_range = 4;
     let ws = WorldState::new(&w.cell, &w.meta, &w.m, p);
-    assert!(!ws.have_electricity(w.sq(13, 13, 0)));
-    assert!(ws.have_electricity(w.sq(16, 12, 0)));
-    assert!(!ws.have_electricity(w.sq(17, 12, 0)));
+    assert!(!ws.have_electricity(&(w.sq(13, 13, 0)).borrow()));
+    assert!(ws.have_electricity(&(w.sq(16, 12, 0)).borrow()));
+    assert!(!ws.have_electricity(&(w.sq(17, 12, 0)).borrow()));
 
     // The grid: on until the shut-off day, never in a NoPower zone.
     let mut p = power();
     assert!(p.does_power_grid_exist(0));
     let ws = WorldState::new(&w.cell, &w.meta, &w.m, p);
-    assert!(ws.has_grid_power(w.sq(12, 12, 0)));
+    assert!(ws.has_grid_power(&(w.sq(12, 12, 0)).borrow()));
     let zone = |x: i32, _y: i32| x == 12;
     let ws = WorldState {
         no_power_zone: &zone,
         ..WorldState::new(&w.cell, &w.meta, &w.m, p)
     };
-    assert!(!ws.has_grid_power(w.sq(12, 12, 0)));
-    assert!(ws.has_grid_power(w.sq(16, 12, 0)));
+    assert!(!ws.has_grid_power(&(w.sq(12, 12, 0)).borrow()));
+    assert!(ws.has_grid_power(&(w.sq(16, 12, 0)).borrow()));
     p.world_age_days = 9.5;
     assert!(!p.does_power_grid_exist(0) && p.does_power_grid_exist(1));
 }
@@ -350,6 +360,7 @@ fn light_switch_power() {
     w.cell
         .get_grid_square_mut(10, 10, 0)
         .unwrap()
+        .borrow_mut()
         .roof_hide_building = Some(BuildingIdx(0));
     let lamp = IsoLightSwitch {
         bulb_item: Some("Base.TestBulb".into()),
@@ -373,7 +384,7 @@ fn light_switch_power() {
         bulb_item: None,
         ..lamp.clone()
     };
-    assert!(!ws.can_switch_light(w.sq(11, 10, 0), &no_bulb));
+    assert!(!ws.can_switch_light(&(w.sq(11, 10, 0)).borrow(), &no_bulb));
 
     // Grid off: only a generator in reach of the switch or a neighbour.
     let mut p = power();
@@ -386,7 +397,7 @@ fn light_switch_power() {
     assert!(ws.lamp_switch_has_power(14, 14, 0));
     assert!(ws.room_switch_square_powered(14, 14, 0));
     // A street light can switch on the generator but needs the grid.
-    assert!(ws.can_switch_light(w.sq(13, 13, 0), &street));
+    assert!(ws.can_switch_light(&(w.sq(13, 13, 0)).borrow(), &street));
     assert!(!ws.lamp_switch_has_power(13, 13, 0));
     // A battery-powered switch ignores both.
     let battery = IsoLightSwitch {
@@ -397,12 +408,12 @@ fn light_switch_power() {
         ..lamp.clone()
     };
     let ws = WorldState::new(&w.cell, &w.meta, &w.m, power());
-    assert!(ws.can_switch_light(w.sq(14, 14, 0), &battery));
+    assert!(ws.can_switch_light(&(w.sq(14, 14, 0)).borrow(), &battery));
     let flat = IsoLightSwitch {
         power: 0.0,
         ..battery
     };
-    assert!(!ws.can_switch_light(w.sq(11, 10, 0), &flat));
+    assert!(!ws.can_switch_light(&(w.sq(11, 10, 0)).borrow(), &flat));
 }
 
 fn item(class: ItemClass, f: impl FnOnce(&mut ItemTemplate)) -> InventoryItem {
@@ -543,9 +554,11 @@ fn special_objects_from_the_real_objects() {
     let ws = w.state();
     let sq = w.sq(10, 10, 0);
     let got: Vec<_> = sq
+        .borrow()
         .objects
         .iter()
-        .map(|o| SquareHooks::special_object(&ws, sq, o))
+        .map(ObjectSlot::borrow)
+        .map(|o| SquareHooks::special_object(&ws, &(sq).borrow(), &o))
         .collect();
     let th = |north, open, is_door, is_hoppable, can_pass_through| {
         Some(SpecialObject::Thumpable(ThumpableInfo {
@@ -577,7 +590,10 @@ fn special_objects_from_the_real_objects() {
             None,
         ]
     );
-    assert_eq!(SquareHooks::door_curtain(&ws, sq, &sq.objects[9]), None);
+    assert_eq!(
+        SquareHooks::door_curtain(&ws, &(sq).borrow(), &sq.borrow().objects[9].borrow()),
+        None
+    );
 }
 
 /// A row of squares y = 10, x 8..=14, with `kind` on the west edge of
@@ -688,39 +704,47 @@ fn adjacent_queries_see_thumpables_and_barricades() {
     let ws = w.state();
     let (m, g) = (&w.m, &w.cell);
     let (a, b) = (w.sq(10, 10, 0), w.sq(11, 10, 0));
-    assert!(b.has_blocked_door(EdgeFacing::EastWest, &ws));
-    assert!(!a.can_reach_to(b, m, g, &ws));
-    assert!(a.can_reach_to(b, m, g, &NoSquareHooks));
+    assert!(b.borrow().has_blocked_door(EdgeFacing::EastWest, &ws));
+    assert!(!a.borrow().can_reach_to(&(b).borrow(), m, g, &ws));
+    assert!(a.borrow().can_reach_to(&(b).borrow(), m, g, &NoSquareHooks));
     assert!(b
+        .borrow()
         .get_door_facing(EdgeFacing::EastWest, &ws)
-        .is_some_and(|o| matches!(o.kind, ObjectKind::Thumpable(_))));
+        .is_some_and(|o| matches!(o.borrow().kind, ObjectKind::Thumpable(_))));
     assert!(b
+        .borrow()
         .get_door_facing(EdgeFacing::EastWest, &NoSquareHooks)
         .is_none());
     assert!(a
+        .borrow()
         .get_hoppable_thumpable_facing(EdgeFacing::NorthSouth, &ws)
         .is_some());
     assert!(a
+        .borrow()
         .get_hoppable_thumpable_facing(EdgeFacing::EastWest, &ws)
         .is_none());
     let c = w.sq(13, 10, 0);
     assert!(c
+        .borrow()
         .get_thumpable_window_facing(EdgeFacing::NorthSouth, m, &ws)
         .is_some());
     // The barricade blocks vision north from (13, 10).
     let env = VisionEnv::new(g, m, &ws);
     assert_eq!(
-        c.test_vision_adjacent(0, -1, 0, false, false, &env),
+        c.borrow()
+            .test_vision_adjacent(0, -1, 0, false, false, &env),
         TestResults::Blocked
     );
     assert_eq!(
         w.sq(13, 9, 0)
+            .borrow()
             .test_vision_adjacent(0, 1, 0, false, true, &env),
         TestResults::Blocked
     );
     let env = VisionEnv::new(g, m, &NoSquareHooks);
     assert_eq!(
-        c.test_vision_adjacent(0, -1, 0, false, false, &env),
+        c.borrow()
+            .test_vision_adjacent(0, -1, 0, false, false, &env),
         TestResults::Clear
     );
 }
@@ -745,11 +769,13 @@ fn object_hooks_without_world_state() {
     let oh = ObjectHooks::new(&w.cell, &w.m);
     let (sq, north) = (w.sq(12, 12, 0), w.sq(12, 11, 0));
     // Open, but barricaded from the opposite square.
-    assert!(oh.is_barricaded(sq, &sq.objects[1]));
-    assert!(oh.has_blocked_thumpable_door(sq, EdgeFacing::NorthSouth));
-    assert!(!sq.can_reach_to(north, &w.m, &w.cell, &oh));
+    assert!(oh.is_barricaded(&(sq).borrow(), &sq.borrow().objects[1].borrow()));
+    assert!(oh.has_blocked_thumpable_door(&(sq).borrow(), EdgeFacing::NorthSouth));
+    assert!(!sq
+        .borrow()
+        .can_reach_to(&(north).borrow(), &w.m, &w.cell, &oh));
     assert_eq!(
-        oh.special_object(north, &north.objects[1]),
+        oh.special_object(&(north).borrow(), &north.borrow().objects[1].borrow()),
         Some(SpecialObject::Barricade {
             dir: IsoDirections::S,
             blocks_vision: true
@@ -760,5 +786,13 @@ fn object_hooks_without_world_state() {
     let ch = &w.cell.chunks[&(1, 1)];
     let getter = crate::square::ChunkGetter(ch);
     let oh = ObjectHooks::new(&getter, &w.m);
-    assert!(oh.is_barricaded(sq, &sq.objects[1]));
+    assert!(oh.is_barricaded(&(sq).borrow(), &sq.borrow().objects[1].borrow()));
+}
+
+fn planks(object: &crate::IsoObjectRef) -> i32 {
+    let body = object.borrow();
+    let ObjectKind::Barricade(b) = &body.kind else {
+        panic!()
+    };
+    b.num_planks()
 }

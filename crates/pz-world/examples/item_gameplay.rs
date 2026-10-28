@@ -11,6 +11,7 @@
 //! improvised=.. standard=.. raining=.. rain=..`) carries the game state the
 //! harness read, so both sides evaluate under the same values.
 
+use pz_world::ObjectSlot;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -21,9 +22,9 @@ use pz_inventory::context::{ItemContext, NoOwner};
 use pz_inventory::dictionary::WorldDictionary;
 use pz_inventory::factory::{parse_item_names, ScriptItems};
 use pz_inventory::item::{InventoryItem, ItemKind};
-use pz_inventory::lua_table::{LuaKey, LuaValue};
 use pz_inventory::visual::NoVisualRng;
 use pz_inventory::{ItemAssets, ItemContainer, ItemTemplate, SavedItem};
+use pz_kahlua::Value;
 use pz_world::objects::ObjectKind;
 use pz_world::save::chunk_file::{chunk_path, load_chunk};
 use pz_world::save::{NoSaveHooks, SaveCtx, SaveSettings, SaveTables, WORLD_VERSION};
@@ -265,8 +266,20 @@ fn getters(i: &mut InventoryItem, ctx: &Ctx, o: &mut String, loaded: bool) {
         put(o, "waterResistance", fb(i.get_water_resistance()));
         put(o, "hasFilter", b(i.has_filter()));
         put(o, "hasTank", b(i.has_tank()));
-        put(o, "filterType", s(i.get_filter_type()));
-        put(o, "tankType", s(i.get_tank_type()));
+        put(
+            o,
+            "filterType",
+            s(i.try_get_filter_type()
+                .expect("readable example filter data")
+                .as_deref()),
+        );
+        put(
+            o,
+            "tankType",
+            s(i.try_get_tank_type()
+                .expect("readable example tank data")
+                .as_deref()),
+        );
         let mut d = String::new();
         for p in 0..ctx.assets.blood_clothing_types.max() {
             for (bite, bullet) in [(false, false), (true, false), (false, true)] {
@@ -380,17 +393,16 @@ fn mutations(ctx: &Ctx, full: &str, o: &mut String) {
     {
         let mut i = ctx.create_item(full).unwrap();
         if is_clothing(&i) {
-            let set = |i: &mut InventoryItem, k: &str, v: LuaValue| {
-                i.table
-                    .get_or_insert_with(Default::default)
-                    .rawset(LuaKey::Str(k.into()), Some(v));
+            let set = |i: &mut InventoryItem, k: &str, v: Value| {
+                i.set_mod_data_value(k, Some(v))
+                    .expect("writable example item ModData");
             };
             set(
                 &mut i,
                 "filterType",
-                LuaValue::Str("Base.GasmaskFilter".into()),
+                Value::Str("Base.GasmaskFilter".into()),
             );
-            set(&mut i, "usedDelta", LuaValue::Num(0.5));
+            set(&mut i, "usedDelta", Value::Num(0.5));
             let alt = i.get_alternate_model_name(Some(&ctx.assets), &own);
             let mut v = format!(
                 "{},{},{}",
@@ -409,8 +421,8 @@ fn mutations(ctx: &Ctx, full: &str, o: &mut String) {
             )
             .unwrap();
             put(o, "gasMask", v);
-            set(&mut i, "tankType", LuaValue::Str("Base.Oxygen_Tank".into()));
-            set(&mut i, "usedDelta", LuaValue::Num(0.5));
+            set(&mut i, "tankType", Value::Str("Base.Oxygen_Tank".into()));
+            set(&mut i, "usedDelta", Value::Num(0.5));
             i.activated = true;
             let _ = i.drain_scba(ctx);
             let mut v = format!(
@@ -419,7 +431,7 @@ fn mutations(ctx: &Ctx, full: &str, o: &mut String) {
                 fb(i.get_used_delta()),
                 b(i.activated)
             );
-            set(&mut i, "usedDelta", LuaValue::Num(0.0));
+            set(&mut i, "usedDelta", Value::Num(0.0));
             let _ = i.drain_scba(ctx);
             write!(v, ",{}", b(i.activated)).unwrap();
             put(o, "scba", v);
@@ -437,11 +449,15 @@ fn mutations(ctx: &Ctx, full: &str, o: &mut String) {
 fn collect(items: &[SavedItem], out: &mut Vec<InventoryItem>) {
     for it in items {
         if let SavedItem::Item(i) = it {
-            out.push((**i).clone());
-            if let ItemKind::Container(c) = &i.kind {
-                collect(&c.container.borrow().to_container().items, out);
-            }
+            collect_item(i, out);
         }
+    }
+}
+
+fn collect_item(i: &InventoryItem, out: &mut Vec<InventoryItem>) {
+    out.push(i.clone());
+    if let ItemKind::Container(c) = &i.kind {
+        collect(&c.container.borrow().to_container().items, out);
     }
 }
 
@@ -584,9 +600,9 @@ fn main() {
         };
         let mut items: Vec<InventoryItem> = Vec::new();
         for sq in ch.squares() {
-            for o in &sq.objects {
+            for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
                 match &o.kind {
-                    ObjectKind::Mannequin(Some(m)) => {
+                    ObjectKind::Mannequin(m) => {
                         for c in m.container.iter() {
                             collect(&c.items, &mut items);
                         }
@@ -598,10 +614,14 @@ fn main() {
                     }
                 }
                 if let ObjectKind::WorldInventory(w) = &o.kind {
-                    collect(std::slice::from_ref(&w.item), &mut items);
+                    let w = w.borrow();
+                    let item = w.item.borrow_item();
+                    if let Some(item) = item {
+                        collect_item(&item, &mut items);
+                    }
                 }
             }
-            for bd in &sq.static_moving {
+            for bd in &sq.borrow().static_moving {
                 if let Some(c) = &bd.container {
                     collect(&c.items, &mut items);
                 }

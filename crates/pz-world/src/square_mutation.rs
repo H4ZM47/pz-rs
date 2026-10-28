@@ -46,16 +46,25 @@ use crate::chunk::{IsoCell, IsoGridSquare, MAX_LEVEL, MIN_LEVEL};
 use crate::isoregion::IsoRegions;
 use crate::java::GameRand;
 use crate::meta_grid::IsoMetaGrid;
+use crate::object_slot::{IsoObjectRef, ObjectSlot};
 use crate::objects::{IsoObject, ObjectId, ObjectKind};
 use crate::save::visual::IsoDeadBody;
 use crate::sprite::{IsoSpriteManager, SpriteIdx};
 use crate::square::{set_matrix_bit, IsoDirections};
+use crate::SquareRef;
+use pz_entity::runtime_load::{HostResult, RuntimeHostError};
 use pz_inventory::InventoryItem;
 
 mod lifecycle;
 mod world_item;
-pub use lifecycle::{AmbientEmitterKind, WorldCall};
-pub use world_item::{render_square, FloorDropEnv, WorldItemPlaced, WORLD_ITEM_ADDED};
+pub use lifecycle::{
+    native_floor_add_to_world, try_flag_object_for_hot_save, AmbientEmitterKind, WorldCall,
+};
+pub use world_item::{
+    load_floor_sprite_visual, render_square, update_floor_sprite, FloorDropEnv, NativeFloorHost,
+    NativeFloorPlacement, NativeFloorRender, WorldItemPlaced, WorldItemPlacementError,
+    WORLD_ITEM_ADDED,
+};
 
 #[cfg(test)]
 mod tests;
@@ -105,7 +114,7 @@ pub trait PathfindSquareHooks {
 
     /// `MapCollisionData.instance.squareChanged(sq)`: the population
     /// thread's collision bits (solid, blocked N/W, water, room) of `sq`.
-    fn map_collision_square_changed(&mut self, _sq: &IsoGridSquare) {}
+    fn map_collision_square_changed(&mut self, _sq: SquareRef) {}
 
     /// `PathfindNative.instance.addChunkToWorld(chunk)` (or
     /// `PolygonalMap2`'s): `IsoChunk.setSquare` on the game thread put a
@@ -125,6 +134,22 @@ pub trait RenderSquareHooks {
     /// `(wx, wy)` (it does nothing unless `fboRenderChunk`, and on a
     /// server).
     fn invalidate_render_chunk_level(&mut self, _wx: i32, _wy: i32, _level: i32, _flags: u64) {}
+
+    /// Checked Native renderer entry. Missing PC20 invalidation capability
+    /// cannot become a successful legacy trace. Data projections explicitly
+    /// use the separate infallible method above.
+    fn try_invalidate_render_chunk_level(
+        &mut self,
+        _wx: i32,
+        _wy: i32,
+        _level: i32,
+        _flags: u64,
+    ) -> HostResult<()> {
+        Err(RuntimeHostError::Unsupported {
+            operation: "native floor render invalidation",
+            kind: None,
+        })
+    }
 
     /// `IsoChunk.invalidateVispolyChunkLevel(level)`.
     fn invalidate_vispoly_chunk_level(&mut self, _wx: i32, _wy: i32, _level: i32) {}
@@ -159,11 +184,11 @@ pub trait RenderSquareHooks {
     /// ([`crate::chunk::IsoChunk::check_physics_later`]) and the chunk's
     /// collision data (`chunk.collision.clear()`, both between the lighting
     /// and water parts upstream) are done right after it.
-    fn properties_recalculated(&mut self, _sq: &IsoGridSquare) {}
+    fn properties_recalculated(&mut self, _sq: SquareRef) {}
 
     /// `IsoGridSquare.clearWater()` (`addFloor`): the square's water
     /// geometry goes back to its pool.
-    fn clear_water(&mut self, _sq: &IsoGridSquare) {}
+    fn clear_water(&mut self, _sq: SquareRef) {}
 
     /// `LightingJNI.buildingsChanged()`: every local player's
     /// `buildingsChangedCounter`, `lightSourceUpdate = 100`, all
@@ -179,13 +204,13 @@ pub trait RenderSquareHooks {
 
 /// A Lua event fired by the mutations (`LuaEventManager.triggerEvent`).
 #[derive(Debug)]
-pub enum LuaEvent<'a> {
+pub enum LuaEvent {
     /// `OnObjectAboutToBeRemoved(obj)`: `obj` is `sq.objects[index]`. The
     /// original throws if the handler removes it.
-    ObjectAboutToBeRemoved { index: usize },
-    /// `OnTileRemoved(obj)`, after the object left the square (`None` when
-    /// it was not on the square).
-    TileRemoved { object: Option<&'a IsoObject> },
+    ObjectAboutToBeRemoved { index: usize, object: IsoObjectRef },
+    /// `OnTileRemoved(obj)`, with the original receiver even when detached.
+    /// `None` is an absent argument in the locator-only entry point.
+    TileRemoved { object: Option<IsoObjectRef> },
     /// `OnContainerUpdate(sq)` (`removeCorpse`).
     ContainerUpdate,
 }
@@ -193,7 +218,7 @@ pub enum LuaEvent<'a> {
 /// The world systems outside this crate the mutations call.
 pub trait SquareMutationHooks {
     /// `LuaEventManager.triggerEvent(name, args)`.
-    fn lua_event(&mut self, _sq: &IsoGridSquare, _event: LuaEvent<'_>) {}
+    fn lua_event(&mut self, _sq: SquareRef, _event: LuaEvent) {}
 
     /// One registry or system call of `addToWorld` / `removeFromWorld` /
     /// `removeFromSquare` for `obj` (see [`WorldCall`]), in the
@@ -202,10 +227,25 @@ pub trait SquareMutationHooks {
     fn world_call(
         &mut self,
         _obj: ObjectRef,
-        _object: &mut IsoObject,
+        _object: IsoObjectRef,
         _rand: &mut dyn GameRand,
         _call: WorldCall,
     ) {
+    }
+
+    /// Checked live lifecycle entry. An absent host capability is not a
+    /// successful legacy trace; explicit data profiles must opt in separately.
+    fn try_world_call(
+        &mut self,
+        _obj: ObjectRef,
+        _object: IsoObjectRef,
+        _rand: &mut dyn GameRand,
+        _call: WorldCall,
+    ) -> HostResult<()> {
+        Err(RuntimeHostError::Unsupported {
+            operation: "native world lifecycle hook",
+            kind: None,
+        })
     }
 
     /// `ItemContainer.isPowered()` of `obj`'s container `container`
@@ -242,7 +282,7 @@ pub trait SquareMutationHooks {
 
     /// `FMODAmbientWalls.getInstance().squareChanged(sq)`: the level's
     /// ambient wall data is marked dirty.
-    fn ambient_walls_square_changed(&mut self, _sq: &IsoGridSquare) {}
+    fn ambient_walls_square_changed(&mut self, _sq: SquareRef) {}
 
     /// `DesignationZoneAnimal.addNewRoof(x, y, z)` (`addFloor`).
     fn designation_zone_add_new_roof(&mut self, _x: i32, _y: i32, _z: i32) {}
@@ -252,7 +292,7 @@ pub trait SquareMutationHooks {
     /// are created and added to the cell's `roomLights` when it has none, an
     /// activated generator inside makes the building toxic, and light
     /// switches join `room.lightSwitches`.
-    fn room_square_updated(&mut self, _sq: &IsoGridSquare, _room: crate::defs::RoomIdx) {}
+    fn room_square_updated(&mut self, _sq: SquareRef, _room: crate::defs::RoomIdx) {}
 
     /// `IsoRoom.clear(false)` of the runtime room of `room_id`, when one
     /// exists (`WorldRegionToMetaGrid.removeRoomDef`): its lights leave the
@@ -263,7 +303,7 @@ pub trait SquareMutationHooks {
     /// registries, `CorpseCount` / `FliesSound.corpseAdded`,
     /// `ObjectIDManager.addObject`, the animal designation zone, the
     /// reanimation updater and the `deathTime` clamp to the world age.
-    fn corpse_added_to_world(&mut self, _pos: SquarePos, _body: &mut IsoDeadBody) {}
+    fn corpse_added_to_world(&mut self, _square: SquareRef, _index: usize) {}
 
     /// `IsoDeadBody.removeFromWorld()` (`removeCorpse`): the reverse of
     /// [`SquareMutationHooks::corpse_added_to_world`].
@@ -283,7 +323,11 @@ pub trait SquareMutationHooks {
     /// `new IsoGenerator(item, cell, sq)`: the generator object (the
     /// script's `WorldObjectSprite`, `setInfoFromItem`), which is then
     /// added with `AddSpecialObject`. `None` leaves the item unplaced.
-    fn generator_from_item(&mut self, _pos: SquarePos, _item: &InventoryItem) -> Option<IsoObject> {
+    fn generator_from_item(
+        &mut self,
+        _pos: SquarePos,
+        _item: &InventoryItem,
+    ) -> Option<ObjectSlot> {
         None
     }
 
@@ -305,7 +349,7 @@ pub trait SquareMutationHooks {
 
     /// `DesignationZoneAnimal.addItemOnGround(obj, sq)`: food, dung and
     /// feathers counted by the animal zone at the square.
-    fn designation_zone_item_on_ground(&mut self, _obj: ObjectRef, _object: &IsoObject) {}
+    fn designation_zone_item_on_ground(&mut self, _obj: ObjectRef, _object: IsoObjectRef) {}
 }
 
 /// Every hook a no-op: no other systems.
@@ -313,6 +357,22 @@ pub struct NoMutationHooks;
 impl PathfindSquareHooks for NoMutationHooks {}
 impl RenderSquareHooks for NoMutationHooks {}
 impl SquareMutationHooks for NoMutationHooks {}
+
+/// Explicit archive/geometry fixture profile. This records no Native system
+/// effects; use only when projecting object/list data, never as a live host.
+pub struct DataProjectionMutationHooks;
+impl SquareMutationHooks for DataProjectionMutationHooks {
+    fn try_world_call(
+        &mut self,
+        obj: ObjectRef,
+        object: IsoObjectRef,
+        rand: &mut dyn GameRand,
+        call: WorldCall,
+    ) -> HostResult<()> {
+        self.world_call(obj, object, rand, call);
+        Ok(())
+    }
+}
 
 /// `IsoDoor`'s double-door offset tables (`DoubleDoorNorthClosedXOffset`
 /// and the seven others), read from the installed game.
@@ -386,16 +446,23 @@ fn chunk_of(pos: SquarePos) -> (i32, i32) {
 }
 
 impl MutationEnv<'_> {
-    fn sq(&self, pos: SquarePos) -> Option<&IsoGridSquare> {
+    fn sq(&self, pos: SquarePos) -> Option<SquareRef> {
         self.cell.get_grid_square(pos.0, pos.1, pos.2)
     }
 
-    fn sq_mut(&mut self, pos: SquarePos) -> Option<&mut IsoGridSquare> {
+    fn sq_mut(&mut self, pos: SquarePos) -> Option<SquareRef> {
         self.cell.get_grid_square_mut(pos.0, pos.1, pos.2)
     }
 
-    fn spr(&self, o: &IsoObject) -> Option<&crate::sprite::IsoSprite> {
-        o.sprite.map(|s| &self.sprites.sprites[s])
+    fn try_spr(&self, o: &IsoObject) -> HostResult<Option<crate::sprite::IsoSprite>> {
+        o.sprite.metadata_projection(self.sprites)
+    }
+
+    // Legacy synchronous mutation entry points have no host-error carrier.
+    // Their metadata query still reads Native directly; it never means null.
+    fn spr(&self, o: &IsoObject) -> Option<crate::sprite::IsoSprite> {
+        self.try_spr(o)
+            .expect("legacy mutation requires unborrowed actual sprite metadata")
     }
 
     fn flag(&self, name: &str) -> Option<crate::sprite::IsoFlagType> {
@@ -408,11 +475,13 @@ impl MutationEnv<'_> {
     /// every `RecalcProperties` of a square in a loaded chunk, so this
     /// always recalculates.
     pub fn recalc_properties(&mut self, pos: SquarePos) {
-        let Some(sq) = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2) else {
+        let Some(sq_owner) = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2) else {
             return;
         };
+        let mut sq = sq_owner.borrow_mut();
         sq.recalc_properties(&*self.sprites);
-        self.render.properties_recalculated(&*sq);
+        drop(sq);
+        self.render.properties_recalculated(sq_owner);
         // `this.chunk.checkPhysicsLater(z)`, then
         // `this.chunk.collision.clear()`; only the hook's water part comes
         // after them upstream, and neither reads the other.
@@ -432,17 +501,19 @@ impl MutationEnv<'_> {
             };
             let m = &*self.sprites;
             let g = &*self.cell;
+            let (sa, sb) = (sa.borrow(), sb.borrow());
             (
-                sa.calculate_collide(Some(sb), false, false, false, false, m, g),
-                sa.calculate_collide(Some(sb), false, true, false, false, m, g),
-                sa.calculate_vision_blocked(Some(sb), m, g),
+                sa.calculate_collide(Some(&sb), false, false, false, false, m, g),
+                sa.calculate_collide(Some(&sb), false, true, false, false, m, g),
+                sa.calculate_vision_blocked(Some(&sb), m, g),
             )
         };
         let (dx, dy, dz) = (1 + b.0 - a.0, 1 + b.1 - a.1, 1 + b.2 - a.2);
         if dx < 0 || dy < 0 || dz < 0 || dx > 2 || dy > 2 || dz > 2 {
             return;
         }
-        let sq = self.sq_mut(a).unwrap();
+        let sq_owner = self.sq_mut(a).unwrap();
+        let mut sq = sq_owner.borrow_mut();
         sq.collide_matrix = set_matrix_bit(sq.collide_matrix, dx, dy, dz, collide);
         sq.path_matrix = set_matrix_bit(sq.path_matrix, dx, dy, dz, path);
         sq.vision_matrix = set_matrix_bit(sq.vision_matrix, dx, dy, dz, vision);
@@ -454,7 +525,8 @@ impl MutationEnv<'_> {
             return;
         }
         for p in [this, a] {
-            if let Some(sq) = self.sq(p) {
+            if let Some(sq_owner) = self.sq(p) {
+                let sq = sq_owner.borrow();
                 sq.solid_floor_cache.set(None);
             }
         }
@@ -476,10 +548,12 @@ impl MutationEnv<'_> {
     /// recalculates both squares' properties), then the four corner pairs
     /// around it.
     pub fn recalc_all_with_neighbours(&mut self, pos: SquarePos) {
-        let Some(sq) = self.sq(pos) else {
+        let Some(sq_owner) = self.sq(pos) else {
             return;
         };
+        let sq = sq_owner.borrow();
         sq.solid_floor_cache.set(None);
+        drop(sq);
         self.recalc_properties(pos);
         for x in pos.0 - 1..=pos.0 + 1 {
             for y in pos.1 - 1..=pos.1 + 1 {
@@ -516,16 +590,20 @@ impl MutationEnv<'_> {
     pub fn check_have_roof(&mut self, x: i32, y: i32) {
         let mut have_roof = false;
         for z in (0..=31).rev() {
-            let Some(sq) = self.sq_mut((x, y, z)) else {
+            let Some(sq_owner) = self.sq_mut((x, y, z)) else {
                 continue;
             };
-            if have_roof != sq.have_roof {
-                sq.have_roof = have_roof;
+            let mut sq = sq_owner.borrow_mut();
+            let changed = have_roof != sq.have_roof;
+            sq.have_roof = have_roof;
+            drop(sq);
+            if changed {
                 self.recalc_all_with_neighbours((x, y, z));
             }
             if self
                 .sq((x, y, z))
                 .unwrap()
+                .borrow()
                 .has_rain_blocking_tile(self.sprites)
             {
                 have_roof = true;
@@ -555,7 +633,7 @@ impl MutationEnv<'_> {
         let new_level = !ch.is_valid_level(pos.2);
         let mut sq = IsoGridSquare::new(pos.0, pos.1, pos.2);
         sq.associated_building = associated;
-        ch.set_square(pos.0 - wx * 8, pos.1 - wy * 8, pos.2, Some(sq));
+        ch.set_square(pos.0 - wx * 8, pos.1 - wy * 8, pos.2, Some((sq).into()));
         if new_level {
             self.pathfind.add_chunk_to_world(self.cell, wx, wy);
         }
@@ -645,7 +723,7 @@ impl MutationEnv<'_> {
     /// `PolygonalMap2.instance.squareChanged(sq)`.
     pub fn polygonal_map2_square_changed(&mut self, pos: SquarePos) {
         let native = self.pathfind.uses_native_code();
-        let Some(sq) = self.cell.get_grid_square(pos.0, pos.1, pos.2) else {
+        let Some(sq_owner) = self.cell.get_grid_square(pos.0, pos.1, pos.2) else {
             return;
         };
         let (wx, wy) = chunk_of(pos);
@@ -654,21 +732,22 @@ impl MutationEnv<'_> {
         }
         self.render.invalidate_vispoly_chunk_level(wx, wy, pos.2);
         self.render.cutaways_square_changed(Some(pos));
-        self.world.ambient_walls_square_changed(sq);
+        self.world.ambient_walls_square_changed(sq_owner);
         if native {
             self.pathfind.square_changed(self.cell, pos);
         }
     }
 
     pub(crate) fn map_collision_square_changed(&mut self, pos: SquarePos) {
-        if let Some(sq) = self.cell.get_grid_square(pos.0, pos.1, pos.2) {
-            self.pathfind.map_collision_square_changed(sq);
+        if let Some(sq_owner) = self.cell.get_grid_square(pos.0, pos.1, pos.2) {
+            self.pathfind.map_collision_square_changed(sq_owner);
         }
     }
 
     fn regions_set_previous_flags(&mut self, pos: SquarePos) {
         let sq = self.cell.get_grid_square(pos.0, pos.1, pos.2);
-        self.regions.set_previous_flags(sq, self.sprites);
+        self.regions
+            .set_previous_flags(sq.as_ref().map(|s| s.borrow()).as_deref(), self.sprites);
     }
 
     fn regions_square_changed(&mut self, pos: SquarePos, is_removal: bool) {
@@ -680,7 +759,8 @@ impl MutationEnv<'_> {
     /// building and its `roofHideBuilding` is absent or entirely
     /// empty-outside.
     pub fn player_built_floor(&self, pos: SquarePos) -> Option<ObjectId> {
-        let sq = self.sq(pos)?;
+        let sq_owner = self.sq(pos)?;
+        let sq = sq_owner.borrow();
         let in_building = sq.room_def(self.meta).is_some_and(|r| r.building.is_some());
         let hide = sq
             .roof_hide_building
@@ -691,7 +771,8 @@ impl MutationEnv<'_> {
         let f = self.sprites.tables.flag.solidfloor;
         sq.objects
             .iter()
-            .find(|o| self.spr(o).is_some_and(|s| s.properties.has(f)))
+            .map(ObjectSlot::borrow)
+            .find(|o| self.spr(&o).is_some_and(|s| s.properties.has(f)))
             .map(|o| o.id)
     }
 
@@ -699,12 +780,13 @@ impl MutationEnv<'_> {
     /// placement) snap their height to the nearest surface height of the
     /// square's objects.
     pub fn fix_placed_item_render_offsets(&mut self, pos: SquarePos) {
-        let Some(sq) = self.sq(pos) else {
+        let Some(sq_owner) = self.sq(pos) else {
             return;
         };
+        let sq = sq_owner.borrow();
         let mut offsets: Vec<i32> = Vec::new();
-        for o in &sq.objects {
-            let (surface, item_height) = match self.spr(o) {
+        for o in sq.objects.iter().map(ObjectSlot::borrow) {
+            let (surface, item_height) = match self.spr(&o) {
                 Some(s) => {
                     let i = s.properties.surface_info(&self.sprites.alias);
                     (i.surface as f32, i.item_height)
@@ -720,11 +802,13 @@ impl MutationEnv<'_> {
         if offsets.is_empty() {
             offsets.push(0);
         }
-        let sq = self.sq_mut(pos).unwrap();
-        for o in &mut sq.objects {
+        drop(sq);
+        let sq = sq_owner.borrow();
+        for mut o in sq.objects.iter().map(ObjectSlot::borrow_mut) {
             let ObjectKind::WorldInventory(w) = &mut o.kind else {
                 continue;
             };
+            let mut w = w.borrow_mut();
             if w.extended_placement {
                 continue;
             }
@@ -749,41 +833,40 @@ impl MutationEnv<'_> {
     pub fn restack_sheet_rope(&mut self, pos: SquarePos) {
         let names = ["climbSheetW", "climbSheetN", "climbSheetE", "climbSheetS"];
         let flags: Vec<_> = names.iter().filter_map(|n| self.flag(n)).collect();
-        let Some(sq) = self.sq(pos) else {
+        let Some(sq_owner) = self.sq(pos) else {
             return;
         };
+        let sq = sq_owner.borrow();
         if !flags.iter().any(|&f| sq.has(f)) {
             return;
         }
         let n = sq.objects.len();
         let found = (0..n.saturating_sub(1)).find(|&i| {
-            self.spr(&sq.objects[i])
+            self.spr(&sq.objects[i].borrow())
                 .is_some_and(|s| flags.iter().any(|&f| s.properties.has(f)))
         });
+        drop(sq);
         if let Some(i) = found {
-            let sq = self.sq_mut(pos).unwrap();
+            let sq_owner = self.sq_mut(pos).unwrap();
+            let mut sq = sq_owner.borrow_mut();
             let o = sq.objects.remove(i);
-            sq.objects.push(o);
+            sq.objects.push((o).into());
         }
     }
 
     // ---- adding ----
 
-    fn insert_object(
-        &mut self,
-        pos: SquarePos,
-        mut obj: IsoObject,
-        index: i32,
-    ) -> Option<ObjectId> {
+    fn insert_object(&mut self, pos: SquarePos, obj: ObjectSlot, index: i32) -> Option<ObjectId> {
         let sprites = &*self.sprites;
-        let sq = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2)?;
-        let index = sq.place_wall_and_door_check(sprites, &obj, index);
-        obj.id = sq.new_object_id();
-        let id = obj.id;
+        let sq_owner = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2)?;
+        let mut sq = sq_owner.borrow_mut();
+        let index = sq.place_wall_and_door_check(sprites, &obj.borrow(), index);
+        let id = sq.new_object_id();
+        obj.borrow_mut().id = id;
         if index != -1 && index >= 0 && index <= sq.objects.len() as i32 {
-            sq.objects.insert(index as usize, obj);
+            sq.objects.insert(index as usize, (obj).into());
         } else {
-            sq.objects.push(obj);
+            sq.objects.push((obj).into());
         }
         Some(id)
     }
@@ -795,9 +878,9 @@ impl MutationEnv<'_> {
     pub fn add_tile_object(
         &mut self,
         pos: SquarePos,
-        obj: IsoObject,
+        obj: ObjectSlot,
         index: i32,
-    ) -> Option<ObjectId> {
+    ) -> HostResult<Option<ObjectId>> {
         self.add_object(pos, obj, index, false)
     }
 
@@ -807,14 +890,18 @@ impl MutationEnv<'_> {
     pub fn add_special_object(
         &mut self,
         pos: SquarePos,
-        obj: IsoObject,
+        obj: ObjectSlot,
         index: i32,
-    ) -> Option<ObjectId> {
+    ) -> HostResult<Option<ObjectId>> {
         self.add_object(pos, obj, index, true)
     }
 
     /// `AddSpecialTileObject(obj)`: `AddSpecialObject(obj)`.
-    pub fn add_special_tile_object(&mut self, pos: SquarePos, obj: IsoObject) -> Option<ObjectId> {
+    pub fn add_special_tile_object(
+        &mut self,
+        pos: SquarePos,
+        obj: ObjectSlot,
+    ) -> HostResult<Option<ObjectId>> {
         self.add_special_object(pos, obj, -1)
     }
 
@@ -823,29 +910,57 @@ impl MutationEnv<'_> {
     pub fn transmit_add_object_to_square(
         &mut self,
         pos: SquarePos,
-        obj: IsoObject,
+        obj: ObjectSlot,
         index: i32,
-    ) -> Option<ObjectId> {
+    ) -> HostResult<Option<ObjectId>> {
         self.add_tile_object(pos, obj, index)
     }
 
     fn add_object(
         &mut self,
         pos: SquarePos,
-        obj: IsoObject,
+        obj: ObjectSlot,
         index: i32,
         special: bool,
-    ) -> Option<ObjectId> {
-        self.sq(pos)?;
+    ) -> HostResult<Option<ObjectId>> {
+        let actual = obj.ref_handle();
+        self.cell.retire_object(ObjectSlot::retain(&actual));
+        if self.sq(pos).is_none() {
+            return Ok(None);
+        }
         self.regions_set_previous_flags(pos);
-        let world_item = matches!(obj.kind, ObjectKind::WorldInventory(_));
-        let id = self.insert_object(pos, obj, index)?;
-        let sq = self.sq_mut(pos).unwrap();
+        let world_item = matches!(obj.borrow().kind, ObjectKind::WorldInventory(_));
+        let Some(id) = self.insert_object(pos, obj, index) else {
+            return Ok(None);
+        };
+        let sq_owner = self.sq_mut(pos).unwrap();
+        let mut sq = sq_owner.borrow_mut();
         if special {
             sq.special_objects.push(id);
         }
         sq.burnt_out = false;
-        lifecycle::add_to_world(self, ObjectRef { pos, id });
+        drop(sq);
+        lifecycle::add_to_world(self, ObjectRef { pos, id })?;
+        // The following void helpers retain their arena-data preconditions.
+        // A genuine native receiver has completed addToWorld at this point;
+        // do not turn its actual sprite into absent tile metadata or enter
+        // those helpers before their native host phases are implemented.
+        if actual
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("addObject post-lifecycle sprite"))?
+            .sprite
+            .native_slot()
+            .is_some()
+        {
+            return Err(RuntimeHostError::Unsupported {
+                operation: if special {
+                    "native addObject restackSheetRope"
+                } else {
+                    "native addObject RecalcAllWithNeighbours"
+                },
+                kind: None,
+            });
+        }
         if special {
             self.restack_sheet_rope(pos);
         }
@@ -861,7 +976,7 @@ impl MutationEnv<'_> {
         self.polygonal_map2_square_changed(pos);
         self.regions_square_changed(pos, false);
         self.invalidate_render(pos, dirty::OBJECT_ADDED);
-        Some(id)
+        Ok(Some(id))
     }
 
     /// `addFloor(sprite)`: the floors, vegetation, tainted water and grass
@@ -870,8 +985,10 @@ impl MutationEnv<'_> {
     /// created here and on every level below down to 1, and the roof,
     /// lighting and regions are updated. The floor does not get
     /// `addToWorld`.
-    pub fn add_floor(&mut self, pos: SquarePos, sprite: &str) -> Option<ObjectId> {
-        self.sq(pos)?;
+    pub fn add_floor(&mut self, pos: SquarePos, sprite: &str) -> HostResult<Option<ObjectId>> {
+        if self.sq(pos).is_none() {
+            return Ok(None);
+        }
         self.regions_set_previous_flags(pos);
         // `new IsoObject(cell, sq, sprite)`: `IsoSpriteManager.getSprite`.
         let s = match self.sprites.named_map.get(sprite) {
@@ -888,9 +1005,10 @@ impl MutationEnv<'_> {
         let f = self.sprites.tables.flag;
         let tainted = self.flag("taintedWater");
         let mut nn = 0;
-        while nn < self.sq(pos).unwrap().objects.len() {
-            let o = &self.sq(pos).unwrap().objects[nn];
-            let Some(ss) = self.spr(o) else {
+        while nn < self.sq(pos).unwrap().borrow().objects.len() {
+            let object = self.sq(pos).unwrap().borrow().objects[nn].ref_handle();
+            let o = object.borrow();
+            let Some(ss) = self.spr(&o) else {
                 nn += 1;
                 continue;
             };
@@ -911,24 +1029,27 @@ impl MutationEnv<'_> {
                 continue;
             }
             let id = o.id;
-            let before = self.sq(pos).unwrap().objects.len();
-            self.transmit_remove_item_from_square(pos, id, true);
+            drop(o);
+            let before = self.sq(pos).unwrap().borrow().objects.len();
+            self.transmit_remove_item_from_square(pos, id, true)?;
             // The original steps back one and looks at the same index
             // again; an object the removal left in place would be looked
             // at forever, so it is passed over here.
-            if self.sq(pos).unwrap().objects.len() >= before {
+            if self.sq(pos).unwrap().borrow().objects.len() >= before {
                 nn += 1;
             }
         }
         self.sprites.sprites[s].properties.set_flag(f.solidfloor);
-        let sq = self.sq_mut(pos).unwrap();
-        obj.id = sq.new_object_id();
-        let id = obj.id;
+        let sq_owner = self.sq_mut(pos).unwrap();
+        let mut sq = sq_owner.borrow_mut();
+        let id = sq.new_object_id();
+        obj.id = id;
         if has_rug {
-            sq.objects.insert(0, obj);
+            sq.objects.insert(0, (ObjectSlot::new(obj)).into());
         } else {
-            sq.objects.push(obj);
+            sq.objects.push((ObjectSlot::new(obj)).into());
         }
+        drop(sq);
         self.ensure_surround_not_null(pos);
         self.recalc_properties(pos);
         self.world
@@ -951,41 +1072,51 @@ impl MutationEnv<'_> {
         self.polygonal_map2_square_changed(pos);
         self.render.grid_occlusion_square_changed();
         self.regions_square_changed(pos, false);
-        if let Some(sq) = self.cell.get_grid_square(pos.0, pos.1, pos.2) {
-            self.render.clear_water(sq);
+        if let Some(sq_owner) = self.cell.get_grid_square(pos.0, pos.1, pos.2) {
+            let sq = sq_owner.borrow();
+            drop(sq);
+            self.render.clear_water(sq_owner);
         }
         self.invalidate_render(pos, dirty::OBJECT_ADDED);
-        Some(id)
+        Ok(Some(id))
     }
 
     /// `addCorpse(body, false)` in single player.
     pub fn add_corpse(&mut self, pos: SquarePos, body: IsoDeadBody) {
         let burnt = self.sprites.tables.flag.burntOut;
-        let Some(sq) = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2) else {
+        let Some(sq_owner) = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2) else {
             return;
         };
+        let mut sq = sq_owner.borrow_mut();
         sq.static_moving.push(body);
         let i = sq.static_moving.len() - 1;
-        self.world
-            .corpse_added_to_world(pos, &mut sq.static_moving[i]);
-        sq.burnt_out = false;
-        sq.properties.unset_flag(burnt);
+        drop(sq);
+        self.world.corpse_added_to_world(sq_owner.clone(), i);
+        {
+            let mut sq = sq_owner.borrow_mut();
+            sq.burnt_out = false;
+            sq.properties.unset_flag(burnt);
+        }
         self.invalidate_render(pos, dirty::CORPSE_ADDED);
     }
 
     /// `removeCorpse(body, false)` in single player: the corpse at
     /// `staticMovingObjects[index]` leaves the world and the square.
     pub fn remove_corpse(&mut self, pos: SquarePos, index: usize) -> Option<IsoDeadBody> {
-        let sq = self.sq_mut(pos)?;
+        let sq_owner = self.sq_mut(pos)?;
+        let sq = sq_owner.borrow();
         if index >= sq.static_moving.len() {
             return None;
         }
+        drop(sq);
         self.invalidate_render(pos, dirty::CORPSE_REMOVED);
-        let sq = self.sq_mut(pos).unwrap();
+        let sq_owner = self.sq_mut(pos).unwrap();
+        let mut sq = sq_owner.borrow_mut();
         let mut body = sq.static_moving.remove(index);
+        drop(sq);
         self.world.corpse_removed_from_world(pos, &mut body);
-        let sq = self.cell.get_grid_square(pos.0, pos.1, pos.2).unwrap();
-        self.world.lua_event(sq, LuaEvent::ContainerUpdate);
+        let sq_owner = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2).unwrap();
+        self.world.lua_event(sq_owner, LuaEvent::ContainerUpdate);
         Some(body)
     }
 
@@ -995,7 +1126,11 @@ impl MutationEnv<'_> {
     /// safely (all parts of a multi-square object). Returns the object's
     /// index (in `objects`, or in `specialObjects` when only there; -1 when
     /// on neither) and the removed object.
-    pub fn remove_tile_object(&mut self, pos: SquarePos, id: ObjectId) -> (i32, Option<IsoObject>) {
+    pub fn remove_tile_object(
+        &mut self,
+        pos: SquarePos,
+        id: ObjectId,
+    ) -> HostResult<(i32, Option<ObjectSlot>)> {
         self.remove_tile_object_with(pos, id, true)
     }
 
@@ -1005,7 +1140,7 @@ impl MutationEnv<'_> {
         pos: SquarePos,
         id: ObjectId,
         safely_remove: bool,
-    ) -> (i32, Option<IsoObject>) {
+    ) -> HostResult<(i32, Option<ObjectSlot>)> {
         if safely_remove {
             return self.safely_remove_tile_object_from_square(ObjectRef { pos, id });
         }
@@ -1019,9 +1154,10 @@ impl MutationEnv<'_> {
         pos: SquarePos,
         id: ObjectId,
         safely_remove: bool,
-    ) -> (i32, Option<IsoObject>) {
-        if self.sq(pos).is_none_or(|sq| sq.object_index(id).is_none()) {
-            return (-1, None);
+    ) -> HostResult<(i32, Option<ObjectSlot>)> {
+        let present = self.try_object_handle(ObjectRef { pos, id })?.is_some();
+        if !present {
+            return Ok((-1, None));
         }
         self.remove_tile_object_with(pos, id, safely_remove)
     }
@@ -1031,61 +1167,115 @@ impl MutationEnv<'_> {
         &mut self,
         pos: SquarePos,
         id: ObjectId,
-    ) -> (i32, Option<IsoObject>) {
+    ) -> HostResult<(i32, Option<ObjectSlot>)> {
+        let receiver = self.try_object_handle(ObjectRef { pos, id })?;
+        self.remove_tile_object_receiver(pos, id, receiver)
+    }
+
+    pub(crate) fn remove_tile_object_receiver(
+        &mut self,
+        pos: SquarePos,
+        id: ObjectId,
+        receiver: Option<IsoObjectRef>,
+    ) -> HostResult<(i32, Option<ObjectSlot>)> {
+        if let Some(object) = &receiver {
+            self.cell.retire_object(ObjectSlot::retain(object));
+        }
         if self.sq(pos).is_none() {
-            return (-1, None);
+            return Ok((-1, None));
         }
         self.regions_set_previous_flags(pos);
-        let sq = self.sq(pos).unwrap();
-        let mut index = match sq.object_index(id) {
-            Some(i) => i as i32,
-            None => sq
-                .special_objects
-                .iter()
-                .position(|&s| s == id)
-                .map_or(-1, |i| i as i32),
+        let sq_owner = self.sq(pos).unwrap();
+        let (actual_index, mut index, table_adjustments) = {
+            let sq = sq_owner
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("remove tile square"))?;
+            let actual_index = receiver
+                .as_ref()
+                .and_then(|r| sq.objects.iter().position(|o| o.ptr_eq_ref(r)));
+            let index = actual_index.map(|i| i as i32).unwrap_or_else(|| {
+                sq.special_objects
+                    .iter()
+                    .position(|&s| s == id)
+                    .map_or(-1, |i| i as i32)
+            });
+            let mut adjustments = Vec::new();
+            if let Some(i) = actual_index {
+                let m = &*self.sprites;
+                let info = |o: &IsoObject| -> HostResult<_> {
+                    Ok(o.sprite
+                        .metadata_projection(m)?
+                        .map(|s| s.properties.surface_info(&m.alias))
+                        .unwrap_or_default())
+                };
+                let this_owner = sq.objects[i].ref_handle();
+                let this = info(
+                    &*this_owner
+                        .try_borrow()
+                        .map_err(|_| RuntimeHostError::Borrowed("remove tile receiver"))?,
+                )?;
+                if this.is_table {
+                    for slot in sq.objects.iter().skip(i + 1) {
+                        let owner = slot.ref_handle();
+                        let o = owner.try_borrow().map_err(|_| {
+                            RuntimeHostError::Borrowed("remove tile table neighbour")
+                        })?;
+                        let other = info(&o)?;
+                        let countertop = o
+                            .sprite
+                            .metadata_projection(m)?
+                            .is_some_and(|s| m.has_prop(&s, "Countertop"));
+                        if other.is_table_top || other.is_table && !countertop {
+                            adjustments.push((slot.ref_handle(), this.surface as f32));
+                        }
+                    }
+                }
+            }
+            (actual_index, index, adjustments)
         };
         let mut removed = None;
-        if let Some(i) = sq.object_index(id) {
-            let m = &*self.sprites;
-            let info = |o: &IsoObject| {
-                o.sprite
-                    .map(|s| m.sprites[s].properties.surface_info(&m.alias))
-                    .unwrap_or_default()
-            };
-            let this = info(&sq.objects[i]);
-            if this.is_table {
-                let offset = this.surface as f32;
-                let countertop: Vec<bool> = sq
-                    .objects
-                    .iter()
-                    .map(|o| {
-                        o.sprite
-                            .is_some_and(|s| m.has_prop(&m.sprites[s], "Countertop"))
-                    })
-                    .collect();
-                let infos: Vec<_> = sq.objects.iter().map(info).collect();
-                let sq = self.sq_mut(pos).unwrap();
-                for j in i + 1..sq.objects.len() {
-                    if !infos[j].is_table_top && (!infos[j].is_table || countertop[j]) {
-                        continue;
-                    }
-                    sq.objects[j].render_y_offset -= offset;
-                    sq.objects[j].sx = 0.0;
-                }
+        if let Some(i) = actual_index {
+            for (object, offset) in table_adjustments {
+                let mut object = object
+                    .try_borrow_mut()
+                    .map_err(|_| RuntimeHostError::Borrowed("remove tile table adjustment"))?;
+                object.render_y_offset -= offset;
+                object.sx = 0.0;
             }
             if self.player_built_floor(pos) == Some(id) {
                 self.render.grid_occlusion_square_changed();
             }
-            let sq = self.cell.get_grid_square(pos.0, pos.1, pos.2).unwrap();
-            self.world
-                .lua_event(sq, LuaEvent::ObjectAboutToBeRemoved { index: i });
-            let sq = self.sq(pos).unwrap();
+            let receiver = receiver.as_ref().unwrap().clone();
+            let sq_owner = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2).unwrap();
+            self.world.lua_event(
+                sq_owner,
+                LuaEvent::ObjectAboutToBeRemoved {
+                    index: i,
+                    object: receiver.clone(),
+                },
+            );
+            let sq_owner = self.sq(pos).ok_or(RuntimeHostError::InvalidHostState(
+                "remove tile square unloaded during callback",
+            ))?;
+            let sq = sq_owner
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("remove tile square after callback"))?;
             let i = sq
-                .object_index(id)
-                .expect("OnObjectAboutToBeRemoved not allowed to remove the object");
+                .objects
+                .iter()
+                .position(|o| o.ptr_eq_ref(&receiver))
+                .ok_or(RuntimeHostError::InvalidHostState(
+                    "OnObjectAboutToBeRemoved removed the actual receiver",
+                ))?;
             index = i as i32;
-            let world_item = matches!(sq.objects[i].kind, ObjectKind::WorldInventory(_));
+            let world_item = matches!(
+                receiver
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("remove tile receiver after callback"))?
+                    .kind,
+                ObjectKind::WorldInventory(_)
+            );
+            drop(sq);
             self.invalidate_render(
                 pos,
                 if world_item {
@@ -1095,8 +1285,8 @@ impl MutationEnv<'_> {
                 },
             );
             let r = ObjectRef { pos, id };
-            lifecycle::remove_from_world(self, r);
-            removed = lifecycle::remove_from_square(self, r);
+            lifecycle::remove_from_world_handle(self, r, &receiver)?;
+            removed = lifecycle::remove_from_square_handle(self, r, &receiver)?;
             if !world_item {
                 self.recalc_all_with_neighbours(pos);
                 self.check_have_roof(pos.0, pos.1);
@@ -1105,16 +1295,12 @@ impl MutationEnv<'_> {
             }
         }
         self.map_collision_square_changed(pos);
-        let sq = self.cell.get_grid_square(pos.0, pos.1, pos.2).unwrap();
-        self.world.lua_event(
-            sq,
-            LuaEvent::TileRemoved {
-                object: removed.as_ref(),
-            },
-        );
+        let sq_owner = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2).unwrap();
+        self.world
+            .lua_event(sq_owner, LuaEvent::TileRemoved { object: receiver });
         self.polygonal_map2_square_changed(pos);
         self.regions_square_changed(pos, true);
-        (index, removed)
+        Ok((index, removed))
     }
 
     /// `RemoveTileObjectErosionNoRecalc(obj)`: the object leaves the world
@@ -1123,35 +1309,74 @@ impl MutationEnv<'_> {
         &mut self,
         pos: SquarePos,
         id: ObjectId,
-    ) -> (i32, Option<IsoObject>) {
-        let Some(sq) = self.sq(pos) else {
-            return (-1, None);
+    ) -> HostResult<(i32, Option<ObjectSlot>)> {
+        let Some(sq_owner) = self.sq(pos) else {
+            return Ok((-1, None));
         };
+        let sq = sq_owner
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("erosion remove square"))?;
         let index = sq.object_index(id).map_or(-1, |i| i as i32);
         let on_square = index != -1 || sq.special_objects.contains(&id);
+        drop(sq);
         if !on_square {
-            return (index, None);
+            return Ok((index, None));
         }
         let r = ObjectRef { pos, id };
-        lifecycle::remove_from_world(self, r);
-        let removed = lifecycle::remove_from_square(self, r);
+        let receiver = self.try_object_handle(r)?;
+        let removed = if let Some(receiver) = receiver {
+            self.cell.retire_object(ObjectSlot::retain(&receiver));
+            lifecycle::remove_from_world_handle(self, r, &receiver)?;
+            lifecycle::remove_from_square_handle(self, r, &receiver)?
+        } else {
+            None
+        };
         self.recalc_properties(pos);
-        (index, removed)
+        Ok((index, removed))
     }
 
     /// `DeleteTileObject(obj)`: the object is taken out of `objects` with
     /// nothing else (no `removeFromWorld`, no recalculation).
-    pub fn delete_tile_object(&mut self, pos: SquarePos, id: ObjectId) -> Option<IsoObject> {
-        let sq = self.sq_mut(pos)?;
+    pub fn delete_tile_object(&mut self, pos: SquarePos, id: ObjectId) -> Option<ObjectSlot> {
+        let sq_owner = self.sq_mut(pos)?;
+        let mut sq = sq_owner.borrow_mut();
         let i = sq.object_index(id)?;
-        Some(sq.objects.remove(i))
+        Some(sq.remove_object_slot(i))
     }
 
     // ---- multi-square objects (`IsoObjectUtils`) ----
 
-    fn object(&self, r: ObjectRef) -> Option<&IsoObject> {
+    fn object(&self, r: ObjectRef) -> Option<IsoObjectRef> {
+        self.object_handle(r)
+    }
+    fn object_handle(&self, r: ObjectRef) -> Option<IsoObjectRef> {
         let sq = self.sq(r.pos)?;
-        sq.objects.iter().find(|o| o.id == r.id)
+        let sq = sq.borrow();
+        sq.objects
+            .iter()
+            .find(|o| o.borrow().id == r.id)
+            .map(ObjectSlot::ref_handle)
+    }
+
+    fn try_object_handle(&self, r: ObjectRef) -> HostResult<Option<IsoObjectRef>> {
+        let Some(square) = self.sq(r.pos) else {
+            return Ok(None);
+        };
+        let square = square
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("remove object lookup square"))?;
+        for slot in &square.objects {
+            let object = slot.ref_handle();
+            let matches = object
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("remove object lookup receiver"))?
+                .id
+                == r.id;
+            if matches {
+                return Ok(Some(object));
+            }
+        }
+        Ok(None)
     }
 
     fn door_open_north(o: &IsoObject) -> Option<(bool, bool, bool)> {
@@ -1163,8 +1388,8 @@ impl MutationEnv<'_> {
     }
 
     fn int_prop(&self, o: &IsoObject, name: &str) -> Option<i32> {
-        let s = self.spr(o)?;
-        let v = self.sprites.prop(s, name)?;
+        let s = self.spr(&o)?;
+        let v = self.sprites.prop(&s, name)?;
         crate::java::parse_int(v)
     }
 
@@ -1173,13 +1398,13 @@ impl MutationEnv<'_> {
         let Some(o) = self.object(r) else {
             return -1;
         };
-        let Some(dd) = self.int_prop(o, "DoubleDoor") else {
+        let Some(dd) = self.int_prop(&o.borrow(), "DoubleDoor") else {
             return -1;
         };
         if !(1..=8).contains(&dd) {
             return -1;
         }
-        let Some((open, _, _)) = Self::door_open_north(o) else {
+        let Some((open, _, _)) = Self::door_open_north(&o.borrow()) else {
             return -1;
         };
         if open {
@@ -1193,13 +1418,13 @@ impl MutationEnv<'_> {
         let Some(o) = self.object(r) else {
             return -1;
         };
-        let Some(gd) = self.int_prop(o, "GarageDoor") else {
+        let Some(gd) = self.int_prop(&o.borrow(), "GarageDoor") else {
             return -1;
         };
         if !(1..=6).contains(&gd) {
             return -1;
         }
-        let Some((open, _, _)) = Self::door_open_north(o) else {
+        let Some((open, _, _)) = Self::door_open_north(&o.borrow()) else {
             return -1;
         };
         if open {
@@ -1217,12 +1442,18 @@ impl MutationEnv<'_> {
         pred: &dyn Fn(ObjectRef) -> bool,
     ) -> Option<ObjectRef> {
         let (_, north, is_door) = Self::door_open_north(like)?;
-        let sq = self.sq(pos)?;
+        let sq_owner = self.sq(pos)?;
+        let sq = sq_owner.borrow();
         for &sid in &sq.special_objects {
-            let Some(o) = sq.objects.iter().find(|o| o.id == sid) else {
+            let Some(o) = sq
+                .objects
+                .iter()
+                .map(ObjectSlot::borrow)
+                .find(|o| o.id == sid)
+            else {
                 continue;
             };
-            let Some((_, n2, d2)) = Self::door_open_north(o) else {
+            let Some((_, n2, d2)) = Self::door_open_north(&o) else {
                 continue;
             };
             if d2 != is_door || n2 != north {
@@ -1243,7 +1474,7 @@ impl MutationEnv<'_> {
             return None;
         }
         let o = self.object(r)?;
-        let (open, north, _) = Self::door_open_north(o)?;
+        let (open, north, _) = Self::door_open_north(&o.borrow())?;
         let (n, op) = (north as usize, open as usize);
         let xo = self.doors.x_offset[n][op];
         let yo = self.doors.y_offset[n][op];
@@ -1254,7 +1485,8 @@ impl MutationEnv<'_> {
             first_y + yo[(index - 1) as usize],
             r.pos.2,
         );
-        self.find_door_part(o, p, &|c| self.double_door_index(c) == index)
+        let result = self.find_door_part(&o.borrow(), p, &|c| self.double_door_index(c) == index);
+        result
     }
 
     /// `IsoDoor.getDoubleDoorPartnerIndex(index)`.
@@ -1278,9 +1510,10 @@ impl MutationEnv<'_> {
             return None;
         }
         let o = self.object(r)?;
-        let (_, north, _) = Self::door_open_north(o)?;
+        let (_, north, _) = Self::door_open_north(&o.borrow())?;
         let p = (r.pos.0 - north as i32, r.pos.1 + !north as i32, r.pos.2);
-        self.find_door_part(o, p, &|c| self.garage_door_index(c) <= own)
+        let result = self.find_door_part(&o.borrow(), p, &|c| self.garage_door_index(c) <= own);
+        result
     }
 
     /// `IsoDoor.getGarageDoorNext(obj)`.
@@ -1290,9 +1523,10 @@ impl MutationEnv<'_> {
             return None;
         }
         let o = self.object(r)?;
-        let (_, north, _) = Self::door_open_north(o)?;
+        let (_, north, _) = Self::door_open_north(&o.borrow())?;
         let p = (r.pos.0 + north as i32, r.pos.1 - !north as i32, r.pos.2);
-        self.find_door_part(o, p, &|c| self.garage_door_index(c) >= own)
+        let result = self.find_door_part(&o.borrow(), p, &|c| self.garage_door_index(c) >= own);
+        result
     }
 
     /// `IsoDoor.getGarageDoorFirst(obj)`.
@@ -1316,11 +1550,18 @@ impl MutationEnv<'_> {
 
     fn sprite_grid(&self, r: ObjectRef) -> Option<(SpriteIdx, usize)> {
         let o = self.object(r)?;
-        let s = o.sprite?;
-        Some((s, self.sprites.sprites[s].sprite_grid?))
+        let body = o.borrow();
+        let metadata = self.spr(&body)?;
+        let grid = metadata.sprite_grid?;
+        let s = body
+            .sprite
+            .tile_projection()
+            .expect("legacy arena sprite-grid query cannot represent a Native member");
+        Some((s, grid))
     }
 
-    /// `IsoObjectUtils.isObjectMultiSquare(obj)`.
+    /// Legacy synchronous/archive inspection. Production removal and fire
+    /// use `try_is_object_multi_square` to preserve host faults.
     pub fn is_object_multi_square(&mut self, r: ObjectRef) -> bool {
         if self.object(r).is_none() {
             return false;
@@ -1328,15 +1569,15 @@ impl MutationEnv<'_> {
         if self.double_door_index(r) != -1 || self.garage_door_index(r) != -1 {
             return true;
         }
-        let o = self.object(r).unwrap().clone();
+        let o = self.object(r).unwrap().borrow().clone();
         if self.world.sprite_config_multi_square(r, &o).is_some() {
             return true;
         }
         self.sprite_grid(r).is_some()
     }
 
-    /// `IsoObjectUtils.getAllMultiTileObjects(obj, list)`: `None` where
-    /// the original returns false.
+    /// Legacy synchronous/archive inspection. Production removal and fire
+    /// use `try_get_all_multi_tile_objects` to preserve host faults.
     pub fn get_all_multi_tile_objects(&mut self, r: ObjectRef) -> Option<Vec<ObjectRef>> {
         let dd = self.double_door_index(r);
         if dd != -1 {
@@ -1354,7 +1595,7 @@ impl MutationEnv<'_> {
             }
             return (!out.is_empty()).then_some(out);
         }
-        let o = self.object(r)?.clone();
+        let o = self.object(r)?.borrow().clone();
         if let Some(all) = self.world.sprite_config_multi_square(r, &o) {
             return all;
         }
@@ -1368,9 +1609,14 @@ impl MutationEnv<'_> {
                     let p = (r.pos.0 + x - ox, r.pos.1 + y - oy, r.pos.2 + z - oz);
                     let test = grid.get_sprite(x, y, z);
                     let found = self.sq(p).and_then(|sq| {
-                        sq.objects
+                        sq.borrow()
+                            .objects
                             .iter()
-                            .find(|o| o.sprite.is_some() && o.sprite == test)
+                            .map(ObjectSlot::borrow)
+                            .find(|o| {
+                                o.sprite.tile_projection().is_some()
+                                    && o.sprite.tile_projection() == test
+                            })
                             .map(|o| o.id)
                     });
                     out.push(ObjectRef { pos: p, id: found? });
@@ -1380,41 +1626,304 @@ impl MutationEnv<'_> {
         Some(out)
     }
 
+    fn try_door_index(&self, r: ObjectRef, garage: bool) -> HostResult<i32> {
+        let Some(owner) = self.try_object_handle(r)? else {
+            return Ok(-1);
+        };
+        let body = owner
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("multi-square door"))?;
+        let index = self.try_spr(&body)?.and_then(|sprite| {
+            self.sprites
+                .prop(&sprite, if garage { "GarageDoor" } else { "DoubleDoor" })
+                .and_then(crate::java::parse_int)
+        });
+        let Some(index) = index else {
+            return Ok(-1);
+        };
+        let limit = if garage { 6 } else { 8 };
+        if !(1..=limit).contains(&index) {
+            return Ok(-1);
+        }
+        let Some((open, _, _)) = Self::door_open_north(&body) else {
+            return Ok(-1);
+        };
+        let offset = if garage { 3 } else { 4 };
+        Ok(if open {
+            if index > offset {
+                index - offset
+            } else {
+                -1
+            }
+        } else {
+            index
+        })
+    }
+
+    fn try_find_door_part(
+        &self,
+        like: ObjectRef,
+        pos: SquarePos,
+        garage: bool,
+        index: i32,
+        next: bool,
+    ) -> HostResult<Option<ObjectRef>> {
+        let Some(owner) = self.try_object_handle(like)? else {
+            return Ok(None);
+        };
+        let shape = Self::door_open_north(
+            &*owner
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("multi-square door shape"))?,
+        );
+        let Some((_, north, is_door)) = shape else {
+            return Ok(None);
+        };
+        let Some(square) = self.sq(pos) else {
+            return Ok(None);
+        };
+        let ids = square
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("multi-square door square"))?
+            .special_objects
+            .clone();
+        for id in ids {
+            let candidate = ObjectRef { pos, id };
+            let Some(owner) = self.try_object_handle(candidate)? else {
+                continue;
+            };
+            let shape = Self::door_open_north(
+                &*owner
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("multi-square door candidate"))?,
+            );
+            if !shape.is_some_and(|(_, n, d)| n == north && d == is_door) {
+                continue;
+            }
+            let actual = self.try_door_index(candidate, garage)?;
+            if if garage {
+                if next {
+                    actual >= index
+                } else {
+                    actual <= index
+                }
+            } else {
+                actual == index
+            } {
+                return Ok(Some(candidate));
+            }
+        }
+        Ok(None)
+    }
+
+    fn try_double_door_object(&self, r: ObjectRef, index: i32) -> HostResult<Option<ObjectRef>> {
+        let own = self.try_door_index(r, false)?;
+        if own == -1 || index <= 0 {
+            return Ok(None);
+        }
+        if own > 4 || index > 4 {
+            return Err(RuntimeHostError::InvalidHostState(
+                "double door offset index out of bounds",
+            ));
+        }
+        let Some(owner) = self.try_object_handle(r)? else {
+            return Ok(None);
+        };
+        let shape = Self::door_open_north(
+            &*owner
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("multi-square double door"))?,
+        );
+        let Some((open, north, _)) = shape else {
+            return Ok(None);
+        };
+        let xo = self.doors.x_offset[north as usize][open as usize];
+        let yo = self.doors.y_offset[north as usize][open as usize];
+        let pos = (
+            r.pos.0 - xo[(own - 1) as usize] + xo[(index - 1) as usize],
+            r.pos.1 - yo[(own - 1) as usize] + yo[(index - 1) as usize],
+            r.pos.2,
+        );
+        self.try_find_door_part(r, pos, false, index, false)
+    }
+
+    fn try_garage_neighbour(&self, r: ObjectRef, next: bool) -> HostResult<Option<ObjectRef>> {
+        let own = self.try_door_index(r, true)?;
+        if own == -1 || own == if next { 3 } else { 1 } {
+            return Ok(None);
+        }
+        let Some(owner) = self.try_object_handle(r)? else {
+            return Ok(None);
+        };
+        let shape = Self::door_open_north(
+            &*owner
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("multi-square garage door"))?,
+        );
+        let Some((_, north, _)) = shape else {
+            return Ok(None);
+        };
+        let direction = if next { 1 } else { -1 };
+        let pos = (
+            r.pos.0 + direction * north as i32,
+            r.pos.1 - direction * !north as i32,
+            r.pos.2,
+        );
+        self.try_find_door_part(r, pos, true, own, next)
+    }
+
+    /// The live removal/fire query borrows actual data and never archive-clones
+    /// components just to inspect door or sprite configuration.
+    pub fn try_is_object_multi_square(&mut self, r: ObjectRef) -> HostResult<bool> {
+        let Some(owner) = self.try_object_handle(r)? else {
+            return Ok(false);
+        };
+        if self.try_door_index(r, false)? != -1 || self.try_door_index(r, true)? != -1 {
+            return Ok(true);
+        }
+        let body = owner
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("multi-square receiver"))?;
+        if self.world.sprite_config_multi_square(r, &body).is_some() {
+            return Ok(true);
+        }
+        Ok(self
+            .try_spr(&body)?
+            .is_some_and(|sprite| sprite.sprite_grid.is_some()))
+    }
+
+    pub fn try_get_all_multi_tile_objects(
+        &mut self,
+        r: ObjectRef,
+    ) -> HostResult<Option<Vec<ObjectRef>>> {
+        let dd = self.try_door_index(r, false)?;
+        if dd != -1 {
+            let mut out = Vec::new();
+            out.extend(self.try_double_door_object(r, dd)?);
+            out.extend(self.try_double_door_object(r, Self::double_door_partner_index(dd))?);
+            return Ok((!out.is_empty()).then_some(out));
+        }
+        if self.try_door_index(r, true)? != -1 {
+            let mut first = r;
+            if self.try_door_index(r, true)? != 1 {
+                let mut prev = self.try_garage_neighbour(r, false)?;
+                while let Some(part) = prev {
+                    if self.try_door_index(part, true)? == 1 {
+                        first = part;
+                        break;
+                    }
+                    prev = self.try_garage_neighbour(part, false)?;
+                }
+            }
+            let mut out = Vec::new();
+            let mut current = Some(first);
+            while let Some(part) = current {
+                out.push(part);
+                current = self.try_garage_neighbour(part, true)?;
+            }
+            return Ok((!out.is_empty()).then_some(out));
+        }
+        let Some(owner) = self.try_object_handle(r)? else {
+            return Ok(None);
+        };
+        let body = owner
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("multi-square sprite receiver"))?;
+        if let Some(all) = self.world.sprite_config_multi_square(r, &body) {
+            return Ok(all);
+        }
+        let Some(metadata) = self.try_spr(&body)? else {
+            return Ok(None);
+        };
+        let Some(grid) = metadata.sprite_grid else {
+            return Ok(None);
+        };
+        let Some(sprite) = body.sprite.tile_projection() else {
+            return Err(RuntimeHostError::Unsupported {
+                operation: "native sprite grid membership requires actual sprite references",
+                kind: None,
+            });
+        };
+        let grid = &self.sprites.grids[grid];
+        let Some((ox, oy, oz)) = grid.sprite_pos(sprite) else {
+            return Ok(None);
+        };
+        let mut out = Vec::new();
+        for z in 0..grid.levels {
+            for x in 0..grid.width {
+                for y in 0..grid.height {
+                    let pos = (r.pos.0 + x - ox, r.pos.1 + y - oy, r.pos.2 + z - oz);
+                    let Some(square) = self.sq(pos) else {
+                        return Ok(None);
+                    };
+                    let square = square
+                        .try_borrow()
+                        .map_err(|_| RuntimeHostError::Borrowed("multi-square sprite square"))?;
+                    let mut found = None;
+                    for slot in &square.objects {
+                        let owner = slot.ref_handle();
+                        let object = owner.try_borrow().map_err(|_| {
+                            RuntimeHostError::Borrowed("multi-square sprite candidate")
+                        })?;
+                        if object.sprite.tile_projection().is_some()
+                            && object.sprite.tile_projection() == grid.get_sprite(x, y, z)
+                        {
+                            found = Some(object.id);
+                            break;
+                        }
+                    }
+                    let Some(id) = found else {
+                        return Ok(None);
+                    };
+                    out.push(ObjectRef { pos, id });
+                }
+            }
+        }
+        Ok(Some(out))
+    }
+
     /// `IsoObjectUtils.safelyRemoveTileObjectFromSquare(obj)`.
     pub fn safely_remove_tile_object_from_square(
         &mut self,
         r: ObjectRef,
-    ) -> (i32, Option<IsoObject>) {
-        if self.is_object_multi_square(r) {
-            let Some(all) = self.get_all_multi_tile_objects(r) else {
-                return (-1, None);
+    ) -> HostResult<(i32, Option<ObjectSlot>)> {
+        if self.try_is_object_multi_square(r)? {
+            let Some(all) = self.try_get_all_multi_tile_objects(r)? else {
+                return Ok((-1, None));
             };
-            let mut result = (-1, None);
+            // The original ArrayList stores the actual Java receivers before
+            // any callbacks run; a later same-ID replacement is unrelated.
+            let target = self.try_object_handle(r)?;
+            let mut pinned = Vec::new();
             for part in all {
-                // `obj.square` is null for a part removed already.
-                if self.object(part).is_none()
-                    && !self
-                        .sq(part.pos)
-                        .is_some_and(|sq| sq.special_objects.contains(&part.id))
-                {
-                    continue;
-                }
-                let (idx, removed) = self.remove_tile_object_unsafe(part.pos, part.id);
-                if part == r {
-                    result = (idx, removed);
+                if let Some(object) = self.try_object_handle(part)? {
+                    pinned.push((part, object));
                 }
             }
-            return result;
+            for (_, object) in &pinned {
+                self.cell.retire_object(ObjectSlot::retain(object));
+            }
+            let mut result = (-1, None);
+            for (part, object) in pinned {
+                let is_target = target
+                    .as_ref()
+                    .is_some_and(|t| std::rc::Rc::ptr_eq(t, &object));
+                let removed = self.remove_tile_object_receiver(part.pos, part.id, Some(object))?;
+                if is_target {
+                    result = removed;
+                }
+            }
+            return Ok(result);
         }
-        if self.sq(r.pos).is_some() && self.object(r).is_some() {
+        if self.try_object_handle(r)?.is_some() {
             return self.remove_tile_object_unsafe(r.pos, r.id);
         }
-        (-1, None)
+        Ok((-1, None))
     }
 }
 
 /// `getAdjacentSquare(dir)` for every `IsoDirections` value.
-pub fn adjacent_squares(cell: &IsoCell, pos: SquarePos) -> [Option<&IsoGridSquare>; 8] {
+pub fn adjacent_squares(cell: &IsoCell, pos: SquarePos) -> [Option<SquareRef>; 8] {
     IsoDirections::ALL.map(|d| {
         let (dx, dy) = d.delta();
         cell.get_grid_square(pos.0 + dx, pos.1 + dy, pos.2)

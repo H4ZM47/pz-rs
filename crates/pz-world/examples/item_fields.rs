@@ -6,6 +6,7 @@
 //! item_fields <game dir> <sprite tables> <save tables> <save dir> <oracle items_fields.txt>
 //! ```
 
+use pz_world::ObjectSlot;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -196,7 +197,13 @@ fn line(i: &InventoryItem) -> String {
     write!(
         o,
         " md={} visual={}",
-        i.table.as_ref().map_or(-1, |t| t.entries.len() as i64),
+        if i.table.is_none() {
+            -1
+        } else {
+            i.mod_data_own_entries()
+                .expect("item field dump requires readable ModData")
+                .len() as i64
+        },
         b(i.visual.is_some())
     )
     .unwrap();
@@ -217,13 +224,17 @@ fn dump(items: &[SavedItem], out: &mut Vec<String>, raw: &mut usize) {
         match it {
             SavedItem::Raw(_) => *raw += 1,
             SavedItem::Item(i) => {
-                if let ItemKind::Container(c) = &i.kind {
-                    dump(&c.container.borrow().to_container().items, out, raw);
-                }
-                out.push(line(i));
+                dump_item(i, out, raw);
             }
         }
     }
+}
+
+fn dump_item(i: &InventoryItem, out: &mut Vec<String>, raw: &mut usize) {
+    if let ItemKind::Container(c) = &i.kind {
+        dump(&c.container.borrow().to_container().items, out, raw);
+    }
+    out.push(line(i));
 }
 
 fn main() {
@@ -306,19 +317,25 @@ fn main() {
         };
         let mut lines = Vec::new();
         for sq in ch.squares() {
-            for o in &sq.objects {
+            for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
                 let conts: Vec<&ItemContainer> = match &o.kind {
-                    ObjectKind::Mannequin(Some(m)) => m.container.iter().collect(),
+                    ObjectKind::Mannequin(m) => m.container.iter().collect(),
                     _ => o.containers().collect(),
                 };
                 for c in conts {
                     dump(&c.items, &mut lines, &mut raw);
                 }
                 if let ObjectKind::WorldInventory(w) = &o.kind {
-                    dump(std::slice::from_ref(&w.item), &mut lines, &mut raw);
+                    let w = w.borrow();
+                    let item = w.item.borrow_item();
+                    if let Some(item) = item {
+                        dump_item(&item, &mut lines, &mut raw);
+                    } else {
+                        raw += 1;
+                    }
                 }
             }
-            for bd in &sq.static_moving {
+            for bd in &sq.borrow().static_moving {
                 if let Some(c) = &bd.container {
                     dump(&c.items, &mut lines, &mut raw);
                 }

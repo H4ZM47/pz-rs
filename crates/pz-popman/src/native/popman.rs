@@ -140,7 +140,7 @@ impl Cell {
         }
         let ux = wx.wrapping_sub((self.x as i32).wrapping_mul(32)) as u32;
         let uy = wy.wrapping_sub((self.y as i32).wrapping_mul(32)) as u32;
-        (ux < 32 && uy < 32).then_some((ux | (uy * 32)) as usize)
+        (ux < 32 && uy < 32).then(|| (ux | (uy * 32)) as usize)
     }
 
     fn set_chunk_loaded(&mut self, wx: i32, wy: i32, loaded: bool) {
@@ -1478,3 +1478,24 @@ impl LegacyZombieSet {
 
 include!("popman_worker.rs");
 include!("popman_jni.rs");
+
+#[cfg(test)]
+mod cell_bounds_tests {
+    use super::Cell;
+
+    #[test]
+    fn chunk_lookup_rejects_neighbour_cells_before_calculating_index() {
+        for (cx, cy) in [(0, 0), (42, 38), (-2, -3)] {
+            let mut cell = Cell::new(cx, cy);
+            cell.loaded = true;
+            let (x, y) = (cx * 32, cy * 32);
+            assert_eq!(cell.chunk_index_chunk(x, y), Some(0));
+            assert_eq!(cell.chunk_index_chunk(x + 31, y + 31), Some(1023));
+            for (wx, wy) in [(x - 1, y), (x, y - 1), (x + 32, y), (x, y + 32), (i32::MIN, i32::MIN), (i32::MAX, i32::MAX)] {
+                assert_eq!(cell.chunk_index_chunk(wx, wy), None);
+            }
+            cell.loaded = false;
+            assert_eq!(cell.chunk_index_chunk(x, y), None);
+        }
+    }
+}

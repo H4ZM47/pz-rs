@@ -76,6 +76,46 @@ pub fn shared_core() -> Rc<RefCell<Core>> {
     })
 }
 
+/// Formatting continuations read only an already installed actual authority.
+/// Unlike shared_core(), this path never initializes a default singleton.
+fn current_format_core() -> LuaResult<Rc<RefCell<Core>>> {
+    SHARED.try_with(|slot| {
+        let slot = slot.try_borrow().map_err(|_| LuaError::Runtime {
+            class: "pz.host.Borrowed", message: "formatter current Core slot".into(),
+        })?;
+        slot.as_ref().cloned().ok_or_else(|| LuaError::Runtime {
+            class: "pz.host.Unsupported", message: "formatter current Core authority unavailable".into(),
+        })
+    }).map_err(|_| LuaError::Runtime {
+        class: "pz.host.Unsupported", message: "formatter current Core TLS unavailable".into(),
+    })?
+}
+
+pub(crate) fn try_format_core_debug() -> LuaResult<bool> {
+    let actual = current_format_core()?;
+    let value = {
+        let body = actual.try_borrow().map_err(|_| LuaError::Runtime {
+            class: "pz.host.Borrowed", message: "formatter current Core.debug".into(),
+        })?;
+        body.debug
+    };
+    Ok(value)
+}
+
+pub(crate) fn try_format_core_is_dev() -> LuaResult<bool> {
+    let actual = current_format_core()?;
+    let value = {
+        let body = actual.try_borrow().map_err(|_| LuaError::Runtime {
+            class: "pz.host.Borrowed", message: "formatter current Core.IS_DEV".into(),
+        })?;
+        body.is_dev
+    };
+    Ok(value)
+}
+
+#[cfg(test)]
+mod formatting_core_tests;
+
 /// The Lua object for the Core singleton.
 pub struct CoreObject {
     pub core: Rc<RefCell<Core>>,
@@ -506,6 +546,14 @@ pub fn register(
     register_methods(&b, &cx);
     let obj = object;
     global(thread, "getCore", move |c| Ok(c.push(obj.clone())));
+    // GlobalObject.getDebug's single-player branch reads the same live Core
+    // flag. Its additional GameServer.server && GameServer.debug branch
+    // requires the still-unported server-debug owner.
+    let debug_core = cx.core.clone();
+    global(thread, "getDebug", move |c| {
+        let debug = debug_core.borrow().get_debug();
+        Ok(c.push(debug))
+    });
     cx
 }
 
@@ -1160,6 +1208,12 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
 
     // ---- Lua reset (queued for the engine) ----
     def(b, cx, "ResetLua", |cx, c| {
+        // Production Native ResetLua reaches SpriteRenderer/RenderThread
+        // before RegistryReset27 and ScriptManager.Reset33. The queued
+        // offline request cannot claim that synchronous native prefix.
+        if crate::bind_registry::shared_script_manager().native_item_key_statics().is_some() {
+            return Err(crate::bind_world_object::unsupported("Core.ResetLua actual SpriteRenderer/RenderThread prefix"));
+        }
         let mods = match c.arg(1) {
             Value::Bool(_) => "default".to_string(),
             _ => opt_str(c, 1).unwrap_or_else(|| "null".into()),
@@ -1951,6 +2005,17 @@ mod tests {
     }
 
     #[test]
+    fn global_debug_reads_the_same_live_single_player_core() {
+        let core = Rc::new(RefCell::new(Core::new()));
+        let mut t = setup(core.clone());
+        run(&mut t, "assert(getDebug() == false and getDebug() == getCore():getDebug())");
+        core.borrow_mut().debug = true;
+        run(&mut t, "assert(getDebug() == true and getDebug() == getCore():getDebug())");
+        core.borrow_mut().debug = false;
+        run(&mut t, "assert(getDebug() == false and getDebug() == getCore():getDebug())");
+    }
+
+    #[test]
     fn getters_and_setters_through_get_core() {
         let core = Rc::new(RefCell::new(Core::new()));
         let mut t = setup(core.clone());
@@ -2150,8 +2215,8 @@ mod tests {
             "#,
         );
         let text = std::fs::read_to_string(dir.join("options.ini")).unwrap();
-        assert!(text.contains("\nsoundVolume=4\n"));
-        assert!(text.contains("\ncodeFontSize=Small\n"));
+        assert!(text.lines().any(|line| line == "soundVolume=4"));
+        assert!(text.lines().any(|line| line == "codeFontSize=Small"));
         let mut c2 = Core::new();
         c2.set_cache_dir(&dir);
         assert!(c2.load_options().unwrap());

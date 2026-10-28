@@ -49,16 +49,21 @@ pub mod floor_drop;
 pub mod fitness;
 pub mod item_owner;
 pub mod items;
+pub mod known_poison;
 pub mod metabolics;
+pub mod mod_data;
 pub mod moodles;
 pub mod nutrition;
 pub mod path_mover;
 pub mod player;
+pub mod reading;
 pub mod save;
 pub mod state;
 pub mod states;
 pub mod stats;
 pub mod thermoregulator;
+pub mod timed_action;
+pub mod grapple;
 pub mod update;
 pub mod xp;
 pub mod zombie;
@@ -214,6 +219,14 @@ pub enum CharacterKind {
 
 /// `IsoGameCharacter`'s simulation state.
 pub struct GameCharacter<I: 'static> {
+    /// Stable BaseGrappleable identity, independent of Vec relocation.
+    grapple: Rc<std::cell::RefCell<grapple::GrappleState>>,
+    /// The real `Stack<BaseAction>`, distinct from Lua's pending-action queue.
+    pub character_actions: Rc<std::cell::RefCell<Vec<timed_action::ActionRef>>>,
+    pub character_actions_handle: Option<pz_kahlua::Value>,
+    pub timed_action_to_retrigger: Option<timed_action::ActionRef>,
+    /// The animator's sit-action readiness gate for BaseAction.waitToStart.
+    pub wait_to_start_timed_action: bool,
     /// `IsoMovingObject.getID()`.
     pub id: i32,
     pub kind: CharacterKind,
@@ -358,12 +371,11 @@ pub struct GameCharacter<I: 'static> {
     /// The fields zombies read and write on the characters they hunt.
     pub seen: zombie::SeenFields,
     /// `IsoMovingObject.table` (the mod data).
-    pub mod_data: Option<pz_inventory::lua_table::LuaTable>,
+    pub mod_data: Option<pz_kahlua::TableRef>,
     /// `getVisual()` (`IsoPlayer.humanVisual`) as saved; `None` until loaded.
     pub human_visual: Option<pz_world::save::visual::HumanVisual>,
-    /// `savedInventoryItems`: the list saved indices refer to, as the ids of
-    /// the inventory's items (`None` for an item that could not be loaded).
-    pub saved_inventory_items: Vec<Option<i32>>,
+    /// Native actual references, or an explicitly selected owned archive profile.
+    pub saved_inventory_items: save::SavedInventoryItems,
     /// `readBooks`.
     pub read_books: Vec<save::ReadBook>,
     /// `lastHourSleeped`.
@@ -418,7 +430,14 @@ impl<I: 'static> GameCharacter<I> {
     pub fn new(sm: &ScriptManager, kind: CharacterKind) -> Self {
         let player = kind == CharacterKind::Player;
         let body_damage = BodyDamage::new(sm, player);
+        let zombie = Box::<zombie::ZombieFields>::default();
+        let grapple = grapple::GrappleState::new(kind, zombie.reanimated_for_grapple_only.shared());
         GameCharacter {
+            grapple,
+            character_actions: Rc::default(),
+            character_actions_handle: None,
+            timed_action_to_retrigger: None,
+            wait_to_start_timed_action: false,
             id: 0,
             kind,
             in_players: false,
@@ -488,11 +507,11 @@ impl<I: 'static> GameCharacter<I> {
             path: path_mover::PathMoverState::default(),
             attack_vars: states::swipe::AttackVars::default(),
             bare_hands: None,
-            zombie: Box::default(),
+            zombie,
             seen: zombie::SeenFields::default(),
             mod_data: None,
             human_visual: None,
-            saved_inventory_items: Vec::new(),
+            saved_inventory_items: save::SavedInventoryItems::actual_empty(),
             read_books: Vec::new(),
             last_hour_sleeped: 0,
             beard_grow_timing: -1.0,

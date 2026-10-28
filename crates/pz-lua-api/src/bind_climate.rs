@@ -151,9 +151,35 @@ pub fn climate_settings() -> ClimateSettings {
     SETTINGS.with(|c| c.borrow().clone())
 }
 
+/// `GameTime.isGamePaused`: single-player reads the actual speed-control
+/// owner. Network pause state still comes from the installed network settings.
+pub fn is_game_paused() -> bool {
+    let network = {
+        let core = crate::bind_core::shared_core();
+        let core = core.borrow();
+        core.is_server || core.is_client
+    };
+    if network {
+        return climate_settings().game_paused;
+    }
+    pz_ui::with_ui(|ui| ui.speed_controls.clone())
+        .and_then(|element| element.ext::<crate::hud::speed_controls::SpeedControls>()
+            .map(|speed| speed.get_current_game_speed() == 0))
+        .unwrap_or(false)
+}
+
 /// Where climate and clock events go (`LuaEventManager.triggerEvent`).
 pub fn install_event_sink(sink: EventSink) {
     SINK.with(|s| *s.borrow_mut() = Some(sink));
+}
+
+/// Retire Lua wrappers and callbacks without changing GameTime or the
+/// climate's simulation/mod-data state. The original exit resets climate
+/// date stamps but keeps the GameTime singleton until the next load.
+pub(crate) fn reset_session_handles() {
+    HANDLES.with(|handles| handles.borrow_mut().clear());
+    COLORS.with(|colors| colors.borrow_mut().clear());
+    SINK.with(|sink| *sink.borrow_mut() = None);
 }
 
 /// The context the bound climate runs in: [`ClimateSettings`], the shared
@@ -224,7 +250,7 @@ impl GameTimeContext for LuaClimateContext {
         self.settings.helicopter
     }
     fn is_game_paused(&self) -> bool {
-        self.settings.game_paused
+        is_game_paused()
     }
     fn all_players_asleep(&self) -> bool {
         self.settings.all_players_asleep
@@ -311,6 +337,11 @@ pub fn update_game_time(thread: &mut Thread) {
         g.apply_climate_view_dist();
     }
     fire_events(thread, ctx);
+    // `ClimateManager.updateFx` follows OnClimateTickDebug. Read the live
+    // climate only after callbacks, which can alter its values or FX flag.
+    if go_on {
+        crate::bind_puddles::update_climate_fx(thread);
+    }
 }
 
 // ---- world load -------------------------------------------------------------

@@ -121,22 +121,26 @@ impl<I: 'static> GameCharacter<I> {
         restart: bool,
         cx: &mut StateCx<'_, I>,
     ) {
+        if cx.has_host_error() { return; }
         if self.state.machine.locked {
             // DebugType.Action.warn("StateMachine is locked...")
             return;
         }
         self.change_root_state(new_state, restart, cx);
+        if cx.has_host_error() { return; }
         for slot in &mut self.state.machine.sub_states {
             slot.should_be_active = false;
         }
         for s in sub_states.iter().flatten() {
             self.ensure_substate_active(*s, cx);
+            if cx.has_host_error() { return; }
         }
         let mut i = 0;
         while i < self.state.machine.sub_states.len() {
             let slot = &self.state.machine.sub_states[i];
             if !slot.should_be_active && !slot.is_empty() {
                 self.remove_substate_at(i, cx);
+                if cx.has_host_error() { return; }
             }
             i += 1;
         }
@@ -148,6 +152,7 @@ impl<I: 'static> GameCharacter<I> {
     }
 
     fn change_root_state(&mut self, new_state: Option<StateRef<I>>, restart: bool, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         let cur = self.state.machine.current;
         if same_state(cur, new_state) {
             if restart {
@@ -159,11 +164,13 @@ impl<I: 'static> GameCharacter<I> {
         }
         if let Some(p) = cur {
             self.state_exit(p, cx);
+            if cx.has_host_error() { return; }
         }
         self.state.machine.previous = cur;
         self.state.machine.current = new_state;
         if let Some(n) = new_state {
             self.state_enter(n, cx);
+            if cx.has_host_error() { return; }
         }
         cx.ctx.event(SimEvent::AiStateChange {
             current: self.state.machine.current.map(|s| s.id()),
@@ -172,6 +179,7 @@ impl<I: 'static> GameCharacter<I> {
     }
 
     fn ensure_substate_active(&mut self, s: StateRef<I>, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         if same_state(Some(s), self.state.machine.current) {
             return;
         }
@@ -191,12 +199,14 @@ impl<I: 'static> GameCharacter<I> {
     }
 
     fn remove_substate_at(&mut self, i: usize, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         let Some(s) = self.state.machine.sub_states[i].state.take() else { return };
         self.state_exit(s, cx);
     }
 
     /// `revertToPreviousState(sender)`.
     pub fn revert_to_previous_state(&mut self, sender: StateRef<I>, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         if let Some(i) = self.state.machine.existing_slot(sender) {
             self.remove_substate_at(i, cx);
             return;
@@ -212,31 +222,38 @@ impl<I: 'static> GameCharacter<I> {
     /// `StateMachine.update()`: the current state's `execute`, then each
     /// sub state's (slots added meanwhile included).
     pub fn state_machine_update(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         if let Some(c) = self.state.machine.current {
             c.execute(self, cx);
+            if cx.has_host_error() { return; }
         }
         let mut i = 0;
         while i < self.state.machine.sub_states.len() {
             if let Some(s) = self.state.machine.sub_states[i].state {
                 s.execute(self, cx);
+                if cx.has_host_error() { return; }
             }
             i += 1;
         }
     }
 
     fn state_enter(&mut self, s: StateRef<I>, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         s.enter(self, cx);
     }
 
     fn state_exit(&mut self, s: StateRef<I>, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         s.exit(self, cx);
     }
 
     /// `StateMachine.stateAnimEvent(stateLayer, layer, track, event)`.
     pub fn state_anim_event(&mut self, state_layer: i32, event: &AnimEventRecord, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         if state_layer <= 0 {
             if let Some(c) = self.state.machine.current {
                 c.anim_event(self, cx, event);
+                if cx.has_host_error() { return; }
             }
             if state_layer == 0 {
                 return;
@@ -246,6 +263,7 @@ impl<I: 'static> GameCharacter<I> {
         while i < self.state.machine.sub_states.len() {
             if let Some(s) = self.state.machine.sub_states[i].state {
                 s.anim_event(self, cx, event);
+                if cx.has_host_error() { return; }
             }
             i += 1;
         }
@@ -355,10 +373,12 @@ impl<I: 'static> GameCharacter<I> {
     /// action states changed) `StateMachineComponent.actionStateChanged`
     /// and the subclass hook.
     pub fn update_action_context(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         let next = self.state.action_context.evaluate_next(&*self);
         self.state.action_context.transfer_action_state(next);
         if self.state.action_context.post_update() {
             self.action_state_changed(cx);
+            if cx.has_host_error() { return; }
             if let Some(h) = self.state.action_state_changed_hook {
                 h(self, cx);
             }
@@ -369,6 +389,7 @@ impl<I: 'static> GameCharacter<I> {
     /// state, then `changeState` to the registered AI states (the default
     /// state for an unregistered root; unregistered children are skipped).
     pub fn action_state_changed(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         let ctx = &self.state.action_context;
         let root = ctx.current_state_name();
         let children: Vec<String> = ctx.child_states().iter().map(|c| c.name().to_string()).collect();
@@ -379,6 +400,7 @@ impl<I: 'static> GameCharacter<I> {
         let ai = self.try_get_ai_state(&root).or(self.state.default_state);
         let subs: Vec<Option<StateRef<I>>> = children.iter().map(|c| self.try_get_ai_state(c)).collect();
         self.change_state_with(ai, &subs, false, cx);
+        if cx.has_host_error() { return; }
         self.state.machine.active_state_changed -= 1;
     }
 }

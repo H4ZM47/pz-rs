@@ -113,15 +113,17 @@ impl Scene {
                 let mut sq = IsoGridSquare::new(x, y, 0);
                 let id = sq.new_object_id();
                 let name = if (x, y) == (9, 9) { "water" } else { "floor" };
-                sq.objects.push(IsoObject::new(
+                sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
                     id,
                     ObjectKind::Object,
                     Some(m.named_map[name]),
-                ));
-                cell.chunks
-                    .get_mut(&(x / 8, y / 8))
-                    .unwrap()
-                    .set_square(x % 8, y % 8, 0, Some(sq));
+                )));
+                cell.chunks.get_mut(&(x / 8, y / 8)).unwrap().set_square(
+                    x % 8,
+                    y % 8,
+                    0,
+                    Some((sq).into()),
+                );
             }
         }
         for wx in 1..=3 {
@@ -150,8 +152,9 @@ impl Scene {
         for wx in 1..=3 {
             for wy in 1..=3 {
                 s.render
-                    .build_chunk(&view, wx, wy, &mut s.sprite_cache, &mut NoTextures);
-                s.lighting.sync_chunk(&view, wx, wy, &NoWorldHooks);
+                    .build_chunk(&view, wx, wy, &mut s.sprite_cache, &mut NoTextures)
+                    .unwrap();
+                s.lighting.sync_chunk(&view, wx, wy, &NoWorldHooks).unwrap();
                 // Recorded once: clean until invalidated.
                 for c in &mut s.caches {
                     c.begin_level(wx, wy, 0, 0, 0);
@@ -173,7 +176,7 @@ impl Scene {
         )
     }
 
-    fn sq(&self, x: i32, y: i32) -> &IsoGridSquare {
+    fn sq(&self, x: i32, y: i32) -> pz_world::SquareRef {
         self.cell.get_grid_square(x, y, 0).unwrap()
     }
 
@@ -186,18 +189,20 @@ impl Scene {
             meta: &self.meta,
             sprites: &self.m,
         };
-        self.pending.apply(
-            &view,
-            &mut self.render,
-            &mut self.lighting,
-            &NoWorldHooks,
-            &mut self.sprite_cache,
-            &mut NoTextures,
-            PuddleInputs {
-                regions: &self.regions,
-                perf_puddles: self.perf_puddles,
-            },
-        );
+        self.pending
+            .apply(
+                &view,
+                &mut self.render,
+                &mut self.lighting,
+                &NoWorldHooks,
+                &mut self.sprite_cache,
+                &mut NoTextures,
+                PuddleInputs {
+                    regions: &self.regions,
+                    perf_puddles: self.perf_puddles,
+                },
+            )
+            .unwrap();
         let input = PlayerFrameInput {
             index: 0,
             player: default_player(14.5, 15.5, 0.0, IsoDirection::E),
@@ -298,10 +303,10 @@ fn recalculated_properties_flag_lighting_puddles_and_water() {
     };
     s.render.squares.get_mut(&(17, 9, 0)).unwrap().water = Some(geom);
     s.render.squares.get_mut(&(9, 9, 0)).unwrap().water = Some(geom);
-    let (dry, wet) = (s.sq(17, 9).clone(), s.sq(9, 9).clone());
+    let (dry, wet) = (s.sq(17, 9), s.sq(9, 9));
     let mut h = s.hooks();
-    h.properties_recalculated(&dry);
-    h.properties_recalculated(&wet);
+    h.properties_recalculated(dry);
+    h.properties_recalculated(wet);
     // checkLightingLater_AllPlayers_OneLevel.
     assert_eq!(s.lighting.light_check(2, 1, 0, 0), Some((true, true)));
     assert_eq!(s.lighting.light_check(2, 1, 0, 1), Some((true, true)));
@@ -325,8 +330,8 @@ fn clear_water_drops_the_geometry() {
         ..Default::default()
     };
     s.render.squares.get_mut(&(9, 9, 0)).unwrap().water = Some(geom);
-    let wet = s.sq(9, 9).clone();
-    s.hooks().clear_water(&wet);
+    let wet = s.sq(9, 9);
+    s.hooks().clear_water(wet);
     assert_eq!(s.render.squares[&(9, 9, 0)].water, None);
 }
 
@@ -447,7 +452,8 @@ fn adding_a_wall_re_records_its_chunk_level_and_relights() {
         };
         for y in 10..=21 {
             let o = IsoObject::new(0, ObjectKind::Object, Some(wall));
-            env.add_tile_object((17, y, 0), o, -1).unwrap();
+            env.add_tile_object((17, y, 0), pz_world::ObjectSlot::new(o), -1)
+                .unwrap().unwrap();
         }
     }
     // The chunk levels holding the wall are dirty (OBJECT_ADD), for every
@@ -503,7 +509,11 @@ fn a_square_going_indoors_re_initialises_its_puddles_next_frame() {
     let neighbour = s.render.squares[&(14, 13, 0)].puddles;
 
     // A roof over (13, 13): RecalcProperties drops `exterior`.
-    s.cell.get_grid_square_mut(13, 13, 0).unwrap().have_roof = true;
+    s.cell
+        .get_grid_square_mut(13, 13, 0)
+        .unwrap()
+        .borrow_mut()
+        .have_roof = true;
     let doors = DoorTables {
         x_offset: [[[0; 4]; 2]; 2],
         y_offset: [[[0; 4]; 2]; 2],
@@ -533,7 +543,7 @@ fn a_square_going_indoors_re_initialises_its_puddles_next_frame() {
         };
         env.recalc_properties((13, 13, 0));
     }
-    assert!(!s.sq(13, 13).has(s.m.tables.flag.exterior));
+    assert!(!s.sq(13, 13).borrow().has(s.m.tables.flag.exterior));
     assert!(s.pending.puddles.contains(&(13, 13, 0)));
     // Unchanged until the frame re-initialises it.
     assert_eq!(s.render.squares[&(13, 13, 0)].puddles, Some(out));
@@ -577,9 +587,51 @@ fn loaded_squares_get_puddles_on_the_first_frame() {
         sprites: &s.m,
     };
     s.render
-        .build_chunk(&view, 2, 2, &mut s.sprite_cache, &mut NoTextures);
+        .build_chunk(&view, 2, 2, &mut s.sprite_cache, &mut NoTextures)
+        .unwrap();
     assert_eq!(s.render.squares[&(20, 20, 0)].puddles, None);
     assert_eq!(s.render.puddles_recalc.len(), 64);
     s.frame();
     assert_eq!(s.render.squares[&(20, 20, 0)].puddles, Some(open));
+}
+
+#[test]
+fn failed_actual_rebuild_keeps_pending_work_and_puddle_geometry_for_retry() {
+    let mut scene = Scene::new();
+    let target = scene.sq(17, 9);
+    scene.hooks().properties_recalculated(target.clone());
+    let before = scene.render.squares[&(17, 9, 0)].puddles;
+    let held = target.borrow_mut();
+    let result = {
+        let view = WorldView {
+            cell: &scene.cell,
+            meta: &scene.meta,
+            sprites: &scene.m,
+        };
+        scene.pending.apply(
+            &view,
+            &mut scene.render,
+            &mut scene.lighting,
+            &NoWorldHooks,
+            &mut scene.sprite_cache,
+            &mut NoTextures,
+            PuddleInputs {
+                regions: &scene.regions,
+                perf_puddles: scene.perf_puddles,
+            },
+        )
+    };
+    assert!(matches!(
+        result,
+        Err(pz_world_render::RuntimeHostError::Borrowed(
+            "render rebuild square"
+        ))
+    ));
+    assert!(scene.pending.has_rebuilds());
+    assert!(scene.pending.puddles.contains(&(17, 9, 0)));
+    assert_eq!(scene.render.squares[&(17, 9, 0)].puddles, before);
+    drop(held);
+    scene.frame();
+    assert!(!scene.pending.has_rebuilds());
+    assert!(scene.pending.puddles.is_empty());
 }

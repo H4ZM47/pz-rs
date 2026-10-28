@@ -7,8 +7,10 @@ use super::character::{
 };
 use super::manager::{FireFlags, NoFireHooks};
 use super::*;
+use crate::fire::manager::{fire_body, fire_body_mut};
 use crate::objects::{IsoDoor, IsoFireplace, IsoGenerator, IsoObject, ObjectKind};
 use crate::sprite::{test_tables, IsoFlagType, PropertyValueMap, SpriteTables};
+use crate::ObjectSlot;
 use crate::{IsoCell, IsoChunk, IsoGridSquare, IsoMetaGrid, IsoSpriteManager};
 
 /// Returns scripted values (0 once they run out) and records each call.
@@ -46,7 +48,7 @@ impl GameRand for Script {
     }
 }
 
-fn tables() -> SpriteTables {
+pub(super) fn tables() -> SpriteTables {
     let t = test_tables();
     let mut flags: Vec<String> = (0..t.flag_count())
         .map(|i| t.flag_name(IsoFlagType(i as u8)).to_string())
@@ -167,7 +169,7 @@ struct World {
     settings: FireSettings,
     regions: crate::isoregion::IsoRegions,
     doors: crate::square_mutation::DoorTables,
-    mw: crate::square_mutation::NoMutationHooks,
+    mw: crate::square_mutation::DataProjectionMutationHooks,
     mp: crate::square_mutation::NoMutationHooks,
     mr: crate::square_mutation::NoMutationHooks,
 }
@@ -190,7 +192,7 @@ impl World {
                 x_offset: [[[0; 4]; 2]; 2],
                 y_offset: [[[0; 4]; 2]; 2],
             },
-            mw: crate::square_mutation::NoMutationHooks,
+            mw: crate::square_mutation::DataProjectionMutationHooks,
             mp: crate::square_mutation::NoMutationHooks,
             mr: crate::square_mutation::NoMutationHooks,
         }
@@ -201,23 +203,21 @@ impl World {
         let mut sq = IsoGridSquare::new(x, y, 0);
         for n in objects {
             let id = sq.new_object_id();
-            sq.objects.push(IsoObject::new(
-                id,
-                ObjectKind::Object,
-                Some(self.m.named_map[*n]),
-            ));
+            sq.objects
+                .push((IsoObject::new(id, ObjectKind::Object, Some(self.m.named_map[*n]))).into());
         }
         sq.have_roof = indoor;
         sq.recalc_properties(&self.m);
         let ch = self.cell.chunks.get_mut(&(x.div_euclid(8), 0)).unwrap();
-        ch.set_square(x.rem_euclid(8), y, 0, Some(sq));
+        ch.set_square(x.rem_euclid(8), y, 0, Some((sq).into()));
     }
 
     fn add(&mut self, x: i32, y: i32, sprite: &str, kind: ObjectKind) {
         let s = self.m.named_map[sprite];
-        let sq = self.cell.get_grid_square_mut(x, y, 0).unwrap();
+        let sq_owner = self.cell.get_grid_square_mut(x, y, 0).unwrap();
+        let mut sq = sq_owner.borrow_mut();
         let id = sq.new_object_id();
-        sq.objects.push(IsoObject::new(id, kind, Some(s)));
+        sq.objects.push((IsoObject::new(id, kind, Some(s))).into());
         sq.special_objects.push(id);
     }
 
@@ -240,15 +240,17 @@ impl World {
         }
     }
 
-    fn sq(&self, x: i32, y: i32) -> &IsoGridSquare {
+    fn sq(&self, x: i32, y: i32) -> crate::SquareRef {
         self.cell.get_grid_square(x, y, 0).unwrap()
     }
 
     fn sprite_names(&self, x: i32, y: i32) -> Vec<String> {
         self.sq(x, y)
+            .borrow()
             .objects
             .iter()
-            .map(|o| match o.sprite {
+            .map(ObjectSlot::borrow)
+            .map(|o| match o.sprite.tile_projection() {
                 Some(s) => self.m.sprites[s].name().to_string(),
                 None => o.kind.class_name().to_string(),
             })
@@ -259,6 +261,75 @@ impl World {
 /// Records the hooks the fire calls.
 #[derive(Default)]
 struct Log(Vec<String>);
+
+#[test]
+fn actual_native_sprite_burn_is_unsupported_before_skip_or_archive_clone() {
+    use crate::sprite::runtime::{create_runtime_sprite, ObjectSprite};
+    for floor in [false, true] {
+        let mut world = World::new();
+        world.put(2, 2, true, &[]);
+        let tables = world.m.tables.clone();
+        let manager = std::rc::Rc::new(std::cell::RefCell::new(IsoSpriteManager::new(
+            tables.clone(),
+        )));
+        let mut retired = pz_entity::RetiredComponents::new();
+        let sprite = create_runtime_sprite(&manager, &tables, &mut retired).unwrap();
+        let kind = if floor {
+            let item = pz_inventory::shared::try_new_item(pz_inventory::InventoryItem::create(
+                std::rc::Rc::new(pz_inventory::ItemTemplate::new(
+                    pz_inventory::ItemClass::Normal,
+                    "Base",
+                    "BurnNative",
+                )),
+                1,
+            ))
+            .unwrap();
+            ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
+                crate::objects::IsoWorldInventoryObject {
+                    xoff: 0.0,
+                    yoff: 0.0,
+                    zoff: 0.0,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    item: crate::floor_item::FloorItem::retain(&item),
+                    drop_time: 0.0,
+                    ignore_remove_sandbox: false,
+                    extended_placement: false,
+                },
+            ))
+        } else {
+            ObjectKind::Object
+        };
+        let mut object = IsoObject::new(91, kind, None);
+        object.sprite = ObjectSprite::Native(sprite.clone());
+        let slot = crate::ObjectSlot::new(object);
+        let actual = slot.ref_handle();
+        world.sq(2, 2).borrow_mut().objects.push(slot);
+        let held = sprite.borrow_mut();
+        let mut manager = IsoFireManager::new();
+        let mut log = Log::default();
+        let mut rand = Script::new(&[]);
+        let result = burn::burn_walls(
+            &mut manager,
+            &mut world.fw(&mut log),
+            &mut rand,
+            (2, 2, 0),
+            false,
+            false,
+        );
+        assert!(result
+            .unwrap_err()
+            .contains("actual native sprite is unsupported"));
+        assert!(world.sq(2, 2).borrow().objects[0].ptr_eq_ref(&actual));
+        assert!(std::rc::Rc::ptr_eq(
+            actual.borrow().sprite.native_slot().unwrap(),
+            &sprite
+        ));
+        assert!(rand.calls.is_empty());
+        drop(held);
+        drop(retired);
+    }
+}
 
 impl sound::FireSoundHooks for Log {}
 impl FireHooks for Log {
@@ -300,11 +371,11 @@ fn starting_a_fire_draws_rand_like_the_constructor() {
         ["float(0,30)", "next(2200)", "next(900)", "next(5)"]
     );
     assert_eq!(log.0, ["OnNewFire 2,2", "sound 2,2 20/20"]);
-    let f = mgr.fire(&w.cell, at).unwrap();
+    let f = fire_body(&mgr.fire(&w.cell, at).unwrap()).clone();
     // Vegetation adds 50 energy; the grass floor needs nothing.
     assert_eq!((f.life, f.spread_delay, f.energy), (1800, 400, 70));
     assert_eq!(f.life_stage_duration, 360);
-    assert!(w.sq(2, 2).has(w.flags.burning));
+    assert!(w.sq(2, 2).borrow().has(w.flags.burning));
     assert_eq!(mgr.fire_stack, vec![at]);
     w.put(3, 2, false, &["pond"]);
     w.put(4, 2, false, &[]);
@@ -313,6 +384,7 @@ fn starting_a_fire_draws_rand_like_the_constructor() {
     w.cell
         .get_grid_square_mut(5, 2, 0)
         .unwrap()
+        .borrow_mut()
         .properties
         .set_flag(burnt);
     // A burning square takes no second fire; nor does water, an empty
@@ -335,7 +407,7 @@ fn a_poor_floor_shortens_the_fire_and_takes_energy() {
     let at = mgr
         .start_fire(&mut w.fw(&mut NoFireHooks), &mut r, 1, 1, 0, true, 10, 0)
         .unwrap();
-    let f = mgr.fire(&w.cell, at).unwrap();
+    let f = fire_body(&mgr.fire(&w.cell, at).unwrap()).clone();
     // 10 less the floor's 8 is under the minimum of 5.
     assert_eq!(f.energy, 5);
     // No life given: 800 less a hundred per point of the requirement,
@@ -376,8 +448,8 @@ fn burning_turns_walls_and_furniture_to_burnt_tiles() {
         assert!(w.m.named_map.contains_key(n), "{n}");
     }
     let sq = w.sq(2, 2);
-    assert!(sq.burnt_out && sq.has(w.m.tables.flag.burntOut));
-    assert!(sq.special_objects.is_empty());
+    assert!(sq.borrow().burnt_out && sq.borrow().has(w.m.tables.flag.burntOut));
+    assert!(sq.borrow().special_objects.is_empty());
     assert!(log.0.contains(&"OnGridBurnt 2,2".to_string()));
     // Burning again leaves the burnt tiles alone.
     let mut r = Script::new(&[]);
@@ -417,11 +489,12 @@ fn a_fuelled_generator_explodes_into_fires_around() {
     assert_eq!(w.sprite_names(2, 2), [""]);
     assert_eq!(mgr.fire_stack.len(), 1);
     assert_eq!((mgr.fire_stack[0].x, mgr.fire_stack[0].y), (0, 0));
-    let f = mgr.fire(&w.cell, mgr.fire_stack[0]).unwrap();
+    let f_owner = mgr.fire(&w.cell, mgr.fire_stack[0]).unwrap();
+    let f = fire_body(&f_owner);
     // Plus the vegetation's 50.
     assert_eq!(f.energy, 200);
     assert_eq!(&r.calls[..3], ["next(100)", "next(170)", "float(0,30)"]);
-    assert!(w.sq(0, 0).burnt_out);
+    assert!(w.sq(0, 0).borrow().burnt_out);
     assert_eq!(mgr.fire_recalc, 1);
 }
 
@@ -438,7 +511,7 @@ fn a_fire_spreads_spending_its_energy_then_goes_out() {
     fire.spread_delay = 9;
     let at = IsoFireManager::place(&mut w.fw(&mut NoFireHooks), 2, 2, 0, fire).unwrap();
     mgr.add_loaded(&mut w.fw(&mut NoFireHooks), &mut Script::new(&[]), at);
-    assert!(w.sq(2, 2).has(w.flags.burning));
+    assert!(w.sq(2, 2).borrow().has(w.flags.burning));
     let mut log = Log::default();
     // One spread (Next(3) = 0, no bonus), northwards (Next(13) = 0): (2, 1)
     // needs its floor's 30 of the 35, leaving 5; exterior, so the new fire
@@ -455,19 +528,19 @@ fn a_fire_spreads_spending_its_energy_then_goes_out() {
         ["next(3)", "next(50)", "next(13)", "float(0,30)"]
     );
     assert_eq!(mgr.fire_stack.len(), 2);
-    let f = mgr.fire(&w.cell, at).unwrap();
+    let f = fire_body(&mgr.fire(&w.cell, at).unwrap()).clone();
     assert_eq!((f.energy, f.spread_timer, f.age), (5, 9, 1));
-    let new = mgr.fire(&w.cell, mgr.fire_stack[1]).unwrap();
+    let new = fire_body(&mgr.fire(&w.cell, mgr.fire_stack[1]).unwrap()).clone();
     assert_eq!(new.energy, 5);
     assert_eq!(log.0.last().unwrap(), "updated 2,2 light Some(5)");
     // At no energy the first fire goes out.
-    IsoFireManager::fire_mut(&mut w.cell, at).unwrap().energy = 0;
+    fire_body_mut(&IsoFireManager::fire_mut(&mut w.cell, at).unwrap()).energy = 0;
     let mut log = Log::default();
     mgr.update(&mut w.fw(&mut log), &mut Script::new(&[]), frame)
         .unwrap();
     assert!(log.0.contains(&"removed 2,2".to_string()));
     assert_eq!(mgr.fire_stack.len(), 1);
-    assert!(!w.sq(2, 2).has(w.flags.burning));
+    assert!(!w.sq(2, 2).borrow().has(w.flags.burning));
     assert_eq!(w.sprite_names(2, 2), ["carpet"]);
 }
 
@@ -496,20 +569,22 @@ fn rain_spends_the_energy_without_spreading() {
     )
     .unwrap();
     assert_eq!(mgr.fire_stack.len(), 1);
-    assert_eq!(mgr.fire(&w.cell, at).unwrap().energy, 5);
+    assert_eq!(fire_body(&mgr.fire(&w.cell, at).unwrap()).energy, 5);
     // With FireSpread off nothing is spent.
     w.settings = FireSettings {
         fire_spread: false,
         ..Default::default()
     };
-    let f = IsoFireManager::fire_mut(&mut w.cell, at).unwrap();
+    let f_owner = IsoFireManager::fire_mut(&mut w.cell, at).unwrap();
+    let mut f = fire_body_mut(&f_owner);
     f.energy = 35;
     f.spread_timer = 1;
+    drop(f);
     let mut r = Script::new(&[]);
     mgr.update(&mut w.fw(&mut NoFireHooks), &mut r, frame)
         .unwrap();
     assert!(r.calls.is_empty());
-    assert_eq!(mgr.fire(&w.cell, at).unwrap().energy, 35);
+    assert_eq!(fire_body(&mgr.fire(&w.cell, at).unwrap()).energy, 35);
 }
 
 #[test]
@@ -535,7 +610,8 @@ fn the_oldest_fire_makes_room_for_a_new_one() {
                 0,
             )
             .unwrap();
-        IsoFireManager::fire_mut(&mut w.cell, at).unwrap().age = if i == 7 { 30 } else { i % 5 };
+        fire_body_mut(&IsoFireManager::fire_mut(&mut w.cell, at).unwrap()).age =
+            if i == 7 { 30 } else { i % 5 };
     }
     let oldest = mgr.fire_stack[7];
     mgr.start_fire(&mut w.fw(&mut NoFireHooks), &mut r, 15, 7, 0, false, 50, 0)
@@ -543,7 +619,7 @@ fn the_oldest_fire_makes_room_for_a_new_one() {
     assert_eq!(mgr.fire_stack.len(), MAX_FIRE_OBJECTS);
     assert!(!mgr.fire_stack.contains(&oldest));
     assert!(mgr.fire(&w.cell, oldest).is_none());
-    assert!(!w.sq(7, 0).has(w.flags.burning));
+    assert!(!w.sq(7, 0).borrow().has(w.flags.burning));
 }
 
 struct Zombie {
@@ -617,7 +693,7 @@ fn zombies_catch_fire_take_damage_and_spread_it() {
     let mut r = Script::new(&[5]);
     spread_fire(&mut mgr, &mut w.fw(&mut NoFireHooks), &z, frame, &mut r);
     assert_eq!(r.calls[0], "next(6000)");
-    assert!(w.sq(3, 2).has(w.flags.burning));
+    assert!(w.sq(3, 2).borrow().has(w.flags.burning));
 }
 
 #[test]
@@ -657,7 +733,7 @@ fn burning_takes_down_the_sheet_rope_of_a_window_frame() {
     let mut w = World::new();
     w.put(2, 2, true, &["carpet", "rope_top"]);
     w.add(2, 2, "frame", ObjectKind::WindowFrame { north: true });
-    assert!(w.sq(2, 2).has(w.flags.climbSheetTop[0].unwrap()));
+    assert!(w.sq(2, 2).borrow().has(w.flags.climbSheetTop[0].unwrap()));
     let mut mgr = IsoFireManager::new();
     burn::burn(
         &mut mgr,
@@ -669,8 +745,8 @@ fn burning_takes_down_the_sheet_rope_of_a_window_frame() {
     // The rope tile is gone (the chunk's lowest level stops the descent),
     // the frame stays and the square no longer has the rope flag.
     assert_eq!(w.sprite_names(2, 2), ["", "frame"]);
-    assert!(!w.sq(2, 2).has(w.flags.climbSheetTop[0].unwrap()));
-    assert!(!w.sq(2, 2).have_sheet_rope);
+    assert!(!w.sq(2, 2).borrow().has(w.flags.climbSheetTop[0].unwrap()));
+    assert!(!w.sq(2, 2).borrow().have_sheet_rope);
 }
 
 #[test]
@@ -721,18 +797,20 @@ fn a_burning_hutch_leaves_ashes_on_its_squares() {
     assert_eq!(h.0, [(3, 2)]);
     assert_eq!(&r.calls[..2], ["next(1)", "next(1)"]);
     let ash = |x| {
-        w.sq(x, 2)
+        w.sq(x, 2).borrow()
             .objects
-            .iter()
+            .iter().map(ObjectSlot::borrow)
             .any(|o| matches!(&o.sprite_name, Some(crate::objects::SpriteName::Str(n)) if n == "floors_burnt_01_1"))
     };
     assert!(ash(2) && ash(3));
     assert!(!w
         .sq(3, 2)
+        .borrow()
         .objects
         .iter()
+        .map(ObjectSlot::borrow)
         .any(|o| matches!(o.kind, ObjectKind::Hutch(_))));
-    assert!(w.sq(3, 2).burnt_out);
+    assert!(w.sq(3, 2).borrow().burnt_out);
 }
 
 #[test]
@@ -973,7 +1051,7 @@ fn a_window_outside_rooms_with_no_square_inside_throws_like_the_original() {
         (2, 2, 0),
     );
     assert_eq!(e.unwrap_err(), burn::REMOVE_SHEET_NPE);
-    assert!(!w.sq(2, 2).burnt_out);
+    assert!(!w.sq(2, 2).borrow().burnt_out);
     assert_eq!(w.sprite_names(2, 2), ["carpet", "frame"]);
     // With the square there (no curtain), the window burns.
     w.put(2, 1, false, &["carpet"]);
@@ -984,7 +1062,7 @@ fn a_window_outside_rooms_with_no_square_inside_throws_like_the_original() {
         (2, 2, 0),
     )
     .unwrap();
-    assert!(w.sq(2, 2).burnt_out);
+    assert!(w.sq(2, 2).borrow().burnt_out);
 }
 
 /// Square (2,2) with a carpet, part 1 of a player-built garage door and
@@ -1009,13 +1087,11 @@ fn garage_door_world(extra: &[&str]) -> World {
     let k = part(&w, "gdoor2");
     w.add(3, 2, "gdoor2", k);
     for e in extra {
-        let sq = w.cell.get_grid_square_mut(2, 2, 0).unwrap();
+        let sq_owner = w.cell.get_grid_square_mut(2, 2, 0).unwrap();
+        let mut sq = sq_owner.borrow_mut();
         let id = sq.new_object_id();
-        sq.objects.push(IsoObject::new(
-            id,
-            ObjectKind::Object,
-            Some(w.m.named_map[*e]),
-        ));
+        sq.objects
+            .push((IsoObject::new(id, ObjectKind::Object, Some(w.m.named_map[*e]))).into());
     }
     w
 }
@@ -1041,8 +1117,8 @@ fn burnt_objects_are_replaced_at_the_loop_index_after_a_recursive_burn_shifts_th
     // ("" is floors_burnt_01_0, a sprite these tables do not have.)
     assert_eq!(w.sprite_names(2, 2), ["", "walls_burnt_01_0"]);
     assert_eq!(w.sprite_names(3, 2), [""]);
-    assert!(w.sq(2, 2).special_objects.is_empty());
-    assert!(w.sq(2, 2).burnt_out && w.sq(3, 2).burnt_out);
+    assert!(w.sq(2, 2).borrow().special_objects.is_empty());
+    assert!(w.sq(2, 2).borrow().burnt_out && w.sq(3, 2).borrow().burnt_out);
     // Without the table, index 1 is past the end: PZArrayList.set throws
     // and BurnWalls stops before the square is marked burnt out.
     let mut w = garage_door_world(&[]);
@@ -1057,5 +1133,5 @@ fn burnt_objects_are_replaced_at_the_loop_index_after_a_recursive_burn_shifts_th
         "java.lang.IndexOutOfBoundsException: Index: 1 Size: 1"
     );
     assert_eq!(w.sprite_names(2, 2), [""]);
-    assert!(!w.sq(2, 2).burnt_out && w.sq(3, 2).burnt_out);
+    assert!(!w.sq(2, 2).borrow().burnt_out && w.sq(3, 2).borrow().burnt_out);
 }

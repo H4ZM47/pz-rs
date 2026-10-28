@@ -284,41 +284,69 @@ pub(crate) fn created_display_name(full_type: &str) -> Option<String> {
     crate::bind_items::script_display_name(full_type)
 }
 
-/// `getModData().rawget(key)` as a string.
-pub(crate) fn mod_str(it: &InventoryItem, key: &str) -> Option<String> {
-    use pz_inventory::lua_table::{LuaKey, LuaValue};
-    match it.table.as_ref()?.rawget(&LuaKey::Str(key.into()))? {
-        LuaValue::Str(s) => Some(s.clone()),
-        LuaValue::Num(n) => Some(pz_core::config::double_to_string(*n)),
-        LuaValue::Bool(b) => Some(b.to_string()),
-        _ => Some(String::new()),
+/// The actual `getModData().rawget(key)`, after pointer adoption has
+/// released every item guard. No detached table or false borrow absence.
+pub(crate) fn mod_value(item: &ItemRef, key: &str) -> LuaResult<Option<Value>> {
+    let table = pz_inventory::moddata::get_mod_data_ref(item)
+        .map_err(|error| error.to_lua_error())?;
+    let value = table.try_rawget(&Value::str(key))
+        .map_err(|error| pz_inventory::moddata::ModDataError::from(error).to_lua_error())?;
+    Ok((!value.is_nil()).then_some(value))
+}
+
+/// Native String cast where the caller requires one.
+pub(crate) fn mod_str(item: &ItemRef, key: &str) -> LuaResult<Option<String>> {
+    match mod_value(item, key)? {
+        None => Ok(None),
+        Some(Value::Str(value)) => Ok(Some(value.to_string())),
+        Some(value) => Err(crate::bind_java_util::class_cast(&value, "java.lang.String")),
     }
 }
 
 /// `getModData().rawget(key) != null`.
-pub(crate) fn mod_has(it: &InventoryItem, key: &str) -> bool {
-    use pz_inventory::lua_table::LuaKey;
-    it.table
-        .as_ref()
-        .and_then(|t| t.rawget(&LuaKey::Str(key.into())))
-        .is_some()
+pub(crate) fn mod_has(item: &ItemRef, key: &str) -> LuaResult<bool> {
+    Ok(mod_value(item, key)?.is_some())
 }
 
 /// `getModData().rawget(key)` as a number.
-pub(crate) fn mod_num(it: &InventoryItem, key: &str) -> Option<f64> {
-    use pz_inventory::lua_table::{LuaKey, LuaValue};
-    match it.table.as_ref()?.rawget(&LuaKey::Str(key.into()))? {
-        LuaValue::Num(n) => Some(*n),
-        _ => None,
+pub(crate) fn mod_num(item: &ItemRef, key: &str) -> LuaResult<Option<f64>> {
+    match mod_value(item, key)? {
+        None => Ok(None),
+        Some(Value::Num(value)) => Ok(Some(value)),
+        Some(value) => Err(crate::bind_java_util::class_cast(&value, "java.lang.Double")),
     }
 }
 
 /// `getModData().rawset(key, value)`.
-pub(crate) fn mod_set(it: &mut InventoryItem, key: &str, v: pz_inventory::lua_table::LuaValue) {
-    use pz_inventory::lua_table::{LuaKey, LuaTable};
-    it.table
-        .get_or_insert_with(LuaTable::default)
-        .rawset(LuaKey::Str(key.into()), Some(v));
+pub(crate) fn mod_set(item: &ItemRef, key: &str, value: Option<Value>) -> LuaResult<()> {
+    pz_inventory::moddata::set_mod_data_value_ref(item, key, value)
+        .map_err(|error| error.to_lua_error())
+}
+
+/// Native Object.toString on a ModData value. Query a real table's Type
+/// field fallibly, and keep known item userdata body conflicts in the host
+/// domain rather than calling an infallible formatter through a guard.
+pub(crate) fn mod_java_string(value: &Value) -> LuaResult<String> {
+    match value {
+        Value::Table(table) => {
+            let kind = table.try_rawget(&Value::str("Type"))
+                .map_err(|error| pz_inventory::moddata::ModDataError::from(error).to_lua_error())?;
+            let hash = pz_kahlua::exec::identity_hash(value);
+            Ok(match kind {
+                Value::Str(kind) => format!("{kind} 0x{hash}"),
+                _ => format!("table 0x{hash}"),
+            })
+        }
+        Value::Object(object) => {
+            if let Some(item) = (&**object as &dyn std::any::Any).downcast_ref::<crate::bind_items::LuaInventoryItem>() {
+                let body = item.item.try_borrow().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item ModData value formatter").to_lua_error())?;
+                Ok(format!("{}:{}@{:x}", body.get_full_type(), object.class_name(), std::rc::Rc::as_ptr(&item.item) as usize))
+            } else {
+                Ok(object.to_lua_string())
+            }
+        }
+        _ => Ok(pz_kahlua::exec::java_value_of(value)),
+    }
 }
 
 /// `instanceof DrainableComboItem`.
@@ -379,13 +407,31 @@ fn draw_item_texture(
     w
 }
 
-/// `getTex()`: the item's icon texture.
-pub(crate) fn item_texture(it: &InventoryItem) -> Option<pz_render::Texture> {
-    let name = match &it.texture_override {
-        Some(n) => n.clone(),
-        None => format!("Item_{}", it.template.icon.as_deref()?),
-    };
-    pz_render::get_shared_texture(&name)
+/// `getTex()` followed by this draw phase's actual texture body read. The
+/// canonical asset is selected before its current descriptor is captured; no
+/// item guard survives custom ModData/provider lookup or texture access.
+pub(crate) fn item_texture(item: &ItemRef) -> LuaResult<Option<pz_render::Texture>> {
+    let texture = pz_inventory::item_texture::get_tex_ref(item)
+        .map_err(crate::bind_world_object::host_error)?;
+    texture
+        .as_ref()
+        .map(pz_render::try_texture_descriptor)
+        .transpose()
+        .map_err(pz_inventory::item_texture::texture_host_error)
+        .map_err(crate::bind_world_object::host_error)
+}
+
+/// The extra ingredient's native setCooked phase, before its getTex call.
+fn prepare_extra_food(item: &ItemRef, cookable: bool, cooked: bool) -> LuaResult<()> {
+    let mut body = item
+        .try_borrow_mut()
+        .map_err(|_| crate::bind_world_object::borrowed("tooltip extra item cooked write"))?;
+    if let ItemKind::Food(food) = &mut body.kind {
+        if (!cookable && food.is_cookable) || (cooked && food.is_cookable) {
+            food.set_cooked(true);
+        }
+    }
+    Ok(())
 }
 
 /// `InventoryItem.DoTooltip(tooltipUI)`: `DoTooltipEmbedded(tooltipUI,
@@ -399,7 +445,7 @@ pub fn do_tooltip(t: &mut Thread, item: &ItemRef, el: &UIElement) -> LuaResult<(
     let tip = Tip::of(el)?;
     el.render(t);
     do_tooltip_embedded(t, item, el, None, 0)?;
-    kinds::container_icons(&tip, item);
+    kinds::container_icons(&tip, item)?;
     Ok(())
 }
 
@@ -465,22 +511,12 @@ pub fn do_tooltip_embedded(
         let dy = (line_spacing - icon_size) / 2;
         let e = item_env();
         for id in extra {
-            // The icon only draws; an item the environment cannot make
-            // takes the icon size.
-            let Some(mut x_item) = e
-                .context()
-                .item_type_from_id(id)
-                .and_then(|full| e.context().create_item(&full))
-            else {
-                x += icon_size + 2;
-                continue;
-            };
-            if let ItemKind::Food(f) = &mut x_item.kind {
-                if (!cookable && f.is_cookable) || (cooked && f.is_cookable) {
-                    f.cooked = true;
-                }
-            }
-            let tex = item_texture(&x_item);
+            let full = e.context().item_type_from_id(id).ok_or_else(|| {
+                crate::bind_world_object::unsupported("tooltip extra item registry identifier")
+            })?;
+            let x_item = crate::bind_items::try_create_item(&full, 1.0)?.ok_or_else(npe)?;
+            prepare_extra_food(&x_item, cookable, cooked)?;
+            let tex = item_texture(&x_item)?;
             let dx = draw_item_texture(
                 &tip,
                 tex.as_ref(),
@@ -508,13 +544,9 @@ pub fn do_tooltip_embedded(
         );
         let mut x = pad_left + pz_ui::draw::measure_string_x(Some(font), &label) + 4;
         let dy = (line_spacing - icon_size) / 2;
-        let e = item_env();
         for s in spices {
-            let Some(x_item) = e.context().create_item(&s) else {
-                x += icon_size + 2;
-                continue;
-            };
-            let tex = item_texture(&x_item);
+            let x_item = crate::bind_items::try_create_item(&s, 1.0)?.ok_or_else(npe)?;
+            let tex = item_texture(&x_item)?;
             let dx = draw_item_texture(
                 &tip,
                 tex.as_ref(),
@@ -725,6 +757,7 @@ fn rows(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout) -> 
             .value(&names.join(", ").replace(['[', ']'], ""), WHITE);
     }
     if cx.tooltip_info() {
+        if ctx.assets().is_some() { crate::bind_items::ensure_clothing_mod_data(item)?; }
         let it = item.borrow();
         let mut dbg = |l: &str, v: f32| {
             layout
@@ -764,7 +797,7 @@ fn rows(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout) -> 
             .add_item()
             .label("DictionaryID", LABEL)
             .set_value_right_no_plus_int(it.registry_id as i32);
-        if let Some(c) = it.get_clothing_item(ctx.assets(), owner.as_ref()) {
+        if let Some(c) = it.try_get_clothing_item(ctx.assets(), owner.as_ref()).map_err(|error| error.to_lua_error())? {
             layout
                 .add_item()
                 .label("ClothingItem", WHITE)
@@ -881,8 +914,12 @@ fn tail_rows(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout
                 .value(&v, LABEL);
         }
     }
-    if !is_weapon(&item.borrow()) && components::has_sharpness(&item.borrow()) {
-        let f = components::sharpness_mut(&mut item.borrow_mut());
+    if !is_weapon(&item.borrow())
+        && components::has_sharpness_ref(item)
+            .map_err(|error| LuaError::runtime(format!("{error:?}")))?
+    {
+        let f = components::sharpness_mut(item)
+            .map_err(|error| LuaError::runtime(format!("{error:?}")))?;
         let c = cx.bad_to_good(f);
         layout
             .add_item()
@@ -930,7 +967,7 @@ fn tail_rows(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout
             layout.add_item().label(&tr("Tooltip_IsFishingLure"), LABEL);
         }
     }
-    components::do_tooltip(cx, item, tip, layout);
+    components::do_tooltip(cx, item, tip, layout)?;
     let it = item.borrow();
     let vision = sv(&it, |s| s.vision_modifier);
     let vision = if script(&it).is_some() { vision } else { 1.0 };
@@ -989,7 +1026,14 @@ fn tail_rows(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout
             );
         }
     }
-    let text = mod_str(&it, "Tooltip").or_else(|| sv(&it, |s| s.tooltip.clone()));
+    let fallback = sv(&it, |s| s.tooltip.clone());
+    drop(it);
+    // InventoryItem.getTooltip uses instanceof String, falling back to
+    // its script field for every other non-null value.
+    let text = match mod_value(item, "Tooltip")? {
+        Some(Value::Str(value)) => Some(value.to_string()),
+        _ => fallback,
+    };
     if let Some(text) = text {
         layout.add_item().label(&tr(&text), LABEL);
     }
@@ -1204,5 +1248,269 @@ mod tests {
         let ls = ObjectTooltip::line_spacing() as f64;
         assert_eq!(h, 5.0 + ls + 5.0 + 3.0 * ls);
         assert!(r[1].as_num().unwrap() >= 150.0);
+    }
+}
+
+
+#[cfg(test)]
+mod captured_texture_tests {
+    use super::*;
+    use pz_inventory::item_texture::CapturedScriptTextures;
+    use pz_inventory::{ItemEnv, ItemTemplate};
+    use pz_render::{LuaTexture, Texture, TextureRef, TextureRefLoader};
+
+    struct Env;
+    impl ItemEnv for Env {}
+    struct Restore(Option<TextureRefLoader>, bool);
+    impl Restore {
+        fn new() -> Self {
+            Self(
+                pz_render::install_texture_ref_loader(None),
+                pz_render::warn_fail_find_texture(),
+            )
+        }
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            drop(pz_render::install_texture_ref_loader(self.0.take()));
+            pz_render::set_warn_fail_find_texture(self.1);
+            pz_inventory::component_host::drain_retired_components();
+        }
+    }
+    fn texture(name: &str) -> TextureRef {
+        let mut value = Texture::empty(name);
+        value.width = 16;
+        value.height = 16;
+        Rc::new(LuaTexture::new(value))
+    }
+    fn actual(
+        class: ItemClass,
+        base: Option<TextureRef>,
+        special: Vec<Option<TextureRef>>,
+    ) -> ItemRef {
+        let mut template = ItemTemplate::new(class, "Base", "ActualTooltipTexture");
+        template.texture_capture = Some(CapturedScriptTextures::new(base, special));
+        pz_inventory::env::create_from_template_ref(&Env, Rc::new(template), 1).unwrap()
+    }
+    fn set_contents(bag: &ItemRef, items: Vec<ItemRef>) {
+        let body = bag.borrow();
+        let ItemKind::Container(data) = &body.kind else {
+            panic!("bag fixture")
+        };
+        data.container.borrow_mut().items = items;
+    }
+    fn custom(item: &ItemRef, name: &str) {
+        pz_inventory::moddata::set_mod_data_value_ref(
+            item,
+            "customInventoryIcon",
+            Some(Value::str(name)),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn tooltip_get_tex_uses_actual_food_priority_and_current_texture_body() {
+        let _restore = Restore::new();
+        let base = texture("base");
+        let rotten = texture("rotten");
+        let cooked = texture("cooked");
+        let burnt = texture("burnt");
+        let item = actual(
+            ItemClass::Food,
+            Some(base.clone()),
+            vec![Some(rotten), Some(cooked), Some(burnt.clone())],
+        );
+        let state = |burnt_value, age, cooked_value| {
+            let mut body = item.borrow_mut();
+            let ItemKind::Food(food) = &mut body.kind else {
+                panic!("Food fixture")
+            };
+            food.burnt = burnt_value;
+            food.age = age;
+            food.off_age_max = 5;
+            food.cooked = cooked_value;
+        };
+        state(true, 5.0, true);
+        assert_eq!(&*item_texture(&item).unwrap().unwrap().name, "burnt");
+        let held = burnt.0.borrow_mut();
+        assert!(matches!(
+            item_texture(&item),
+            Err(LuaError::Runtime {
+                class: "pz.host.Borrowed",
+                ..
+            })
+        ));
+        drop(held);
+        state(false, 5.0, true);
+        assert_eq!(&*item_texture(&item).unwrap().unwrap().name, "rotten");
+        state(false, 0.0, true);
+        assert_eq!(&*item_texture(&item).unwrap().unwrap().name, "cooked");
+        state(false, 0.0, false);
+        base.0.borrow_mut().width = 37;
+        assert_eq!(item_texture(&item).unwrap().unwrap().width, 37);
+        assert!(Rc::ptr_eq(
+            &pz_inventory::item_texture::get_tex_ref(&item)
+                .unwrap()
+                .unwrap(),
+            &base
+        ));
+        let held = item.borrow_mut();
+        assert!(matches!(
+            item_texture(&item),
+            Err(LuaError::Runtime {
+                class: "pz.host.Borrowed",
+                ..
+            })
+        ));
+        drop(held);
+        let null = actual(ItemClass::Normal, None, Vec::new());
+        assert!(item_texture(&null).unwrap().is_none());
+    }
+
+    #[test]
+    fn tooltip_custom_lookup_releases_item_guard_and_keeps_provider_error() {
+        let _restore = Restore::new();
+        let item = actual(ItemClass::Normal, Some(texture("base")), Vec::new());
+        custom(&item, "dynamic");
+        let calls = Rc::new(Cell::new(0));
+        let count = calls.clone();
+        let receiver = item.clone();
+        pz_render::install_texture_ref_loader(Some(Rc::new(move |_, name| {
+            assert_eq!(name, "dynamic");
+            let _guard = receiver
+                .try_borrow_mut()
+                .expect("item guard survived into provider");
+            count.set(count.get() + 1);
+            Err(pz_render::TextureHostError::Unavailable(
+                "tooltip custom provider",
+            ))
+        })));
+        assert!(
+            matches!(item_texture(&item), Err(LuaError::Runtime { class: "pz.host.Unsupported", message }) if message == "tooltip custom provider")
+        );
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn container_texture_fault_keeps_width_prefix_and_dedup_skips_unused_body() {
+        let _restore = Restore::new();
+        let good = actual(ItemClass::Normal, Some(texture("good")), Vec::new());
+        let bad_texture = texture("bad");
+        let bad = actual(ItemClass::Normal, Some(bad_texture.clone()), Vec::new());
+        let bag = actual(ItemClass::Container, None, Vec::new());
+        set_contents(&bag, vec![bad.clone(), good]);
+        let el = ObjectTooltip::create("Small");
+        let tip = Tip::of(&el).unwrap();
+        tip.tt.set_measure_only(true);
+        el.set_width(80.0);
+        el.set_height(77.0);
+        let held = bad_texture.0.borrow_mut();
+        // Same name: the earlier reverse-order icon suppresses this getTex.
+        kinds::container_icons(&tip, &bag).unwrap();
+        assert_eq!(el.get_width(), 160.0);
+        assert!(el.get_height() > 77.0);
+        bad.borrow_mut().name = "other name".into();
+        el.set_width(80.0);
+        el.set_height(77.0);
+        assert!(matches!(
+            kinds::container_icons(&tip, &bag),
+            Err(LuaError::Runtime {
+                class: "pz.host.Borrowed",
+                ..
+            })
+        ));
+        assert_eq!(el.get_width(), 160.0, "width changes before first getTex");
+        assert_eq!(
+            el.get_height(),
+            77.0,
+            "failed draw must not publish the final height"
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn container_custom_provider_sees_no_guards_and_stops_before_later_icon() {
+        let _restore = Restore::new();
+        let later = actual(ItemClass::Normal, Some(texture("later")), Vec::new());
+        let first = actual(ItemClass::Normal, Some(texture("first")), Vec::new());
+        first.borrow_mut().name = "first item".into();
+        custom(&first, "FirstLookup");
+        custom(&later, "LaterLookup");
+        let bag = actual(ItemClass::Container, None, Vec::new());
+        set_contents(&bag, vec![later, first.clone()]);
+        let contents = {
+            let body = bag.borrow();
+            let ItemKind::Container(data) = &body.kind else {
+                panic!("bag fixture")
+            };
+            data.container.clone()
+        };
+        let parent = bag.clone();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let observed = calls.clone();
+        pz_render::install_texture_ref_loader(Some(Rc::new(move |_, name| {
+            let _bag = parent
+                .try_borrow_mut()
+                .expect("bag guard survived provider call");
+            let _contents = contents
+                .try_borrow_mut()
+                .expect("contents guard survived provider call");
+            let _item = first
+                .try_borrow_mut()
+                .expect("contained item guard survived provider call");
+            observed.borrow_mut().push(name.to_owned());
+            Err(pz_render::TextureHostError::Unavailable(
+                "first contained texture",
+            ))
+        })));
+        let el = ObjectTooltip::create("Small");
+        let tip = Tip::of(&el).unwrap();
+        tip.tt.set_measure_only(true);
+        el.set_width(80.0);
+        el.set_height(77.0);
+        assert!(
+            matches!(kinds::container_icons(&tip, &bag), Err(LuaError::Runtime { class: "pz.host.Unsupported", message }) if message == "first contained texture")
+        );
+        assert_eq!(*calls.borrow(), ["FirstLookup"]);
+        assert_eq!(el.get_width(), 160.0);
+        assert_eq!(el.get_height(), 77.0);
+    }
+
+    #[test]
+    fn extra_food_cooked_time_prefix_survives_later_actual_texture_body_fault() {
+        let _restore = Restore::new();
+        let cooked = texture("cooked");
+        let item = actual(
+            ItemClass::Food,
+            Some(texture("base")),
+            vec![None, Some(cooked.clone())],
+        );
+        {
+            let mut body = item.borrow_mut();
+            let ItemKind::Food(food) = &mut body.kind else {
+                panic!("Food fixture")
+            };
+            food.is_cookable = true;
+            food.minutes_to_cook = 23.0;
+            food.cooking_time = 1.0;
+        }
+        let held = cooked.0.borrow_mut();
+        prepare_extra_food(&item, false, false).unwrap();
+        assert!(matches!(
+            item_texture(&item),
+            Err(LuaError::Runtime {
+                class: "pz.host.Borrowed",
+                ..
+            })
+        ));
+        {
+            let body = item.borrow();
+            let ItemKind::Food(food) = &body.kind else {
+                panic!("Food fixture")
+            };
+            assert!(food.cooked);
+            assert_eq!(food.cooking_time, 23.0);
+        }
+        drop(held);
     }
 }

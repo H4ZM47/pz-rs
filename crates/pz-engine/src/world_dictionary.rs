@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use pz_inventory::component::{ComponentBlob, ComponentCodec, EntityCodec, FactoryRng};
-use pz_inventory::dictionary::WorldDictionary;
+use pz_inventory::dictionary::{DictionaryInfo, Register, WorldDictionary};
 use pz_inventory::factory::ScriptItems;
 use pz_inventory::io::{Reader, SaveResult, Writer};
 use pz_inventory::ItemTemplate;
@@ -22,7 +22,11 @@ const CANNOT_LOAD: &str = "WorldDictionary: Cannot load world due to WorldDictio
 /// (`None`: nothing read, for a `noSave` game or a new game without the
 /// file). A missing file in a loaded game, or one that does not read, is
 /// a `WorldDictionaryException`.
-fn load_data(save_dir: &Path, no_save: bool, is_new_game: bool) -> Result<Option<WorldDictionary>, String> {
+fn load_data(
+    save_dir: &Path,
+    no_save: bool,
+    is_new_game: bool,
+) -> Result<Option<WorldDictionary>, String> {
     if no_save {
         return Ok(None);
     }
@@ -35,29 +39,188 @@ fn load_data(save_dir: &Path, no_save: bool, is_new_game: bool) -> Result<Option
     }
     println!("Loading WorldDictionary:{}", path.display());
     let bytes = std::fs::read(&path).map_err(|e| format!("Error loading WorldDictionary.: {e}"))?;
-    WorldDictionary::load(&bytes).map(Some).map_err(|e| format!("Error loading WorldDictionary.: {}", e.0))
+    WorldDictionary::load(&bytes)
+        .map(Some)
+        .map_err(|e| format!("Error loading WorldDictionary.: {}", e.0))
 }
 
-/// `WorldDictionary.init()` in a local game (`isNewGame` is
-/// `GameLoadingState.newGame`, set by `WorldDictionary.setIsNewGame`):
-/// `DictionaryData.load()`, then the original matches the loaded scripts
-/// against it. An error is logged and becomes the
-/// `WorldDictionaryException` that stops the world load.
+/// The script-loading callback's item/entity information. The script
+/// loader retains every (mod id, body) pair, including overridden bodies.
+fn script_info(
+    entity: &pz_scripts::objects::entity::GameEntityScript,
+    obsolete: bool,
+) -> Result<DictionaryInfo, String> {
+    let full_type = entity.full_name().map_err(|e| e.to_string())?;
+    let module_name = entity
+        .module_name()
+        .ok_or_else(|| format!("Missing module for {full_type}"))?;
+    let name = entity
+        .name()
+        .ok_or_else(|| format!("Missing name for {full_type}"))?
+        .to_string();
+    let mod_id = entity.mod_id().unwrap_or("pz-vanilla").to_string();
+    let mut overrides = Vec::new();
+    let mut previous: Option<&str> = None;
+    let mut exists_as_vanilla = entity.exists_as_vanilla() || mod_id == "pz-vanilla";
+    for pair in entity.base.loaded_script_bodies().chunks_exact(2) {
+        let Some(id) = pair[0].as_deref() else {
+            continue;
+        };
+        if id == "pz-vanilla" {
+            exists_as_vanilla = true;
+        }
+        if let Some(old) = previous.filter(|old| *old != id) {
+            if !overrides.iter().any(|s| s == old) {
+                overrides.push(old.to_string());
+            }
+        }
+        previous = Some(id);
+    }
+    Ok(DictionaryInfo {
+        registry_id: -1,
+        module_name,
+        name,
+        full_type,
+        is_modded: mod_id != "pz-vanilla",
+        mod_id,
+        exists_as_vanilla,
+        obsolete,
+        removed: false,
+        mod_overrides: if overrides.is_empty() {
+            None
+        } else {
+            Some(overrides)
+        },
+    })
+}
+
+fn register_scripts(
+    dictionary: &mut WorldDictionary,
+    sm: &pz_scripts::ScriptManager,
+) -> Result<(), String> {
+    use pz_scripts::objects::entity::GameEntityScript;
+    use pz_scripts::script_type::ScriptType;
+    // WorldDictionary's load lists are java.util.HashMaps keyed by full
+    // type. Reuse the script loader's Java ordering, not Rust's randomized
+    // HashMap order, when assigning new ids.
+    let mut items = pz_scripts::java::JHashMap::new();
+    let mut entities = pz_scripts::java::JHashMap::new();
+    let modules = sm.module_list();
+    let item_scripts: Vec<_> = modules
+        .iter()
+        .flat_map(|m| m.bucket(ScriptType::Item).loaded_definitions())
+        .filter_map(|s| s.downcast::<pz_scripts::objects::items::Item>())
+        .collect();
+    let entity_scripts: Vec<_> = modules
+        .iter()
+        .flat_map(|m| m.bucket(ScriptType::Entity).loaded_definitions())
+        .filter_map(|s| s.downcast::<GameEntityScript>())
+        .collect();
+    for item in &item_scripts {
+        let item = item.borrow();
+        let info = script_info(&item.entity, item.obsolete)?;
+        items.insert(info.full_type.clone(), info);
+    }
+    for entity in &entity_scripts {
+        let info = script_info(&entity.borrow(), false)?;
+        entities.insert(info.full_type.clone(), info);
+    }
+    dictionary
+        .reconcile_scripts(
+            &items.values().cloned().collect::<Vec<_>>(),
+            &entities.values().cloned().collect::<Vec<_>>(),
+        )
+        .map_err(|e| e.to_string())?;
+    let item_ids: std::collections::HashMap<_, _> = dictionary
+        .items
+        .values()
+        .map(|i| (i.full_type.as_str(), i.registry_id))
+        .collect();
+    let entity_ids: std::collections::HashMap<_, _> = dictionary
+        .entities
+        .values()
+        .map(|i| (i.full_type.as_str(), i.registry_id))
+        .collect();
+    for item in item_scripts {
+        let mut item = item.borrow_mut();
+        if let Some(&id) = item_ids.get(item.full_name().as_str()) {
+            // The Rust host can open another world without reloading the
+            // scripts. An identical assignment is already registered.
+            if item.entity.registry_id() != id {
+                item.entity.set_registry_id(id).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    for entity in entity_scripts {
+        let mut entity = entity.borrow_mut();
+        let full_type = entity.full_name().map_err(|e| e.to_string())?;
+        if let Some(&id) = entity_ids.get(full_type.as_str()) {
+            if entity.registry_id() != id {
+                entity.set_registry_id(id).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn save_data(save_dir: &Path, dictionary: &WorldDictionary) -> Result<(), String> {
+    let bytes = dictionary.save().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(save_dir).map_err(|e| e.to_string())?;
+    let temporary = save_dir.join("WorldDictionary.tmp");
+    std::fs::write(&temporary, bytes).map_err(|e| format!("Error saving WorldDictionary.: {e}"))?;
+    std::fs::rename(&temporary, save_dir.join("WorldDictionary.bin"))
+        .map_err(|e| format!("Error saving WorldDictionary.: {e}"))
+}
+
+/// `WorldDictionary.init()` for a local game: load saved ids, reconcile
+/// the current item/entity scripts, register erosion object names, then
+/// persist the dictionary before chunks and players load. `noSave` still
+/// creates usable in-memory ids but neither reads nor writes a file.
 ///
-/// TODO(port): the rest of `init()`: `collectObjectNames`,
-/// `WorldDictionaryLogger`, `backupCurrentDataSet`, `collectStrings`,
-/// `parseInfoLoadList` / `parseCurrentInfoSet` (registry ids for items and
-/// entities new since the save, removed and mod-changed ones),
-/// `parseObjectNameLoadList`, the `StringDictionary` / `ScriptsDictionary`
-/// registers, `getDictionaryMods`, then `saveAsText`
-/// (`WorldDictionaryReadable.lua`), `save()` and
-/// `deleteBackupCurrentDataSet`; on error `createErrorBackups` and
-/// `saveLog("WorldDictionaryLog.lua")`. Until then a new game has no
-/// dictionary, and items added to the scripts since a save have no ids.
-pub fn init(save_dir: &Path, no_save: bool, is_new_game: bool) -> Result<Option<WorldDictionary>, String> {
+/// TODO(port): register the Generic strings from XUI/FluidFilter and
+/// component script registers (including their original version hashes)
+/// when those script-loading hooks are implemented. Existing register
+/// records are preserved. Readable/log/error-backup files remain unported.
+pub fn init(
+    save_dir: &Path,
+    no_save: bool,
+    is_new_game: bool,
+    sm: &pz_scripts::ScriptManager,
+    object_names: &[String],
+) -> Result<Option<WorldDictionary>, String> {
     println!("WorldDictionary: Checking dictionary...");
-    match load_data(save_dir, no_save, is_new_game) {
-        Ok(d) => Ok(d),
+    let initialize = || -> Result<WorldDictionary, String> {
+        let mut dictionary =
+            load_data(save_dir, no_save, is_new_game)?.unwrap_or_else(WorldDictionary::new);
+        register_scripts(&mut dictionary, sm)?;
+        dictionary
+            .register_object_names(object_names, sm.debug)
+            .map_err(|e| e.to_string())?;
+        if dictionary.string_register("Generic").is_none() {
+            dictionary.string_registers.push(Register {
+                name: "Generic".into(),
+                ..Default::default()
+            });
+        }
+        for name in [
+            "SpriteConfigs",
+            "SpriteOverlayConfigs",
+            "ContextMenuConfigs",
+        ] {
+            if dictionary.script_register(name).is_none() {
+                dictionary.script_registers.push(Register {
+                    name: name.into(),
+                    ..Default::default()
+                });
+            }
+        }
+        if !no_save {
+            save_data(save_dir, &dictionary)?;
+        }
+        Ok(dictionary)
+    };
+    match initialize() {
+        Ok(d) => Ok(Some(d)),
         Err(e) => {
             eprintln!("ERROR: WorldDictionary: {e}");
             println!("WorldDictionary: Warning: error occurred loading dictionary!");
@@ -88,16 +251,47 @@ impl OwnedEntityCodec {
 }
 
 impl ComponentCodec for OwnedEntityCodec {
-    fn load_entity(&self, r: &mut Reader<'_>, world_version: i32, components: &mut Vec<ComponentBlob>) -> SaveResult<Vec<i16>> {
+    fn load_archive_entity(
+        &self,
+        reader: &mut Reader<'_>,
+        world_version: i32,
+        components: &mut pz_inventory::ItemComponents,
+    ) -> SaveResult<pz_entity::RetiredComponents> {
+        self.codec().load_archive_entity(reader, world_version, components)
+    }
+    fn factory_runtime(
+        &self,
+        item: &pz_inventory::shared::ItemRef,
+        template: &ItemTemplate,
+        rng: &mut dyn FactoryRng,
+        retired: &mut pz_entity::RetiredComponents,
+        native_notices: &mut Vec<pz_entity::runtime_fluid::RuntimeNativeNotice>,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        self.codec().factory_runtime(item, template, rng, retired, native_notices)
+    }
+    fn load_entity(
+        &self,
+        r: &mut Reader<'_>,
+        world_version: i32,
+        components: &mut Vec<ComponentBlob>,
+    ) -> SaveResult<Vec<i16>> {
         self.codec().load_entity(r, world_version, components)
     }
     fn save_entity(&self, w: &mut Writer, components: &[ComponentBlob]) -> SaveResult<()> {
         self.codec().save_entity(w, components)
     }
-    fn factory_components(&self, template: &ItemTemplate, rng: &mut dyn FactoryRng) -> Vec<ComponentBlob> {
+    fn factory_components(
+        &self,
+        template: &ItemTemplate,
+        rng: &mut dyn FactoryRng,
+    ) -> Vec<ComponentBlob> {
         self.codec().factory_components(template, rng)
     }
-    fn factory_entity(&self, template: &ItemTemplate, rng: &mut dyn FactoryRng) -> Option<pz_entity::Components> {
+    fn factory_entity(
+        &self,
+        template: &ItemTemplate,
+        rng: &mut dyn FactoryRng,
+    ) -> Option<pz_entity::Components> {
         self.codec().factory_entity(template, rng)
     }
     fn entity_context(&self) -> Option<&dyn pz_entity::EntityContext> {
@@ -117,7 +311,9 @@ fn item_names(sm: &pz_scripts::ScriptManager) -> std::collections::HashMap<Strin
         if !full.contains('.') {
             continue;
         }
-        let name = pz_lua_api::bind_text::with_translator_mut(|t| t.get_item_name_from_full_type(&full, |_| None));
+        let name = pz_lua_api::bind_text::with_translator_mut(|t| {
+            t.get_item_name_from_full_type(&full, |_| None)
+        });
         if let Some(n) = name.filter(|n| *n != full) {
             out.insert(full, n);
         }
@@ -152,8 +348,14 @@ pub fn script_items(dictionary: WorldDictionary, inputs: &RegistryInputs<'_>) ->
     }
     items.textures_loaded = true;
     items.rand = std::cell::RefCell::new(Some(Box::new(StandardFactoryRng)));
-    items.assets = pz_lua_api::bind_items::item_env().context().assets().cloned();
-    match pz_lua_api::bind_items::item_entity_context(&inputs.game_dir.join("projectzomboid.jar"), &sm) {
+    items.assets = pz_lua_api::bind_items::item_env()
+        .context()
+        .assets()
+        .cloned();
+    match pz_lua_api::bind_items::item_entity_context(
+        &inputs.game_dir.join("projectzomboid.jar"),
+        &sm,
+    ) {
         Ok(ctx) => items.components = Box::new(OwnedEntityCodec(ctx)),
         Err(e) => eprintln!("ERROR: item entity registries: {e}"),
     }
@@ -169,8 +371,11 @@ mod tests {
     fn temp_dir() -> std::path::PathBuf {
         static N: AtomicUsize = AtomicUsize::new(0);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        let d = std::env::temp_dir().join(format!("pz-engine-wd-{}-{n}-{nanos}", std::process::id()));
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let d =
+            std::env::temp_dir().join(format!("pz-engine-wd-{}-{n}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
     }
@@ -200,26 +405,109 @@ mod tests {
     fn loads_the_save_dictionary() {
         let d = temp_dir();
         std::fs::write(d.join("WorldDictionary.bin"), one_item()).unwrap();
-        let dict = init(&d, false, false).unwrap().unwrap();
+        let dict = init(&d, false, false, &pz_scripts::ScriptManager::new(), &[])
+            .unwrap()
+            .unwrap();
         assert_eq!(dict.item_type(1), Some("Base.Axe"));
+        assert!(dict.items[&1].removed);
+        assert_eq!(
+            WorldDictionary::load(&std::fs::read(d.join("WorldDictionary.bin")).unwrap())
+                .unwrap()
+                .item_id("Base.Axe"),
+            Some(1)
+        );
         std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
     fn missing_file_fails_a_loaded_game_only() {
         let d = temp_dir();
-        assert_eq!(init(&d, false, false).unwrap_err(), CANNOT_LOAD);
-        assert!(init(&d, false, true).unwrap().is_none());
+        let sm = pz_scripts::ScriptManager::new();
+        assert_eq!(init(&d, false, false, &sm, &[]).unwrap_err(), CANNOT_LOAD);
+        assert!(init(&d, false, true, &sm, &[]).unwrap().is_some());
+        assert!(d.join("WorldDictionary.bin").is_file());
         std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
-    fn no_save_reads_nothing() {
+    fn no_save_reads_and_writes_nothing_but_registers_in_memory() {
         let d = temp_dir();
-        std::fs::write(d.join("WorldDictionary.bin"), one_item()).unwrap();
-        assert!(init(&d, true, false).unwrap().is_none());
         std::fs::write(d.join("WorldDictionary.bin"), [0u8, 1]).unwrap();
-        assert_eq!(init(&d, false, false).unwrap_err(), CANNOT_LOAD);
+        let sm = fixture_scripts("item Pebble { Weight = 1, }");
+        let dict = init(&d, true, false, &sm, &["Fern".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(dict.item_id("Base.Pebble"), Some(0));
+        assert_eq!(dict.object_id("Fern"), Some(0));
+        assert_eq!(
+            std::fs::read(d.join("WorldDictionary.bin")).unwrap(),
+            [0u8, 1]
+        );
+        assert!(!d.join("WorldDictionary.tmp").exists());
+        assert_eq!(init(&d, false, false, &sm, &[]).unwrap_err(), CANNOT_LOAD);
+        std::fs::remove_file(d.join("WorldDictionary.bin")).unwrap();
+        init(&d, true, true, &sm, &[]).unwrap();
+        assert!(!d.join("WorldDictionary.bin").exists());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    fn fixture_scripts(body: &str) -> pz_scripts::ScriptManager {
+        use pz_scripts::script_type::{ScriptLoadMode, ScriptType};
+        let sm = pz_scripts::ScriptManager::new();
+        sm.parse_script(ScriptLoadMode::Init, &format!("module Base {{ {body} }}"))
+            .unwrap();
+        let module = sm.get_module("Base").unwrap();
+        for t in [ScriptType::Item, ScriptType::Entity] {
+            module.bucket(t).load_scripts(&sm, ScriptLoadMode::Init);
+        }
+        sm
+    }
+
+    #[test]
+    fn new_game_dictionary_reloads_with_same_script_ids_and_appends_new_definitions() {
+        let d = temp_dir();
+        let sm = fixture_scripts(
+            "item Pebble { Weight = 1, } item Retired { Obsolete = true, } entity Bench { }",
+        );
+        let initial = init(&d, false, true, &sm, &["Fern".into()])
+            .unwrap()
+            .unwrap();
+        let pebble = initial.item_id("Base.Pebble").unwrap();
+        let bench = initial.entity_id("Base.Bench").unwrap();
+        assert_eq!(pebble, 0);
+        assert_eq!(bench, 1);
+        assert_eq!(initial.item_id("Base.Retired"), None);
+        let item = pz_scripts::objects::items::get_all_items(&sm)
+            .pop()
+            .unwrap();
+        assert_eq!(item.borrow().entity.registry_id(), pebble);
+
+        let reload_sm = fixture_scripts(
+            "item Pebble { Weight = 2, } item Cord { Weight = 1, } entity Bench { }",
+        );
+        let loaded = init(
+            &d,
+            false,
+            false,
+            &reload_sm,
+            &["Fern".into(), "Shrub".into()],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(loaded.item_id("Base.Pebble"), Some(pebble));
+        assert_eq!(loaded.entity_id("Base.Bench"), Some(bench));
+        assert_eq!(loaded.item_id("Base.Cord"), Some(2));
+        assert_eq!(loaded.object_id("Fern"), Some(0));
+        assert_eq!(loaded.object_id("Shrub"), Some(1));
+        assert_eq!(loaded.next_info_id, 3);
+        // Reopening with the same in-process script manager must keep the
+        // existing registry assignments, including id 0.
+        init(&d, false, false, &reload_sm, &[]).unwrap();
+        let disk =
+            WorldDictionary::load(&std::fs::read(d.join("WorldDictionary.bin")).unwrap()).unwrap();
+        assert_eq!(disk.items, loaded.items);
+        assert_eq!(disk.entities, loaded.entities);
+        assert!(!d.join("WorldDictionary.tmp").exists());
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

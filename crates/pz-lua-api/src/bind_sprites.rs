@@ -28,18 +28,33 @@ pub fn install_sprite_manager(m: Option<Rc<RefCell<IsoSpriteManager>>>) {
     SPRITES.with(|s| *s.borrow_mut() = m);
 }
 
-fn manager() -> LuaResult<Rc<RefCell<IsoSpriteManager>>> {
+pub(crate) fn manager() -> LuaResult<Rc<RefCell<IsoSpriteManager>>> {
     SPRITES
         .with(|s| s.borrow().clone())
         .ok_or_else(|| LuaError::runtime("IsoSpriteManager: tile definitions are not loaded"))
 }
 
 fn with_manager<R>(f: impl FnOnce(&mut IsoSpriteManager) -> LuaResult<R>) -> LuaResult<R> {
+    let _collection_deferral = pz_kahlua::gc::defer_collection();
     let m = manager()?;
     let mut m = m
         .try_borrow_mut()
         .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
     f(&mut m)
+}
+
+/// `IsoSpriteManager.instance.getSprite(name).getProperties().get(key)`
+/// (adding a sprite for an unknown name, as `getSprite` does); `None` while
+/// no manager is installed.
+pub fn sprite_property(name: &str, key: &str) -> Option<Option<String>> {
+    let _collection_deferral = pz_kahlua::gc::defer_collection();
+    let m = SPRITES.with(|s| s.borrow().clone())?;
+    let mut m = m.try_borrow_mut().ok()?;
+    let i = match m.named_map.get(name) {
+        Some(&i) => i,
+        None => m.add_sprite_named(name),
+    };
+    Some(m.sprites[i].properties.get(&m.alias, key).map(str::to_string))
 }
 
 struct ManagerObj;

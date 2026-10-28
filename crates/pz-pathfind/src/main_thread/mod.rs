@@ -33,9 +33,8 @@ pub mod line_clear_collide;
 pub mod los;
 pub mod square;
 
-use pz_world::chunk::IsoGridSquare;
 use pz_world::square::{SquareHooks, VisionEnv};
-use pz_world::{GetSquare, IsoSpriteManager, ObjectHooks};
+use pz_world::{GetSquare, IsoSpriteManager, ObjectHooks, SquareRef};
 
 use crate::game_vehicle::VehicleSource;
 use crate::square_bits::SquareBits;
@@ -71,7 +70,7 @@ impl<'w, 'a: 'w, G: GetSquare + 'a> MainThreadMap<'w, 'a, G> {
 
     /// `IsoCell.getGridSquare(x, y, z)`.
     #[inline]
-    pub fn square(&self, x: i32, y: i32, z: i32) -> Option<&'a IsoGridSquare> {
+    pub fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         self.bits.squares.get_grid_square(x, y, z)
     }
 

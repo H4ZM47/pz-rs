@@ -219,6 +219,16 @@ pub fn with_styles<R>(thread: &Thread, f: impl FnOnce(&PopulationStyles<'_>) -> 
 /// `SandboxOptions.noBlackClothes` is its default (the menu has no game
 /// sandbox). `None` without outfits or clothing assets (nothing to dress).
 pub fn with_dress_context<R>(thread: &Thread, f: impl FnOnce(&DressContext<'_>) -> R) -> Option<R> {
+    with_dress_context_options(thread, true, f)
+}
+
+/// The same live dressing owners with the current world's sandbox value.
+/// Callers must release world and sprite guards before entering this context.
+pub fn with_dress_context_options<R>(
+    thread: &Thread,
+    no_black_clothes: bool,
+    f: impl FnOnce(&DressContext<'_>) -> R,
+) -> Option<R> {
     let colors = hair_common_colors();
     let pop = shared_population();
     check_dirty(thread, &mut pop.borrow_mut());
@@ -233,7 +243,7 @@ pub fn with_dress_context<R>(thread: &Thread, f: impl FnOnce(&DressContext<'_>) 
         population: &p,
         hair_common_colors: &colors,
         world_age_days: world_age_days(),
-        no_black_clothes: true,
+        no_black_clothes,
     };
     Some(f(&DressContext { outfit: &outfit, outfits, clothing: &assets.clothing_items, scripts: &sm, group: &group }))
 }

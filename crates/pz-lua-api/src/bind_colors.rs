@@ -274,7 +274,7 @@ pub(crate) fn named_color(name: &str) -> Option<Rc<Color>> {
 }
 
 fn color_value(c: &Rc<Color>) -> Value {
-    Value::Object(c.clone())
+    crate::bind_fluid_container::existing_color_value(c)
 }
 
 fn opt_color(c: Option<Rc<Color>>) -> Value {

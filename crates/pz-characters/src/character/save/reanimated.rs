@@ -39,7 +39,7 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             can_walk,
             fake_dead,
             can_crawl_under_vehicle: self.zombie.can_crawl_under_vehicle,
-            reanimated_for_grapple_only: self.zombie.reanimated_for_grapple_only,
+            reanimated_for_grapple_only: self.zombie.is_reanimated_for_grapple_only(),
         })
     }
 
@@ -136,7 +136,7 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             if state.is_initialized() {
                 self.zombie.can_crawl_under_vehicle = state.is_can_crawl_under_vehicle();
             }
-            self.zombie.reanimated_for_grapple_only = state.is_reanimated_for_grapple_only();
+            self.zombie.set_reanimated_for_grapple_only(state.is_reanimated_for_grapple_only());
         }
         self.load_worn_items(sm, chars, r)?;
         self.set_state_machine_locked(false);

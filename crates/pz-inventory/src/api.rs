@@ -538,6 +538,16 @@ impl InventoryItem {
 }
 
 impl FoodData {
+    /// Inherited InventoryItem.setCooked: publish the cooked field first,
+    /// then raise cookingTime only for an ordered, strict comparison with
+    /// this instance's current minutesToCook. NaN and signed-zero ties skip.
+    pub fn set_cooked(&mut self, cooked: bool) {
+        self.cooked = cooked;
+        if cooked && self.cooking_time < self.minutes_to_cook {
+            self.cooking_time = self.minutes_to_cook;
+        }
+    }
+
     /// Port of `Food.multiplyFoodValues`.
     pub fn multiply_food_values(&mut self, p: f32) {
         self.boredom_change *= p;

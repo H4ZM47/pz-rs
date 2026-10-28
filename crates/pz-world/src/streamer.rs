@@ -56,9 +56,10 @@
 //!
 //! `chunkStore` is a pool of `IsoChunk` objects the original reuses to save
 //! allocations. Rust chunks are plain values, so the places that return a
-//! chunk to the store (cancelled jobs, discarded chunks, the three extra
-//! chunks of `LoadBrandNew`, saved chunks) drop it, and report it as a
-//! [`StreamEvent`] where it matters.
+//! chunk to the store retire its owned payload until the caller releases
+//! its enclosing world/sprite borrows. The caller drains
+//! [`ChunkStreamer::take_retired_chunks`] at that boundary. Stream events
+//! retain their original order; external item handles remain valid owners.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -71,7 +72,8 @@ use crate::java::{fastfloor, GameRand};
 use crate::meta_grid::IsoMetaGrid;
 use crate::objects::{ObjectLoadHooks, ObjectLoadSettings, ObjectTables};
 use crate::save::chunk_file::{
-    chunk_path, finish_chunk_load, load_chunk, save_chunk, ChunkLoadHook,
+    chunk_path, finish_chunk_erosion, finish_chunk_load, load_chunk, prepare_chunk_load,
+    save_chunk, ChunkActivationCursor, ChunkActivationError, ChunkLoadHook,
 };
 use crate::save::items::ItemRegistry;
 use crate::save::vehicles_db;
@@ -419,11 +421,22 @@ pub struct ChunkStreamer {
     job_list: Vec<ChunkId>,
     /// `IsoChunk.loadGridSquare`: served chunks waiting for the main thread.
     load_grid_square: VecDeque<(ChunkId, IsoChunk)>,
+    /// Opt-in host coordinator: preparation stays in the cell, while the
+    /// engine performs activation/observers outside world and sprite guards.
+    deferred_world_activation: bool,
+    pending_world_activation: VecDeque<ChunkActivationCursor>,
+    deferred_activation_in_flight: bool,
+    /// A grant from processAll (MAX) or one map-update's original cap. The
+    /// guard-free engine coordinator resumes this grant, not a fresh batch.
+    deferred_handoff_budget: Option<usize>,
     /// `ChunkSaveWorker.toSaveQueue`.
     save_queue: VecDeque<QueuedSave>,
     /// `VehiclesDB2.worldStreamer.queue`: the rows `removeFromWorld` queued
     /// (`QueueUpdateVehicle`).
     vehicle_queue: VecDeque<crate::save::vehicle::VehicleRow>,
+    /// Chunks returned to the store. Rich floor-item owners may run host
+    /// destructors, so callers drop these only outside enclosing borrows.
+    retired_chunks: Vec<IsoChunk>,
     events: Vec<StreamEvent>,
 }
 
@@ -443,10 +456,85 @@ impl ChunkStreamer {
             job_queue: VecDeque::new(),
             job_list: Vec::new(),
             load_grid_square: VecDeque::new(),
+            deferred_world_activation: false,
+            pending_world_activation: VecDeque::new(),
+            deferred_activation_in_flight: false,
+            deferred_handoff_budget: None,
             save_queue: VecDeque::new(),
             vehicle_queue: VecDeque::new(),
+            retired_chunks: Vec::new(),
             events: Vec::new(),
         }
+    }
+
+    /// Enable before loading a world. Ordinary callers retain the historical
+    /// erosion-only finish path unless their host supplies the coordinator.
+    pub fn set_deferred_world_activation(&mut self, enabled: bool) {
+        self.deferred_world_activation = enabled;
+    }
+
+    pub fn pop_pending_world_activation(&mut self) -> Option<ChunkActivationCursor> {
+        self.pending_world_activation.pop_front()
+    }
+
+    pub fn pending_world_activations(&self) -> usize {
+        self.pending_world_activation.len()
+    }
+
+    /// Publish completion only after the engine has activated every reached
+    /// object and run each square's erosion/observers. The cursor remains
+    /// owned by the engine on errors, so no retained receiver drops here.
+    pub fn finish_deferred_world_activation(
+        &mut self,
+        cursor: &mut ChunkActivationCursor,
+        cell: &mut IsoCell,
+        ctx: &mut StreamCtx<'_>,
+    ) -> Result<(), ChunkActivationError> {
+        cursor.check_unpublished_complete()?;
+        finish_chunk_erosion(
+            cell,
+            cursor.wx,
+            cursor.wy,
+            ctx.sprites,
+            chunk_hook(&mut ctx.chunk_hook),
+        )?;
+        self.publish_hand_off(cursor.wx, cursor.wy, ctx);
+        cursor.mark_published();
+        self.deferred_activation_in_flight = false;
+        Ok(())
+    }
+
+    /// Resume at most one prepared handoff from the already granted native
+    /// batch. A queued or engine-owned cursor must finish before another
+    /// chunk's preparation, preserving cross-chunk activation ordering.
+    pub fn process_next_pending_load_grid_square(
+        &mut self,
+        cell: &mut IsoCell,
+        ctx: &mut StreamCtx<'_>,
+    ) -> bool {
+        if !self.deferred_world_activation || self.deferred_activation_in_flight {
+            return false;
+        }
+        let Some(mut remaining) = self.deferred_handoff_budget else {
+            return false;
+        };
+        while remaining != 0 {
+            let Some((id, chunk)) = self.load_grid_square.pop_front() else {
+                break;
+            };
+            if remaining != usize::MAX {
+                remaining -= 1;
+            }
+            self.deferred_handoff_budget = Some(remaining);
+            if self.hand_off(id, chunk, cell, ctx) {
+                return true;
+            }
+        }
+        self.deferred_handoff_budget = None;
+        for player in 0..self.maps.len() {
+            self.calculate_z_extents(player, cell);
+        }
+        false
     }
 
     /// The number of chunk maps (`IsoPlayer.numPlayers` at creation).
@@ -465,6 +553,14 @@ impl ChunkStreamer {
     /// The events since the last call.
     pub fn take_events(&mut self) -> Vec<StreamEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    /// Transfer retired ownership without dropping it. Drain after releasing
+    /// both the cell/world and sprite-manager guards. If a callback panics,
+    /// already-retired chunks remain here for the next safe boundary (or
+    /// the streamer's own destruction outside those guards).
+    pub fn take_retired_chunks(&mut self) -> Vec<IsoChunk> {
+        std::mem::take(&mut self.retired_chunks)
     }
 
     /// `getChunk(x, y)` of a player's grid: the coordinates of the chunk in
@@ -634,8 +730,18 @@ impl ChunkStreamer {
         }
         self.events
             .push(StreamEvent::Unloaded { wx: r.wx, wy: r.wy });
-        if let Some(mut chunk) = cell.unload_chunk(r.wx, r.wy, chunk_hook(&mut ctx.chunk_hook)) {
-            self.vehicles_to_meta(&mut chunk, ctx);
+        if let Some(chunk) = cell.chunks.remove(&(r.wx, r.wy)) {
+            // Pin privately before callbacks, but publish a pending save
+            // only after the original unload/vehicle phases succeed. On an
+            // unwind the payload remains retired rather than partly saved.
+            self.retired_chunks.push(chunk);
+            let chunk = self
+                .retired_chunks
+                .last_mut()
+                .expect("unloading chunk pinned");
+            Self::finish_unload(chunk, ctx);
+            Self::vehicles_to_meta(&mut self.vehicle_queue, &mut self.events, chunk, ctx);
+            let chunk = self.retired_chunks.pop().expect("unloading chunk pinned");
             self.save_queue.push_back(QueuedSave {
                 wx: r.wx,
                 wy: r.wy,
@@ -925,15 +1031,25 @@ impl ChunkStreamer {
 
     /// `WriteQueuedSave` → `IsoChunk.Save(false)`.
     fn write_queued_save(&mut self, q: QueuedSave, ctx: &mut StreamCtx<'_>) {
-        self.save_chunk_file(q.wx, q.wy, &q.chunk, ctx);
+        // Pin before serializing: error/no-save paths and a panicking save
+        // hook must not drop the final item owner under the caller's guards.
+        self.retired_chunks.push(q.chunk);
+        let chunk = self.retired_chunks.last().expect("queued chunk retired");
+        Self::save_chunk_file(&mut self.events, q.wx, q.wy, chunk, ctx);
     }
 
     /// `IsoChunk.Save(bPreventChunkReuse)` (not a hot save): the chunk's
     /// bytes, then `VehiclesDB2.unloadChunk` (inside `Save(ByteBuffer)`,
     /// after the erosion data), then `SafeWrite`. Nothing with saving off.
-    fn save_chunk_file(&mut self, wx: i32, wy: i32, chunk: &IsoChunk, ctx: &mut StreamCtx<'_>) {
+    fn save_chunk_file(
+        events: &mut Vec<StreamEvent>,
+        wx: i32,
+        wy: i32,
+        chunk: &IsoChunk,
+        ctx: &mut StreamCtx<'_>,
+    ) {
         if ctx.no_save {
-            self.events.push(StreamEvent::Saved {
+            events.push(StreamEvent::Saved {
                 wx,
                 wy,
                 written: false,
@@ -956,7 +1072,7 @@ impl ChunkStreamer {
                 };
                 let saver = ctx.vehicle_saver.unwrap_or(&default_saver);
                 let r = vehicles_db::unload_chunk(Some(conn), chunk, &save_ctx, saver);
-                self.events.push(StreamEvent::VehiclesUnloaded {
+                events.push(StreamEvent::VehiclesUnloaded {
                     wx,
                     wy,
                     saved: r.saved,
@@ -971,7 +1087,7 @@ impl ChunkStreamer {
             }
             std::fs::write(&path, bytes).map_err(|e| e.to_string())
         });
-        self.events.push(match result {
+        events.push(match result {
             Ok(()) => StreamEvent::Saved {
                 wx,
                 wy,
@@ -1017,17 +1133,19 @@ impl ChunkStreamer {
                     tables: ctx.object_tables,
                     settings: ctx.object_settings,
                     hooks: ctx.object_hooks,
+                    blood_body_parts: ctx.save_tables.blood_body_parts,
                 };
                 // The other three chunks of the 2x2 block go back to the
                 // chunk store.
-                load_brand_new(
+                let (chunk, others) = load_brand_new(
                     ctx.meta,
                     wx,
                     wy,
                     &mut env,
                     brand_new_hook(&mut ctx.brand_new),
-                )
-                .0
+                );
+                self.retired_chunks.extend(others);
+                chunk
             }
         };
         self.events.push(StreamEvent::Served { wx, wy, source });
@@ -1091,18 +1209,34 @@ impl ChunkStreamer {
         if !loaded {
             self.records.remove(&id);
             self.events.push(StreamEvent::Discarded { wx, wy });
+            self.retired_chunks.push(chunk);
             return false;
         }
-        debug_assert!(!cell.chunks.contains_key(&(wx, wy)));
-        cell.chunks.insert((wx, wy), chunk);
-        finish_chunk_load(
-            cell,
-            wx,
-            wy,
-            ctx.meta,
-            ctx.sprites,
-            chunk_hook(&mut ctx.chunk_hook),
-        );
+        // Preserve release-build replacement behavior without destroying an
+        // old rich payload beneath the enclosing world/sprite guards.
+        if let Some(replaced) = cell.chunks.insert((wx, wy), chunk) {
+            self.retired_chunks.push(replaced);
+        }
+        if self.deferred_world_activation {
+            if let Some(cursor) = prepare_chunk_load(cell, wx, wy, ctx.meta, ctx.sprites) {
+                self.pending_world_activation.push_back(cursor);
+                self.deferred_activation_in_flight = true;
+            }
+        } else {
+            finish_chunk_load(
+                cell,
+                wx,
+                wy,
+                ctx.meta,
+                ctx.sprites,
+                chunk_hook(&mut ctx.chunk_hook),
+            );
+            self.publish_hand_off(wx, wy, ctx);
+        }
+        true
+    }
+
+    fn publish_hand_off(&mut self, wx: i32, wy: i32, ctx: &mut StreamCtx<'_>) {
         self.events.push(StreamEvent::HandedOff { wx, wy });
         // `doLoadGridsquare`, after `loadInMainThread`:
         // `metaCell.checkAnimalZonesGenerated(wx, wy)`.
@@ -1110,13 +1244,23 @@ impl ChunkStreamer {
         if ctx.meta.check_animal_zones_generated(cx, cy) {
             self.events.push(StreamEvent::GenAnimalsPath { wx, wy });
         }
-        true
     }
 
     /// `IsoChunkMap.update()` (`updateInternal`) for one player: hand off
     /// up to `1 + n * 3 / chunkGridWidth` of the `n` served chunks.
     /// (`IsoChunk.update`, hot saves and vehicles are not ported.)
     pub fn chunk_map_update(&mut self, m: usize, cell: &mut IsoCell, ctx: &mut StreamCtx<'_>) {
+        if self.deferred_world_activation {
+            if self.deferred_activation_in_flight || self.deferred_handoff_budget.is_some() {
+                return;
+            }
+            let count = self.load_grid_square.len();
+            if count != 0 {
+                self.deferred_handoff_budget = Some(1 + count * 3 / self.width as usize);
+                self.process_next_pending_load_grid_square(cell, ctx);
+            }
+            return;
+        }
         let mut changed = false;
         let mut count = self.load_grid_square.len() as i32;
         if count != 0 {
@@ -1140,6 +1284,13 @@ impl ChunkStreamer {
     /// `IsoChunkMap.processAllLoadGridSquare()`: hand off every served
     /// chunk.
     pub fn process_all_load_grid_square(&mut self, cell: &mut IsoCell, ctx: &mut StreamCtx<'_>) {
+        if self.deferred_world_activation {
+            if !self.deferred_activation_in_flight && self.deferred_handoff_budget.is_none() {
+                self.deferred_handoff_budget = Some(usize::MAX);
+                self.process_next_pending_load_grid_square(cell, ctx);
+            }
+            return;
+        }
         while let Some((id, chunk)) = self.load_grid_square.pop_front() {
             self.hand_off(id, chunk, cell, ctx);
         }
@@ -1239,7 +1390,7 @@ impl ChunkStreamer {
                     };
                     let (wx, wy) = (self.records[&id].wx, self.records[&id].wy);
                     if let Some(chunk) = cell.chunks.get(&(wx, wy)) {
-                        self.save_chunk_file(wx, wy, chunk, ctx);
+                        Self::save_chunk_file(&mut self.events, wx, wy, chunk, ctx);
                     }
                 }
             }
@@ -1276,19 +1427,38 @@ impl ChunkStreamer {
                 let r = self.records.remove(&id).expect("chunk record");
                 self.events
                     .push(StreamEvent::Removed { wx: r.wx, wy: r.wy });
-                if let Some(mut chunk) =
-                    cell.unload_chunk(r.wx, r.wy, chunk_hook(&mut ctx.chunk_hook))
-                {
-                    self.vehicles_to_meta(&mut chunk, ctx);
+                if let Some(chunk) = cell.chunks.remove(&(r.wx, r.wy)) {
+                    self.retired_chunks.push(chunk);
+                    let chunk = self
+                        .retired_chunks
+                        .last_mut()
+                        .expect("removed chunk retired");
+                    Self::finish_unload(chunk, ctx);
+                    Self::vehicles_to_meta(&mut self.vehicle_queue, &mut self.events, chunk, ctx);
                 }
             }
         }
     }
 
+    /// The notification/collision tail of `IsoCell::unload_chunk`, after
+    /// its removed owner has been pinned in the private retirement sink.
+    /// Keep notification before collision removal and vehicle work.
+    fn finish_unload(chunk: &mut IsoChunk, ctx: &mut StreamCtx<'_>) {
+        if let Some(hook) = ctx.chunk_hook.as_deref_mut() {
+            hook.chunk_unloaded(chunk.wx, chunk.wy);
+        }
+        chunk.collision.clear();
+    }
+
     /// The vehicle part of `IsoChunk.removeFromWorld`
     /// ([`vehicles_db::remove_vehicles_to_meta`]) with this context's saver
     /// and meta hook; the rows join the streamer's vehicle queue.
-    fn vehicles_to_meta(&mut self, chunk: &mut IsoChunk, ctx: &mut StreamCtx<'_>) {
+    fn vehicles_to_meta(
+        vehicle_queue: &mut VecDeque<crate::save::vehicle::VehicleRow>,
+        events: &mut Vec<StreamEvent>,
+        chunk: &mut IsoChunk,
+        ctx: &mut StreamCtx<'_>,
+    ) {
         if chunk.vehicles.is_empty() {
             return;
         }
@@ -1318,8 +1488,8 @@ impl ChunkStreamer {
         if r.to_meta.is_empty() && r.errors.is_empty() {
             return;
         }
-        self.vehicle_queue.extend(r.queued);
-        self.events.push(StreamEvent::VehiclesToMeta {
+        vehicle_queue.extend(r.queued);
+        events.push(StreamEvent::VehiclesToMeta {
             wx: chunk.wx,
             wy: chunk.wy,
             ids: r.to_meta,
@@ -1429,5 +1599,7 @@ fn backup_blam(save_dir: &Path, wx: i32, wy: i32, error: &str) {
     }
 }
 
+#[cfg(test)]
+mod activation_tests;
 #[cfg(test)]
 mod tests;

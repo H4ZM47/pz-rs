@@ -14,6 +14,35 @@ use pz_ui::{with_ui, TextAlign, UiDrawCmd};
 use std::cell::Cell;
 use std::rc::Weak;
 
+#[test]
+fn session_reset_discards_pending_chat_values_and_old_event_sink() {
+    let payload_owner = Rc::new(());
+    let payload_weak = Rc::downgrade(&payload_owner);
+    let payload = Value::Native(pz_kahlua::NativeFunction::new("old-chat-payload", move |_| {
+        let _keep_alive = payload_owner.clone();
+        Ok(0)
+    }));
+    trigger_event("OnOldChatEvent", vec![payload]);
+    let sink_owner = Rc::new(());
+    let sink_weak = Rc::downgrade(&sink_owner);
+    install_event_sink(Rc::new(move |_, _, _| {
+        let _keep_alive = sink_owner.clone();
+    }));
+    crate::session_reset::reset_session_bindings();
+    assert!(payload_weak.upgrade().is_none(), "reset retained an old Lua event payload");
+    assert!(sink_weak.upgrade().is_none(), "reset retained the old event sink");
+
+    let received = Rc::new(RefCell::new(Vec::new()));
+    let events = received.clone();
+    install_event_sink(Rc::new(move |_, name, _| events.borrow_mut().push(name.to_string())));
+    let mut thread = Thread::new(TableRef::new());
+    fire_pending_events(&mut thread);
+    assert!(received.borrow().is_empty(), "fresh Lua received a retired session's chat event");
+    trigger_event("OnFreshChatEvent", vec![]);
+    fire_pending_events(&mut thread);
+    assert_eq!(*received.borrow(), ["OnFreshChatEvent"]);
+}
+
 /// A local player: speaker (`ChatElementOwner`) and listener.
 struct TestPlayer {
     num: usize,

@@ -81,11 +81,13 @@ fn main() {
     // Load and recalculate the chunks (x outer, y inner, like
     // `checkNewlyOnScreenChunks`).
     let fix2x = Fix2xTable::default();
+    let blood_body_parts = pz_world::save::SaveTables::from_game_jar(&game.join("projectzomboid.jar")).expect("visual body tables").blood_body_parts;
     let mut cell = IsoCell::default();
     let mut order = Vec::new();
     for wx in wx0..wx0 + n {
         for wy in wy0..wy0 + n {
             let mut env = ChunkLoadEnv {
+                blood_body_parts: blood_body_parts,
                 sprites: &mut sprites,
                 fix2x: &fix2x,
                 rand: &mut Zero,
@@ -117,8 +119,8 @@ fn main() {
     let hooks = NoWorldHooks;
     let mut lighting = WorldLighting::new();
     for &(wx, wy) in &order {
-        world.build_chunk(&view, wx, wy, &mut cache, &mut tex);
-        lighting.sync_chunk(&view, wx, wy, &hooks);
+        world.build_chunk(&view, wx, wy, &mut cache, &mut tex).expect("world render requires supported sprite bodies");
+        lighting.sync_chunk(&view, wx, wy, &hooks).expect("world lighting requires unborrowed sprite bodies");
     }
 
     if !unlit {

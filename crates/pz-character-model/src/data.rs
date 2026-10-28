@@ -128,6 +128,28 @@ impl ResolvedItemVisual {
     /// the original does) with its clothing item; `None` without a ready
     /// clothing item. The body location is the caller's (the script
     /// item's, as an `ItemBodyLocation` key).
+    pub fn try_from_item(
+        item: &mut pz_inventory::InventoryItem,
+        assets: &pz_inventory::ItemAssets,
+        owner: &dyn pz_inventory::ItemOwner,
+        rng: &dyn pz_inventory::visual::VisualRng,
+        body_location: Option<BodyLocationKey>,
+    ) -> pz_inventory::ModDataResult<Option<Self>> {
+        let Some(c) = item.try_get_clothing_item(Some(assets), owner)? else {
+            return Ok(None);
+        };
+        let c = Rc::new(c.clone());
+        let Some(visual) = item.try_get_visual(Some(assets), owner, rng)? else {
+            return Ok(None);
+        };
+        let visual = visual.clone();
+        Ok(Some(ResolvedItemVisual {
+            visual,
+            clothing_item: Some(c),
+            body_location,
+        }))
+    }
+
     pub fn from_item(
         item: &mut pz_inventory::InventoryItem,
         assets: &pz_inventory::ItemAssets,
@@ -135,13 +157,8 @@ impl ResolvedItemVisual {
         rng: &dyn pz_inventory::visual::VisualRng,
         body_location: Option<BodyLocationKey>,
     ) -> Option<Self> {
-        let c = Rc::new(item.get_clothing_item(Some(assets), owner)?.clone());
-        let visual = item.get_visual(Some(assets), owner, rng)?.clone();
-        Some(ResolvedItemVisual {
-            visual,
-            clothing_item: Some(c),
-            body_location,
-        })
+        Self::try_from_item(item, assets, owner, rng, body_location)
+            .expect("unborrowed visual ModData")
     }
 
     fn byte(&self, arr: usize, part: usize) -> f32 {

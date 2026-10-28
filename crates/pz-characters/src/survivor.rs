@@ -565,12 +565,6 @@ pub fn java_float_string(f: f32) -> String {
 mod tests {
     use super::*;
 
-    impl ItemIdentity for () {
-        fn same(&self, _: &Self) -> bool {
-            true
-        }
-    }
-
     #[test]
     fn create_and_name() {
         let sm = ScriptManager::new();

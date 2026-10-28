@@ -9,16 +9,18 @@
 
 use std::rc::Rc;
 
-use crate::component::ComponentBlob;
 use crate::container::ItemContainer;
 use crate::device::DeviceData;
 use crate::env::ItemEnv;
-use crate::io::{err, has, read_header, BitHeaderWrite, Reader, SaveError, SaveResult, Writer};
-use crate::lua_table::{present, LuaKey, LuaTable, LuaValue};
-use crate::shared::{ContainerRef, SharedContainer};
+use crate::io::{has, read_header, BitHeaderWrite, Reader, SaveError, SaveResult, Writer};
+use crate::item_components::ItemComponents;
+use crate::moddata::{ItemModData, ModDataResult};
+use crate::shared::SharedContainer;
 use crate::template::{ItemClass, ItemTemplate};
 use crate::visual::ItemVisual;
+use pz_kahlua::Value;
 use pz_scripts::objects::items::ModelWeaponPart;
+use pz_scripts::registry::RegistryKey;
 
 /// `Color` (`col`): the item's custom colour.
 pub type Rgba = [f32; 4];
@@ -229,6 +231,10 @@ pub struct FoodData {
     pub heat: f32,
     pub last_cook_minute: i32,
     pub cooking_time: f32,
+    /// Actual inherited InventoryItem.minutesToCook. Constructors set 60;
+    /// InstanceItem copies its current script argument at PC632. Not saved;
+    /// loading preserves this receiver's value.
+    pub minutes_to_cook: f32,
     pub cooked: bool,
     pub burnt: bool,
     pub is_cookable: bool,
@@ -236,14 +242,24 @@ pub struct FoodData {
     pub poison_detection_level: i32,
     pub spices: Option<Vec<String>>,
     pub poison_power: i32,
+    /// Runtime Food fields: recipe level is distinct from detection, and
+    /// neither it nor herbalistType is serialized by Food.save/load.
+    pub poison_level_for_recipe: i32,
+    pub herbalist_type: Option<String>,
     pub chef: Option<String>,
     pub off_age: i32,
     pub off_age_max: i32,
+    /// Actual mutable Food.replaceOnRotten, copied by InstanceItem PC813.
+    /// Food.save/load omit it; load preserves the receiver's current value.
+    pub replace_on_rotten: Option<String>,
     pub pain_reduction: f32,
     pub flu_reduction: i32,
     pub food_sickness_change: i32,
     pub poison: bool,
     pub use_for_poison: i32,
+    /// `Food.canBeFrozen` (runtime only; native constructors set true).
+    /// Loading food fields leaves the existing value unchanged.
+    pub can_be_frozen: bool,
     pub freezing_time: f32,
     pub frozen: bool,
     pub last_frozen_update: f32,
@@ -306,6 +322,11 @@ pub struct WeaponData {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiteratureData {
     pub number_of_pages: i32,
+    /// Actual Literature fields copied by InstanceItem; not part of its wire body.
+    pub lvl_skill_trained: i32,
+    pub num_levels_trained: i32,
+    pub skill_trained: Option<String>,
+    pub page_to_write: i32,
     pub already_read_pages: i32,
     pub can_be_write: bool,
     /// `customPages` values in key order `1..=n` (`HashMap` order for
@@ -351,25 +372,36 @@ pub struct MoveableData {
 /// shared object, see [`crate::shared::new_item`]).
 #[derive(Debug)]
 pub struct ContainerData {
+    /// Actual InventoryContainer.capacity; distinct from current child capacity.
+    pub capacity: i32,
     pub weight_reduction: i32,
-    pub container: ContainerRef,
+    pub container: crate::shared::ContainerField,
 }
 
 impl Clone for ContainerData {
     /// A copy of the bag holds a copy of its contents.
     fn clone(&self) -> Self {
         ContainerData {
+            capacity: self.capacity,
             weight_reduction: self.weight_reduction,
-            container: self.container.borrow().deep_clone(),
+            container: self
+                .container
+                .slot()
+                .map(|c| c.borrow().deep_clone().into())
+                .unwrap_or_default(),
         }
     }
 }
 
 impl PartialEq for ContainerData {
     fn eq(&self, o: &Self) -> bool {
-        self.weight_reduction == o.weight_reduction
-            && (Rc::ptr_eq(&self.container, &o.container)
-                || *self.container.borrow() == *o.container.borrow())
+        self.capacity == o.capacity
+            && self.weight_reduction == o.weight_reduction
+            && match (self.container.slot(), o.container.slot()) {
+                (Some(a), Some(b)) => Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow(),
+                (None, None) => true,
+                _ => false,
+            }
     }
 }
 
@@ -405,7 +437,20 @@ pub enum ItemKind {
 /// `InventoryItem` state that saving and loading touch.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InventoryItem {
+    /// Actual `worldItem` reference. Runtime identity is deliberately excluded
+    /// from Rust archive copies/equality; native item load preserves this slot.
+    pub(crate) world_item: crate::world_item::WorldItemSlot,
+    pub(crate) container: crate::shared::ItemContainerSlot,
     pub template: Rc<ItemTemplate>,
+    /// `itemType`: a per-instance reference, independent of later script
+    /// changes. `isItemType` compares the canonical object by identity.
+    pub item_type: Option<Rc<pz_scripts::registry::RegistryKey>>,
+    /// `InventoryContainer`/`Radio.canBeEquipped`: the actual registry key
+    /// copied by `Item.InstanceItem` before initialiseItem, not saved. Base
+    /// InventoryItem and all other subclasses return null from the getter.
+    equipped_location: Option<Rc<RegistryKey>>,
+    /// The public `mainCategory` override, null by default and not saved.
+    pub main_category: Option<String>,
     /// `getRegistry_id()`.
     pub registry_id: i16,
     /// `type` (a `Moveable` takes its world sprite name).
@@ -414,11 +459,13 @@ pub struct InventoryItem {
     pub uses: i32,
     pub condition: i32,
     pub condition_max: i32,
+    /// Actual independent `InventoryItem.broken`; Java defaults false. Not saved.
+    pub broken: bool,
     pub visual: Option<ItemVisual>,
     pub custom_color: bool,
     pub col: Rgba,
     pub item_capacity: f32,
-    pub table: Option<LuaTable>,
+    pub table: Option<ItemModData>,
     pub activated: bool,
     pub have_been_repaired: i32,
     pub name: String,
@@ -438,6 +485,12 @@ pub struct InventoryItem {
     pub color_blue: f32,
     pub worker: Option<String>,
     pub wet_cooldown: f32,
+    /// Base InventoryItem.itemHeat, initially 1 and preserved by item load.
+    /// Distinct from both Food.heat and DrainableComboItem.heat.
+    pub item_heat: f32,
+    /// Actual DrainableComboItem.heat; absent for every other native class.
+    /// Constructors initialize 1; inherited item save/load omit this field.
+    pub drainable_heat: Option<f32>,
     pub favorite: bool,
     pub stash_map: Option<String>,
     pub zombie_infected: bool,
@@ -449,18 +502,11 @@ pub struct InventoryItem {
     pub recorded_media_index: i16,
     pub world_scale: f32,
     pub is_initialised: bool,
-    /// ECS components in entity order (see [`crate::component`]), as
-    /// saved.
-    pub components: Vec<ComponentBlob>,
-    /// The decoded components of a newly made item (or one changed through
-    /// [`set_components`](InventoryItem::set_components)), kept beside the
-    /// blobs: in memory the original keeps values the save rounds (fluid
-    /// colours are saved as bytes). `None` after a load, whose blobs decode
-    /// exactly. Code that edits `components` directly must clear it.
-    pub component_cache: Option<Box<pz_entity::Components>>,
+    /// Sole live/explicit-archive component authority.
+    pub components: ItemComponents,
     pub animal_tracks: Option<AnimalTracks>,
-    /// A texture name saved because it differs from the script icon.
-    pub texture_override: Option<String>,
+    /// Sole actual asset slots or explicitly uncaptured archive profile.
+    pub textures: crate::item_texture::ItemTextures,
     pub model_index: i32,
     /// `staticModelsByIndex` / `worldStaticModelsByIndex`: the script's
     /// lists when not empty (`Item.InstanceItem`), not saved.
@@ -481,6 +527,19 @@ pub struct InventoryItem {
     pub kind: ItemKind,
 }
 
+/// Direct writer continuation at native texture save phase PC1074.
+pub(crate) struct ItemSaveContinuation {
+    header: BitHeaderWrite,
+    bits: BitHeaderWrite,
+}
+
+/// Scalar prefix continuation at the native entity-data phase.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ItemLoadContinuation {
+    pub(crate) bits: u64,
+    pub(crate) entity_present: bool,
+}
+
 const WHITE: Rgba = [1.0, 1.0, 1.0, 1.0];
 
 impl InventoryItem {
@@ -499,8 +558,12 @@ impl InventoryItem {
             ItemClass::Weapon => ItemKind::Weapon(Box::new(WeaponData::from_template(t))),
             ItemClass::Literature => ItemKind::Literature(Box::new(LiteratureData {
                 number_of_pages: t.number_of_pages,
+                lvl_skill_trained: t.lvl_skill_trained,
+                num_levels_trained: t.num_levels_trained,
+                skill_trained: t.skill_trained.clone(),
+                page_to_write: t.page_to_write,
                 already_read_pages: 0,
-                can_be_write: false,
+                can_be_write: t.can_be_write,
                 custom_pages: None,
                 locked_by: None,
                 learned_recipes: None,
@@ -530,8 +593,9 @@ impl InventoryItem {
                 Box::default(),
             ),
             ItemClass::Container => ItemKind::Container(Box::new(ContainerData {
+                capacity: t.capacity,
                 weight_reduction: t.weight_reduction.clamp(0, 100),
-                container: SharedContainer::new_bag(t).into_ref(),
+                container: SharedContainer::new_bag(t).into_ref().into(),
             })),
             ItemClass::Map => ItemKind::Map {
                 map_id: String::new(),
@@ -540,12 +604,24 @@ impl InventoryItem {
             ItemClass::Animal => ItemKind::Plain,
         };
         InventoryItem {
+            world_item: crate::world_item::WorldItemSlot::default(),
+            container: crate::shared::ItemContainerSlot::default(),
+            item_type: t.item_type.clone(),
+            equipped_location: if matches!(kind, ItemKind::Container(_) | ItemKind::Radio(..)) {
+                t.script
+                    .as_ref()
+                    .and_then(|script| script.0.borrow().can_be_equipped.clone())
+            } else {
+                None
+            },
+            main_category: None,
             registry_id,
             type_: t.type_.clone(),
             id: 0,
             uses: 1,
             condition: t.condition_max,
             condition_max: t.condition_max,
+            broken: false,
             visual: None,
             custom_color: false,
             col: WHITE,
@@ -570,6 +646,8 @@ impl InventoryItem {
             worker: None,
             // `item.setWetCooldown(this.wetCooldown)`.
             wet_cooldown: t.wet_cooldown,
+            item_heat: 1.0,
+            drainable_heat: (t.class == ItemClass::Drainable).then_some(1.0),
             favorite: false,
             stash_map: None,
             zombie_infected: false,
@@ -581,10 +659,9 @@ impl InventoryItem {
             recorded_media_index: -1,
             world_scale: 1.0,
             is_initialised: false,
-            components: Vec::new(),
-            component_cache: None,
+            components: ItemComponents::new(),
             animal_tracks: None,
-            texture_override: None,
+            textures: crate::item_texture::ItemTextures::default(),
             model_index: -1,
             static_models_by_index: t.static_models_by_index.clone().filter(|l| !l.is_empty()),
             world_static_models_by_index: t
@@ -601,6 +678,16 @@ impl InventoryItem {
             vehicle_part: t.vehicle_part.clone(),
             kind,
             template,
+        }
+    }
+
+    /// The instance `canBeEquipped()` override on bags and radios. Later
+    /// ScriptManager replacement or script edits do not rewrite this field.
+    pub fn can_be_equipped(&self) -> Option<Rc<RegistryKey>> {
+        if matches!(self.kind, ItemKind::Container(_) | ItemKind::Radio(..)) {
+            self.equipped_location.clone()
+        } else {
+            None
         }
     }
 
@@ -649,6 +736,30 @@ impl InventoryItem {
     }
 
     fn save_fields(&self, w: &mut Writer, env: &dyn ItemEnv) -> SaveResult<()> {
+        let continuation = self.save_fields_prefix(w, env).map_err(SaveError::from)?;
+        let name = self
+            .textures
+            .archive_saved_name()
+            .map_err(|error| SaveError(format!("{error:?}")))?;
+        self.save_fields_suffix(w, env, continuation, name)
+    }
+
+    pub(crate) fn save_native_prefix(
+        &self,
+        w: &mut Writer,
+        env: &dyn ItemEnv,
+    ) -> Result<ItemSaveContinuation, crate::item_texture::ItemPersistenceError> {
+        w.i16(self.registry_id);
+        w.i8(-1);
+        w.i32(self.id);
+        self.save_fields_prefix(w, env)
+    }
+
+    fn save_fields_prefix(
+        &self,
+        w: &mut Writer,
+        _env: &dyn ItemEnv,
+    ) -> Result<ItemSaveContinuation, crate::item_texture::ItemPersistenceError> {
         let mut header = BitHeaderWrite::alloc(w, 1);
         let uses = self.get_current_uses();
         if uses != 1 {
@@ -674,9 +785,11 @@ impl InventoryItem {
             w.f32(self.item_capacity);
         }
         let mut bits = BitHeaderWrite::alloc(w, 4);
-        if let Some(t) = present(&self.table) {
-            bits.add(1);
-            t.save(w);
+        if let Some(t) = &self.table {
+            if !t.try_is_empty()? {
+                bits.add(1);
+                t.save(w)?;
+            }
         }
         if self.activated {
             bits.add(2);
@@ -774,15 +887,49 @@ impl InventoryItem {
         }
         if !self.components.is_empty() {
             bits.add(0x4000000);
-            env.components().save_entity(w, &self.components)?;
+            if w.is_native_buffer() {
+                return Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+                    operation: "bounded scratch component writer",
+                    kind: None,
+                }.into());
+            }
+            self.components
+                .write_to_runtime(w, crate::component::COMPONENT_WORLD_VERSION)
+                .map_err(pz_entity::runtime_load::RuntimeHostError::Storage)?;
         }
         if let Some(t) = &self.animal_tracks {
             bits.add(0x8000000);
             t.save(w);
         }
-        if let Some(t) = &self.texture_override {
+        Ok(ItemSaveContinuation { header, bits })
+    }
+
+    pub(crate) fn save_fields_suffix(
+        &self,
+        w: &mut Writer,
+        env: &dyn ItemEnv,
+        continuation: ItemSaveContinuation,
+        texture_name: Option<&str>,
+    ) -> SaveResult<()> {
+        self.save_native_suffix_base(w, continuation, texture_name)?;
+        self.save_kind(w, env)
+    }
+
+    /// Complete InventoryItem.save before any subclass continuation. Actual
+    /// bags resume only after the parent guard is released.
+    pub(crate) fn save_native_suffix_base(
+        &self,
+        w: &mut Writer,
+        continuation: ItemSaveContinuation,
+        texture_name: Option<&str>,
+    ) -> SaveResult<()> {
+        let ItemSaveContinuation {
+            mut header,
+            mut bits,
+        } = continuation;
+        if let Some(name) = texture_name {
             bits.add(0x10000000);
-            w.string(t);
+            w.string(name);
         }
         if self.model_index > -1 {
             bits.add(0x20000000);
@@ -804,10 +951,10 @@ impl InventoryItem {
             bits.discard(w);
         }
         header.write(w);
-        self.save_kind(w, env)
+        Ok(())
     }
 
-    fn save_kind(&self, w: &mut Writer, env: &dyn ItemEnv) -> SaveResult<()> {
+    pub(crate) fn save_kind(&self, w: &mut Writer, env: &dyn ItemEnv) -> SaveResult<()> {
         match &self.kind {
             ItemKind::Plain => {}
             ItemKind::Food(f) => f.save(w),
@@ -837,7 +984,12 @@ impl InventoryItem {
                 w.bytes(symbols);
             }
             ItemKind::Container(c) => {
-                let saved = c.container.borrow().to_container();
+                let saved = c
+                    .container
+                    .try_borrow()
+                    .map_err(|_| SaveError("host borrow conflict: save bag container".into()))?
+                    .try_to_container()
+                    .map_err(|error| SaveError(error.to_string()))?;
                 w.i32(saved.id);
                 w.i32(c.weight_reduction);
                 saved.save(w, env)?;
@@ -849,6 +1001,41 @@ impl InventoryItem {
     /// `InventoryItem.load` and the subclass `load` (after the registry
     /// id and save type).
     pub fn load(&mut self, r: &mut Reader<'_>, wv: i32, env: &dyn ItemEnv) -> SaveResult<()> {
+        let mut retired = pz_entity::RetiredComponents::new();
+        let mut notices = Vec::new();
+        let result = (|| {
+            let continuation = self
+                .load_prefix(r, wv, env, &mut retired, &mut notices)
+                .map_err(SaveError::from)?;
+            if continuation.entity_present {
+                retired.append(env.components().load_archive_entity(
+                    r,
+                    wv,
+                    &mut self.components,
+                )?);
+            }
+            self.load_suffix(continuation, r, wv, env)?;
+            self.load_kind_and_sync(r, wv, env)
+        })();
+        // Even an archive receiver may replace a formerly actual live table.
+        // Keep all former slots until the engine's outer safe boundary.
+        crate::component_host::retire_components(retired);
+        crate::component_host::emit_mod_data_notices(&notices)
+            .map_err(|error| SaveError(format!("{error:?}")))?;
+        result
+    }
+
+    pub(crate) fn load_prefix(
+        &mut self,
+        r: &mut Reader<'_>,
+        wv: i32,
+        env: &dyn ItemEnv,
+        retired: &mut pz_entity::RetiredComponents,
+        notices: &mut Vec<pz_kahlua::java_io::JavaIoNotice>,
+    ) -> ModDataResult<ItemLoadContinuation> {
+        // Native InventoryItem.load never assigns worldItem. In particular,
+        // the scalar reset below must preserve the actual runtime backlink
+        // even when a later field/component read fails.
         if let ItemKind::Weapon(w) = &mut self.kind {
             // clearAllWeaponParts
             w.attachments.clear();
@@ -861,7 +1048,9 @@ impl InventoryItem {
         self.custom_color = false;
         self.col = WHITE;
         self.item_capacity = -1.0;
-        self.table = None;
+        if let Some(old) = self.table.take() {
+            retired.push_payload(Box::new(old));
+        }
         self.activated = false;
         self.have_been_repaired = 0;
         self.custom_name = false;
@@ -902,15 +1091,10 @@ impl InventoryItem {
                 }
             }
             if has(header, 4) {
-                // setConditionWhileLoading: PZMath.clamp(c, 0, conditionMax).
+                // Only this flag calls setConditionWhileLoading. The earlier
+                // raw condition reset deliberately preserves the old broken bit.
                 let c = r.i8()? as i32;
-                self.condition = if c < 0 {
-                    0
-                } else if c > self.condition_max {
-                    self.condition_max
-                } else {
-                    c
-                };
+                self.set_condition_while_loading(c);
             }
             if has(header, 8) {
                 self.visual = Some(ItemVisual::load(r, env.blood_body_parts())?);
@@ -930,7 +1114,7 @@ impl InventoryItem {
             if has(header, 64) {
                 let bits = read_header(r, 4)?;
                 if has(bits, 1) {
-                    self.table = Some(LuaTable::load(r, wv)?);
+                    self.load_mod_data(r, wv, retired, notices)?;
                 }
                 self.activated = has(bits, 2);
                 if has(bits, 4) {
@@ -942,7 +1126,7 @@ impl InventoryItem {
                 if has(bits, 16) {
                     let n = r.i32()?;
                     if n < 0 {
-                        return err("negative byteData size");
+                        return Err(SaveError("negative byteData size".into()).into());
                     }
                     self.byte_data = Some(r.bytes(n as usize)?.to_vec());
                 }
@@ -958,10 +1142,7 @@ impl InventoryItem {
                 }
                 // setCustomName also stores the name in the mod data.
                 self.custom_name = has(bits, 64);
-                self.table.get_or_insert_with(LuaTable::default).rawset(
-                    LuaKey::Str("customName".into()),
-                    Some(LuaValue::Str(self.name.clone())),
-                );
+                self.set_mod_data_value("customName", Some(Value::str(&self.name.clone())))?;
                 if has(bits, 128) {
                     let weight = r.f32()?;
                     if weight >= 0.0 {
@@ -1023,44 +1204,95 @@ impl InventoryItem {
                     self.world_scale = r.f32()?;
                 }
                 self.is_initialised = has(bits, 0x2000000);
-                if has(bits, 0x4000000) {
-                    let loaded = env.components().load_entity(r, wv, &mut self.components)?;
-                    // Components the factory made that the file does not hold
-                    // are removed, last to first, from the component list (an
-                    // unordered `Array`: the last component takes the removed
-                    // one's place).
-                    for i in (0..self.components.len()).rev() {
-                        if !loaded.contains(&self.components[i].type_id) {
-                            self.components.swap_remove(i);
-                        }
-                    }
-                    self.component_cache = None;
+                return Ok(ItemLoadContinuation {
+                    bits,
+                    entity_present: has(bits, 0x4000000),
+                });
+            }
+        }
+        Ok(ItemLoadContinuation {
+            bits: 0,
+            entity_present: false,
+        })
+    }
+
+    pub(crate) fn load_suffix(
+        &mut self,
+        continuation: ItemLoadContinuation,
+        r: &mut Reader<'_>,
+        wv: i32,
+        env: &dyn ItemEnv,
+    ) -> SaveResult<()> {
+        if let Some(name) = self.load_suffix_before_texture(continuation, r)? {
+            match &mut self.textures {
+                crate::item_texture::ItemTextures::Archive(profile) => {
+                    profile.saved_name = env.texture_round_trip(&self.template, &name)
                 }
-                if has(bits, 0x8000000) {
-                    self.animal_tracks = Some(AnimalTracks::load(r)?);
-                }
-                if has(bits, 0x10000000) {
-                    let name = r.string()?;
-                    self.texture_override = env.texture_round_trip(&self.template, &name);
-                }
-                if has(bits, 0x20000000) {
-                    self.model_index = r.i32()?;
-                }
-                if has(bits, 0x40000000) {
-                    if wv >= 232 {
-                        self.world_x_rotation = r.f32()?;
-                        self.world_y_rotation = r.f32()?;
-                        self.world_z_rotation = r.f32()?;
-                    } else {
-                        self.world_y_rotation = r.i32()? as f32;
-                        self.world_x_rotation = r.i32()? as f32;
-                    }
+                crate::item_texture::ItemTextures::Live(_) => {
+                    return Err(SaveError(
+                        "live texture load requires actual ItemRef continuation".into(),
+                    ))
                 }
             }
         }
-        // The end of `InventoryItem.load`: `synchWithVisual` (its model
-        // index draw; the visual part runs after the subclass fields here).
+        self.load_suffix_after_texture(continuation, r, wv)?;
         self.pick_model_index(&mut |m| env.rand_next(m));
+        Ok(())
+    }
+
+    pub(crate) fn load_suffix_before_texture(
+        &mut self,
+        continuation: ItemLoadContinuation,
+        r: &mut Reader<'_>,
+    ) -> SaveResult<Option<String>> {
+        let bits = continuation.bits;
+        if has(bits, 0x8000000) {
+            self.animal_tracks = Some(AnimalTracks::load(r)?);
+        }
+        if has(bits, 0x10000000) {
+            return r.string().map(Some);
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn load_suffix_after_texture(
+        &mut self,
+        continuation: ItemLoadContinuation,
+        r: &mut Reader<'_>,
+        wv: i32,
+    ) -> SaveResult<()> {
+        let bits = continuation.bits;
+        if has(bits, 0x20000000) {
+            self.model_index = r.i32()?;
+        }
+        if has(bits, 0x40000000) {
+            if wv >= 232 {
+                self.world_x_rotation = r.f32()?;
+                self.world_y_rotation = r.f32()?;
+                self.world_z_rotation = r.f32()?;
+            } else {
+                self.world_y_rotation = r.i32()? as f32;
+                self.world_x_rotation = r.i32()? as f32;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn load_kind_native(
+        &mut self,
+        r: &mut Reader<'_>,
+        wv: i32,
+        env: &dyn ItemEnv,
+    ) -> SaveResult<()> {
+        self.load_kind(r, wv, env)
+    }
+
+    pub(crate) fn load_kind_and_sync(
+        &mut self,
+        r: &mut Reader<'_>,
+        wv: i32,
+        env: &dyn ItemEnv,
+    ) -> SaveResult<()> {
         self.load_kind(r, wv, env)?;
         if let Some(a) = env.assets() {
             self.synch_with_visual(Some(a), &crate::context::NoOwner, env.visual_rng());
@@ -1092,7 +1324,7 @@ impl InventoryItem {
 
     /// `setKeyId` (`Key` overrides it: its own field, and -1 draws a
     /// random id).
-    fn set_key_id(&mut self, k: i32, env: &dyn ItemEnv) {
+    pub fn set_key_id(&mut self, k: i32, env: &dyn ItemEnv) {
         match &mut self.kind {
             ItemKind::Key { key_id, .. } => {
                 *key_id = if k == -1 {
@@ -1197,7 +1429,8 @@ impl InventoryItem {
 
     /// `Moveable.ReadFromWorldSprite`: the item state the sprite's
     /// properties give, with the flatpack colour of a multi-tile sprite
-    /// drawn from `Rand` (textures are not modelled).
+    /// drawn from `Rand`. This data sprite projection does not perform the
+    /// native moveable texture override; actual callers must bound that phase.
     pub fn read_from_world_sprite(&mut self, sprite: &str, env: &dyn ItemEnv) -> bool {
         let (ItemKind::Moveable(m) | ItemKind::Radio(m, _)) = &mut self.kind else {
             return false;
@@ -1240,14 +1473,14 @@ impl InventoryItem {
             } else {
                 format!("{name} ({}/{count})", index + 1)
             };
-            self.table.get_or_insert_with(LuaTable::default).rawset(
-                LuaKey::Str("Flatpack".into()),
-                Some(LuaValue::Str("true".into())),
-            );
         }
         m.custom_name_full = name.clone();
         self.name = name;
         m.has_read_world_sprite = true;
+        if info.sprite_grid.is_some() {
+            self.set_mod_data_value("Flatpack", Some(Value::str("true")))
+                .expect("unowned Moveable ModData initialization");
+        }
         true
     }
 }
@@ -1353,6 +1586,7 @@ impl ClothingData {
 
 impl FoodData {
     fn from_template(t: &ItemTemplate) -> Self {
+        crate::food_age::initialize_update_rate();
         FoodData {
             age: 0.0,
             last_aged: -1.0,
@@ -1368,6 +1602,7 @@ impl FoodData {
             heat: 1.0,
             last_cook_minute: 0,
             cooking_time: 0.0,
+            minutes_to_cook: 60.0,
             cooked: false,
             burnt: false,
             is_cookable: t.is_cookable,
@@ -1375,14 +1610,18 @@ impl FoodData {
             poison_detection_level: -1,
             spices: None,
             poison_power: t.poison_power,
+            poison_level_for_recipe: t.poison_detection_level,
+            herbalist_type: t.herbalist_type.clone(),
             chef: None,
             off_age: t.days_fresh,
             off_age_max: t.days_totally_rotten,
+            replace_on_rotten: t.replace_on_rotten.clone(),
             pain_reduction: 0.0,
             flu_reduction: 0,
             food_sickness_change: 0,
-            poison: false,
+            poison: t.poison,
             use_for_poison: 0,
+            can_be_frozen: true,
             freezing_time: 0.0,
             frozen: false,
             last_frozen_update: 0.0,
@@ -1769,6 +2008,14 @@ impl WeaponData {
     }
 
     fn save(&self, w: &mut Writer, env: &dyn ItemEnv, t: &ItemTemplate) -> SaveResult<()> {
+        self.save_with_mode(w, env, t, false).map_err(SaveError::from)
+    }
+
+    pub(crate) fn save_native(&self, w: &mut Writer, env: &dyn ItemEnv, t: &ItemTemplate) -> Result<(), crate::item_texture::ItemPersistenceError> {
+        self.save_with_mode(w, env, t, true)
+    }
+
+    fn save_with_mode(&self, w: &mut Writer, env: &dyn ItemEnv, t: &ItemTemplate, actual: bool) -> Result<(), crate::item_texture::ItemPersistenceError> {
         let mut bits = BitHeaderWrite::alloc(w, 4);
         if self.max_range != 1.0 {
             bits.add(1);
@@ -1808,6 +2055,12 @@ impl WeaponData {
         if !self.attachments.is_empty() {
             bits.add(1024);
             w.i8(self.attachments.len() as i8);
+            if actual {
+                return Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+                    operation: "actual weapon attachment owner/serializer",
+                    kind: None,
+                }.into());
+            }
             for p in &self.attachments {
                 p.save(w, env)?;
             }

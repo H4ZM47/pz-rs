@@ -163,7 +163,7 @@ pub fn write_iso_chunk_into_buffer(c: &IsoChunk, m: &IsoSpriteManager, bb: &mut 
     for z in 0..=c.max_level {
         for p in 0..64 {
             let sq = c.get_grid_square(p % 8, p / 8, z);
-            bb.push(calculate_square_flags(sq, m) as u8);
+            bb.push(calculate_square_flags(sq.as_ref().map(|s| s.borrow()).as_deref(), m) as u8);
         }
     }
     let len = (bb.len() - start) as i32;
@@ -556,10 +556,11 @@ impl IsoRegions {
         z: i32,
         is_removal: bool,
     ) {
-        let Some(gs) = cell.get_grid_square(x, y, z) else {
+        let Some(gs_owner) = cell.get_grid_square(x, y, z) else {
             return;
         };
-        let flags = calculate_square_flags(Some(gs), m);
+        let gs = gs_owner.borrow();
+        let flags = calculate_square_flags(Some(&gs), m);
         if flags == self.previous_flags {
             return;
         }
@@ -956,7 +957,7 @@ impl IsoRegions {
 pub fn client_reset_cached_region_references(cell: &IsoCell) {
     for c in cell.chunks.values() {
         for sq in c.squares() {
-            sq.set_iso_world_region(None);
+            sq.borrow().set_iso_world_region(None);
         }
     }
 }

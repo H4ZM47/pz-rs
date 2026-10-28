@@ -7,6 +7,10 @@
 //! properties, objects, rooms, neighbours through a [`GetSquare`]). Flag and
 //! object-type ordinals come from the runtime [`SpriteTables`]; the ones
 //! `pz-world` does not name are resolved by name in [`BitsTables`].
+//! These synchronous, infallible queries require unborrowed object/native
+//! sprite bodies and resolved metadata. They read current actual metadata
+//! per phase; an unavailable/borrowed body is not treated as an absent sprite.
+//! A fallible pathfinding host carrier is outside this scalar adapter.
 //!
 //! State `pz-world` does not model yet goes through [`SquareBitsHooks`]; its
 //! defaults are a fresh single-player world:
@@ -291,16 +295,22 @@ pub struct SquareBits<'a, G: GetSquare> {
 }
 
 /// `IsoObject.getProperties()`: the sprite's properties.
-fn props<'m>(m: &'m IsoSpriteManager, o: &IsoObject) -> Option<&'m PropertyContainer> {
-    o.sprite.map(|s| &m.sprites[s].properties)
+fn props(m: &IsoSpriteManager, o: &IsoObject) -> Option<PropertyContainer> {
+    o.sprite
+        .try_read(m)
+        .expect("synchronous path properties require unborrowed resolved sprite metadata")
+        .map(|sprite| sprite.properties.clone())
 }
 
 /// `square.getSpecialObjects()`, skipping identities no longer in
 /// `objects`.
-fn specials(sq: &IsoGridSquare) -> impl Iterator<Item = &IsoObject> {
-    sq.special_objects
-        .iter()
-        .filter_map(move |&id| sq.objects.iter().find(|o| o.id == id))
+fn specials(sq: &IsoGridSquare) -> impl Iterator<Item = std::cell::Ref<'_, IsoObject>> {
+    sq.special_objects.iter().filter_map(move |&id| {
+        sq.objects
+            .iter()
+            .find(|o| o.borrow().id == id)
+            .map(|o| o.borrow())
+    })
 }
 
 impl<'a, G: GetSquare> SquareBits<'a, G> {
@@ -320,7 +330,7 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
     }
 
     fn obj_has(&self, o: &IsoObject, f: IsoFlagType) -> bool {
-        props(self.sprites, o).is_some_and(|p| p.has(f))
+        props(self.sprites, &o).is_some_and(|p| p.has(f))
     }
 
     /// `SquareUpdateTask.getBits(square)`.
@@ -395,9 +405,9 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
             let mut dir = None;
             match &obj.kind {
                 ObjectKind::Door(d) => {
-                    dir = self.door_sprite_edge(obj, d.north, d.open, false);
+                    dir = self.door_sprite_edge(&obj, d.north, d.open, false);
                     if d.open {
-                        match self.door_sprite_edge(obj, d.north, d.open, true) {
+                        match self.door_sprite_edge(&obj, d.north, d.open, true) {
                             Some(IsoDirections::N) => b |= DOOR_N_UNBLOCKED,
                             Some(IsoDirections::W) => b |= DOOR_W_UNBLOCKED,
                             _ => {}
@@ -406,9 +416,9 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
                     }
                 }
                 ObjectKind::Thumpable(th) if th.is_door => {
-                    dir = self.thumpable_sprite_edge(obj, th, false);
+                    dir = self.thumpable_sprite_edge(&obj, th, false);
                     if th.open {
-                        match self.thumpable_sprite_edge(obj, th, true) {
+                        match self.thumpable_sprite_edge(&obj, th, true) {
                             Some(IsoDirections::N) => b |= DOOR_N_UNBLOCKED,
                             Some(IsoDirections::W) => b |= DOOR_W_UNBLOCKED,
                             _ => {}
@@ -486,11 +496,14 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
     /// `f_bushes_1` or has a `Bush` property (`IsoObject.isBush()`).
     pub fn has_bush(&self, sq: &IsoGridSquare) -> bool {
         sq.objects.iter().any(|o| {
-            o.sprite.is_some_and(|s| {
-                let sp = &self.sprites.sprites[s];
-                sp.tileset_name.as_deref() == Some("f_bushes_1")
-                    || sp.properties.get(&self.sprites.alias, "Bush").is_some()
-            })
+            o.borrow()
+                .sprite
+                .metadata_projection(self.sprites)
+                .expect("synchronous bush query requires unborrowed resolved sprite metadata")
+                .is_some_and(|sp| {
+                    sp.tileset_name.as_deref() == Some("f_bushes_1")
+                        || sp.properties.get(&self.sprites.alias, "Bush").is_some()
+                })
         })
     }
 
@@ -498,8 +511,8 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
     pub fn sloped_surface(&self, sq: &IsoGridSquare) -> Option<SlopedSurface> {
         sq.sloped_surface_direction.map(|direction| SlopedSurface {
             direction,
-            min: slope_min(sq),
-            max: slope_max(sq),
+            min: slope_min(&sq),
+            max: slope_max(&sq),
         })
     }
 
@@ -509,13 +522,13 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
             x: sq.x,
             y: sq.y,
             z: sq.z + 32,
-            bits: self.get_bits(sq),
-            cost: self.get_cost(sq),
+            bits: self.get_bits(&sq),
+            cost: self.get_cost(&sq),
             slope_direction: sq
                 .sloped_surface_direction
                 .map_or(NO_SLOPE_DIRECTION, |d| d as i32),
-            slope_min: slope_min(sq),
-            slope_max: slope_max(sq),
+            slope_min: slope_min(&sq),
+            slope_max: slope_max(&sq),
         }
     }
 
@@ -539,19 +552,20 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
         for z in chunk.min_level..=chunk.max_level {
             for y in 0..8 {
                 for x in 0..8 {
-                    let Some(sq) = chunk.get_grid_square(x, y, z) else {
+                    let Some(sq_owner) = chunk.get_grid_square(x, y, z) else {
                         bb.extend_from_slice(&0i64.to_be_bytes());
                         bb.extend_from_slice(&0i16.to_be_bytes());
                         continue;
                     };
-                    bb.extend_from_slice(&self.get_bits(sq).to_be_bytes());
-                    bb.extend_from_slice(&self.get_cost(sq).to_be_bytes());
+                    let sq = sq_owner.borrow();
+                    bb.extend_from_slice(&self.get_bits(&sq).to_be_bytes());
+                    bb.extend_from_slice(&self.get_cost(&sq).to_be_bytes());
                     let Some(dir) = sq.sloped_surface_direction else {
                         continue;
                     };
                     slopes.extend_from_slice(&[x as u8, y as u8, (z + 32) as u8, dir as u8]);
-                    slopes.extend_from_slice(&slope_min(sq).to_be_bytes());
-                    slopes.extend_from_slice(&slope_max(sq).to_be_bytes());
+                    slopes.extend_from_slice(&slope_min(&sq).to_be_bytes());
+                    slopes.extend_from_slice(&slope_max(&sq).to_be_bytes());
                     num_sloped = num_sloped.wrapping_add(1);
                 }
             }
@@ -578,10 +592,12 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
             return Some(closed_edge);
         }
         let p = props(self.sprites, obj);
-        if p.is_some_and(|p| p.has_name(&self.sprites.alias, "GarageDoor")) {
+        if p.as_ref()
+            .is_some_and(|p| p.has_name(&self.sprites.alias, "GarageDoor"))
+        {
             return Some(closed_edge);
         }
-        Some(self.open_edge(p, north))
+        Some(self.open_edge(p.as_ref(), north))
     }
 
     /// `IsoThumpable.getSpriteEdge(ignoreOpen)`.
@@ -591,7 +607,7 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
         th: &IsoThumpable,
         ignore_open: bool,
     ) -> Option<IsoDirections> {
-        if !th.is_door && !self.is_window_object(obj) {
+        if !th.is_door && !self.is_window_object(&obj) {
             return None;
         }
         if !th.open || ignore_open {
@@ -601,7 +617,7 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
                 IsoDirections::W
             });
         }
-        Some(self.open_edge(props(self.sprites, obj), th.north))
+        Some(self.open_edge(props(self.sprites, obj).as_ref(), th.north))
     }
 
     /// The open-door edge shared by `IsoDoor` and `IsoThumpable`.
@@ -637,10 +653,10 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
         &self,
         obj: &IsoObject,
         th: &IsoThumpable,
-    ) -> Option<&PropertyContainer> {
+    ) -> Option<PropertyContainer> {
         if th.is_door && !th.open {
             if let Some(cs) = th.closed_sprite {
-                return Some(&self.sprites.sprites[cs].properties);
+                return Some(self.sprites.sprites[cs].properties.clone());
             }
         }
         props(self.sprites, obj)
@@ -665,7 +681,7 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
 
     /// `IsoThumpable.isThumpable()`.
     fn thumpable_thumpable(&self, sq: &IsoGridSquare, obj: &IsoObject, th: &IsoThumpable) -> bool {
-        self.hooks.is_barricaded(sq, obj) || th.is_thumpable
+        self.hooks.is_barricaded(sq, &obj) || th.is_thumpable
     }
 
     /// `SquareUpdateTask.isWindowUnblocked(square, north)`.
@@ -673,15 +689,15 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
         for special in specials(sq) {
             match &special.kind {
                 ObjectKind::Thumpable(th)
-                    if self.is_window_object(special) && th.north == north =>
+                    if self.is_window_object(&special) && th.north == north =>
                 {
-                    return !self.hooks.is_barricaded(sq, special);
+                    return !self.hooks.is_barricaded(sq, &special);
                 }
                 ObjectKind::Window(w) if w.north == north => {
-                    if self.hooks.is_barricaded(sq, special) {
+                    if self.hooks.is_barricaded(sq, &special) {
                         return false;
                     }
-                    if self.window_invincible(sq, special, north) {
+                    if self.window_invincible(sq, &special, north) {
                         return false;
                     }
                     if w.open {
@@ -694,19 +710,18 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
         }
         // `getWindowFrame(facing)`: the first `IsoWindowFrame` in `objects`
         // on that edge, then `canClimbThrough(null)`.
-        let frame = sq
-            .objects
-            .iter()
-            .find(|o| matches!(o.kind, ObjectKind::WindowFrame { north: n } if n == north));
+        let frame = sq.objects.iter().find(
+            |o| matches!(o.borrow().kind, ObjectKind::WindowFrame { north: n } if n == north),
+        );
         let Some(frame) = frame else {
             return false;
         };
         if let Some(i) = sq.window_index(north) {
-            if self.hooks.is_barricaded(sq, &sq.objects[i]) {
+            if self.hooks.is_barricaded(sq, &sq.objects[i].borrow()) {
                 return false;
             }
         }
-        !self.hooks.is_barricaded(sq, frame)
+        !self.hooks.is_barricaded(sq, &frame.borrow())
     }
 
     /// `IsoWindow.isInvincible()`.
@@ -715,13 +730,14 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
         if !sq.has(t.makeWindowInvincible) {
             return false;
         }
-        if let Some(index) = sq.objects.iter().position(|o| o.id == window.id) {
+        if let Some(index) = sq.objects.iter().position(|o| o.borrow().id == window.id) {
             let cut = if north { t.cutN } else { t.cutW };
             for (i, o) in sq.objects.iter().enumerate() {
+                let o = o.borrow();
                 if i == index {
                     continue;
                 }
-                if let Some(p) = props(self.sprites, o) {
+                if let Some(p) = props(self.sprites, &o) {
                     if p.has(cut) && p.has(t.makeWindowInvincible) {
                         return true;
                     }
@@ -738,12 +754,12 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
         }
         for obj in specials(sq) {
             if let ObjectKind::Thumpable(th) = &obj.kind {
-                if self.thumpable_thumpable(sq, obj, th) && th.block_all_the_square {
+                if self.thumpable_thumpable(sq, &obj, th) && th.block_all_the_square {
                     return true;
                 }
             }
         }
-        sq.objects.iter().any(|o| o.moved_thumpable)
+        sq.objects.iter().any(|o| o.borrow().moved_thumpable)
     }
 
     /// `SquareUpdateTask.hasWallThumpableN/W(square)`: decided by the first
@@ -754,27 +770,28 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
                 continue;
             };
             // `canClimbThrough(null)`: a window that is not barricaded.
-            let climb_through = self.is_window_object(obj) && !self.hooks.is_barricaded(sq, obj);
+            let climb_through = self.is_window_object(&obj) && !self.hooks.is_barricaded(sq, &obj);
             // `canClimbOver(null)`: hoppable.
-            let climb_over = self.thumpable_hoppable(obj, th);
+            let climb_over = self.thumpable_hoppable(&obj, th);
             if climb_through
-                || climb_over && !self.thumpable_tall_hoppable(obj, th)
-                || !self.thumpable_thumpable(sq, obj, th)
+                || climb_over && !self.thumpable_tall_hoppable(&obj, th)
+                || !self.thumpable_thumpable(sq, &obj, th)
                 || th.block_all_the_square
                 || th.is_door
             {
                 continue;
             }
-            return (self.is_wall_object(obj, north) || th.is_corner) && !th.can_pass_through;
+            return (self.is_wall_object(&obj, north) || th.is_corner) && !th.can_pass_through;
         }
         false
     }
 
     /// `SquareUpdateTask.hasWallBendableN/W(square)`.
     fn has_wall_bendable(&self, sq: &IsoGridSquare, north: bool) -> bool {
-        sq.objects
-            .iter()
-            .any(|o| self.hooks.is_unbent_object(sq, o) && self.is_wall_object(o, north))
+        sq.objects.iter().any(|o| {
+            let o = o.borrow();
+            self.hooks.is_unbent_object(sq, &o) && self.is_wall_object(&o, north)
+        })
     }
 
     /// `IsoWindow.isSheetRopeHere(square)`.
@@ -805,39 +822,54 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
         let Some(adj) = sq.get_adjacent_square(dir, self.squares) else {
             return false;
         };
-        if sq.have_roof || adj.have_roof {
+        if sq.have_roof || adj.borrow().have_roof {
             return false;
         }
-        if !sq.treat_as_solid_floor(m) || !adj.treat_as_solid_floor(m) {
+        if !sq.treat_as_solid_floor(m) || !adj.borrow().treat_as_solid_floor(m) {
             return false;
         }
-        if self.is_sheet_rope_here(Some(sq)) || self.is_sheet_rope_here(Some(adj)) {
+        if self.is_sheet_rope_here(Some(sq)) || self.is_sheet_rope_here(Some(&adj.borrow())) {
             return false;
         }
-        if self.has_building(sq) || self.has_building(adj) {
+        if self.has_building(sq) || self.has_building(&adj.borrow()) {
             return false;
         }
-        if sq.has(t.water) || adj.has(t.water) {
+        if sq.has(t.water) || adj.borrow().has(t.water) {
             return false;
         }
-        if sq.has(t.CantClimb) || adj.has(t.CantClimb) {
+        if sq.has(t.CantClimb) || adj.borrow().has(t.CantClimb) {
             return false;
         }
-        if sq.has(t.solid) || sq.has(t.solidtrans) || adj.has(t.solid) || adj.has(t.solidtrans) {
+        if sq.has(t.solid)
+            || sq.has(t.solidtrans)
+            || adj.borrow().has(t.solid)
+            || adj.borrow().has(t.solidtrans)
+        {
             return false;
         }
         let above = self.squares.get_grid_square(sq.x, sq.y, sq.z + 1);
-        if above.is_some_and(|a| self.sloped_roof_without_eave(a)) {
+        if above
+            .as_ref()
+            .is_some_and(|a| self.sloped_roof_without_eave(&a.borrow()))
+        {
             return false;
         }
-        let above2 = self.squares.get_grid_square(adj.x, adj.y, adj.z + 1);
-        if above2.is_some_and(|a| self.sloped_roof_without_eave(a)) {
+        let above2 =
+            self.squares
+                .get_grid_square(adj.borrow().x, adj.borrow().y, adj.borrow().z + 1);
+        if above2
+            .as_ref()
+            .is_some_and(|a| self.sloped_roof_without_eave(&a.borrow()))
+        {
             return false;
         }
-        if above.is_some_and(|a| a.has(t.collideN)) || above2.is_some_and(|a| a.has(t.collideN)) {
+        if above.as_ref().is_some_and(|a| a.borrow().has(t.collideN))
+            || above2.as_ref().is_some_and(|a| a.borrow().has(t.collideN))
+        {
             return false;
         }
-        !self.hooks.is_client() || !self.hooks.in_safehouse(sq) && !self.hooks.in_safehouse(adj)
+        !self.hooks.is_client()
+            || !self.hooks.in_safehouse(sq) && !self.hooks.in_safehouse(&adj.borrow())
     }
 }
 

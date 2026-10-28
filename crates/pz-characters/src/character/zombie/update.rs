@@ -194,6 +194,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `tryThump(square)`: climb through a window, hop a low fence or door,
     /// or pick the thump target in front.
     pub fn try_thump(&mut self, square: Option<(i32, i32, i32)>, cx: &mut StateCx<'_, I>) -> bool {
+        if cx.has_host_error() { return false; }
         if self.zombie.ghost || self.vars.crawling {
             return false;
         }
@@ -221,6 +222,7 @@ impl<I: 'static> GameCharacter<I> {
             } else {
                 self.climb_through_window_frame(oref, cx);
             }
+            if cx.has_host_error() { return false; }
             return true;
         }
         if (i.kind == ThumpKind::Door || i.kind == ThumpKind::Thumpable && !i.can_climb_through) && i.hoppable && !i.tall_hoppable {
@@ -233,6 +235,7 @@ impl<I: 'static> GameCharacter<I> {
         }
         if i.kind == ThumpKind::Thumpable && i.can_climb_through {
             self.climb_through_window(oref, cx);
+            if cx.has_host_error() { return false; }
             return true;
         }
         if i.thumpable_for.is_some() {
@@ -406,6 +409,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `IsoZombie.updateInternal()` (without the movement and network).
     pub fn update_zombie(&mut self, registry: &mut StateRegistry<I>, groups: &mut ActionGroups, cx: &mut StateCx<'_, I>) -> ScriptResult {
+        if cx.has_host_error() { return Ok(()); }
         let ctx = cx.ctx;
         if ctx.is_debug() {
             if let Some(o) = self.zombie.outfit_name.clone().filter(|o| o.contains("Debug")) {
@@ -472,6 +476,7 @@ impl<I: 'static> GameCharacter<I> {
         // super.update(): the state machine, fire, then updateTextObjects
         // (the chat element's part is queued).
         self.state_machine_update(cx);
+        if cx.has_host_error() { return Ok(()); }
         self.update_fire(cx);
         self.update_text_objects(cx.ctx);
         if [ids::CLIMB_THROUGH_WINDOW, ids::CLIMB_OVER_FENCE, ids::CRAWLING_ZOMBIE_TURN].iter().any(|s| self.is_current_state_id(*s)) {
@@ -502,6 +507,7 @@ impl<I: 'static> GameCharacter<I> {
         }
         self.vars.shootable = true;
         self.try_thump(None, cx);
+        if cx.has_host_error() { return Ok(()); }
         // damageSheetRope: the roll comes first.
         if ctx.rand_next(30) == 0 {
             if let Some(sq) = self.current_square_xyz() {
@@ -588,6 +594,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `IsoZombie.postupdate()`: the chasing count, the action context
     /// (with the zombie variable snapshot), balance and `canSeeTarget`.
     pub fn postupdate_zombie(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         if let Some(t) = self.vars.target {
             if let Some(p) = cx.world.character_mut(t) {
                 if p.is_player() {
@@ -598,9 +605,11 @@ impl<I: 'static> GameCharacter<I> {
         // super.postupdate(): the move and its collisions, then the
         // action context (`postUpdateAnimating`).
         self.moving_postupdate(cx);
+        if cx.has_host_error() { return; }
         self.update_eat_body_target(cx);
         self.refresh_zombie_view(cx);
         self.update_action_context(cx);
+        if cx.has_host_error() { return; }
         self.apply_zombie_var_effects();
         if self.zombie.unbalanced_level > 0.0 {
             let m = cx.ctx.multiplier();

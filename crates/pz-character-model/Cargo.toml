@@ -17,6 +17,7 @@ pz-scripts.workspace = true
 pz-lighting.workspace = true
 
 [dev-dependencies]
+pz-kahlua.workspace = true
 pz-bullet.workspace = true
 pz-fs.workspace = true
 pz-gpu = { path = "../pz-gpu" }

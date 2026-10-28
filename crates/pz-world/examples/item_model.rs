@@ -14,6 +14,7 @@
 //! `String.hashCode()`, and chunk loads from one seeded with
 //! `(wx << 32) ^ wy`, as the harness seeds the game's `Rand`.
 
+use pz_world::ObjectSlot;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::rc::Rc;
@@ -103,16 +104,11 @@ fn opt(s: Option<&str>) -> String {
 }
 
 fn ent_hex(i: &InventoryItem) -> String {
-    let mut s = format!("{:02x}", i.components.len() as u8);
-    for c in &i.components {
-        for x in (c.data.len() as i32 + 2)
-            .to_be_bytes()
-            .iter()
-            .chain(c.type_id.to_be_bytes().iter())
-            .chain(c.data.iter())
-        {
-            write!(s, "{x:02x}").unwrap();
-        }
+    let mut writer = pz_inventory::io::Writer::new();
+    i.components.write_to(&mut writer, 249).expect("component diagnostic serialization");
+    let mut s = String::new();
+    for x in &writer.buf {
+        write!(s, "{x:02x}").unwrap();
     }
     s
 }
@@ -208,11 +204,15 @@ fn getters(
 fn collect(items: &[SavedItem], out: &mut Vec<InventoryItem>) {
     for it in items {
         if let SavedItem::Item(i) = it {
-            out.push((**i).clone());
-            if let ItemKind::Container(c) = &i.kind {
-                collect(&c.container.borrow().to_container().items, out);
-            }
+            collect_item(i, out);
         }
+    }
+}
+
+fn collect_item(i: &InventoryItem, out: &mut Vec<InventoryItem>) {
+    out.push(i.clone());
+    if let ItemKind::Container(c) = &i.kind {
+        collect(&c.container.borrow().to_container().items, out);
     }
 }
 
@@ -327,9 +327,9 @@ fn main() {
         };
         let mut items: Vec<InventoryItem> = Vec::new();
         for sq in ch.squares() {
-            for o in &sq.objects {
+            for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
                 match &o.kind {
-                    ObjectKind::Mannequin(Some(m)) => {
+                    ObjectKind::Mannequin(m) => {
                         for c in m.container.iter() {
                             collect(&c.items, &mut items);
                         }
@@ -341,10 +341,14 @@ fn main() {
                     }
                 }
                 if let ObjectKind::WorldInventory(w) = &o.kind {
-                    collect(std::slice::from_ref(&w.item), &mut items);
+                    let w = w.borrow();
+                    let item = w.item.borrow_item();
+                    if let Some(item) = item {
+                        collect_item(&item, &mut items);
+                    }
                 }
             }
-            for bd in &sq.static_moving {
+            for bd in &sq.borrow().static_moving {
                 if let Some(c) = &bd.container {
                     collect(&c.items, &mut items);
                 }

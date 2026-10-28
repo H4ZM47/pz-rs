@@ -257,10 +257,12 @@ impl<I: 'static> GameCharacter<I> {
     /// `climbSheetRope()`: drops the heavy hand items, then
     /// `EventClimbRope`.
     pub fn climb_sheet_rope(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         if !self.can_climb_sheet_rope(self.path.current_square, cx) {
             return;
         }
         self.drop_heavy_items_in(cx);
+        if cx.has_host_error() { return; }
         self.state.params.clear(ids::CLIMB_SHEET_ROPE);
         self.report_event("EventClimbRope");
     }
@@ -268,10 +270,12 @@ impl<I: 'static> GameCharacter<I> {
     /// `climbDownSheetRope()`: drops the heavy hand items, then
     /// `EventClimbDownRope`.
     pub fn climb_down_sheet_rope(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         if !self.can_climb_down_sheet_rope(self.path.current_square, cx) {
             return;
         }
         self.drop_heavy_items_in(cx);
+        if cx.has_host_error() { return; }
         self.state.params.clear(ids::CLIMB_DOWN_SHEET_ROPE);
         self.report_event("EventClimbDownRope");
     }
@@ -288,10 +292,12 @@ impl<I: 'static> GameCharacter<I> {
     /// `IsoPlayer.climbOverWall(dir)`: drops the heavy hand items, rolls
     /// the climb (`ClimbOverWallState.setParams`), then `EventClimbWall`.
     pub fn climb_over_wall(&mut self, dir: IsoDirections, cx: &mut StateCx<'_, I>) -> bool {
+        if cx.has_host_error() { return false; }
         if !self.can_climb_over_wall(dir, cx) {
             return false;
         }
         self.drop_heavy_items_in(cx);
+        if cx.has_host_error() { return false; }
         climb_wall::set_params(self, dir, cx);
         self.report_event("EventClimbWall");
         true
@@ -455,6 +461,34 @@ mod tests {
         let _ = cx;
         assert!(w.floor.put.is_empty());
         assert!(!c.state.action_context.has_event_occurred("EventClimbDownRope", None));
+    }
+
+    #[test]
+    fn failed_drop_aborts_climb_and_preserves_unexecuted_path_requests() {
+        use crate::character::path_mover::PathMoverRequest;
+        use pz_inventory::floor_drop::RuntimeHostError;
+        let (sm, mut chars) = fixture();
+        let ctx = Recorder::default();
+        let mut w = Climbs { rope: rope(), ..Default::default() };
+        w.floor.fail_at = Some(1);
+        let mut c = climber(&sm, &mut chars);
+        give_item(&sm, &mut c, ItemClass::Container, "Duffel", 1, |_| {}, |_| {});
+        give_item(&sm, &mut c, ItemClass::Container, "Bag", 2, |_| {}, |_| {});
+        c.set_primary_hand_item(&sm, Some(1));
+        c.set_secondary_hand_item(&sm, Some(2));
+        c.path.requests = vec![PathMoverRequest::ClimbOverWall(IsoDirections::N), PathMoverRequest::ClimbOverWall(IsoDirections::N)];
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+        c.run_path_requests(&mut cx);
+        assert_eq!(cx.host_result(), Err(RuntimeHostError::Borrowed("actual floor allocation")));
+        assert_eq!(c.path.requests.len(), 1);
+        assert!(!c.state.action_context.has_event_occurred("EventClimbWall", None));
+        assert!(climb_wall::END_Y.peek(&c.state.params).is_none());
+        assert_eq!(c.items.primary_hand_item, None);
+        assert_eq!(c.items.secondary_hand_item, Some(2));
+        assert!(ctx.events.borrow().is_empty());
+        drop(cx);
+        assert_eq!(w.floor.attempts, 1);
+        assert!(w.floor.put.is_empty());
     }
 
     #[test]

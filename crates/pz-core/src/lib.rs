@@ -15,3 +15,5 @@ pub mod game_time;
 pub mod game_time_save;
 pub mod save_trackers;
 pub mod thumbnail;
+
+pub mod pool_statistics;

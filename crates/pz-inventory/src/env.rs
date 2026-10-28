@@ -46,6 +46,13 @@ pub trait ItemEnv {
         None
     }
 
+    /// DictionaryData.getItemTypeDebugString: the actual registered type,
+    /// or the native literal when getItemTypeFromID returns null.
+    fn item_type_debug_string(&self, registry_id: i16) -> String {
+        self.full_type(registry_id)
+            .unwrap_or_else(|| "Unknown".into())
+    }
+
     /// `WorldDictionary.getItemRegistryID`: -1 for an unknown type.
     fn registry_id(&self, _full_type: &str) -> i16 {
         -1
@@ -172,11 +179,513 @@ pub fn create_item(env: &dyn ItemEnv, registry_id: i16) -> Option<InventoryItem>
 /// constructors (see [`instance_draws`]).
 pub fn create_from_template(
     env: &dyn ItemEnv,
+    template: Rc<ItemTemplate>,
+    registry_id: i16,
+) -> InventoryItem {
+    let mut item = create_template_prefix(env, template.clone(), registry_id);
+    let codec = env.components();
+    match codec.factory_entity(&template, &mut crate::component::EnvRng(env)) {
+        Some(values) => drop(
+            item.set_components(values)
+                .expect("unowned component factory values"),
+        ),
+        None => {
+            item.components = crate::item_components::ItemComponents::from_encoded_blobs(
+                codec.factory_components(&template, &mut crate::component::EnvRng(env)),
+                crate::component::COMPONENT_WORLD_VERSION,
+            )
+            .expect("explicit component archive import")
+        }
+    }
+    finish_template_before_empty(env, &mut item);
+    if template.empty_fluid_container {
+        if let Some(context) = codec.entity_context() {
+            if let Some(mut fluid) = item.get_fluid_container(context) {
+                fluid.empty();
+                drop(
+                    item.set_fluid_container(fluid)
+                        .expect("unowned empty-fluid factory value"),
+                );
+            }
+        }
+    }
+    finish_template_after_empty(env, &mut item);
+    item
+}
+
+/// An actual factory receiver and completed native prefix on failure.
+#[derive(Debug)]
+#[must_use]
+pub struct FactoryItemFailure {
+    pub error: pz_entity::runtime_load::RuntimeHostError,
+    pub item: Option<crate::shared::ItemRef>,
+    pub retired: pz_entity::RetiredComponents,
+}
+
+impl FactoryItemFailure {
+    pub fn into_error_and_retire(mut self) -> pz_entity::runtime_load::RuntimeHostError {
+        if let Some(item) = self.item.take() {
+            self.retired
+                .push_owner(pz_entity::EntityOwner::from_ref(&item));
+        }
+        crate::component_host::retire_components(self.retired);
+        self.error
+    }
+}
+
+pub fn create_item_ref(
+    env: &dyn ItemEnv,
+    registry_id: i16,
+) -> Result<Option<crate::shared::ItemRef>, FactoryItemFailure> {
+    let Some(template) = env.template(registry_id) else {
+        return Ok(None);
+    };
+    create_from_template_ref(env, template, registry_id).map(Some)
+}
+
+/// Production actual-owner factory. Native component construction and pool
+/// reuse happen while this exact receiver already exists, before subsequent
+/// visual/model/id draws and before any Lua initialisation exposure.
+pub fn create_from_template_ref(
+    env: &dyn ItemEnv,
+    template: Rc<ItemTemplate>,
+    registry_id: i16,
+) -> Result<crate::shared::ItemRef, FactoryItemFailure> {
+    // Publish the same actual receiver before any captured constructor read.
+    // Archive creation remains the explicitly separate value API above.
+    let mut value = InventoryItem::create(template.clone(), registry_id);
+    crate::literature::initialize_java_fields_value(&mut value);
+    // Native InventoryContainer string constructor leaves its own two ints
+    // at Java defaults, distinct from the noarg child container's capacity50.
+    if let crate::ItemKind::Container(bag) = &mut value.kind {
+        bag.capacity = 0;
+        bag.weight_reduction = 0;
+        bag.container.borrow_mut().capacity = 50;
+        bag.container.borrow_mut().weight_reduction = 0;
+        value.item_capacity = -1.0;
+        value.weight = 1.0;
+        value.actual_weight = 1.0;
+    }
+    let item = crate::shared::try_new_item(value).map_err(|failure| FactoryItemFailure {
+        error: failure.error,
+        item: Some(failure.item),
+        retired: failure.retired,
+    })?;
+    let mut retired = pz_entity::RetiredComponents::new();
+    crate::item_texture::constructor_script_ref(&item, &template).map_err(|error| {
+        FactoryItemFailure {
+            error,
+            item: Some(item.clone()),
+            retired: pz_entity::RetiredComponents::new(),
+        }
+    })?;
+    copy_bag_capacity_ref(&item, &template).map_err(|error| FactoryItemFailure {
+        error,
+        item: Some(item.clone()),
+        retired: std::mem::take(&mut retired),
+    })?;
+    copy_food_poison_ref(&item, &template).map_err(|error| FactoryItemFailure {
+        error, item: Some(item.clone()), retired: std::mem::take(&mut retired),
+    })?;
+    // Native Food construction (including all texture capture) has returned
+    // before Item.InstanceItem PC632 reads this current argument script field.
+    // Any earlier constructor failure retains the raw 60-minute default.
+    copy_food_minutes_to_cook_ref(&item, &template).map_err(|error| FactoryItemFailure {
+        error,
+        item: Some(item.clone()),
+        retired: std::mem::take(&mut retired),
+    })?;
+    copy_food_herbalist_ref(&item, &template).map_err(|error| FactoryItemFailure {
+        error, item: Some(item.clone()), retired: std::mem::take(&mut retired),
+    })?;
+    crate::literature::copy_instance_fields(&item, &template).map_err(|error| FactoryItemFailure {
+        error, item: Some(item.clone()), retired: std::mem::take(&mut retired),
+    })?;
+    finish_constructor_prefix(env, &mut item.borrow_mut());
+    // Item.InstanceItem PC3336/3345: common condition setters follow the
+    // subclass constructor/draw/world-sprite phases, before mask setters.
+    let condition_callback = {
+        let mut body = item.borrow_mut();
+        body.condition = body.condition_max.max(0).min(body.condition_max);
+        body.broken = body.condition <= 0;
+        body.broken && body.template.on_break.is_some()
+    };
+    crate::shared::observe_item(&item);
+    if condition_callback {
+        return Err(FactoryItemFailure {
+            error: pz_entity::runtime_load::RuntimeHostError::Unsupported {
+                operation: "Item.InstanceItem setCondition OnBreak callback",
+                kind: None,
+            },
+            item: Some(item),
+            retired,
+        });
+    }
+    // Native common weight setters occur after the bag capacity warning and
+    // before retaining scriptItem. Both read the CURRENT argument separately.
+    copy_bag_common_weight_ref(&item, &template).map_err(|error| FactoryItemFailure {
+        error,
+        item: Some(item.clone()),
+        retired: std::mem::take(&mut retired),
+    })?;
+    crate::item_texture::set_script_item_ref(&item, template.script.as_ref()).map_err(|error| {
+        FactoryItemFailure {
+            error,
+            item: Some(item.clone()),
+            retired: pz_entity::RetiredComponents::new(),
+        }
+    })?;
+    // Native common InstanceItem PC3694 overwrites the earlier bag PC365
+    // itemCapacity from the CURRENT argument's distinct itemCapacity field.
+    copy_common_item_capacity_ref(&item, &template).map_err(|error| FactoryItemFailure {
+        error,
+        item: Some(item.clone()),
+        retired: std::mem::take(&mut retired),
+    })?;
+    crate::item_texture::constructor_masks_ref(&item, &template).map_err(|error| {
+        FactoryItemFailure {
+            error,
+            item: Some(item.clone()),
+            retired: pz_entity::RetiredComponents::new(),
+        }
+    })?;
+    let mut native_notices = Vec::new();
+    let built = env.components().factory_runtime(
+        &item,
+        &template,
+        &mut crate::component::EnvRng(env),
+        &mut retired,
+        &mut native_notices,
+    );
+    // factory_runtime has ended every body/script guard, including Err.
+    // A later unported lookup must not erase earlier native warning output.
+    let emitted = crate::component_host::emit_native_notices(&native_notices);
+    if let Err(error) = emitted {
+        return Err(FactoryItemFailure {
+            error,
+            item: Some(item),
+            retired,
+        });
+    }
+    if let Err(error) = built {
+        return Err(FactoryItemFailure {
+            error,
+            item: Some(item),
+            retired,
+        });
+    }
+    // Native InstanceItem has no finally around synchWithVisual: failure
+    // retains the newly published OutfitRNG seed and earlier texture writes.
+    let rng = env.visual_rng();
+    let saved_seed = rng.get_seed();
+    rng.set_seed(env.rand_next(i32::MAX) as i64);
+    crate::item_texture::synch_with_visual_ref(
+        &item,
+        env.assets(),
+        &crate::context::Loose,
+        rng,
+        &mut |m| env.rand_next(m),
+    )
+    .map_err(|error| FactoryItemFailure {
+        error,
+        item: Some(item.clone()),
+        retired: std::mem::take(&mut retired),
+    })?;
+    rng.set_seed(saved_seed);
+    if template.empty_fluid_container {
+        let component = item
+            .borrow()
+            .get_fluid_ref()
+            .map_err(|error| FactoryItemFailure {
+                error: pz_entity::runtime_load::RuntimeHostError::Storage(error),
+                item: Some(item.clone()),
+                retired: pz_entity::RetiredComponents::new(),
+            });
+        match component {
+            Ok(Some(component)) => {
+                let result = {
+                    let Some(context) = env.components().entity_context() else {
+                        retired.push_component(component);
+                        return Err(FactoryItemFailure {
+                            error: pz_entity::runtime_load::RuntimeHostError::Unsupported {
+                                operation: "actual factory fluid context",
+                                kind: Some(pz_entity::ComponentType::FluidContainer),
+                            },
+                            item: Some(item),
+                            retired,
+                        });
+                    };
+                    component
+                        .try_borrow_mut()
+                        .map_err(|_| {
+                            pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                                "empty factory fluid",
+                            )
+                        })
+                        .and_then(|mut body| {
+                            body.fluid_empty_data(context)
+                                .map_err(pz_entity::runtime_load::RuntimeHostError::Storage)
+                        })
+                };
+                retired.push_component(component);
+                match result {
+                    Ok(outcome) => {
+                        if let Err(error) = crate::component_host::notify_fluid_update(&outcome) {
+                            return Err(FactoryItemFailure {
+                                error,
+                                item: Some(item),
+                                retired,
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        return Err(FactoryItemFailure {
+                            error,
+                            item: Some(item),
+                            retired,
+                        })
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(mut failure) => {
+                failure.retired.append(retired);
+                return Err(failure);
+            }
+        }
+    }
+    finish_template_after_empty(env, &mut item.borrow_mut());
+    // Pool reuse can replace the last actual cached-script owner. Successful
+    // construction is also callable under outer WORLD/sprite scopes.
+    crate::component_host::retire_components(retired);
+    Ok(item)
+}
+
+fn create_template_prefix(
+    env: &dyn ItemEnv,
     t: Rc<ItemTemplate>,
     registry_id: i16,
 ) -> InventoryItem {
-    let mut item = InventoryItem::create(t.clone(), registry_id);
-    instance_draws(env, &mut item);
+    let mut item = InventoryItem::create(t, registry_id);
+    // Explicit archive/value factory uses its template's captured scalar. It
+    // is separate from the actual factory's current script-argument read.
+    if let crate::ItemKind::Food(food) = &mut item.kind {
+        food.minutes_to_cook = item.template.minutes_to_cook as f32;
+    }
+    finish_constructor_prefix(env, &mut item);
+    item.condition = item.condition_max.max(0).min(item.condition_max);
+    item.broken = item.condition <= 0;
+    item
+}
+
+fn copy_bag_capacity_ref(
+    item: &crate::shared::ItemRef,
+    template: &ItemTemplate,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    if template.class != ItemClass::Container {
+        return Ok(());
+    }
+    let capacity = || -> pz_entity::runtime_load::HostResult<i32> {
+        match &template.script {
+            Some(script) => Ok(script
+                .0
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag capacity script"))?
+                .capacity),
+            None => Ok(template.capacity), // Explicit captured fixture input.
+        }
+    };
+    let first = capacity()?;
+    item.try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag itemCapacity"))?
+        .item_capacity = first as f32;
+    let capacity = capacity()?;
+    let child = {
+        let mut body = item
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag raw capacity"))?;
+        let actual_weight = body.actual_weight;
+        let crate::ItemKind::Container(bag) = &mut body.kind else {
+            return Err(RuntimeHostError::InvalidHostState(
+                "InstanceItem bag receiver",
+            ));
+        };
+        bag.capacity = capacity;
+        // General.warn uses genuine Java Object identity in InventoryItem's
+        // toString. Never invent that diagnostic or proceed beyond its phase.
+        if capacity as f32 > 50.0f32 - actual_weight {
+            return Err(RuntimeHostError::Unsupported {
+                operation: "native bag capacity identity warning",
+                kind: None,
+            });
+        }
+        bag.container
+            .slot()
+            .cloned()
+            .ok_or(RuntimeHostError::Unsupported {
+                operation: "native null bag factory child diagnostic",
+                kind: None,
+            })?
+    };
+    crate::shared::pin_owner(&child);
+    child
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag child capacity"))?
+        .capacity = capacity;
+    crate::shared::observe_container(&child);
+    let reduction = match &template.script {
+        Some(script) => {
+            script
+                .0
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag weightReduction script"))?
+                .weight_reduction
+        }
+        None => template.weight_reduction,
+    }
+    .clamp(0, 100);
+    let child = {
+        let mut body = item
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag weightReduction"))?;
+        let crate::ItemKind::Container(bag) = &mut body.kind else {
+            return Err(RuntimeHostError::InvalidHostState(
+                "InstanceItem bag receiver",
+            ));
+        };
+        bag.weight_reduction = reduction;
+        bag.container
+            .slot()
+            .cloned()
+            .ok_or(RuntimeHostError::Unsupported {
+                operation: "native null bag factory child diagnostic",
+                kind: None,
+            })?
+    };
+    crate::shared::pin_owner(&child);
+    child
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag child weightReduction"))?
+        .weight_reduction = reduction;
+    crate::shared::observe_container(&child);
+    crate::shared::observe_item(item);
+    Ok(())
+}
+
+fn copy_bag_common_weight_ref(
+    item: &crate::shared::ItemRef,
+    template: &ItemTemplate,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    if template.class != ItemClass::Container {
+        return Ok(());
+    }
+    let current = || -> pz_entity::runtime_load::HostResult<f32> {
+        match &template.script {
+            Some(script) => Ok(script
+                .0
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag common weight script"))?
+                .actual_weight),
+            None => Ok(template.actual_weight), // Explicit captured input.
+        }
+    };
+    let weight = current()?;
+    item.try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag actualWeight"))?
+        .actual_weight = if weight < 0.0 { 0.0 } else { weight };
+    let weight = current()?;
+    item.try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag weight"))?
+        .weight = if weight < 0.0 { 0.0 } else { weight };
+    crate::shared::observe_item(item);
+    Ok(())
+}
+
+fn copy_common_item_capacity_ref(
+    item: &crate::shared::ItemRef,
+    template: &ItemTemplate,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let capacity = match &template.script {
+        Some(script) => {
+            script
+                .0
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("InstanceItem common itemCapacity script"))?
+                .item_capacity
+        }
+        None => template.item_capacity, // Explicit captured fixture input.
+    };
+    item.try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem common itemCapacity receiver"))?
+        .item_capacity = capacity as f32;
+    crate::shared::observe_item(item);
+    Ok(())
+}
+
+// InstanceItem PC504,516,534 read the current constructor argument, after
+// Food's superclass and subclass initialization, separately from PC742.
+fn copy_food_poison_ref(item: &crate::shared::ItemRef, template: &ItemTemplate) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError as E;
+    if template.class != ItemClass::Food { return Ok(()); }
+    for phase in 0..3 {
+        let value = if let Some(script) = &template.script {
+            let script = script.0.try_borrow().map_err(|_| E::Borrowed("InstanceItem Food poison script"))?;
+            match phase { 0 => i32::from(script.poison), 1 => script.poison_detection_level, _ => script.poison_power }
+        } else { match phase { 0 => i32::from(template.poison), 1 => template.poison_detection_level, _ => template.poison_power } };
+        let mut item = item.try_borrow_mut().map_err(|_| E::Borrowed("InstanceItem Food poison receiver"))?;
+        let crate::ItemKind::Food(food) = &mut item.kind else { return Err(E::InvalidHostState("Food receiver class")) };
+        match phase { 0 => food.poison = value != 0, 1 => food.poison_level_for_recipe = value, _ => food.poison_power = value }
+    }
+    Ok(())
+}
+fn copy_food_herbalist_ref(item: &crate::shared::ItemRef, template: &ItemTemplate) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError as E;
+    if template.class != ItemClass::Food { return Ok(()); }
+    let herbalist = if let Some(script) = &template.script {
+        script.0.try_borrow().map_err(|_| E::Borrowed("InstanceItem Food herbalist script"))?.herbalist_type.clone()
+    } else { template.herbalist_type.clone() };
+    let mut item = item.try_borrow_mut().map_err(|_| E::Borrowed("InstanceItem Food herbalist receiver"))?;
+    let crate::ItemKind::Food(food) = &mut item.kind else { return Err(E::InvalidHostState("Food receiver class")) };
+    food.herbalist_type = herbalist;
+    Ok(())
+}
+
+fn copy_food_minutes_to_cook_ref(
+    item: &crate::shared::ItemRef,
+    template: &ItemTemplate,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    if template.class != ItemClass::Food {
+        return Ok(());
+    }
+    let minutes = if let Some(script) = template.script.as_ref() {
+        script
+            .0
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("InstanceItem Food minutesToCook script"))?
+            .minutes_to_cook
+    } else {
+        // Explicit captured fixture input, rather than a live-script proxy.
+        template.minutes_to_cook
+    };
+    let mut body = item
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem Food minutesToCook receiver"))?;
+    let crate::ItemKind::Food(food) = &mut body.kind else {
+        return Err(RuntimeHostError::InvalidHostState(
+            "InstanceItem Food receiver class",
+        ));
+    };
+    food.minutes_to_cook = minutes as f32;
+    Ok(())
+}
+
+fn finish_constructor_prefix(env: &dyn ItemEnv, item: &mut InventoryItem) {
+    let t = item.template.clone();
+    instance_draws(env, item);
     // Item.InstanceItem: moveables and radios read their world sprite;
     // createItemInternal then reads the `Moveables.<sprite>` name.
     if t.class == ItemClass::Moveable {
@@ -203,13 +712,9 @@ pub fn create_from_template(
     {
         item.read_from_world_sprite(ws, env);
     }
-    let codec = env.components();
-    match codec.factory_entity(&t, &mut crate::component::EnvRng(env)) {
-        Some(c) => item.set_components(c),
-        None => {
-            item.components = codec.factory_components(&t, &mut crate::component::EnvRng(env));
-        }
-    }
+}
+
+fn finish_template_before_empty(env: &dyn ItemEnv, item: &mut InventoryItem) {
     // `OutfitRNG.setSeed(Rand.Next(Integer.MAX_VALUE))` around
     // `synchWithVisual` (the visual draws come from `visual_rng`).
     let rng = env.visual_rng();
@@ -220,14 +725,10 @@ pub fn create_from_template(
         item.synch_with_visual(Some(a), &crate::context::Loose, rng);
     }
     rng.set_seed(saved_seed);
-    // createItemInternal: a `<type>Empty` fluid container starts empty.
-    if t.empty_fluid_container {
-        let ctx = env.components().entity_context();
-        if let Some(mut fc) = ctx.and_then(|c| item.get_fluid_container(c)) {
-            fc.empty();
-            item.set_fluid_container(fc);
-        }
-    }
+}
+
+fn finish_template_after_empty(env: &dyn ItemEnv, item: &mut InventoryItem) {
+    let t = item.template.clone();
     item.id = env.rand_next(2146250223).wrapping_add(1233423);
     if let Some(ms) = &t.moveable_sprite {
         item.read_from_world_sprite(ms, env);
@@ -237,7 +738,6 @@ pub fn create_from_template(
         item.uses = item.get_max_uses();
         item.update_weight_by(|n| env.script_actual_weight(n));
     }
-    item
 }
 
 /// The `Rand` draws `Item.InstanceItem` and the item constructors make

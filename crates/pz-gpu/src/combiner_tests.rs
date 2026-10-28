@@ -10,6 +10,18 @@ const BLEND: [u32; 4] = [770, 771, 1, 771];
 const OVERLAY: [u32; 4] = [774, 771, 772, 771];
 const HOLE: [u32; 4] = [770, 0, 1, 771];
 
+/// These measured blend fixtures can land on neighboring 8-bit RGB
+/// codes on different backends. Keep alpha/branch checks exact and bound
+/// the blended RGB error to one code. WGSL leaves intermediate rounding
+/// unspecified: https://www.w3.org/TR/WGSL/#floating-point-accuracy
+fn assert_blended_pixel(actual: [u8; 4], expected: [u8; 4], label: &str) {
+    assert_eq!(actual[3], expected[3], "{label}: alpha");
+    for channel in 0..3 {
+        assert!(actual[channel].abs_diff(expected[channel]) <= 1,
+            "{label}: channel {channel}, actual={actual:?}, expected={expected:?}");
+    }
+}
+
 fn gpu() -> Option<Gpu> {
     match Gpu::new_headless(16, 16) {
         Ok(g) => Some(g),
@@ -188,7 +200,7 @@ fn blood_and_dirt_overlays_multiply_the_texture_below() {
         }
         let o = cmd(&overlay, shader, Some(&m), &params, OVERLAY);
         let (_, px) = run(&mut g, &mut tm, &[blit(&base), o]);
-        assert_eq!(px[0], want, "{shader:?} {intensity} {a}");
+        assert_blended_pixel(px[0], want, &format!("{shader:?} {intensity} {a}"));
     }
 }
 
@@ -264,10 +276,9 @@ fn add_hole_cuts_alpha_between_the_cutoffs() {
         &mut tm,
         &[cmd(&c, CombinerShader::AddHole, Some(&mask), &[], HOLE)],
     );
-    assert_eq!(
-        &px[..3],
-        &[[200, 100, 50, 255], [86, 43, 21, 109], [0, 0, 0, 0]]
-    );
+    assert_eq!(px[0], [200, 100, 50, 255]);
+    assert_blended_pixel(px[1], [86, 43, 21, 109], "hole edge");
+    assert_eq!(px[2], [0, 0, 0, 0]);
 }
 
 #[test]

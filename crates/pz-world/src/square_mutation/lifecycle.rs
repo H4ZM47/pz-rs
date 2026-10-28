@@ -5,6 +5,295 @@
 
 use super::{MutationEnv, ObjectRef};
 use crate::objects::{IsoObject, ObjectKind};
+use crate::{IsoObjectRef, ObjectSlot};
+use std::cell::RefMut;
+
+#[cfg(test)]
+mod native_tests;
+
+/// Genuine supported native floor lifecycle, separate from the data-profile
+/// WorldCall recorder. Unknown registry/process/property branches stop at the
+/// phase that needs them and preserve prior entity/event effects.
+pub fn native_floor_add_to_world(
+    object: &IsoObjectRef,
+    _supplied_square: &crate::SquareRef,
+    tables: &crate::sprite::SpriteTables,
+    retired: &mut pz_entity::RetiredComponents,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let unsupported = |operation| RuntimeHostError::Unsupported {
+        operation,
+        kind: None,
+    };
+    let item = crate::floor_object::runtime::item_ref(object)?;
+    if let Some(item) = item {
+        if pz_inventory::world_update::should_update_in_world_ref(
+            &item,
+            &PlainFloorContext { tables },
+        )? {
+            return Err(unsupported("actual cell processWorldItems registry"));
+        }
+        if matches!(
+            item.try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("floor addToWorld inventory class"))?
+                .kind,
+            pz_inventory::ItemKind::Container(_)
+        ) {
+            return Err(unsupported("actual floor inventory addItemsToProcessItems"));
+        }
+    }
+    // GameEntityManager.RegisterEntity returns for no components. Its
+    // nonempty manager branch must not be replaced by a successful trace.
+    {
+        let body = object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor RegisterEntity receiver"))?;
+        if !body.components.is_empty() {
+            return Err(unsupported("actual floor GameEntityManager.RegisterEntity"));
+        }
+    }
+    object
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("floor addedToWorld flag"))?
+        .added_to_world_or_equipped = true;
+    pz_entity::runtime_event::send_entity_event(
+        &mut PlainFloorEventHost(object),
+        pz_entity::runtime_event::EntityEventType::AddedToWorld,
+        retired,
+    )?;
+
+    // Fresh static sprites have actual empty PropertyContainer fields.
+    // Nonempty property evaluation/container producers remain a distinct
+    // capability; arena/name snapshots cannot authenticate these branches.
+    let sprite = object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("floor sprite properties"))?
+        .sprite
+        .native_slot()
+        .cloned()
+        .ok_or_else(|| unsupported("actual unmanaged floor sprite properties"))?;
+    {
+        let sprite = sprite
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor createContainers sprite"))?;
+        if !sprite.data.properties.is_empty() || sprite.data.properties.flags() != (0, 0) {
+            return Err(unsupported(
+                "native nonempty floor sprite property evaluation",
+            ));
+        }
+    }
+    if object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("floor containers"))?
+        .container_count()
+        != 0
+    {
+        return Err(unsupported("actual floor container processItems registry"));
+    }
+    // getPipedFuelAmount first consults actual object ModData, even when
+    // the sprite has no FuelAmount property. Its live table path is pending.
+    if object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("floor piped fuel ModData"))?
+        .mod_data
+        .is_some()
+    {
+        return Err(unsupported("actual floor piped fuel ModData query"));
+    }
+    // With no containers and no property flags the generator, fridge and
+    // waterPiped branches are authenticated false. No RNG is consumed.
+    {
+        let sprite = sprite
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor tent sprite name"))?;
+        if sprite
+            .data
+            .name
+            .as_deref()
+            .is_some_and(|name| name.starts_with("camping_01"))
+            && matches!(sprite.data.tile_sheet_index, 0 | 3)
+        {
+            return Err(unsupported("actual floor tent ambient emitter"));
+        }
+    }
+    // This entry accepts the actual WorldInventory subclass only, which is
+    // neither Door/Window nor Tree. Empty properties lack AmbientSound/RGB.
+    {
+        let sprite = sprite
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor wind sprite"))?;
+        if sprite.data.move_with_wind {
+            return Err(unsupported("actual floor wind render effect"));
+        }
+    }
+    try_flag_object_for_hot_save(object)
+}
+
+struct PlainFloorContext<'a> {
+    tables: &'a crate::sprite::SpriteTables,
+}
+impl pz_inventory::world_update::WorldItemUpdateContext for PlainFloorContext<'_> {
+    fn is_server(&self) -> pz_entity::runtime_load::HostResult<bool> {
+        Ok(false)
+    }
+    fn is_client(&self) -> pz_entity::runtime_load::HostResult<bool> {
+        Ok(false)
+    }
+    fn world_object_index(
+        &self,
+        owner: &pz_entity::EntityOwner,
+    ) -> pz_entity::runtime_load::HostResult<i32> {
+        use pz_entity::runtime_load::RuntimeHostError;
+        let object = owner
+            .try_handle::<IsoObject>()
+            .ok_or(RuntimeHostError::InvalidHostState(
+                "floor predicate world-item allocation",
+            ))?;
+        let square = {
+            let body = object
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("floor predicate object.square"))?;
+            // Native returns -1 for null square or a non-WorldInventory
+            // receiver without consulting that square's list/body.
+            let Some(square) = body.square_slot() else {
+                return Ok(-1);
+            };
+            if !matches!(body.kind, ObjectKind::WorldInventory(_)) {
+                return Ok(-1);
+            }
+            std::rc::Rc::clone(square)
+        };
+        let list = square
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor predicate square.worldObjects"))?
+            .world_objects
+            .clone();
+        let list = list
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor predicate worldObjects"))?;
+        // ArrayList.indexOf uses this actual object identity and returns the
+        // first match. Other/null entries neither cast nor borrow their bodies.
+        let index = list.entry_slots().position(|entry| {
+            matches!(entry, crate::world_objects::WorldObjectEntry::Object(candidate)
+                if std::rc::Rc::ptr_eq(candidate, &object))
+        });
+        match index {
+            Some(index) => i32::try_from(index).map_err(|_| {
+                RuntimeHostError::InvalidHostState("floor worldObjects Java index range")
+            }),
+            None => Ok(-1),
+        }
+    }
+    fn world_square_outside(
+        &self,
+        owner: &pz_entity::EntityOwner,
+    ) -> pz_entity::runtime_load::HostResult<Option<bool>> {
+        use pz_entity::runtime_load::RuntimeHostError;
+        let object = owner
+            .try_handle::<IsoObject>()
+            .ok_or(RuntimeHostError::InvalidHostState(
+                "floor predicate world-item allocation",
+            ))?;
+        let square = object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor predicate object.square"))?
+            .square_slot()
+            .cloned();
+        let Some(square) = square else {
+            return Ok(None);
+        };
+        let square = square
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor predicate square.properties"))?;
+        Ok(Some(square.properties.has(self.tables.flag.exterior)))
+    }
+    fn rotten_food_removal_days(&self) -> pz_entity::runtime_load::HostResult<i32> {
+        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+            operation: "actual floor rotten removal sandbox query",
+            kind: None,
+        })
+    }
+}
+
+struct PlainFloorEventHost<'a>(&'a IsoObjectRef);
+impl pz_entity::runtime_event::EntityEventHost for PlainFloorEventHost<'_> {
+    fn entity_owner(&self) -> pz_entity::runtime_load::HostResult<pz_entity::EntityOwner> {
+        Ok(pz_entity::EntityOwner::from_ref(self.0))
+    }
+    fn has_component_container(&self) -> pz_entity::runtime_load::HostResult<bool> {
+        // The supported fresh receiver has no component container. An
+        // allocated empty representation makes the same no-callback branch.
+        Ok(!self
+            .0
+            .try_borrow()
+            .map_err(|_| {
+                pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                    "floor event component container",
+                )
+            })?
+            .components
+            .is_empty())
+    }
+    fn component_count(&self) -> pz_entity::runtime_load::HostResult<usize> {
+        Ok(self
+            .0
+            .try_borrow()
+            .map_err(|_| {
+                pz_entity::runtime_load::RuntimeHostError::Borrowed("floor event components")
+            })?
+            .components
+            .len())
+    }
+    fn component_event(
+        &mut self,
+        _: usize,
+        _: &pz_entity::runtime_event::EntityEventRef,
+        _: &mut pz_entity::RetiredComponents,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+            operation: "actual floor component onEntityEvent",
+            kind: None,
+        })
+    }
+    // Current native client profile has Java desiredAssertionStatus disabled.
+    fn assertions_enabled(&self) -> bool {
+        false
+    }
+    fn debug_enabled(&self) -> pz_entity::runtime_load::HostResult<bool> {
+        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+            operation: "native entity-event Core.debug assertion profile",
+            kind: None,
+        })
+    }
+}
+
+/// Reads the current actual object.square slot at the native phase. The
+/// retained chunk-state association survives coordinate/cell replacement.
+pub fn try_flag_object_for_hot_save(
+    object: &IsoObjectRef,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let square = object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("flagForHotSave object.square"))?
+        .square_slot()
+        .cloned();
+    let Some(square) = square else {
+        return Ok(());
+    };
+    let state = square
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("flagForHotSave square.chunk"))?
+        .chunk_hot_save
+        .clone();
+    if let Some(state) = state {
+        state
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("flagForHotSave actual chunk"))?
+            .flag_for_hot_save();
+    }
+    Ok(())
+}
 
 /// `ObjectAmbientEmitters` logic `IsoObject.addToWorld` attaches
 /// (`chunk.addObjectAmbientEmitter(obj, logic)`).
@@ -128,44 +417,140 @@ pub enum WorldCall {
     /// `addToProcessItemsRemove(item)`, `ItemSoundManager.removeItem(item)`,
     /// `item.atlasTexture = null`.
     WorldItemRemoved,
-    /// `GameEntityFactory.TransferComponent(obj, item, FluidContainer)`
-    /// (`IsoWorldInventoryObject.removeFromSquare` of an object with a
-    /// fluid container).
-    WorldItemTransferFluid,
     /// `IsoMovingObject.removeFromWorld`: the cell's object, add and
     /// remove lists and `MovingObjectUpdateScheduler` (pushables in the
     /// object list).
     MovingObjectRemove,
 }
 
-fn call(env: &mut MutationEnv<'_>, r: ObjectRef, c: WorldCall) {
-    let MutationEnv {
-        cell, world, rand, ..
-    } = env;
-    let Some(o) = cell
-        .get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)
-        .and_then(|sq| sq.objects.iter_mut().find(|o| o.id == r.id))
-    else {
-        return;
-    };
-    world.world_call(r, o, &mut **rand, c);
+/// A Java method receiver remains the same allocation across host calls,
+/// even when callbacks remove or replace its square membership.
+struct Receiver {
+    location: ObjectRef,
+    object: IsoObjectRef,
+}
+impl std::ops::Deref for Receiver {
+    type Target = ObjectRef;
+    fn deref(&self) -> &ObjectRef {
+        &self.location
+    }
+}
+fn receiver(env: &MutationEnv<'_>, r: ObjectRef) -> Option<Receiver> {
+    Some(Receiver {
+        location: r,
+        object: env.object_handle(r)?,
+    })
+}
+fn call(env: &mut MutationEnv<'_>, r: &Receiver, c: WorldCall) {
+    env.world
+        .world_call(r.location, r.object.clone(), &mut *env.rand, c);
+}
+fn call_checked(
+    env: &mut MutationEnv<'_>,
+    r: &Receiver,
+    c: WorldCall,
+) -> pz_entity::runtime_load::HostResult<()> {
+    env.world
+        .try_world_call(r.location, r.object.clone(), &mut *env.rand, c)
+}
+fn with_obj<T>(_env: &MutationEnv<'_>, r: &Receiver, f: impl FnOnce(&IsoObject) -> T) -> Option<T> {
+    Some(f(&r.object.borrow()))
+}
+fn obj_mut<'r>(_env: &mut MutationEnv<'_>, r: &'r Receiver) -> Option<RefMut<'r, IsoObject>> {
+    Some(r.object.borrow_mut())
 }
 
-fn with_obj<T>(env: &MutationEnv<'_>, r: ObjectRef, f: impl FnOnce(&IsoObject) -> T) -> Option<T> {
-    env.cell
-        .get_grid_square(r.pos.0, r.pos.1, r.pos.2)
-        .and_then(|sq| sq.objects.iter().find(|o| o.id == r.id))
-        .map(f)
+// Only the dispatch tag is captured. Live inventories, components and VM
+// metadata stay with the retained receiver, never a whole-kind archive copy.
+#[derive(Clone, Copy)]
+enum LifecycleClass {
+    Base,
+    Barbecue,
+    CarBatteryCharger,
+    Thumpable,
+    ClothingDryer,
+    ClothingWasher,
+    CombinationWasherDryer,
+    StackedWasherDryer,
+    Compost,
+    Trap,
+    Door,
+    FeedingTrough,
+    Fire,
+    Fireplace,
+    Generator,
+    Hutch,
+    Jukebox,
+    LightSwitch,
+    Mannequin,
+    Stove,
+    Radio,
+    Television,
+    Window,
+    WorldInventory,
+    Pushable,
+    ButcherHook,
+}
+impl LifecycleClass {
+    fn of(kind: &ObjectKind) -> Self {
+        match kind {
+            ObjectKind::Barbecue(_) => Self::Barbecue,
+            ObjectKind::CarBatteryCharger(_) => Self::CarBatteryCharger,
+            ObjectKind::Thumpable(_) => Self::Thumpable,
+            ObjectKind::ClothingDryer(_) => Self::ClothingDryer,
+            ObjectKind::ClothingWasher(_) => Self::ClothingWasher,
+            ObjectKind::CombinationWasherDryer(_) => Self::CombinationWasherDryer,
+            ObjectKind::StackedWasherDryer(_) => Self::StackedWasherDryer,
+            ObjectKind::Compost(_) => Self::Compost,
+            ObjectKind::Trap(_) => Self::Trap,
+            ObjectKind::Door(_) => Self::Door,
+            ObjectKind::FeedingTrough(_) => Self::FeedingTrough,
+            ObjectKind::Fire(_) => Self::Fire,
+            ObjectKind::Fireplace(_) => Self::Fireplace,
+            ObjectKind::Generator(_) => Self::Generator,
+            ObjectKind::Hutch(_) => Self::Hutch,
+            ObjectKind::Jukebox => Self::Jukebox,
+            ObjectKind::LightSwitch(_) => Self::LightSwitch,
+            ObjectKind::Mannequin(_) => Self::Mannequin,
+            ObjectKind::Stove(_) => Self::Stove,
+            ObjectKind::Radio(_) => Self::Radio,
+            ObjectKind::Television(_) => Self::Television,
+            ObjectKind::Window(_) => Self::Window,
+            ObjectKind::WorldInventory(_) => Self::WorldInventory,
+            ObjectKind::Pushable(_) => Self::Pushable,
+            ObjectKind::ButcherHook => Self::ButcherHook,
+            ObjectKind::Object
+            | ObjectKind::Curtain(_)
+            | ObjectKind::WindowFrame { .. }
+            | ObjectKind::Tree(_)
+            | ObjectKind::BrokenGlass
+            | ObjectKind::Barricade(_)
+            | ObjectKind::AnimalTrack(_) => Self::Base,
+        }
+    }
 }
 
-fn obj_mut<'e>(env: &'e mut MutationEnv<'_>, r: ObjectRef) -> Option<&'e mut IsoObject> {
-    env.cell
-        .get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)
-        .and_then(|sq| sq.objects.iter_mut().find(|o| o.id == r.id))
+fn lifecycle_class(
+    r: &Receiver,
+    operation: &'static str,
+) -> pz_entity::runtime_load::HostResult<LifecycleClass> {
+    let object = r
+        .object
+        .try_borrow()
+        .map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed(operation))?;
+    Ok(LifecycleClass::of(&object.kind))
 }
 
-fn kind_of(env: &MutationEnv<'_>, r: ObjectRef) -> Option<ObjectKind> {
-    with_obj(env, r, |o| o.kind.clone())
+fn fire_perm(r: &Receiver) -> pz_entity::runtime_load::HostResult<bool> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let object = r
+        .object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("fire lifecycle perm"))?;
+    match &object.kind {
+        ObjectKind::Fire(fire) => Ok(fire.perm),
+        _ => Err(RuntimeHostError::InvalidHostState("fire class changed")),
+    }
 }
 
 fn container_types(o: &IsoObject) -> Vec<Option<String>> {
@@ -180,30 +565,27 @@ fn fridge_index(o: &IsoObject) -> Option<usize> {
 }
 
 /// `couldBePoweredByGenerator()`.
-fn could_be_powered_by_generator(env: &mut MutationEnv<'_>, r: ObjectRef) -> bool {
-    let Some(o) = with_obj(env, r, |o| o.clone()) else {
-        return false;
-    };
-    if env.world.piped_fuel_amount(r, &o) > 0 {
+fn could_be_powered_by_generator(env: &mut MutationEnv<'_>, r: &Receiver) -> bool {
+    // Synchronous property query: do not archive-copy live components or
+    // nested item graphs merely to read power/container information.
+    let o = r.object.borrow();
+    if env.world.piped_fuel_amount(r.location, &o) > 0 {
         return true;
     }
     fridge_index(&o).is_some()
 }
 
 /// `IsoObject.addToWorld()`.
-fn base_add(env: &mut MutationEnv<'_>, r: ObjectRef) {
+fn base_add(env: &mut MutationEnv<'_>, r: &Receiver) -> pz_entity::runtime_load::HostResult<()> {
     call(env, r, WorldCall::RegisterEntity);
+    // GameEntity.addToWorld writes this after RegisterEntity even when the
+    // manager's empty-component branch performs no registration.
+    r.object.borrow_mut().added_to_world_or_equipped = true;
     {
         let sprites = &*env.sprites;
-        if let Some(o) = env
-            .cell
-            .get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)
-            .and_then(|sq| sq.objects.iter_mut().find(|o| o.id == r.id))
-        {
-            // A malformed `ContainerCapacity` throws upstream; the
-            // container is then left as far as it was built.
-            let _ = crate::cell_loader::create_containers_from_sprite_properties(sprites, o);
-        }
+        let mut o = r.object.borrow_mut();
+        // Malformed properties preserve the partially built container.
+        let _ = crate::cell_loader::create_containers_from_sprite_properties(sprites, &mut o);
     }
     let n = with_obj(env, r, |o| o.container_count()).unwrap_or(0);
     for i in 0..n {
@@ -219,29 +601,50 @@ fn base_add(env: &mut MutationEnv<'_>, r: ObjectRef) {
     if could_be_powered_by_generator(env, r) {
         call(env, r, WorldCall::PoweredByGenerator { add: true });
     }
-    let Some(o) = with_obj(env, r, |o| o.clone()) else {
-        return;
+    // These checks need only scalar sprite/class data. Cloning a whole live
+    // floor object here would archive-copy its retained item/component graph.
+    let Some((sprite, is_tree)) = with_obj(env, r, |o| {
+        (o.sprite.retained(), matches!(o.kind, ObjectKind::Tree(_)))
+    }) else {
+        return Ok(());
     };
-    let spr = o.sprite.map(|s| &env.sprites.sprites[s]);
+    let spr = match &sprite {
+        // Explicit old archive-ID data profile; no actual sprite is inferred.
+        crate::objects::ObjectSprite::ArchiveUnmanaged(_) => None,
+        _ => sprite.try_read(env.sprites)?,
+    };
     let water_piped = env.sprites.tables.flag_from_string("waterPiped");
     let piped = spr
+        .as_ref()
         .zip(water_piped)
         .is_some_and(|(s, f)| s.properties.has(f));
-    let tent = spr.is_some_and(|s| {
+    let tent = spr.as_ref().is_some_and(|s| {
         s.name
             .as_deref()
             .is_some_and(|n| n.starts_with("camping_01"))
             && (s.tile_sheet_index == 0 || s.tile_sheet_index == 3)
     });
-    let ambient = spr.is_some_and(|s| env.sprites.has_prop(s, "AmbientSound"));
-    let fridge_powered = fridge_index(&o).is_some_and(|i| env.world.container_powered(r, &o, i));
+    let ambient = spr
+        .as_ref()
+        .is_some_and(|s| env.sprites.has_prop(s, "AmbientSound"));
+    drop(spr);
+    let fridge_powered = {
+        let object = r.object.borrow();
+        fridge_index(&object).is_some_and(|i| env.world.container_powered(r.location, &object, i))
+    };
     let emitter = if fridge_powered {
         Some((AmbientEmitterKind::FridgeHum, true))
-    } else if piped && env.world.fluid_amount(r, &o) > 0.0 && env.rand.next(15) == 0 {
+    } else if piped
+        && {
+            let object = r.object.borrow();
+            env.world.fluid_amount(r.location, &object) > 0.0
+        }
+        && env.rand.next(15) == 0
+    {
         Some((AmbientEmitterKind::WaterDrip, false))
     } else if tent {
         Some((AmbientEmitterKind::TentAmbiance, false))
-    } else if matches!(o.kind, ObjectKind::Tree(_)) && env.rand.next(40) == 0 {
+    } else if is_tree && env.rand.next(40) == 0 {
         Some((AmbientEmitterKind::TreeAmbiance, false))
     } else {
         None
@@ -262,50 +665,108 @@ fn base_add(env: &mut MutationEnv<'_>, r: ObjectRef) {
     call(env, r, WorldCall::CheckMoveWithWind);
     call(env, r, WorldCall::LightSource { add: true });
     call(env, r, WorldCall::FlagForHotSave);
+    Ok(())
+}
+
+/// Native allocations never enter tile-only property adapters or legacy
+/// trace hooks. A successful true means the actual native phase completed.
+fn try_native_add_to_world_dispatch(
+    object: &IsoObjectRef,
+    tables: &crate::sprite::SpriteTables,
+    retired: &mut pz_entity::RetiredComponents,
+) -> pz_entity::runtime_load::HostResult<bool> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let native_class = {
+        let body = object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("addToWorld sprite authority"))?;
+        body.sprite
+            .native_slot()
+            .map(|_| matches!(body.kind, ObjectKind::WorldInventory(_)))
+    };
+    let Some(world_item) = native_class else {
+        return Ok(false);
+    };
+    if !world_item {
+        return Err(RuntimeHostError::Unsupported {
+            operation: "actual native sprite subclass addToWorld",
+            kind: None,
+        });
+    }
+    let square = object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("native addToWorld actual square"))?
+        .square_slot()
+        .cloned()
+        .ok_or(RuntimeHostError::Unsupported {
+            operation: "native floor addToWorld null-square capability",
+            kind: None,
+        })?;
+    retired.push_owner(pz_entity::EntityOwner::from_ref(object));
+    retired.push_owner(pz_entity::EntityOwner::from_ref(&square));
+    native_floor_add_to_world(object, &square, tables, retired)?;
+    Ok(true)
 }
 
 /// `obj.addToWorld()` for the object's class.
-pub(super) fn add_to_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
-    let Some(kind) = kind_of(env, r) else {
-        return;
-    };
-    use ObjectKind as K;
-    match kind {
-        K::Barbecue(_) | K::CarBatteryCharger(_) | K::Thumpable(_) => {
-            base_add(env, r);
+fn add_to_world_on(
+    env: &mut MutationEnv<'_>,
+    r: &Receiver,
+) -> pz_entity::runtime_load::HostResult<()> {
+    let mut retired = pz_entity::RetiredComponents::new();
+    let native = try_native_add_to_world_dispatch(&r.object, &env.sprites.tables, &mut retired);
+    env.cell.retire_components(retired);
+    if native? {
+        return Ok(());
+    }
+    // Class dispatch must not clone the floor payload and its actual item
+    // graph merely to select this branch.
+    if with_obj(env, r, |o| matches!(o.kind, ObjectKind::WorldInventory(_))).unwrap_or(false) {
+        call(env, r, WorldCall::ProcessWorldItems { add: true });
+        call(env, r, WorldCall::WorldItemContainer { add: true });
+        base_add(env, r)?;
+        return Ok(());
+    }
+    let class = lifecycle_class(r, "addToWorld class")?;
+    use LifecycleClass as K;
+    match class {
+        K::Barbecue | K::CarBatteryCharger | K::Thumpable => {
+            base_add(env, r)?;
             call(env, r, WorldCall::ProcessIsoObjectAdd);
         }
-        K::ClothingDryer(_)
-        | K::ClothingWasher(_)
-        | K::CombinationWasherDryer(_)
-        | K::StackedWasherDryer(_)
-        | K::Compost(_)
-        | K::Trap(_) => call(env, r, WorldCall::ProcessIsoObjectAdd),
-        K::Door(_) => {
-            base_add(env, r);
+        K::ClothingDryer
+        | K::ClothingWasher
+        | K::CombinationWasherDryer
+        | K::StackedWasherDryer
+        | K::Compost
+        | K::Trap => call(env, r, WorldCall::ProcessIsoObjectAdd),
+        K::Door => {
+            base_add(env, r)?;
             call(env, r, WorldCall::DancingDoor { add: true });
         }
-        K::FeedingTrough(_) => {
-            base_add(env, r);
+        K::FeedingTrough => {
+            base_add(env, r)?;
             call(env, r, WorldCall::ProcessIsoObjectAdd);
             call(env, r, WorldCall::FeedingTroughCheck);
         }
-        K::Fire(f) => {
-            if f.perm {
+        K::Fire => {
+            if fire_perm(r)? {
                 call(env, r, WorldCall::StaticUpdater { add: true });
             } else {
                 call(env, r, WorldCall::FireManager { add: true });
             }
         }
-        K::Fireplace(_) => {
+        K::Fireplace => {
             call(env, r, WorldCall::ProcessIsoObjectAdd);
-            let capacity = with_obj(env, r, |o| {
-                o.sprite.is_some_and(|s| {
-                    env.sprites
-                        .has_prop(&env.sprites.sprites[s], "ContainerCapacity")
-                })
-            })
-            .unwrap_or(false);
+            let capacity = {
+                let object = r.object.try_borrow().map_err(|_| {
+                    pz_entity::runtime_load::RuntimeHostError::Borrowed("fireplace sprite")
+                })?;
+                let sprite = object.sprite.try_read(env.sprites)?;
+                sprite
+                    .as_ref()
+                    .is_some_and(|sprite| env.sprites.has_prop(sprite, "ContainerCapacity"))
+            };
             if capacity {
                 call(
                     env,
@@ -317,27 +778,40 @@ pub(super) fn add_to_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
                 );
             }
         }
-        K::Generator(_) => {
+        K::Generator => {
             call(env, r, WorldCall::ProcessIsoObjectAdd);
             call(env, r, WorldCall::Generators { add: true });
         }
-        K::Hutch(h) => {
-            base_add(env, r);
-            if h.master.is_some() {
+        K::Hutch => {
+            base_add(env, r)?;
+            // IsoHutch.isSlave reads linkedX/linkedY AFTER the base call.
+            // The archive-only master payload is not the native predicate.
+            let is_slave = {
+                use pz_entity::runtime_load::RuntimeHostError;
+                let object = r
+                    .object
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("addToWorld hutch isSlave"))?;
+                match &object.kind {
+                    ObjectKind::Hutch(hutch) => hutch.linked_x > 0 && hutch.linked_y > 0,
+                    _ => return Err(RuntimeHostError::InvalidHostState("hutch class changed")),
+                }
+            };
+            if !is_slave {
                 call(env, r, WorldCall::HutchManager { add: true });
             }
         }
         K::Jukebox => {
-            base_add(env, r);
+            base_add(env, r)?;
             call(env, r, WorldCall::StaticUpdater { add: true });
         }
-        K::LightSwitch(_) => {
+        K::LightSwitch => {
             let (light_room, lights, can_be_modified) = {
-                let Some(o) = obj_mut(env, r) else {
-                    return;
+                let Some(mut o) = obj_mut(env, r) else {
+                    return Ok(());
                 };
                 let ObjectKind::LightSwitch(s) = &mut o.kind else {
-                    return;
+                    return Ok(());
                 };
                 if !s.activated {
                     s.last_minute_stamp = -1;
@@ -364,14 +838,14 @@ pub(super) fn add_to_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
                 call(env, r, WorldCall::PoweredByGenerator { add: true });
             }
         }
-        K::Mannequin(_) => {
-            base_add(env, r);
+        K::Mannequin => {
+            base_add(env, r)?;
             call(env, r, WorldCall::MannequinInit);
         }
-        K::Stove(_) => {
-            base_add(env, r);
+        K::Stove => {
+            base_add(env, r)?;
             if with_obj(env, r, |o| o.container.is_none()).unwrap_or(true) {
-                return;
+                return Ok(());
             }
             call(env, r, WorldCall::ProcessIsoObjectAdd);
             call(
@@ -385,27 +859,36 @@ pub(super) fn add_to_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
             call(env, r, WorldCall::StoveSetActivated);
             call(env, r, WorldCall::LightSource { add: true });
         }
-        K::Radio(_) | K::Television(_) => {
+        K::Radio | K::Television => {
             call(env, r, WorldCall::RadioDevice { add: true });
             call(env, r, WorldCall::StaticUpdater { add: true });
-            base_add(env, r);
+            base_add(env, r)?;
         }
-        K::Window(_) => {
-            base_add(env, r);
+        K::Window => {
+            base_add(env, r)?;
             call(env, r, WorldCall::WindowList { add: true });
         }
-        K::WorldInventory(_) => {
+        K::WorldInventory => {
             call(env, r, WorldCall::ProcessWorldItems { add: true });
             call(env, r, WorldCall::WorldItemContainer { add: true });
-            base_add(env, r);
+            base_add(env, r)?;
         }
-        _ => base_add(env, r),
+        K::Base | K::ButcherHook | K::Pushable => base_add(env, r)?,
     }
+    Ok(())
 }
 
+/// Checked live base lifecycle. Unregister failure preserves the added flag.
+fn base_remove(env: &mut MutationEnv<'_>, r: &Receiver) -> pz_entity::runtime_load::HostResult<()> {
+    remove_world_item_base(env, r)
+}
+
+/// Legacy fire-manager data projection only. Its infallible trace capability
+/// cannot stand in for a checked Native registry host.
 /// `IsoObject.removeFromWorld()`.
-fn base_remove(env: &mut MutationEnv<'_>, r: ObjectRef) {
+fn base_remove_data_projection(env: &mut MutationEnv<'_>, r: &Receiver) {
     call(env, r, WorldCall::UnregisterEntity);
+    r.object.borrow_mut().added_to_world_or_equipped = false;
     call(env, r, WorldCall::ProcessIsoObjectRemove);
     call(env, r, WorldCall::StaticUpdater { add: false });
     let n = with_obj(env, r, |o| o.container_count()).unwrap_or(0);
@@ -433,220 +916,377 @@ fn base_remove(env: &mut MutationEnv<'_>, r: ObjectRef) {
 }
 
 /// `obj.removeFromWorld()` for the object's class.
-pub(super) fn remove_from_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
-    let Some(kind) = kind_of(env, r) else {
-        return;
-    };
-    use ObjectKind as K;
-    match kind {
+fn remove_from_world_on(
+    env: &mut MutationEnv<'_>,
+    r: &Receiver,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let class = lifecycle_class(r, "removeFromWorld class")?;
+    use LifecycleClass as K;
+    match class {
         K::ButcherHook => {
-            call(env, r, WorldCall::ButcherHookAnimal);
-            call(env, r, WorldCall::StopEmitter);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::ButcherHookAnimal)?;
+            call_checked(env, r, WorldCall::StopEmitter)?;
+            base_remove(env, r)?;
         }
-        K::Barbecue(_) => {
-            call(env, r, WorldCall::RemoveHeatSource);
-            base_remove(env, r);
+        K::Barbecue => {
+            call_checked(env, r, WorldCall::RemoveHeatSource)?;
+            base_remove(env, r)?;
         }
-        K::CarBatteryCharger(_) => {
-            call(env, r, WorldCall::StopChargingSound);
-            base_remove(env, r);
+        K::CarBatteryCharger => {
+            call_checked(env, r, WorldCall::StopChargingSound)?;
+            base_remove(env, r)?;
         }
-        K::Door(_) => {
-            base_remove(env, r);
-            call(env, r, WorldCall::DancingDoor { add: false });
+        K::Door => {
+            base_remove(env, r)?;
+            call_checked(env, r, WorldCall::DancingDoor { add: false })?;
         }
-        K::FeedingTrough(_) => {
-            call(env, r, WorldCall::FeedingTroughZoneRemove);
-            base_remove(env, r);
+        K::FeedingTrough => {
+            call_checked(env, r, WorldCall::FeedingTroughZoneRemove)?;
+            base_remove(env, r)?;
         }
-        K::Fire(f) => {
-            if !f.perm {
-                call(env, r, WorldCall::FireManager { add: false });
+        K::Fire => {
+            if !fire_perm(r)? {
+                call_checked(env, r, WorldCall::FireManager { add: false })?;
             }
-            call(env, r, WorldCall::FireStopSound);
-            call(env, r, WorldCall::RemoveObjectLamppost);
-            call(env, r, WorldCall::RemoveHeatSource);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::FireStopSound)?;
+            call_checked(env, r, WorldCall::RemoveObjectLamppost)?;
+            call_checked(env, r, WorldCall::RemoveHeatSource)?;
+            base_remove(env, r)?;
         }
-        K::Fireplace(_) => {
-            call(env, r, WorldCall::RemoveObjectLamppost);
-            call(env, r, WorldCall::RemoveHeatSource);
-            base_remove(env, r);
+        K::Fireplace => {
+            call_checked(env, r, WorldCall::RemoveObjectLamppost)?;
+            call_checked(env, r, WorldCall::RemoveHeatSource)?;
+            base_remove(env, r)?;
         }
-        K::Generator(_) => {
-            call(env, r, WorldCall::Generators { add: false });
-            call(env, r, WorldCall::StopEmitter);
-            base_remove(env, r);
+        K::Generator => {
+            call_checked(env, r, WorldCall::Generators { add: false })?;
+            call_checked(env, r, WorldCall::StopEmitter)?;
+            base_remove(env, r)?;
         }
-        K::Hutch(_) => {
-            base_remove(env, r);
-            call(env, r, WorldCall::HutchManager { add: false });
+        K::Hutch => {
+            base_remove(env, r)?;
+            call_checked(env, r, WorldCall::HutchManager { add: false })?;
         }
-        K::LightSwitch(_) => {
-            let (light_room, lights) = with_obj(env, r, |o| match &o.kind {
-                ObjectKind::LightSwitch(s) => (s.light_room, s.lights.len()),
-                _ => (true, 0),
-            })
-            .unwrap_or((true, 0));
+        K::LightSwitch => {
+            let (light_room, lights) = {
+                let body = r
+                    .object
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld light switch"))?;
+                match &body.kind {
+                    ObjectKind::LightSwitch(s) => (s.light_room, s.lights.len()),
+                    _ => {
+                        return Err(RuntimeHostError::InvalidHostState(
+                            "light switch class changed",
+                        ))
+                    }
+                }
+            };
             if !light_room && lights > 0 {
                 for i in 0..lights {
-                    if let Some(ObjectKind::LightSwitch(s)) = obj_mut(env, r).map(|o| &mut o.kind) {
+                    {
+                        let mut o = r.object.try_borrow_mut().map_err(|_| {
+                            RuntimeHostError::Borrowed("removeFromWorld light switch")
+                        })?;
+                        let ObjectKind::LightSwitch(s) = &mut o.kind else {
+                            return Err(RuntimeHostError::InvalidHostState(
+                                "light switch class changed",
+                            ));
+                        };
                         s.lights[i].active = false;
                     }
-                    call(
+                    call_checked(
                         env,
                         r,
                         WorldCall::SwitchLamppost {
                             light: i,
                             add: false,
                         },
-                    );
+                    )?;
                 }
-                if let Some(ObjectKind::LightSwitch(s)) = obj_mut(env, r).map(|o| &mut o.kind) {
+                {
+                    let mut o = r
+                        .object
+                        .try_borrow_mut()
+                        .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld light switch"))?;
+                    let ObjectKind::LightSwitch(s) = &mut o.kind else {
+                        return Err(RuntimeHostError::InvalidHostState(
+                            "light switch class changed",
+                        ));
+                    };
                     s.lights.clear();
                 }
             }
             if light_room {
-                call(env, r, WorldCall::RoomLightSwitchRemove);
+                call_checked(env, r, WorldCall::RoomLightSwitchRemove)?;
             }
-            call(env, r, WorldCall::ClearOnOverlay);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::ClearOnOverlay)?;
+            base_remove(env, r)?;
         }
-        K::Mannequin(_) => {
-            base_remove(env, r);
-            call(env, r, WorldCall::MannequinListRemove);
+        K::Mannequin => {
+            base_remove(env, r)?;
+            call_checked(env, r, WorldCall::MannequinListRemove)?;
         }
-        K::Thumpable(_) => {
-            call(env, r, WorldCall::RemoveObjectLamppost);
-            base_remove(env, r);
+        K::Thumpable => {
+            call_checked(env, r, WorldCall::RemoveObjectLamppost)?;
+            base_remove(env, r)?;
         }
-        K::Trap(_) => {
-            call(env, r, WorldCall::StopEmitter);
-            base_remove(env, r);
+        K::Trap => {
+            call_checked(env, r, WorldCall::StopEmitter)?;
+            base_remove(env, r)?;
         }
-        K::Radio(_) | K::Television(_) => {
-            call(env, r, WorldCall::RadioDevice { add: false });
-            call(env, r, WorldCall::LightSource { add: false });
-            call(env, r, WorldCall::RadioCleanSounds);
-            base_remove(env, r);
+        K::Radio | K::Television => {
+            call_checked(env, r, WorldCall::RadioDevice { add: false })?;
+            call_checked(env, r, WorldCall::LightSource { add: false })?;
+            call_checked(env, r, WorldCall::RadioCleanSounds)?;
+            base_remove(env, r)?;
         }
-        K::Window(_) => {
-            base_remove(env, r);
-            call(env, r, WorldCall::WindowList { add: false });
+        K::Window => {
+            base_remove(env, r)?;
+            call_checked(env, r, WorldCall::WindowList { add: false })?;
         }
-        K::WorldInventory(_) => {
-            call(env, r, WorldCall::ProcessWorldItems { add: false });
-            call(env, r, WorldCall::WorldItemRemoved);
-            call(env, r, WorldCall::WorldItemContainer { add: false });
-            base_remove(env, r);
+        K::WorldInventory => {
+            call_checked(env, r, WorldCall::ProcessWorldItems { add: false })?;
+            call_checked(env, r, WorldCall::WorldItemRemoved)?;
+            call_checked(env, r, WorldCall::WorldItemContainer { add: false })?;
+            base_remove(env, r)?;
         }
-        K::Pushable(_) => {
-            call(env, r, WorldCall::MovingObjectRemove);
-            base_remove(env, r);
+        K::Pushable => {
+            call_checked(env, r, WorldCall::MovingObjectRemove)?;
+            base_remove(env, r)?;
         }
-        _ => base_remove(env, r),
+        K::Base
+        | K::ClothingDryer
+        | K::ClothingWasher
+        | K::CombinationWasherDryer
+        | K::StackedWasherDryer
+        | K::Compost
+        | K::Jukebox
+        | K::Stove => base_remove(env, r)?,
     }
+    Ok(())
 }
 
-/// `obj.removeFromSquare()`: out of `objects` and `specialObjects` (and
-/// `worldObjects` for a world item). Returns the object.
-pub(super) fn remove_from_square(env: &mut MutationEnv<'_>, r: ObjectRef) -> Option<IsoObject> {
-    let world_item = with_obj(env, r, |o| {
-        (
-            matches!(o.kind, ObjectKind::WorldInventory(_)),
-            o.has_components,
-        )
-    });
-    if let Some((true, has_components)) = world_item {
-        if has_components {
-            call(env, r, WorldCall::WorldItemTransferFluid);
-        }
+pub(super) fn add_to_world(
+    env: &mut MutationEnv<'_>,
+    r: ObjectRef,
+) -> pz_entity::runtime_load::HostResult<()> {
+    if let Some(r) = receiver(env, r) {
+        add_to_world_on(env, &r)?;
     }
-    let sq = env.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)?;
-    if matches!(world_item, Some((true, _))) {
-        if let Some(i) = sq.world_objects.iter().position(|&w| w == r.id) {
-            sq.world_objects.remove(i);
-        }
-    }
-    let removed = sq.object_index(r.id).map(|i| sq.objects.remove(i));
-    if let Some(i) = sq.special_objects.iter().position(|&s| s == r.id) {
-        sq.special_objects.remove(i);
-    }
-    removed
+    Ok(())
 }
-
-/// The `removeFromWorld` entry points the fire code uses (`BurnWalls`
-/// replacing an object, `IsoFire.removeFromWorld` and the feeding
-/// trough's `handleBurning`).
-impl MutationEnv<'_> {
-    /// `obj.removeFromWorld()` of `r`, which is on its square, for its
-    /// class.
-    pub(crate) fn object_remove_from_world(&mut self, r: ObjectRef) {
-        remove_from_world(self, r);
-    }
-
-    /// `obj.removeFromWorld()` for the object's class, for `obj` (id
-    /// `r.id`) taken off square `r.pos` by `removeFromSquare`, which leaves
-    /// its `square` set: the class code runs as for an object still there.
-    /// It reaches the object only by reference, never by scanning the
-    /// square, so `obj` is put back at the end of `objects` for the call
-    /// and taken off again, with what the call changed on it.
-    pub(crate) fn object_remove_from_world_detached(&mut self, r: ObjectRef, obj: &mut IsoObject) {
-        let Some(sq) = self.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2) else {
-            return;
+pub(super) fn add_to_world_handle(
+    env: &mut MutationEnv<'_>,
+    r: ObjectRef,
+    object: &IsoObjectRef,
+) -> pz_entity::runtime_load::HostResult<()> {
+    add_to_world_on(
+        env,
+        &Receiver {
+            location: r,
+            object: object.clone(),
+        },
+    )
+}
+pub(super) fn remove_from_world_handle(
+    env: &mut MutationEnv<'_>,
+    r: ObjectRef,
+    object: &IsoObjectRef,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    // Reading the class must not clone the floor payload and its item graph.
+    let world_item = matches!(
+        object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld receiver"))?
+            .kind,
+        ObjectKind::WorldInventory(_)
+    );
+    if world_item {
+        let receiver = Receiver {
+            location: r,
+            object: object.clone(),
         };
-        debug_assert!(sq.object_index(r.id).is_none());
-        sq.objects.push(obj.clone());
-        remove_from_world(self, r);
-        if let Some(sq) = self.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2) {
-            if let Some(i) = sq.object_index(r.id) {
-                *obj = sq.objects.remove(i);
+        call_checked(env, &receiver, WorldCall::ProcessWorldItems { add: false })?;
+        call_checked(env, &receiver, WorldCall::WorldItemRemoved)?;
+        call_checked(env, &receiver, WorldCall::WorldItemContainer { add: false })?;
+        return remove_world_item_base(env, &receiver);
+    }
+    remove_from_world_on(
+        env,
+        &Receiver {
+            location: r,
+            object: object.clone(),
+        },
+    )
+}
+
+fn remove_world_item_base(
+    env: &mut MutationEnv<'_>,
+    r: &Receiver,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    call_checked(env, r, WorldCall::UnregisterEntity)?;
+    // GameEntity.removeFromWorld: UnregisterEntity PC13, then flag PC18.
+    // Do not clear before a failed unregister or execute a later system phase.
+    r.object
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld added flag"))?
+        .added_to_world_or_equipped = false;
+    call_checked(env, r, WorldCall::ProcessIsoObjectRemove)?;
+    call_checked(env, r, WorldCall::StaticUpdater { add: false })?;
+    let count = r
+        .object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld containers"))?
+        .container_count();
+    for container in 0..count {
+        call_checked(
+            env,
+            r,
+            WorldCall::ProcessItems {
+                container,
+                add: false,
+            },
+        )?;
+    }
+    call_checked(env, r, WorldCall::StopEmitter)?;
+    call_checked(env, r, WorldCall::RemoveAmbientEmitters)?;
+    call_checked(env, r, WorldCall::LightSource { add: false })?;
+    call_checked(env, r, WorldCall::ClearOnOverlay)?;
+    if env.render.fbo_render_chunk() {
+        call_checked(env, r, WorldCall::UnregisterHighlight)?;
+    }
+    let powered = {
+        let body = r
+            .object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld power query"))?;
+        env.world.piped_fuel_amount(r.location, &body) > 0 || fridge_index(&body).is_some()
+    };
+    if powered {
+        call_checked(env, r, WorldCall::PoweredByGenerator { add: false })?;
+    }
+    call_checked(env, r, WorldCall::FlagForHotSave)?;
+    Ok(())
+}
+
+/// Remove only this actual receiver; a same-ID replacement is a different object.
+pub(super) fn remove_from_square_handle(
+    env: &mut MutationEnv<'_>,
+    r: ObjectRef,
+    object: &IsoObjectRef,
+) -> pz_entity::runtime_load::HostResult<Option<ObjectSlot>> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let mut retired = pz_entity::RetiredComponents::new();
+    retired.push_owner(pz_entity::EntityOwner::from_ref(object));
+    let result = (|| {
+        let (world_item, fluid) = {
+            let body = object
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("removeFromSquare receiver"))?;
+            let world_item = matches!(body.kind, ObjectKind::WorldInventory(_));
+            let fluid = if world_item {
+                body.components
+                    .get_ref(pz_entity::ComponentType::FluidContainer)
+                    .map_err(RuntimeHostError::Storage)?
+            } else {
+                None
+            };
+            (world_item, fluid)
+        };
+        if let Some(fluid) = fluid {
+            retired.push_component(fluid);
+            let item = crate::floor_object::runtime::item_ref(object)?.ok_or(
+                RuntimeHostError::InvalidHostState(
+                    "world fluid transfer requires a live floor item",
+                ),
+            )?;
+            retired.push_owner(pz_entity::EntityOwner::from_ref(&item));
+            // Native transfer runs before either membership is removed. The
+            // item.worldItem field is independent and is not cleared here.
+            crate::floor_object::runtime::fluid_to_item(object, &item, &mut retired)?;
+        }
+        let Some(sq_owner) = env.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2) else {
+            return Ok(None);
+        };
+        let mut sq = sq_owner
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("removeFromSquare square"))?;
+        if world_item {
+            let removed = sq
+                .world_objects
+                .try_borrow_mut()
+                .map_err(|_| RuntimeHostError::Borrowed("removeFromSquare world list"))?
+                .remove_first_object(object);
+            if let Some(crate::world_objects::WorldObjectEntry::Object(owner)) = removed {
+                retired.push_owner(pz_entity::EntityOwner::from_ref(&owner));
+                sq.retire_object(ObjectSlot::retain(&owner));
             }
         }
-    }
-
-    /// `IsoObject.removeFromWorld()` (the base class part) of `r`, which is
-    /// on its square.
-    pub(crate) fn base_remove_from_world(&mut self, r: ObjectRef) {
-        base_remove(self, r);
-    }
-
-    /// One [`WorldCall`] for `obj`, which need not be on a square any
-    /// more (`r` is where it was).
-    pub(crate) fn world_call_on(&mut self, r: ObjectRef, obj: &mut IsoObject, c: WorldCall) {
-        let MutationEnv { world, rand, .. } = self;
-        world.world_call(r, obj, &mut **rand, c);
-    }
-
-    /// `IsoObject.removeFromWorld()` (the base class part) of `obj`, which
-    /// already left square `r.pos` (`IsoFire.extinctFire` takes the fire
-    /// off the square before `removeFromWorld`).
-    pub(crate) fn base_remove_from_world_detached(&mut self, r: ObjectRef, obj: &mut IsoObject) {
-        self.world_call_on(r, obj, WorldCall::UnregisterEntity);
-        self.world_call_on(r, obj, WorldCall::ProcessIsoObjectRemove);
-        self.world_call_on(r, obj, WorldCall::StaticUpdater { add: false });
-        for i in 0..obj.container_count() {
-            self.world_call_on(
-                r,
-                obj,
-                WorldCall::ProcessItems {
-                    container: i,
-                    add: false,
-                },
-            );
+        let removed = sq
+            .objects
+            .iter()
+            .position(|o| o.ptr_eq_ref(object))
+            .map(|i| sq.remove_object_slot(i));
+        if let Some(i) = sq.special_objects.iter().position(|&s| s == r.id) {
+            sq.special_objects.remove(i);
         }
-        self.world_call_on(r, obj, WorldCall::StopEmitter);
-        self.world_call_on(r, obj, WorldCall::RemoveAmbientEmitters);
-        self.world_call_on(r, obj, WorldCall::LightSource { add: false });
-        self.world_call_on(r, obj, WorldCall::ClearOnOverlay);
-        if self.render.fbo_render_chunk() {
-            self.world_call_on(r, obj, WorldCall::UnregisterHighlight);
-        }
-        let powered = self.world.piped_fuel_amount(r, obj) > 0 || fridge_index(obj).is_some();
-        if powered {
-            self.world_call_on(r, obj, WorldCall::PoweredByGenerator { add: false });
-        }
-        self.world_call_on(r, obj, WorldCall::FlagForHotSave);
+        Ok(removed)
+    })();
+    // Both success and every partial-prefix error hand off physical pins
+    // before returning through any enclosing world/sprite guards.
+    env.cell.retire_components(retired);
+    result
+}
+impl MutationEnv<'_> {
+    /// Invoke `addToWorld` on the selected actual receiver. Host callbacks
+    /// must be staged outside enclosing world/sprite guards by the caller.
+    pub fn object_add_to_world(
+        &mut self,
+        r: ObjectRef,
+        object: &IsoObjectRef,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        add_to_world_handle(self, r, object)
+    }
+    pub(crate) fn object_remove_from_world(
+        &mut self,
+        r: ObjectRef,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        let Some(object) = self.try_object_handle(r)? else {
+            return Ok(());
+        };
+        self.object_remove_from_world_detached(r, &object)
+    }
+    /// A detached Java receiver is reachable by reference, never reinserted
+    /// into square lists merely to execute its method.
+    pub(crate) fn object_remove_from_world_detached(
+        &mut self,
+        r: ObjectRef,
+        obj: &IsoObjectRef,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_owner(pz_entity::EntityOwner::from_ref(obj));
+        let result = remove_from_world_handle(self, r, obj);
+        self.cell.retire_components(retired);
+        result
+    }
+    pub(crate) fn world_call_on(&mut self, r: ObjectRef, obj: &IsoObjectRef, c: WorldCall) {
+        self.world.world_call(r, obj.clone(), &mut *self.rand, c);
+    }
+    pub(crate) fn base_remove_from_world_detached_data_projection(
+        &mut self,
+        r: ObjectRef,
+        obj: &IsoObjectRef,
+    ) {
+        base_remove_data_projection(
+            self,
+            &Receiver {
+                location: r,
+                object: obj.clone(),
+            },
+        );
     }
 }

@@ -93,8 +93,8 @@ impl SoundWorld for WorldSoundAdapter<'_> {
     fn room_at(&self, x: i32, y: i32, z: i32) -> RoomAt {
         match self.cell.get_grid_square(x, y, z) {
             None => RoomAt::NoSquare,
-            Some(sq) if sq.room_id == -1 => RoomAt::Outside,
-            Some(sq) => RoomAt::Room(sq.room_id as u64),
+            Some(sq) if sq.borrow().room_id == -1 => RoomAt::Outside,
+            Some(sq) => RoomAt::Room(sq.borrow().room_id as u64),
         }
     }
     fn on_world_sound(

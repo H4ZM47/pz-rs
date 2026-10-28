@@ -344,7 +344,7 @@ impl PathfindService {
         }
         for dir in IsoDirections::ALL {
             if let Some(sq2) = square.get_adjacent_square(dir, bits.squares) {
-                self.queue_square_update(sq2, bits);
+                self.queue_square_update(&sq2.borrow(), bits);
             }
         }
         self.queue_square_update(square, bits);

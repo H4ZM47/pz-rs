@@ -13,20 +13,12 @@ use pz_scripts::objects::items::ModelWeaponPart;
 
 use crate::component::{ComponentBlob, COMPONENT_WORLD_VERSION};
 use crate::item::{InventoryItem, ItemKind};
-use crate::lua_table::{LuaKey, LuaValue};
+use crate::moddata::ModDataResult;
 
 /// `ItemTag.USE_WORLD_STATIC_MODEL`.
 pub const TAG_USE_WORLD_STATIC_MODEL: &str = "base:useworldstaticmodel";
 
 impl InventoryItem {
-    fn mod_data_string(&self, key: &str) -> Option<Option<&str>> {
-        let v = self.table.as_ref()?.rawget(&LuaKey::Str(key.to_string()))?;
-        Some(match v {
-            LuaValue::Str(s) => Some(s.as_str()),
-            _ => None,
-        })
-    }
-
     /// `getStaticModelsByIndex()`.
     pub fn get_static_models_by_index(&self) -> Option<&Rc<Vec<String>>> {
         self.static_models_by_index.as_ref()
@@ -71,18 +63,22 @@ impl InventoryItem {
 
     /// `InventoryItem.getStaticModel()` (without the subclass overrides): a
     /// `staticModel` mod data string, the indexed instance model, or the
-    /// script's. A non-string mod data value (the original's cast throws)
-    /// and an index past the list's end give `None`.
-    pub fn get_base_static_model(&self) -> Option<String> {
-        if let Some(v) = self.mod_data_string("staticModel") {
-            return v.map(str::to_string);
+    /// script's. A non-string value returns the native cast error; a host
+    /// borrow conflict remains a distinct capability error.
+    pub fn try_get_base_static_model(&self) -> ModDataResult<Option<String>> {
+        if let Some(value) = self.mod_data_string("staticModel")? {
+            return Ok(Some(value));
         }
         if self.model_index != -1 {
-            if let Some(l) = &self.static_models_by_index {
-                return index(l, self.model_index);
+            if let Some(models) = &self.static_models_by_index {
+                return Ok(index(models, self.model_index));
             }
         }
-        self.template.static_model.clone()
+        Ok(self.template.static_model.clone())
+    }
+    pub fn get_base_static_model(&self) -> Option<String> {
+        self.try_get_base_static_model()
+            .expect("unborrowed model ModData with native string values")
     }
 
     /// `getStaticModel()` with the `HandWeapon` (indexed weapon sprite, then
@@ -91,40 +87,51 @@ impl InventoryItem {
     ///
     /// `model_script` is `ScriptManager.getModelScript(name)` answering the
     /// script's `getName()`.
+    pub fn try_get_static_model(
+        &self,
+        model_script: &dyn Fn(&str) -> Option<String>,
+    ) -> ModDataResult<Option<String>> {
+        if let ItemKind::Weapon(w) = &self.kind {
+            if self.model_index != -1 {
+                if let Some(l) = &w.weapon_sprites_by_index {
+                    return Ok(index(l, self.model_index));
+                }
+            }
+            return Ok(w.weapon_sprite.clone());
+        }
+        if let ItemKind::Food(f) = &self.kind {
+            let variant = |suffix: &str| {
+                let base = self.try_get_base_static_model()?;
+                Ok::<_, crate::ModDataError>(model_script(&format!(
+                    "{}{suffix}",
+                    base.as_deref().unwrap_or("null")
+                )))
+            };
+            if f.burnt {
+                if let Some(n) = variant("Burnt")? {
+                    return Ok(Some(n));
+                }
+            }
+            if self.is_rotten() {
+                if let Some(n) = variant("Rotten")? {
+                    return Ok(Some(n));
+                }
+            }
+            if f.cooked {
+                if let Some(n) = variant("Cooked")? {
+                    return Ok(Some(n));
+                }
+            }
+        }
+        self.try_get_base_static_model()
+    }
+
     pub fn get_static_model(
         &self,
         model_script: &dyn Fn(&str) -> Option<String>,
     ) -> Option<String> {
-        if let ItemKind::Weapon(w) = &self.kind {
-            if self.model_index != -1 {
-                if let Some(l) = &w.weapon_sprites_by_index {
-                    return index(l, self.model_index);
-                }
-            }
-            return w.weapon_sprite.clone();
-        }
-        if let ItemKind::Food(f) = &self.kind {
-            let variant = |suffix: &str| {
-                let base = self.get_base_static_model();
-                model_script(&format!("{}{suffix}", base.as_deref().unwrap_or("null")))
-            };
-            if f.burnt {
-                if let Some(n) = variant("Burnt") {
-                    return Some(n);
-                }
-            }
-            if self.is_rotten() {
-                if let Some(n) = variant("Rotten") {
-                    return Some(n);
-                }
-            }
-            if f.cooked {
-                if let Some(n) = variant("Cooked") {
-                    return Some(n);
-                }
-            }
-        }
-        self.get_base_static_model()
+        self.try_get_static_model(model_script)
+            .expect("unborrowed model ModData with native string values")
     }
 
     /// `tryGetWorldStaticModelByIndex(index)`.
@@ -141,25 +148,34 @@ impl InventoryItem {
     /// value is (by identity) the literal `"true"`, which only holds for the
     /// value `Moveable` sets at runtime, not for one read from a save. That
     /// runtime path is not ported, so the branch never applies here.
-    pub fn get_world_static_model(&self) -> Option<String> {
-        if let Some(v) = self.mod_data_string("worldStaticModel") {
-            return v.map(str::to_string);
+    pub fn try_get_world_static_model(&self) -> ModDataResult<Option<String>> {
+        if let Some(value) = self.mod_data_string("worldStaticModel")? {
+            return Ok(Some(value));
         }
-        if let Some(m) = self.try_get_world_static_model_by_index(self.model_index) {
-            return Some(m);
+        if let Some(model) = self.try_get_world_static_model_by_index(self.model_index) {
+            return Ok(Some(model));
         }
-        self.template.world_static_model.clone()
+        Ok(self.template.world_static_model.clone())
     }
-
-    /// `getStaticModelException()`.
+    pub fn get_world_static_model(&self) -> Option<String> {
+        self.try_get_world_static_model()
+            .expect("unborrowed world model ModData with native string values")
+    }
+    pub fn try_get_static_model_exception(
+        &self,
+        model_script: &dyn Fn(&str) -> Option<String>,
+    ) -> ModDataResult<Option<String>> {
+        if self.has_tag(TAG_USE_WORLD_STATIC_MODEL) {
+            return self.try_get_world_static_model();
+        }
+        self.try_get_static_model(model_script)
+    }
     pub fn get_static_model_exception(
         &self,
         model_script: &dyn Fn(&str) -> Option<String>,
     ) -> Option<String> {
-        if self.has_tag(TAG_USE_WORLD_STATIC_MODEL) {
-            return self.get_world_static_model();
-        }
-        self.get_static_model(model_script)
+        self.try_get_static_model_exception(model_script)
+            .expect("unborrowed model ModData with native string values")
     }
 
     /// The model index part of `synchWithVisual`: an item with model lists
@@ -214,92 +230,156 @@ impl InventoryItem {
         }
     }
 
-    /// The item's ECS components, decoded (`None` when a block does not
-    /// decode, e.g. with an opaque codec's raw bytes of an older format).
+    /// Detached, read-only archive/presentation values. Runtime users obtain
+    /// actual component references instead of retaining this snapshot.
     pub fn decode_components(&self, ctx: &dyn EntityContext) -> Option<Components> {
-        match &self.component_cache {
-            Some(c) => Some((**c).clone()),
-            None => decode_blobs(&self.components, ctx),
-        }
+        self.components.values_snapshot(ctx).ok()
     }
 
-    /// Replaces the item's components with `c` (encoded as saved, and kept
-    /// decoded).
-    pub fn set_components(&mut self, c: Components) {
-        self.components = encode_blobs(&c);
-        self.component_cache = Some(Box::new(c));
+    /// Explicit unowned factory/archive replacement. All displaced native
+    /// slots are returned for destruction after enclosing guards end.
+    pub fn set_components(
+        &mut self,
+        values: Components,
+    ) -> Result<pz_entity::RetiredComponents, pz_entity::runtime_load::RuntimeHostError> {
+        use pz_entity::runtime_load::RuntimeHostError;
+        let replacement = crate::item_components::ItemComponents::from_values_unowned(values)
+            .map_err(|rejected| RuntimeHostError::Storage(rejected.error))?;
+        self.components
+            .replace_unowned(replacement)
+            .map_err(|rejected| rejected.into_error_and_retire())
     }
 
-    /// `getFluidContainer()`: the `FluidContainer` component. Read amount,
-    /// capacity and colour with its `get_amount`, `get_capacity`,
-    /// `get_filled_ratio`, `is_empty` and `get_color(ctx)`.
+    /// The actual native allocation; absence and encoded/unavailable state
+    /// remain distinct. No body is copied or decoded by this live getter.
+    pub fn get_fluid_ref(
+        &self,
+    ) -> Result<Option<pz_entity::ComponentRef>, pz_entity::RuntimeError> {
+        self.components.get_ref(ComponentType::FluidContainer)
+    }
+
+    /// The actual Attributes component allocation. An encoded body or a
+    /// borrowed store is an error, rather than a missing attribute container.
+    pub fn get_attributes_ref(
+        &self,
+    ) -> Result<Option<pz_entity::ComponentRef>, pz_entity::RuntimeError> {
+        self.components.get_ref(ComponentType::Attributes)
+    }
+
+    /// Read the actual attribute instance. This propagates nested instance
+    /// borrows and encoded storage instead of reporting a false absence.
+    pub fn try_get_attribute_by_id(
+        &self,
+        id: i16,
+    ) -> Result<Option<pz_entity::components::attributes::AttributeValue>, pz_entity::RuntimeError>
+    {
+        let Some(component) = self.get_attributes_ref()? else {
+            return Ok(None);
+        };
+        let body =
+            component
+                .try_borrow()
+                .map_err(|_| pz_entity::RuntimeError::BorrowedComponent {
+                    index: None,
+                    kind: ComponentType::Attributes,
+                })?;
+        body.attributes()
+            .ok_or(pz_entity::RuntimeError::InvalidBody(
+                ComponentType::Attributes,
+            ))?
+            .get_value(id)
+    }
+
+    /// Detached fluid data for existing pure value-presentation consumers.
+    /// This is not the Lua/native getFluidContainer implementation.
     pub fn get_fluid_container(&self, ctx: &dyn EntityContext) -> Option<FluidContainer> {
-        if let Some(c) = &self.component_cache {
-            return c.fluid_container().cloned();
-        }
-        let b = self
+        match self
             .components
-            .iter()
-            .find(|b| b.type_id == ComponentType::FluidContainer.id())?;
-        match decode_blobs(std::slice::from_ref(b), ctx)?.list.pop()? {
-            Component::FluidContainer(f) => Some(f),
+            .value_snapshot(ComponentType::FluidContainer, ctx)
+            .ok()??
+        {
+            Component::FluidContainer(fluid) => Some(fluid),
             _ => None,
         }
     }
 
-    /// `attrib()`: the `Attributes` component's attributes.
+    /// Detached attributes for value-presentation consumers.
     pub fn get_attributes(
         &self,
         ctx: &dyn EntityContext,
     ) -> Option<pz_entity::components::attributes::AttributeContainer> {
-        if let Some(c) = &self.component_cache {
-            return match c.get(ComponentType::Attributes) {
-                Some(Component::Attributes(a)) => Some(a.clone()),
-                _ => None,
-            };
-        }
-        let b = self
+        match self
             .components
-            .iter()
-            .find(|b| b.type_id == ComponentType::Attributes.id())?;
-        match decode_blobs(std::slice::from_ref(b), ctx)?.list.pop()? {
-            Component::Attributes(a) => Some(a),
+            .value_snapshot(ComponentType::Attributes, ctx)
+            .ok()??
+        {
+            Component::Attributes(attributes) => Some(attributes),
             _ => None,
         }
     }
 
-    /// `attrib().getAttribute(<name>)`'s value.
     pub fn get_attribute(
         &self,
         ctx: &dyn EntityContext,
         name: &str,
     ) -> Option<pz_entity::components::attributes::AttributeValue> {
         let id = ctx.attribute_type_by_name(name)?.id;
-        let a = self.get_attributes(ctx)?;
-        a.attributes
+        self.get_attributes(ctx)?
+            .attributes
             .into_iter()
-            .find(|a| a.id == id)
-            .map(|a| a.value)
+            .find(|attribute| attribute.id == id)
+            .map(|attribute| attribute.value)
     }
 
-    /// Stores a changed `FluidContainer` back into the item's components
-    /// (in place, or appended when the item had none).
-    pub fn set_fluid_container(&mut self, fc: FluidContainer) {
-        if let Some(mut c) = self.component_cache.take() {
-            c.add_replace_in_place(Component::FluidContainer(fc));
-            self.set_components(*c);
-            return;
-        }
-        let mut comps = Components::new();
-        comps.add(Component::FluidContainer(fc));
-        let blob = encode_blobs(&comps).pop().expect("one component");
-        match self
-            .components
-            .iter_mut()
-            .find(|b| b.type_id == blob.type_id)
-        {
-            Some(b) => *b = blob,
-            None => self.components.push(blob),
+    /// Legacy data-setting boundary, not a native fluid mutator. Existing
+    /// live allocation identity is retained. Adding to an owned entity must
+    /// use ItemComponentHost so metadata/owner/lifecycle phases are real.
+    pub fn set_fluid_container(
+        &mut self,
+        fluid: FluidContainer,
+    ) -> Result<pz_entity::RetiredComponents, pz_entity::runtime_load::RuntimeHostError> {
+        use pz_entity::runtime_load::RuntimeHostError;
+        use pz_entity::{RuntimeComponent, RuntimeError};
+        match self.get_fluid_ref() {
+            Ok(Some(component)) => {
+                let mut body = component
+                    .try_borrow_mut()
+                    .map_err(|_| RuntimeHostError::Borrowed("set fluid body"))?;
+                *body
+                    .fluid_mut()
+                    .ok_or(RuntimeHostError::Storage(RuntimeError::InvalidBody(
+                        ComponentType::FluidContainer,
+                    )))? = fluid;
+                body.fluid_mut()
+                    .expect("immutable FluidContainer class")
+                    .cache_invalidated = true;
+                Ok(pz_entity::RetiredComponents::new())
+            }
+            Ok(None) | Err(RuntimeError::NeedsPromotion { .. }) => {
+                if self.components.is_bound()
+                    || self
+                        .components
+                        .has_live_owners()
+                        .map_err(RuntimeHostError::Storage)?
+                {
+                    return Err(RuntimeHostError::Unsupported {
+                        operation: "add fluid without item lifecycle host",
+                        kind: Some(ComponentType::FluidContainer),
+                    });
+                }
+                let component = RuntimeComponent::new_unowned(Component::FluidContainer(fluid))
+                    .map_err(|rejected| RuntimeHostError::Storage(rejected.error))?;
+                let _old_encoded = self
+                    .components
+                    .runtime_mut()
+                    .remove_encoded_type_unordered(ComponentType::FluidContainer.id());
+                self.components
+                    .runtime_mut()
+                    .push_ref_if_absent(component)
+                    .map_err(|rejected| RuntimeHostError::Storage(rejected.error))?;
+                Ok(pz_entity::RetiredComponents::new())
+            }
+            Err(error) => Err(RuntimeHostError::Storage(error)),
         }
     }
 }
@@ -389,10 +469,8 @@ mod tests {
         );
         assert_eq!(i.get_world_static_model().as_deref(), Some("Base.MugWorld"));
         // Mod data overrides both.
-        i.table.get_or_insert_with(Default::default).rawset(
-            LuaKey::Str("staticModel".into()),
-            Some(LuaValue::Str("Base.Other".into())),
-        );
+        i.set_mod_data_value("staticModel", Some(pz_kahlua::Value::str("Base.Other")))
+            .unwrap();
         assert_eq!(i.get_static_model(&|_| None).as_deref(), Some("Base.Other"));
         // An item that already has an index keeps it.
         i.pick_model_index(&mut |_| panic!("no draw"));

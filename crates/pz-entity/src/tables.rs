@@ -3,11 +3,14 @@
 //! types `Attribute.<clinit>` registers and the fluids `Fluid.<clinit>`
 //! creates for `FluidType` constants.
 
-use std::collections::BTreeMap;
+use std::cell::{Ref, RefCell};
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Deref;
+use std::rc::Rc;
 
 use pz_classfile::{Jar, Value};
 
-use crate::context::AttributeKind;
+use crate::context::{AttributeKind, Lookup};
 
 const ATTRIBUTE: &str = "zombie/entity/components/attributes/Attribute";
 const ATTRIBUTE_TYPE: &str = "zombie/entity/components/attributes/AttributeType$";
@@ -36,10 +39,42 @@ pub enum InitialValue {
     Str(String),
 }
 
+/// The actual registered type object. Instances retain this allocation;
+/// detached AttributeTypeInfo values are explicit presentation metadata.
+pub type AttributeTypeRef = Rc<RefCell<AttributeTypeDefinition>>;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NumericAttributeBounds {
+    pub min: InitialValue,
+    pub max: InitialValue,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NumericAttributeValidation {
+    pub requires_validation: bool,
+    pub bounds: Option<NumericAttributeBounds>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttributeTypeDefinition {
+    info: AttributeTypeInfo,
+    pub read_only: bool,
+    /// Unknown imported metadata is distinct from native requires=false.
+    pub numeric_validation: Lookup<NumericAttributeValidation>,
+}
+
+impl Deref for AttributeTypeDefinition {
+    type Target = AttributeTypeInfo;
+    fn deref(&self) -> &Self::Target {
+        &self.info
+    }
+}
+
 /// `Attribute`'s registry (`attributeTypeIdMap`).
 #[derive(Clone, Debug, Default)]
 pub struct AttributeTypes {
-    by_id: BTreeMap<i16, AttributeTypeInfo>,
+    by_id: BTreeMap<i16, AttributeTypeRef>,
+    by_name: HashMap<String, AttributeTypeRef>,
 }
 
 impl AttributeTypes {
@@ -47,7 +82,17 @@ impl AttributeTypes {
     pub fn from_jar(jar: &Jar) -> pz_classfile::Result<AttributeTypes> {
         let cf = pz_classfile::load_class(jar, ATTRIBUTE)?;
         let mut out = AttributeTypes::default();
-        for init in pz_classfile::static_inits(&cf)? {
+        let effects = pz_classfile::method_effects(&cf, "<clinit>")?;
+        let mut fields = HashMap::new();
+        for effect in effects {
+            if let pz_classfile::Effect::Call(Value::Call { name, args, .. }) = &effect {
+                if name == "setBounds" {
+                    apply_static_attribute_bounds(&fields, args)?;
+                }
+            }
+            let pz_classfile::Effect::PutStatic(init) = effect else {
+                continue;
+            };
             let Value::Call { name, args, .. } = &init.value else {
                 continue;
             };
@@ -80,13 +125,33 @@ impl AttributeTypes {
                 matches!(a, Value::Static { class, name }
                     if class.ends_with("Attribute$UI$Display") && name == "Hidden")
             });
-            out.insert(AttributeTypeInfo {
-                id: *id as i16,
-                name: n.clone(),
-                kind,
-                initial,
-                hidden_ui,
-            });
+            let numeric_validation = match kind {
+                AttributeKind::Long
+                | AttributeKind::Int
+                | AttributeKind::Short
+                | AttributeKind::Byte
+                | AttributeKind::Double
+                | AttributeKind::Float => Lookup::Found(NumericAttributeValidation {
+                    requires_validation: false,
+                    bounds: None,
+                }),
+                _ => Lookup::Unknown,
+            };
+            // Numeric/String/Bool overloads forward the fourth boolean as
+            // readOnly. The three-argument overload supplies false.
+            let read_only = matches!(args.get(3), Some(Value::Int(value)) if *value != 0);
+            let registered = out.insert_with_validation(
+                AttributeTypeInfo {
+                    id: *id as i16,
+                    name: n.clone(),
+                    kind,
+                    initial,
+                    hidden_ui,
+                },
+                read_only,
+                numeric_validation,
+            );
+            fields.insert(init.field, registered);
         }
         if out.by_id.is_empty() {
             return Err(pz_classfile::Error::Missing(
@@ -97,26 +162,111 @@ impl AttributeTypes {
     }
 
     pub fn insert(&mut self, info: AttributeTypeInfo) {
-        self.by_id.insert(info.id, info);
+        self.insert_with_validation(info, false, Lookup::Unknown);
     }
 
-    pub fn get(&self, id: i16) -> Option<&AttributeTypeInfo> {
-        self.by_id.get(&id)
+    /// Explicit registry construction; metadata imports do not invent numeric
+    /// validation. Native construction supplies the decoded class state.
+    pub fn insert_with_validation(
+        &mut self,
+        info: AttributeTypeInfo,
+        read_only: bool,
+        numeric_validation: Lookup<NumericAttributeValidation>,
+    ) -> AttributeTypeRef {
+        let id = info.id;
+        let name = info.name.to_ascii_lowercase();
+        let definition = Rc::new(RefCell::new(AttributeTypeDefinition {
+            info,
+            read_only,
+            numeric_validation,
+        }));
+        if let Some(old) = self.by_id.insert(id, definition.clone()) {
+            self.by_name.retain(|_, value| !Rc::ptr_eq(value, &old));
+        }
+        self.by_name.insert(name, definition.clone());
+        definition
+    }
+
+    pub fn get_ref(&self, id: i16) -> Option<AttributeTypeRef> {
+        self.by_id.get(&id).cloned()
+    }
+
+    pub fn by_name_ref(&self, name: &str) -> Option<AttributeTypeRef> {
+        self.by_name.get(&name.to_ascii_lowercase()).cloned()
+    }
+
+    pub fn get(&self, id: i16) -> Option<Ref<'_, AttributeTypeInfo>> {
+        self.by_id
+            .get(&id)
+            .map(|value| Ref::map(value.borrow(), |definition| &definition.info))
     }
 
     pub fn kind(&self, id: i16) -> Option<AttributeKind> {
         self.get(id).map(|t| t.kind)
     }
 
-    pub fn by_name(&self, name: &str) -> Option<&AttributeTypeInfo> {
-        self.by_id
-            .values()
-            .find(|t| t.name.eq_ignore_ascii_case(name))
+    pub fn by_name(&self, name: &str) -> Option<Ref<'_, AttributeTypeInfo>> {
+        self.by_name
+            .get(&name.to_ascii_lowercase())
+            .map(|value| Ref::map(value.borrow(), |definition| &definition.info))
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &AttributeTypeInfo> {
-        self.by_id.values()
+    pub fn iter(&self) -> impl Iterator<Item = Ref<'_, AttributeTypeInfo>> {
+        self.by_id
+            .values()
+            .map(|value| Ref::map(value.borrow(), |definition| &definition.info))
     }
+}
+
+fn numeric_constant(value: &Value) -> Option<InitialValue> {
+    match value {
+        Value::Int(value) => Some(InitialValue::Int(*value)),
+        Value::Float(value) => Some(InitialValue::Float(*value)),
+        Value::Call {
+            class, name, args, ..
+        } if class.starts_with("java/lang/") && name == "valueOf" && args.len() == 1 => {
+            numeric_constant(&args[0])
+        }
+        _ => None,
+    }
+}
+
+fn apply_static_attribute_bounds(
+    fields: &HashMap<String, AttributeTypeRef>,
+    args: &[Value],
+) -> pz_classfile::Result<()> {
+    let [Value::Static { class, name }, min, max] = args else {
+        return Err(pz_classfile::Error::Missing(
+            "Attribute setBounds receiver/arguments".into(),
+        ));
+    };
+    if class != ATTRIBUTE {
+        return Err(pz_classfile::Error::Missing(
+            "Attribute setBounds static owner".into(),
+        ));
+    }
+    let definition = fields
+        .get(name)
+        .ok_or_else(|| pz_classfile::Error::Missing(format!("Attribute setBounds type {name}")))?;
+    let min = numeric_constant(min).ok_or_else(|| {
+        pz_classfile::Error::Missing(format!("Attribute setBounds minimum {name}"))
+    })?;
+    let max = numeric_constant(max).ok_or_else(|| {
+        pz_classfile::Error::Missing(format!("Attribute setBounds maximum {name}"))
+    })?;
+    let mut definition = definition.borrow_mut();
+    let Lookup::Found(validation) = &mut definition.numeric_validation else {
+        return Err(pz_classfile::Error::Missing(format!(
+            "Attribute numeric constructor {name}"
+        )));
+    };
+    validation.requires_validation = true;
+    // Native setBounds allocates NumericVars only once. Later calls retain
+    // those same bounds; native class initialization uses valid constants.
+    if validation.bounds.is_none() {
+        validation.bounds = Some(NumericAttributeBounds { min, max });
+    }
+    Ok(())
 }
 
 /// The `FluidType` constant names `Fluid.<clinit>` creates a `Fluid` for
@@ -186,3 +336,7 @@ pub fn named_colors(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+#[path = "tables/attribute_tests.rs"]
+mod attribute_tests;

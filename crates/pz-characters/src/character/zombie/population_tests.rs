@@ -4,14 +4,17 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use pz_sandbox::ZombieConfig;
 use pz_popman::native::Native;
 use pz_popman::state_flags::{ZombieStateFlag, ZombieStateFlags};
 use pz_popman::ZombiePopulationManager;
+use pz_sandbox::ZombieConfig;
 use pz_world::defs::room_id;
 use pz_world::meta_grid::{IsoMetaCell, IsoMetaGrid};
 use pz_world::sprite::SpriteTables;
-use pz_world::{BuildingDef, BuildingIdx, GameRand, IsoCell, IsoChunk, IsoGridSquare, IsoSpriteManager, RoomDef, RoomIdx};
+use pz_world::{
+    BuildingDef, BuildingIdx, GameRand, IsoCell, IsoChunk, IsoGridSquare, IsoSpriteManager,
+    RoomDef, RoomIdx,
+};
 use pz_world_popman::{SittingChecks, WorldPopulationHost};
 
 use super::RealZombies;
@@ -75,7 +78,6 @@ fn meta() -> IsoMetaGrid {
     g
 }
 
-
 struct World {
     cell: IsoCell,
     meta: IsoMetaGrid,
@@ -99,7 +101,7 @@ impl World {
     }
 
     /// A square at `(x, y, z)` with the named flags and object types.
-    fn put(&mut self, x: i32, y: i32, z: i32, names: &[&str]) -> &mut IsoGridSquare {
+    fn put(&mut self, x: i32, y: i32, z: i32, names: &[&str]) -> pz_world::SquareRef {
         let mut sq = IsoGridSquare::new(x, y, z);
         for n in names {
             if let Some(f) = self.m.tables.flag_from_string(n) {
@@ -115,10 +117,9 @@ impl World {
             .chunks
             .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
             .unwrap();
-        ch.set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some(sq));
+        ch.set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some((sq).into()));
         self.cell.get_grid_square_mut(x, y, z).unwrap()
     }
-
 }
 
 /// [`SittingChecks`] with movers on listed squares, blocked lines to listed
@@ -165,7 +166,6 @@ impl GameRand for ListRand {
     }
 }
 
-
 struct Ctx(pz_core::random::Rand);
 impl SimContext for Ctx {
     fn rand_next(&self, m: i32) -> i32 {
@@ -181,7 +181,8 @@ impl SimContext for Ctx {
 
 #[test]
 fn population_tick_creates_a_sitting_real_zombie() {
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp/zombie_popman_sit");
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/tmp/zombie_popman_sit");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("w/zpop")).unwrap();
     std::fs::create_dir_all(dir.join("w/chunkdata")).unwrap();
@@ -192,15 +193,25 @@ fn population_tick_creates_a_sitting_real_zombie() {
     let mut m: ZombiePopulationManager<i32> = ZombiePopulationManager::new(native);
     {
         let n = &mut m.native;
-        n.mcd_set_game_state_string("Core.GameSaveWorld", "w").unwrap();
-        n.mcd_set_game_state_string("GameWindow.GameModeCacheDir", &format!("{}/", dir.display())).unwrap();
-        n.mcd_set_game_state_string("SavefileNaming.SUBDIR_CHUNKDATA", "chunkdata").unwrap();
-        n.mcd_set_game_state_string("SavefileNaming.SUBDIR_ZPOP", "zpop").unwrap();
+        n.mcd_set_game_state_string("Core.GameSaveWorld", "w")
+            .unwrap();
+        n.mcd_set_game_state_string(
+            "GameWindow.GameModeCacheDir",
+            &format!("{}/", dir.display()),
+        )
+        .unwrap();
+        n.mcd_set_game_state_string("SavefileNaming.SUBDIR_CHUNKDATA", "chunkdata")
+            .unwrap();
+        n.mcd_set_game_state_string("SavefileNaming.SUBDIR_ZPOP", "zpop")
+            .unwrap();
         n.mcd_set_game_state_bool("PAUSED", false).unwrap();
         n.mcd_init_meta_grid(0, 0, 2, 2);
         n.mcd_init(0, 0, 2, 2);
     }
-    let cfg = ZombieConfig { population_multiplier: 0.0, ..Default::default() };
+    let cfg = ZombieConfig {
+        population_multiplier: 0.0,
+        ..Default::default()
+    };
     m.init((0, 0, 2, 2), &cfg, &["Generic01".to_string()]);
     let mut w = World::new();
     for x in 24..32 {
@@ -210,12 +221,16 @@ fn population_tick_creates_a_sitting_real_zombie() {
     }
     w.put(25, 26, 0, &["solidfloor", "WallN"]);
     w.put(27, 28, 0, &["solidfloor", "WallW"]);
-    let checks = Checks { blocked_to: vec![(25.5, 26.5)], ..Checks::default() };
+    let checks = Checks {
+        blocked_to: vec![(25.5, 26.5)],
+        ..Checks::default()
+    };
     let mut rand = ListRand(vec![], vec![]);
 
     let (sm, mut chars) = fixture();
     let ctx = Ctx(pz_core::random::Rand::new(8));
     let desc = Rc::new(RefCell::new(SurvivorDesc::new(&mut chars, &sm).unwrap()));
+    let chars = RefCell::new(chars);
     let mut zombies: Vec<GameCharacter<()>> = Vec::new();
     let mut next_id = 100;
     let mut nw = NullWorld;
@@ -235,12 +250,15 @@ fn population_tick_creates_a_sitting_real_zombie() {
         removed: Vec::new(),
     };
     let state = ZombieStateFlags::from_flags(&[ZombieStateFlag::Initialized]).as_int();
-    m.native.n_add_zombie(28.5, 29.5, 0.0, 4, 0, state, i32::MIN, i32::MIN, 0);
+    m.native
+        .n_add_zombie(28.5, 29.5, 0.0, 4, 0, state, i32::MIN, i32::MIN, 0);
     {
-        let mut host = WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, &mut ops);
+        let mut host =
+            WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, &mut ops);
         let mut tick = |m: &mut ZombiePopulationManager<i32>| {
             clock.set(clock.get() + 50);
-            m.update_main(&mut host, 1.0, 10.0, &[(0, 0)], 10, &[]).unwrap();
+            m.update_main(&mut host, 1.0, 10.0, &[(0, 0)], 10, &[])
+                .unwrap();
             m.thread_step();
         };
         for _ in 0..3 {
@@ -262,7 +280,7 @@ fn population_tick_creates_a_sitting_real_zombie() {
     assert_eq!((z.vars.x, z.vars.y), (26.5, 28.5));
     assert_eq!(z.vars.dir, pz_world::square::IsoDirections::W);
     assert!(!z.zombie.can_crawl_under_vehicle);
-    assert!(!z.zombie.reanimated_for_grapple_only);
+    assert!(!z.zombie.is_reanimated_for_grapple_only());
 }
 
 /// `zpop_X_Y.bin` version 7 (`DataOutputStream`, big-endian) for cell
@@ -275,10 +293,15 @@ fn synthetic_zpop(zombies: &[(f32, f32, u32)]) -> Vec<u8> {
     b.extend_from_slice(&0i16.to_be_bytes());
     b.extend_from_slice(&0f32.to_be_bytes()); // lastRepop
     b.extend_from_slice(&0f32.to_be_bytes()); // lastRedistribute
-    let state = ZombieStateFlags::from_flags(&[ZombieStateFlag::Initialized, ZombieStateFlag::CanWalk]).as_int();
+    let state =
+        ZombieStateFlags::from_flags(&[ZombieStateFlag::Initialized, ZombieStateFlag::CanWalk])
+            .as_int();
     for i in 0..1024 {
         let (wx, wy) = (i % 32, i / 32);
-        let here: Vec<_> = zombies.iter().filter(|z| (z.0 as i32) / 8 == wx && (z.1 as i32) / 8 == wy).collect();
+        let here: Vec<_> = zombies
+            .iter()
+            .filter(|z| (z.0 as i32) / 8 == wx && (z.1 as i32) / 8 == wy)
+            .collect();
         b.extend_from_slice(&0i16.to_be_bytes()); // desired
         b.extend_from_slice(&(here.len() as i16).to_be_bytes());
         for &&(x, y, id) in &here {
@@ -305,11 +328,16 @@ fn loaded_world_zpop_zombies_become_real() {
     use pz_world_popman::world::save_game_state;
     use pz_world_popman::{PopulationFrame, WorldPopulation};
 
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp/zombie_world_zpop");
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/tmp/zombie_world_zpop");
     let _ = std::fs::remove_dir_all(&root);
     let save = root.join("Zomboid/Saves/Sandbox/w");
     std::fs::create_dir_all(save.join("zpop")).unwrap();
-    let saved = [(25.5f32, 26.5f32, 501u32), (28.25, 29.75, 502), (30.5, 27.5, 503)];
+    let saved = [
+        (25.5f32, 26.5f32, 501u32),
+        (28.25, 29.75, 502),
+        (30.5, 27.5, 503),
+    ];
     std::fs::write(save.join("zpop/zpop_0_0.bin"), synthetic_zpop(&saved)).unwrap();
 
     let clock = Rc::new(Cell::new(1_000_000i64));
@@ -324,8 +352,12 @@ fn loaded_world_zpop_zombies_become_real() {
     }
     let gs = save_game_state(&save);
     assert_eq!(gs.game_save_world, "w");
-    let cfg = ZombieConfig { population_multiplier: 0.0, ..Default::default() };
-    let mut pop: WorldPopulation<i32> = WorldPopulation::init(native, &w.meta, &gs, &cfg, &["Generic01".to_string()]);
+    let cfg = ZombieConfig {
+        population_multiplier: 0.0,
+        ..Default::default()
+    };
+    let mut pop: WorldPopulation<i32> =
+        WorldPopulation::init(native, &w.meta, &gs, &cfg, &["Generic01".to_string()]);
     for wx in 2..=4 {
         for wy in 2..=4 {
             pop.add_chunk_to_world(&w.cell, &w.meta, &w.m, wx, wy);
@@ -335,6 +367,7 @@ fn loaded_world_zpop_zombies_become_real() {
     let (sm, mut chars) = fixture();
     let ctx = Ctx(pz_core::random::Rand::new(8));
     let desc = Rc::new(RefCell::new(SurvivorDesc::new(&mut chars, &sm).unwrap()));
+    let chars = RefCell::new(chars);
     let mut zombies: Vec<GameCharacter<()>> = Vec::new();
     let mut next_id = 100;
     let mut nw = NullWorld;
@@ -353,12 +386,22 @@ fn loaded_world_zpop_zombies_become_real() {
         building_keys: Vec::new(),
         removed: Vec::new(),
     };
-    let maps = pz_world_popman::PlayerChunkMaps { origins: vec![(0, 0)], width: 10 };
+    let maps = pz_world_popman::PlayerChunkMaps {
+        origins: vec![(0, 0)],
+        width: 10,
+    };
     let checks = NoObstacles;
     let mut rand = ListRand(vec![1; 64], vec![]);
-    let mut frame = |pop: &mut WorldPopulation<i32>, ops: &mut RealZombies<'_, (), NullWorld>, start: bool| {
+    let mut frame = |pop: &mut WorldPopulation<i32>,
+                     ops: &mut RealZombies<'_, (), NullWorld>,
+                     start: bool| {
         let reals = ops.infos();
-        let f = PopulationFrame { multiplier: 1.0, world_age_hours: 10.0, chunk_maps: &maps, real_zombies: &reals };
+        let f = PopulationFrame {
+            multiplier: 1.0,
+            world_age_hours: 10.0,
+            chunk_maps: &maps,
+            real_zombies: &reals,
+        };
         let mut host = WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, ops);
         if start {
             pop.start_game(&mut host, &f).unwrap();
@@ -373,20 +416,35 @@ fn loaded_world_zpop_zombies_become_real() {
         frame(&mut pop, &mut ops, false);
     }
     assert!(pop.worker.passes > 0);
-    let mut got: Vec<(i32, (f32, f32))> = ops.zombies.iter().map(|z| (z.zombie.persistent_id, (z.vars.x, z.vars.y))).collect();
+    let mut got: Vec<(i32, (f32, f32))> = ops
+        .zombies
+        .iter()
+        .map(|z| (z.zombie.persistent_id, (z.vars.x, z.vars.y)))
+        .collect();
     got.sort_by_key(|g| g.0);
-    assert_eq!(got, vec![(501, (25.5, 26.5)), (502, (28.25, 29.75)), (503, (30.5, 27.5))]);
+    assert_eq!(
+        got,
+        vec![
+            (501, (25.5, 26.5)),
+            (502, (28.25, 29.75)),
+            (503, (30.5, 27.5))
+        ]
+    );
     for z in ops.zombies.iter() {
         assert_eq!(z.kind, CharacterKind::Zombie);
         assert!(pop.manager.real_zombies().is_live(z.zombie.persistent_id));
-        assert_eq!(z.forward_iso_direction(), pz_world::square::IsoDirections::S);
+        assert_eq!(
+            z.forward_iso_direction(),
+            pz_world::square::IsoDirections::S
+        );
     }
 
     // The chunk unloads: its zombies go back to the library.
     let cz = ops.chunk_zombies(3, 3, &|_| false);
     assert_eq!(cz.len(), 3);
     {
-        let mut host = WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, &mut ops);
+        let mut host =
+            WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, &mut ops);
         pop.remove_chunk_from_world(&mut host, 3, 3, &cz);
     }
     assert!(ops.zombies.is_empty());

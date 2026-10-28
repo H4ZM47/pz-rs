@@ -28,7 +28,9 @@ use pz_core::game_time_save;
 use pz_core::save_trackers::{InstanceTracker, MetaTracker, Statistics};
 use pz_core::thumbnail::{self, Thumbnail};
 use pz_kahlua::java_io::JavaWrite;
-use pz_world::meta_save::{save_map_meta, MetaWorld, NetRole};
+use pz_world::meta_save::{try_save_map_meta, MetaWorld, NetRole};
+use pz_entity::runtime_load::HostResult;
+use pz_world::designation::DesignationIoError;
 use pz_world::save::vehicle::VehicleRow;
 use pz_world::save::vehicles_db::{self, ChunkVehiclesUnloaded};
 use pz_world::zone_save::{SpawnedZombieZones, UuidSource};
@@ -121,6 +123,26 @@ pub fn local_player_data<I: ItemIdentity + 'static>(
         world_version: WORLD_VERSION,
         bytes: w.buf,
     })
+}
+
+/// Actual receiver producer. No player/manager body guard crosses item save.
+pub fn local_player_data_ref<I: ItemIdentity + 'static>(
+    player: &pz_characters::character::GameCharacterRef<I>, sql_id: i32,
+    sm: &ScriptManager, chars: &std::rc::Rc<std::cell::RefCell<Characters>>,
+    ctx: &dyn SimContext, env: &SaveEnv<'_>,
+) -> pz_characters::character::save::CharacterPersistenceResult<PlayerData> {
+    use pz_inventory::floor_drop::RuntimeHostError;
+    let (x,y,z,is_dead,name) = {
+        let body = player.try_borrow().map_err(|_| RuntimeHostError::Borrowed("PlayerData name player"))?;
+        let (x,y,z,is_dead)=(body.vars.x,body.vars.y,body.vars.z,body.is_dead());
+        let descriptor = body.descriptor.as_ref().ok_or_else(|| ScriptError::new("java.lang.NullPointerException"))?;
+        let descriptor = descriptor.try_borrow().map_err(|_| RuntimeHostError::Borrowed("PlayerData name descriptor"))?;
+        let name=format!("{} {}", descriptor.forename.as_deref().unwrap_or("null"), descriptor.surname.as_deref().unwrap_or("null"));
+        (x,y,z,is_dead,name)
+    };
+    let mut writer = Writer::new();
+    pz_characters::character::save::save_player_ref(player, sm, chars, ctx, env, &mut writer)?;
+    Ok(PlayerData { sql_id, x,y,z,is_dead, name: Some(name), world_version: WORLD_VERSION, bytes: writer.buf })
 }
 
 /// The world state [`save_game`] saves.
@@ -238,6 +260,23 @@ fn write(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
 /// `map_sand.bin` failures end it (`IOException`); the rest is logged in
 /// [`SaveReport::errors`] as the original logs it.
 pub fn save_game(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks) -> io::Result<SaveReport> {
+    let mut report = save_game_before_event(g)?;
+    if report.saved {
+        hooks.on_save();
+        save_game_cell(g, hooks, &mut report);
+        save_game_finish(g, hooks, &mut report);
+    }
+    Ok(report)
+}
+
+/// The writes before `OnSave`. A game loop can release its shared world,
+/// `Core` and `GameTime` borrows after this returns, deliver the Lua event,
+/// then build a fresh [`SaveGame`] for [`save_game_cell`]. This keeps the
+/// event's changes visible to the cell and global-object saves.
+///
+/// A skipped save returns `saved == false`; an I/O error ends the save.
+/// Neither case fires `OnSave` or runs the later phases.
+pub fn save_game_before_event(g: &SaveGame<'_>) -> io::Result<SaveReport> {
     let mut report = SaveReport::default();
     if g.no_save || !g.has_cell || g.game_mode == "LastStand" || g.game_mode == "Tutorial" {
         return Ok(report);
@@ -281,12 +320,35 @@ pub fn save_game(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks) -> io::Res
         "StatisticsManager.save",
         g.statistics.save_file(dir, g.no_save),
     );
-    hooks.on_save();
+    Ok(report)
+}
+
+/// After a successful [`save_game_before_event`] and delivery of `OnSave`,
+/// capture the thumbnail and save the cell. The supplied state must be
+/// read again after the event, since its handlers can change the clock,
+/// world and global objects. A skipped prelude remains a skipped save.
+pub fn save_game_cell(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks, report: &mut SaveReport) {
+    assert!(g.meta_world.designation_zones.archive().is_some(), "owned archive save_game_cell profile; use save_game_cell_actual for Live");
+    save_game_cell_actual(g,hooks,report).expect("archive save_game_cell has no host phase");
+}
+
+/// Actual save phase; host failures never become native file-error strings.
+pub fn save_game_cell_actual(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks, report: &mut SaveReport) -> HostResult<()> {
+    if !report.saved {
+        return Ok(());
+    }
+    let dir = g.save_dir;
+    let log = |r: &mut SaveReport, what: &str, e: io::Result<()>| {
+        if let Err(e) = e {
+            eprintln!("ERROR: {what}: {e}");
+            r.errors.push(format!("{what}: {e}"));
+        }
+    };
     if g.on_game_thread {
         if let Some(player) = thumbnail::thumbnail_player(g.local_players) {
             if let Some(t) = hooks.capture_thumbnail(player) {
                 log(
-                    &mut report,
+                    report,
                     "SavefileThumbnail.create",
                     thumbnail::save_thumbnail(dir, &t),
                 );
@@ -298,37 +360,57 @@ pub fn save_game(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks) -> io::Res
     hooks.save_chunks(g.meta);
     let header = write(dir, "map.bin", &map_bin_bytes(CELL_SIZE));
     let header_ok = header.is_ok();
-    log(&mut report, "map.bin", header);
+    log(report, "map.bin", header);
     // An exception in `IsoCell.save` skips the rest of it.
     if header_ok {
         let gt = game_time_save::save_map_t_file(g.game_time, g.core, dir);
         let gt_ok = gt.is_ok();
-        log(&mut report, "map_t.bin", gt);
+        log(report, "map_t.bin", gt);
         if gt_ok {
-            save_meta_grid(g, &mut report);
+            save_meta_grid(g, report)?;
             if g.players.is_some() && g.can_save_players {
                 report.force_save_players = true;
             }
             if let Some(zombies) = g.reanimated {
                 let r = write(dir, "reanimated.bin", &reanimated_bytes(zombies));
-                log(&mut report, "reanimated.bin", r);
+                log(report, "reanimated.bin", r);
             }
         }
     }
+    Ok(())
+}
+
+/// The remaining systems after [`save_game_cell`]: animals, population,
+/// global objects, then the other systems. This separate phase lets the
+/// engine run its population save without holding the shared cell's
+/// borrow. `OnPostSave` belongs to the quit caller and follows this phase.
+pub fn save_game_finish(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks, report: &mut SaveReport) {
+    if !report.saved {
+        return;
+    }
     hooks.save_animals();
     hooks.save_population();
-    let r = global_objects_save::save_all(dir, g.no_save, false);
-    log(&mut report, "SGlobalObjects.save", r);
+    if let Err(e) = global_objects_save::save_all(g.save_dir, g.no_save, false) {
+        eprintln!("ERROR: SGlobalObjects.save: {e}");
+        report.errors.push(format!("SGlobalObjects.save: {e}"));
+    }
     hooks.save_other_systems();
-    Ok(report)
 }
 
 /// `IsoMetaGrid.save()`: `map_meta.bin`, `map_zone.bin`, `map_animals.bin`,
 /// then `metagrid/metacell_*.bin` for the queued cells; the first failure
 /// ends it (logged).
-fn save_meta_grid(g: &mut SaveGame<'_>, report: &mut SaveReport) {
+fn save_meta_grid(g: &mut SaveGame<'_>, report: &mut SaveReport) -> HostResult<()> {
     let dir = g.save_dir;
-    let meta = save_map_meta(g.meta, g.meta_world, NetRole::SinglePlayer);
+    let meta = match try_save_map_meta(g.meta,g.meta_world,NetRole::SinglePlayer) {
+        Ok(meta)=>meta,
+        Err(DesignationIoError::Host(error))=>return Err(error),
+        Err(DesignationIoError::Io(error))=>{
+            eprintln!("ERROR: IsoMetaGrid.save: {error}");
+            report.errors.push(format!("IsoMetaGrid.save: {error}"));
+            return Ok(());
+        }
+    };
     let r = write(dir, "map_meta.bin", &meta)
         .and_then(|_| g.meta.save_zones_file(dir, g.spawned_zones, &mut *g.uuids))
         .and_then(|_| g.meta.save_animal_zones_file(dir, &mut *g.uuids))
@@ -337,6 +419,7 @@ fn save_meta_grid(g: &mut SaveGame<'_>, report: &mut SaveReport) {
         eprintln!("ERROR: IsoMetaGrid.save: {e}");
         report.errors.push(format!("IsoMetaGrid.save: {e}"));
     }
+    Ok(())
 }
 
 /// The meta-grid loads of `IsoWorld.init` after `map_zone.bin`:
@@ -449,14 +532,20 @@ pub struct HotSave<'a> {
 /// `save()` methods. Failures are logged and returned; the other files
 /// are still written.
 pub fn hot_save_ancillary(h: &mut HotSave<'_>) -> Vec<String> {
+    assert!(h.meta_world.designation_zones.archive().is_some(), "owned archive hot-save profile; use hot_save_ancillary_actual for Live");
+    hot_save_ancillary_actual(h).expect("archive hot-save has no host phase")
+}
+
+pub fn hot_save_ancillary_actual(h: &mut HotSave<'_>) -> HostResult<Vec<String>> {
     let mut errors = Vec::new();
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    files.push((
-        "map_meta.bin".into(),
-        save_map_meta(h.meta, h.meta_world, NetRole::SinglePlayer),
-    ));
+    let metadata_prefix_ok=match try_save_map_meta(h.meta,h.meta_world,NetRole::SinglePlayer) {
+        Ok(bytes)=>{files.push(("map_meta.bin".into(),bytes));true},
+        Err(DesignationIoError::Host(error))=>return Err(error),
+        Err(DesignationIoError::Io(error))=>{errors.push(format!("IsoMetaGrid.saveToBufferMap: {error}"));false},
+    };
     // `saveToBufferMap`: the first failure ends the meta grid's part.
-    let meta = h
+    let meta = if metadata_prefix_ok { h
         .meta
         .save_zones(h.spawned_zones, &mut *h.uuids)
         .and_then(|z| {
@@ -465,7 +554,7 @@ pub fn hot_save_ancillary(h: &mut HotSave<'_>) -> Vec<String> {
             files.push(("map_animals.bin".into(), a));
             files.extend(h.meta.save_cells());
             Ok(())
-        });
+        }) } else { Ok(()) };
     if let Err(e) = meta {
         errors.push(format!("IsoMetaGrid.saveToBufferMap: {e}"));
     }
@@ -483,7 +572,7 @@ pub fn hot_save_ancillary(h: &mut HotSave<'_>) -> Vec<String> {
     for e in &errors {
         eprintln!("ERROR: {e}");
     }
-    errors
+    Ok(errors)
 }
 
 #[cfg(test)]

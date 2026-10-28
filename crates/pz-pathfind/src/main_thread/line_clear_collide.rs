@@ -201,7 +201,7 @@ impl<'m, 'w, 'a: 'w, G: GetSquare> LineClearCollideMain<'m, 'w, 'a, G> {
         let mut has = square.is_some_and(|s| s.treat_as_solid_floor(m.sprites()));
         if square.is_none_or(|s| s.objects.is_empty()) {
             if let Some(below) = m.square(x, y, z - 1) {
-                if below.get_sloped_surface_height_at(0.5, 0.5) > 0.9 {
+                if below.borrow().get_sloped_surface_height_at(0.5, 0.5) > 0.9 {
                     has = true;
                 }
             }
@@ -212,7 +212,7 @@ impl<'m, 'w, 'a: 'w, G: GetSquare> LineClearCollideMain<'m, 'w, 'a, G> {
     /// The blocking test shared by `canStandAtOld` and `isNotClearOld`.
     fn blocks(&self, square: Option<&IsoGridSquare>, has_floor: bool) -> bool {
         let m = self.map;
-        match square {
+        match square.as_ref() {
             None => true,
             Some(s) => {
                 s.is_solid(m.sprites())
@@ -248,8 +248,11 @@ impl<'m, 'w, 'a: 'w, G: GetSquare> LineClearCollideMain<'m, 'w, 'a, G> {
                 let (fx, fy) = (sx as f32, sy as f32);
                 let target = x >= fx && y >= fy && x < (sx + 1) as f32 && y < (sy + 1) as f32;
                 let square = m.square(sx, sy, zi);
-                let has_floor = self.has_floor(square, sx, sy, zi);
-                let Some(sq) = square.filter(|_| !self.blocks(square, has_floor)) else {
+                let has_floor =
+                    self.has_floor(square.as_ref().map(|s| s.borrow()).as_deref(), sx, sy, zi);
+                let Some(sq) = square.as_ref().filter(|_| {
+                    !self.blocks(square.as_ref().map(|s| s.borrow()).as_deref(), has_floor)
+                }) else {
                     let hit = if close_to_walls {
                         target
                     } else {
@@ -273,20 +276,23 @@ impl<'m, 'w, 'a: 'w, G: GetSquare> LineClearCollideMain<'m, 'w, 'a, G> {
                         || blocked(IsoDirections::W) && near(x, y, fx, cy)
                         || blocked(IsoDirections::E) && near(x, y, (sx + 1) as f32, cy)
                 };
-                if sq.has_stairs(m.sprites()) {
+                if sq.borrow().has_stairs(m.sprites()) {
                     if close_to_walls || target {
                         continue;
                     }
-                    if edges(&|d| sq.is_stairs_edge_blocked(d, m.sprites(), m.squares())) {
+                    if edges(&|d| {
+                        sq.borrow()
+                            .is_stairs_edge_blocked(d, m.sprites(), m.squares())
+                    }) {
                         return false;
                     }
                     continue;
                 }
-                if sq.has_sloped_surface() {
+                if sq.borrow().has_sloped_surface() {
                     if close_to_walls || target {
                         continue;
                     }
-                    if edges(&|d| sq.is_sloped_surface_edge_blocked(d, m.squares())) {
+                    if edges(&|d| sq.borrow().is_sloped_surface_edge_blocked(d, m.squares())) {
                         return false;
                     }
                     continue;
@@ -295,14 +301,20 @@ impl<'m, 'w, 'a: 'w, G: GetSquare> LineClearCollideMain<'m, 'w, 'a, G> {
                     continue;
                 }
                 let t = &m.bits.t;
-                if (sq.has(t.collideW)
-                    || !ignore_doors && sq.has_blocked_door(EdgeFacing::EastWest, m.hooks()))
+                if (sq.borrow().has(t.collideW)
+                    || !ignore_doors
+                        && sq
+                            .borrow()
+                            .has_blocked_door(EdgeFacing::EastWest, m.hooks()))
                     && near(x, y, fx, clamp(y, fy, (sy + 1) as f32))
                 {
                     return false;
                 }
-                if (sq.has(t.collideN)
-                    || !ignore_doors && sq.has_blocked_door(EdgeFacing::NorthSouth, m.hooks()))
+                if (sq.borrow().has(t.collideN)
+                    || !ignore_doors
+                        && sq
+                            .borrow()
+                            .has_blocked_door(EdgeFacing::NorthSouth, m.hooks()))
                     && near(x, y, clamp(x, fx, (sx + 1) as f32), fy)
                 {
                     return false;
@@ -546,46 +558,54 @@ impl<'m, 'w, 'a: 'w, G: GetSquare> LineClearCollideMain<'m, 'w, 'a, G> {
             let (px, py) = (pt.0 as f32, pt.1 as f32);
             let square = m.square(pt.0, pt.1, z);
             if check_cost {
-                if let Some(s) = square {
-                    if m.bits.get_cost(s) > 0 {
+                if let Some(s) = square.as_ref() {
+                    if m.bits.get_cost(&s.borrow()) > 0 {
                         return true;
                     }
                 }
             }
-            let has_floor = self.has_floor(square, pt.0, pt.1, z);
-            let Some(sq) = square.filter(|_| !self.blocks(square, has_floor)) else {
+            let has_floor = self.has_floor(
+                square.as_ref().map(|s| s.borrow()).as_deref(),
+                pt.0,
+                pt.1,
+                z,
+            );
+            let Some(sq) = square.as_ref().filter(|_| {
+                !self.blocks(square.as_ref().map(|s| s.borrow()).as_deref(), has_floor)
+            }) else {
                 let mg = Self::margins_square(from, to, pt);
                 if hit(mg, px, py, px + 1.0, py + 1.0) {
                     return true;
                 }
                 continue;
             };
-            if sq.has_stairs(m.sprites()) {
+            if sq.borrow().has_stairs(m.sprites()) {
                 let t = &m.bits.t;
-                if sq.has_stairs_north(m.sprites())
+                if sq.borrow().has_stairs_north(m.sprites())
                     && (vert(from_x, from_y, to_x, to_y, px, py, false, true)
                         || vert(from_x, from_y, to_x, to_y, px + 1.0, py, true, false)
-                        || sq.has_type(t.stairsTN)
+                        || sq.borrow().has_type(t.stairsTN)
                             && horiz(from_x, from_y, to_x, to_y, px, py, false, true))
                 {
                     return true;
                 }
-                if sq.has_stairs_west(m.sprites())
+                if sq.borrow().has_stairs_west(m.sprites())
                     && (horiz(from_x, from_y, to_x, to_y, px, py, false, true)
                         || horiz(from_x, from_y, to_x, to_y, px, py + 1.0, true, false)
-                        || sq.has_type(t.stairsTW)
+                        || sq.borrow().has_type(t.stairsTW)
                             && vert(from_x, from_y, to_x, to_y, px, py, false, true))
                 {
                     return true;
                 }
                 continue;
             }
-            if let Some(dir) = sq.sloped_surface_direction {
+            if let Some(dir) = sq.borrow().sloped_surface_direction {
                 let g = m.bits.squares;
-                let adj = |d: IsoDirections| sq.get_adjacent_square(d, g);
-                let differs =
-                    |d: IsoDirections| adj(d).is_none_or(|a| !sq.has_identical_sloped_surface(a));
-                let max = sq.get_sloped_surface_height_max();
+                let adj = |d: IsoDirections| sq.borrow().get_adjacent_square(d, g);
+                let differs = |d: IsoDirections| {
+                    adj(d).is_none_or(|a| !sq.borrow().has_identical_sloped_surface(&a.borrow()))
+                };
+                let max = sq.borrow().get_sloped_surface_height_max();
                 if dir == IsoDirections::N || dir == IsoDirections::S {
                     if differs(IsoDirections::W)
                         && vert(from_x, from_y, to_x, to_y, px, py, false, true)
@@ -598,15 +618,17 @@ impl<'m, 'w, 'a: 'w, G: GetSquare> LineClearCollideMain<'m, 'w, 'a, G> {
                         return true;
                     }
                     if dir == IsoDirections::N
-                        && adj(IsoDirections::N)
-                            .is_none_or(|a| max != a.get_sloped_surface_height_at(0.5, 1.0))
+                        && adj(IsoDirections::N).is_none_or(|a| {
+                            max != a.borrow().get_sloped_surface_height_at(0.5, 1.0)
+                        })
                         && horiz(from_x, from_y, to_x, to_y, px, py, false, true)
                     {
                         return true;
                     }
                     if dir == IsoDirections::S
-                        && adj(IsoDirections::S)
-                            .is_none_or(|a| max != a.get_sloped_surface_height_at(0.5, 0.0))
+                        && adj(IsoDirections::S).is_none_or(|a| {
+                            max != a.borrow().get_sloped_surface_height_at(0.5, 0.0)
+                        })
                         && horiz(from_x, from_y, to_x, to_y, px, py + 1.0, true, false)
                     {
                         return true;
@@ -627,14 +649,14 @@ impl<'m, 'w, 'a: 'w, G: GetSquare> LineClearCollideMain<'m, 'w, 'a, G> {
                 }
                 if dir == IsoDirections::W
                     && adj(IsoDirections::W)
-                        .is_none_or(|a| max != a.get_sloped_surface_height_at(1.0, 0.5))
+                        .is_none_or(|a| max != a.borrow().get_sloped_surface_height_at(1.0, 0.5))
                     && vert(from_x, from_y, to_x, to_y, px, py, false, true)
                 {
                     return true;
                 }
                 if dir == IsoDirections::E
                     && adj(IsoDirections::E)
-                        .is_none_or(|a| max != a.get_sloped_surface_height_at(0.0, 0.5))
+                        .is_none_or(|a| max != a.borrow().get_sloped_surface_height_at(0.0, 0.5))
                     && vert(from_x, from_y, to_x, to_y, px + 1.0, py, true, false)
                 {
                     return true;
@@ -642,14 +664,20 @@ impl<'m, 'w, 'a: 'w, G: GetSquare> LineClearCollideMain<'m, 'w, 'a, G> {
                 continue;
             }
             let t = &m.bits.t;
-            if (sq.has(t.collideW)
-                || !ignore_doors && sq.has_blocked_door(EdgeFacing::EastWest, m.hooks()))
+            if (sq.borrow().has(t.collideW)
+                || !ignore_doors
+                    && sq
+                        .borrow()
+                        .has_blocked_door(EdgeFacing::EastWest, m.hooks()))
                 && hit(Self::margins_w(from, to, pt), px, py, px, py + 1.0)
             {
                 return true;
             }
-            if (sq.has(t.collideN)
-                || !ignore_doors && sq.has_blocked_door(EdgeFacing::NorthSouth, m.hooks()))
+            if (sq.borrow().has(t.collideN)
+                || !ignore_doors
+                    && sq
+                        .borrow()
+                        .has_blocked_door(EdgeFacing::NorthSouth, m.hooks()))
                 && hit(Self::margins_n(from, to, pt), px, py, px + 1.0, py)
             {
                 return true;
@@ -752,21 +780,29 @@ impl<'m, 'w, 'a: 'w, G: GetSquare> LineClearCollideMain<'m, 'w, 'a, G> {
             let (px, py) = (pt.0 as f32, pt.1 as f32);
             let square = m.square(pt.0, pt.1, z);
             if check_cost {
-                if let Some(s) = square {
-                    if m.bits.get_cost(s) > 0 {
+                if let Some(s) = square.as_ref() {
+                    if m.bits.get_cost(&s.borrow()) > 0 {
                         return (px + 0.5, py + 0.5);
                     }
                 }
             }
-            let blocked = match square {
+            let blocked = match square.as_ref() {
                 None => true,
                 Some(s) => {
-                    s.is_solid(m.sprites())
-                        || s.is_solid_trans(m.sprites())
-                            && !s.is_adjacent_to_window(m.sprites(), m.squares(), m.hooks())
-                            && !s.is_adjacent_to_hoppable(m.sprites(), m.squares(), m.hooks())
-                        || s.has_stairs(m.sprites())
-                        || !s.treat_as_solid_floor(m.sprites())
+                    s.borrow().is_solid(m.sprites())
+                        || s.borrow().is_solid_trans(m.sprites())
+                            && !s.borrow().is_adjacent_to_window(
+                                m.sprites(),
+                                m.squares(),
+                                m.hooks(),
+                            )
+                            && !s.borrow().is_adjacent_to_hoppable(
+                                m.sprites(),
+                                m.squares(),
+                                m.hooks(),
+                            )
+                        || s.borrow().has_stairs(m.sprites())
+                        || !s.borrow().treat_as_solid_floor(m.sprites())
                 }
             };
             if blocked {
@@ -783,15 +819,21 @@ impl<'m, 'w, 'a: 'w, G: GetSquare> LineClearCollideMain<'m, 'w, 'a, G> {
             }
             let sq = square.unwrap();
             let t = &m.bits.t;
-            if (sq.has(t.collideW)
-                || !ignore_doors && sq.has_blocked_door(EdgeFacing::EastWest, m.hooks()))
+            if (sq.borrow().has(t.collideW)
+                || !ignore_doors
+                    && sq
+                        .borrow()
+                        .has_blocked_door(EdgeFacing::EastWest, m.hooks()))
                 && hit(Self::margins_w(from, to, pt), px, py, px, py + 1.0)
             {
                 let ox = if from_x - to_x < 0.0 { -0.5 } else { 0.5 };
                 return (px + ox, py + 0.5);
             }
-            if (sq.has(t.collideN)
-                || !ignore_doors && sq.has_blocked_door(EdgeFacing::NorthSouth, m.hooks()))
+            if (sq.borrow().has(t.collideN)
+                || !ignore_doors
+                    && sq
+                        .borrow()
+                        .has_blocked_door(EdgeFacing::NorthSouth, m.hooks()))
                 && hit(Self::margins_n(from, to, pt), px, py, px + 1.0, py)
             {
                 let oy = if from_y - to_y < 0.0 { -0.5 } else { 0.5 };

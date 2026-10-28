@@ -205,6 +205,8 @@ enum Tex2 {
     Offscreen,
     /// The batch texture sampled GL_NEAREST.
     Nearest,
+    /// Captured run overrides, distinct from the projected-quad sampler.
+    Sampled { nearest: bool, repeat: bool },
     /// A surface draw's first reflection texture, white when missing.
     Surface(Option<u32>),
 }
@@ -306,6 +308,11 @@ const NO_TEXTURE: u32 = u32::MAX;
 /// Sampler choice: min nearest, mag nearest, mip-mapped, clamp to edge.
 type Filter = (bool, bool, bool, bool);
 
+fn sampled_filter(uploaded: Filter, nearest: bool, repeat: bool) -> Filter {
+    let (min, mag, mips, clamp) = uploaded;
+    (min || nearest, mag || nearest, mips && !nearest, clamp && !repeat)
+}
+
 pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -340,6 +347,9 @@ pub struct Gpu {
     /// Texture views by id, and bind groups sampling them GL_NEAREST.
     views: HashMap<u32, wgpu::TextureView>,
     nearest: HashMap<u32, wgpu::BindGroup>,
+    /// Derived samplers over the same uploaded image, keyed by effective
+    /// state. Entries are retired with that texture's upload/version.
+    sampled: HashMap<(u32, Filter), wgpu::BindGroup>,
     offscreen: Option<OffscreenTarget>,
     /// `WeatherFxMask.fboMask` and `fboParticles`.
     weather: [Option<OffscreenTarget>; 2],
@@ -359,6 +369,13 @@ pub struct Gpu {
 }
 
 impl Gpu {
+    /// Retire cached character meshes when the owning world unloads.
+    /// Live UI meshes are uploaded again on their next draw. Pipelines and
+    /// textures remain available across the transition.
+    pub fn clear_character_mesh_cache(&mut self) {
+        self.models.meshes.clear();
+    }
+
     /// Renders into `window`'s surface.
     pub fn new<W>(window: Arc<W>, width: u32, height: u32) -> Result<Self, GpuError>
     where
@@ -386,7 +403,15 @@ impl Gpu {
             height: height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
+            // The original's GL back buffer is opaque. The first listed
+            // mode is not always Opaque (e.g. on some Wayland compositors),
+            // and a premultiplied surface shows the desktop through pixels
+            // with alpha below 1.
+            alpha_mode: if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+                wgpu::CompositeAlphaMode::Opaque
+            } else {
+                caps.alpha_modes[0]
+            },
             view_formats: vec![],
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
@@ -571,6 +596,7 @@ impl Gpu {
             sky_targets: HashMap::new(),
             views: HashMap::new(),
             nearest: HashMap::new(),
+            sampled: HashMap::new(),
             offscreen: None,
             weather: [None, None],
             textures: HashMap::new(),
@@ -761,6 +787,9 @@ impl Gpu {
             }
             if let (Tex2::Nearest, Some(id)) = (f.batches[i].tex2, f.batches[i].texture) {
                 self.ensure_nearest(id);
+            }
+            if let (Tex2::Sampled { nearest, repeat }, Some(id)) = (f.batches[i].tex2, f.batches[i].texture) {
+                self.ensure_sampled(id, nearest, repeat);
             }
             if let Some(op) = f.batches[i].vision {
                 match op {
@@ -1130,6 +1159,13 @@ impl Gpu {
                         Some(bg) => bg,
                         None => continue,
                     },
+                    Tex2::Sampled { nearest, repeat } => match b.texture.and_then(|id| {
+                        let filter = sampled_filter(*self.filters.get(&id)?, nearest, repeat);
+                        self.sampled.get(&(id, filter))
+                    }) {
+                        Some(bg) => bg,
+                        None => continue,
+                    },
                     Tex2::Offscreen => match self.offscreen.as_ref() {
                         Some(o) => &o.bind,
                         None => continue,
@@ -1170,6 +1206,17 @@ impl Gpu {
                 let g = f.globals(&self.state, f.mvp_for_target(), 0.5);
                 let key = self.key(f, Program::Default);
                 f.push(key, s.texture.as_ref().and_then(|t| t.id), Tex2::None, &self.state, g, sprite_vertices(s));
+            }
+            DrawCmd::SampledSprite { sprite, nearest, repeat } => {
+                let g = f.globals(&self.state, f.mvp_for_target(), 0.5);
+                let key = self.key(f, Program::Default);
+                let texture = sprite.texture.as_ref().and_then(|t| t.id);
+                let sampling = if texture.is_some() && (*nearest || *repeat) {
+                    Tex2::Sampled { nearest: *nearest, repeat: *repeat }
+                } else {
+                    Tex2::None
+                };
+                f.push(key, texture, sampling, &self.state, g, sprite_vertices(sprite));
             }
             DrawCmd::WorldSprite(s, shader) => {
                 let mut g = f.globals(&self.state, f.mvp_for_target(), 0.5);
@@ -1719,6 +1766,8 @@ impl Gpu {
         });
         self.textures.insert(id, bg);
         self.views.insert(id, view.clone());
+        self.filters.insert(id, (false, false, false, true));
+        self.sampled.retain(|(texture, _), _| *texture != id);
         self.sky_targets.insert(id, view);
     }
 
@@ -1823,7 +1872,9 @@ impl Gpu {
         let id = pz_render::WEATHER_FX_TEXTURE_IDS[i];
         self.textures.insert(id, bind.clone());
         self.views.insert(id, color.clone());
+        self.filters.insert(id, (false, false, false, true));
         self.nearest.remove(&id);
+        self.sampled.retain(|(texture, _), _| *texture != id);
         self.weather[i] = Some(OffscreenTarget { width, height, color, depth_stencil, bind });
     }
 
@@ -1911,6 +1962,7 @@ impl Gpu {
             self.views.remove(&id);
             self.filters.remove(&id);
             self.nearest.remove(&id);
+            self.sampled.retain(|(texture, _), _| *texture != id);
         }
         if !d.ready {
             return;
@@ -2007,6 +2059,25 @@ impl Gpu {
             ],
         });
         self.nearest.insert(id, bg);
+    }
+
+    fn ensure_sampled(&mut self, id: u32, nearest: bool, repeat: bool) {
+        let Some(uploaded) = self.filters.get(&id).copied() else { return };
+        let filter = sampled_filter(uploaded, nearest, repeat);
+        if self.sampled.contains_key(&(id, filter)) {
+            return;
+        }
+        let Some(view) = self.views.get(&id).cloned() else { return };
+        let sampler = self.sampler(filter);
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("captured run sampler"),
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+        self.sampled.insert((id, filter), bg);
     }
 
     fn create_texture(&mut self, width: u32, height: u32, levels: &[Vec<u8>], filter: Filter) -> (wgpu::BindGroup, wgpu::TextureView) {
@@ -2399,6 +2470,9 @@ pub fn quad_indices(base: u32, c0: u32, c2: u32) -> [u32; 6] {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod sampled_sprite_tests;
 
 #[cfg(test)]
 #[path = "screen_tests.rs"]

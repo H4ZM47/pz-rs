@@ -10,15 +10,41 @@
 //! the server's), and the `PlayerDropHeldItems`/`Equip` packets are not
 //! sent.
 
-use pz_inventory::floor_drop::{self, DropCharacter, Dropped, FloorWorld};
+use pz_inventory::floor_drop::{self, DropCharacter, Dropped, FloorWorld, HostResult, RuntimeHostError};
 use pz_inventory::shared::{ContainerRef, ItemRef};
 use pz_inventory::ItemKind;
 use pz_scripts::objects::items::find_item;
-use pz_scripts::ScriptManager;
+use pz_scripts::{ScriptError, ScriptManager};
 
 use super::context::{SimContext, SimEvent};
 use super::item_owner::CharacterItemContext;
 use super::GameCharacter;
+
+/// A native script failure and an unimplemented/borrowed host phase are
+/// distinct domains. Worn-item actions can encounter either while retaining
+/// their completed mutation prefix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CharacterActionError {
+    Script(ScriptError),
+    Host(RuntimeHostError),
+}
+pub type CharacterActionResult<T = ()> = Result<T, CharacterActionError>;
+
+impl From<ScriptError> for CharacterActionError {
+    fn from(error: ScriptError) -> Self { Self::Script(error) }
+}
+impl From<RuntimeHostError> for CharacterActionError {
+    fn from(error: RuntimeHostError) -> Self { Self::Host(error) }
+}
+impl std::fmt::Display for CharacterActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Script(error) => std::fmt::Display::fmt(error, f),
+            Self::Host(error) => write!(f, "{error:?}"),
+        }
+    }
+}
+impl std::error::Error for CharacterActionError {}
 
 /// The world a character's items drop into, with the simulation context
 /// the drop reads (`GameClient.client`, the weights, the events).
@@ -125,11 +151,13 @@ impl<I: 'static> GameCharacter<I> {
         cx: FloorCx<'_>,
         force: bool,
         item_cur: Option<i32>,
-    ) -> Option<Dropped> {
+    ) -> HostResult<Option<Dropped>> {
         if cx.ctx.is_client() {
-            return None;
+            return Ok(None);
         }
-        let item = item_cur.and_then(|id| self.items.item(id))?;
+        let Some(item) = item_cur.and_then(|id| self.items.item(id)) else {
+            return Ok(None);
+        };
         let mut chr = CharacterDrop::new(self, sm, cx.ctx);
         floor_drop::force_drop_too_heavy(&mut chr, cx.floor, force, Some(&item))
     }
@@ -137,7 +165,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `dropHeavyItems()`: the heavy hand items (bags, `HeavyItem`s,
     /// corpses, animals, generators) fall to the floor under the
     /// character ([`floor_drop::drop_heavy_items`]).
-    pub fn drop_heavy_items(&mut self, sm: &ScriptManager, cx: FloorCx<'_>) -> Vec<Dropped> {
+    pub fn drop_heavy_items(&mut self, sm: &ScriptManager, cx: FloorCx<'_>) -> HostResult<Vec<Dropped>> {
         let mut chr = CharacterDrop::new(self, sm, cx.ctx);
         floor_drop::drop_heavy_items(&mut chr, cx.floor)
     }
@@ -145,7 +173,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `dropHandItems()`: nothing in the `Tutorial` game mode or for a
     /// player that is not local; else the heavy hand items, then the rest
     /// ([`floor_drop::drop_hand_items`]).
-    pub fn drop_hand_items(&mut self, sm: &ScriptManager, cx: FloorCx<'_>) -> Vec<Dropped> {
+    pub fn drop_hand_items(&mut self, sm: &ScriptManager, cx: FloorCx<'_>) -> HostResult<Vec<Dropped>> {
         let tutorial = cx.ctx.is_tutorial();
         let mut chr = CharacterDrop::new(self, sm, cx.ctx);
         floor_drop::drop_hand_items(&mut chr, cx.floor, tutorial)

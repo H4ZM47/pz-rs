@@ -190,7 +190,7 @@ pub fn real_zombie_info<I: 'static>(z: &GameCharacter<I>, ctx: &dyn SimContext, 
             can_walk: z.zombie.can_walk,
             fake_dead: z.zombie.fake_dead && ctx.lore_disable_fake_dead() != 3,
             can_crawl_under_vehicle: z.zombie.can_crawl_under_vehicle,
-            reanimated_for_grapple_only: z.zombie.reanimated_for_grapple_only,
+            reanimated_for_grapple_only: z.zombie.is_reanimated_for_grapple_only(),
         },
         path_target_x: px,
         path_target_y: py,
@@ -210,7 +210,10 @@ pub fn real_zombie_info<I: 'static>(z: &GameCharacter<I>, ctx: &dyn SimContext, 
 /// second borrow of the cell next to the mutable one.
 pub struct RealZombies<'a, I: 'static, W: crate::character::state::StateWorld<I>> {
     pub sm: &'a ScriptManager,
-    pub chars: &'a crate::Characters,
+    /// Borrowed only while a zombie is pathed, killed or removed, so
+    /// [`Self::create_survivor`] may borrow it mutably
+    /// (`SurvivorFactory.CreateSurvivor` counts descriptor ids).
+    pub chars: &'a std::cell::RefCell<crate::Characters>,
     pub ctx: &'a dyn SimContext,
     /// The rest of the world (path finding, corpses).
     pub world: &'a mut W,
@@ -240,7 +243,8 @@ impl<I: 'static, W: crate::character::state::StateWorld<I>> RealZombies<'_, I, W
         let i = self.find(id)?;
         let mut z = self.zombies.remove(i);
         let r = {
-            let mut cx = StateCx::new(self.sm, self.chars, self.ctx, &mut *self.world);
+            let chars = self.chars.borrow();
+            let mut cx = StateCx::new(self.sm, &chars, self.ctx, &mut *self.world);
             f(&mut z, &mut cx)
         };
         self.zombies.insert(i, z);
@@ -344,7 +348,7 @@ impl<I: 'static, W: crate::character::state::StateWorld<I>> pz_world_popman::Zom
     }
     fn set_reanimated_for_grapple_only(&mut self, z: i32, v: bool) {
         if let Some(i) = self.find(z) {
-            self.zombies[i].zombie.reanimated_for_grapple_only = v;
+            self.zombies[i].zombie.set_reanimated_for_grapple_only(v);
         }
     }
     fn path_to(&mut self, z: i32, x: i32, y: i32) {

@@ -49,7 +49,7 @@ impl KeySet {
     /// `contains`.
     pub fn contains(&self, key: Option<&Rc<RegistryKey>>) -> bool {
         self.0.iter().any(|k| match (k, key) {
-            (Some(a), Some(b)) => a.location == b.location,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
         })
@@ -86,6 +86,10 @@ pub struct Item {
     pub hidden: bool,
     pub cant_eat: bool,
     pub icon: Option<String>,
+    normal_texture: Option<pz_render::TextureRef>,
+    world_texture: Option<pz_render::TextureRef>,
+    special_textures: Vec<Option<pz_render::TextureRef>>,
+    texture_capture_complete: bool,
     pub medical: bool,
     pub canned_food: bool,
     pub survival_gear: bool,
@@ -535,6 +539,43 @@ fn eq_true(v: &str) -> bool {
 }
 
 impl Item {
+    pub fn normal_texture_slot(&self) -> Option<&pz_render::TextureRef> {
+        self.normal_texture.as_ref()
+    }
+    pub fn world_texture_slot(&self) -> Option<&pz_render::TextureRef> {
+        self.world_texture.as_ref()
+    }
+    pub fn special_texture_slots(&self) -> &[Option<pz_render::TextureRef>] {
+        &self.special_textures
+    }
+    pub fn texture_capture_complete(&self) -> bool {
+        self.texture_capture_complete
+    }
+    /// Collector-only physical detach, with no native reload/reset behavior.
+    pub fn take_texture_slots_for_gc(
+        &mut self,
+    ) -> (
+        Option<pz_render::TextureRef>,
+        Option<pz_render::TextureRef>,
+        Vec<Option<pz_render::TextureRef>>,
+    ) {
+        (
+            self.normal_texture.take(),
+            self.world_texture.take(),
+            std::mem::take(&mut self.special_textures),
+        )
+    }
+
+    fn replace_normal_texture(&mut self, texture: Option<pz_render::TextureRef>) {
+        if let Some(old) = std::mem::replace(&mut self.normal_texture, texture) {
+            crate::texture_capture::retire_texture(old);
+        }
+    }
+    fn replace_world_texture(&mut self, texture: Option<pz_render::TextureRef>) {
+        if let Some(old) = std::mem::replace(&mut self.world_texture, texture) {
+            crate::texture_capture::retire_texture(old);
+        }
+    }
     pub fn new() -> Self {
         let mut entity = GameEntityScript::new();
         entity.base = BaseScriptObject::new(ScriptType::Item);
@@ -545,6 +586,10 @@ impl Item {
             hidden: false,
             cant_eat: false,
             icon: s("None"),
+            normal_texture: None,
+            world_texture: None,
+            special_textures: Vec::new(),
+            texture_capture_complete: false,
             medical: false,
             canned_food: false,
             survival_gear: false,
@@ -1052,7 +1097,7 @@ impl Item {
         if self.lvl_skill_trained == -1 {
             return -1;
         }
-        self.lvl_skill_trained + self.num_levels_trained
+        self.lvl_skill_trained.wrapping_add(self.num_levels_trained)
     }
 
     /// `getR` / `getColorRed`.
@@ -1093,7 +1138,7 @@ impl Item {
     /// `isItemType(ItemType)`.
     pub fn is_item_type_key(&self, item_type: Option<&Rc<RegistryKey>>) -> bool {
         match (&self.item_type, item_type) {
-            (Some(a), Some(b)) => a.location == b.location,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
         }
@@ -1107,7 +1152,7 @@ impl Item {
     /// `isBodyLocation`.
     pub fn is_body_location(&self, location: Option<&Rc<RegistryKey>>) -> bool {
         match (&self.body_location, location) {
-            (Some(a), Some(b)) => a.location == b.location,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
         }
@@ -2152,9 +2197,68 @@ impl Item {
         }
     }
 
+    fn capture_icon(&mut self, sm: &ScriptManager, val: &str) -> pz_render::TextureResult<()> {
+        self.texture_capture_complete = false;
+        self.icon = s(val);
+        let item_name = format!("Item_{val}");
+        self.item_name = Some(item_name.clone());
+        self.replace_normal_texture(pz_render::try_get_texture_ref(&item_name)?);
+        if self.normal_texture.is_none() {
+            self.replace_normal_texture(pz_render::get_shared_texture_ref(
+                "media/inventory/Question_On.png",
+            )?);
+        }
+        let world = format!(
+            "{}.png",
+            item_name.replace("Item_", "media/inventory/world/WItem_")
+        );
+        self.world_texture_name = Some(world.clone());
+        self.replace_world_texture(pz_render::get_shared_texture_ref(&world)?);
+        if self.is_item_type(sm, "FOOD") {
+            let mut rotten = pz_render::try_get_texture_ref(&format!("{item_name}Rotten"))?;
+            let mut world_rotten = world.replace(".png", "Rotten.png");
+            if rotten.is_none() {
+                rotten = pz_render::try_get_texture_ref(&format!("{item_name}Spoiled"))?;
+                world_rotten = world_rotten.replace("Rotten.png", "Spoiled.png");
+            }
+            if rotten.is_none() {
+                rotten = pz_render::try_get_texture_ref(&format!("{item_name}_Rotten"))?;
+                world_rotten = world_rotten.replace("Rotten.png", "_Rotten.png");
+            }
+            self.special_world_texture_names.push(world_rotten);
+            self.special_textures.push(rotten);
+            let cooked = pz_render::try_get_texture_ref(&format!("{item_name}Cooked"))?;
+            self.special_textures.push(cooked);
+            self.special_world_texture_names
+                .push(world.replace(".png", "Cooked.png"));
+            let mut burnt = pz_render::try_get_texture_ref(&format!("{item_name}Overdone"))?;
+            let mut world_burnt = world.replace(".png", "Overdone.png");
+            if burnt.is_none() {
+                burnt = pz_render::try_get_texture_ref(&format!("{item_name}Burnt"))?;
+                world_burnt = world_burnt.replace("Overdone.png", "Burnt.png");
+            }
+            if burnt.is_none() {
+                burnt = pz_render::try_get_texture_ref(&format!("{item_name}_Burnt"))?;
+                world_burnt = world_burnt.replace("Overdone.png", "_Burnt.png");
+            }
+            self.special_textures.push(burnt);
+            self.special_world_texture_names.push(world_burnt);
+        }
+        self.texture_capture_complete = true;
+        Ok(())
+    }
+
     /// The `Icon` param: the texture names derived from the icon. A food
     /// item looks for its rotten/cooked/burnt variants under fallback names.
     fn do_param_icon(&mut self, sm: &ScriptManager, val: &str) -> ScriptResult {
+        if sm.texture_capture_enabled() {
+            if let Err(error) = self.capture_icon(sm, val) {
+                sm.record_texture_host_fault(error);
+            }
+            return Ok(());
+        }
+        // Explicit offline parser/data profile; actual slots remain uncaptured.
+        self.texture_capture_complete = false;
         self.icon = s(val);
         let item_name = format!("Item_{val}");
         // TODO(Texture): normalTexture (falling back to Question_On.png) and
@@ -2409,11 +2513,13 @@ impl Item {
                 attachment: self.secondary_anim_mask_attachment.clone(),
             });
         }
-        // TODO(Texture): without a normalTexture, `Item_<iconsForTexture[0]>`.
     }
 
     fn load_block(&mut self, sm: &ScriptManager, block: &Block) -> ScriptResult {
         self.entity.base.load_common_block(block);
+        if sm.texture_capture_enabled() {
+            self.texture_capture_complete = false;
+        }
         for element in &block.elements {
             match element {
                 BlockElement::Value(i) => self.do_param_str(sm, &block.values[*i].string)?,
@@ -2428,8 +2534,29 @@ impl Item {
                     }
                 }
             }
+            if sm.texture_capture_aborted() {
+                return Ok(());
+            }
         }
         self.build_hand_replacements();
+        if sm.texture_capture_enabled() {
+            if self.normal_texture.is_none() {
+                if let Some(first) = self
+                    .icons_for_texture
+                    .as_ref()
+                    .and_then(|icons| icons.first())
+                {
+                    match pz_render::try_get_texture_ref(&format!("Item_{first}")) {
+                        Ok(texture) => self.replace_normal_texture(texture),
+                        Err(error) => {
+                            sm.record_texture_host_fault(error);
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            self.texture_capture_complete = true;
+        }
         Ok(())
     }
 }

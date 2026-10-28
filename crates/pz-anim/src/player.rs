@@ -622,8 +622,10 @@ impl AnimationPlayer {
 
     /// `releaseRagdollController`.
     pub fn release_ragdoll_controller<'h>(&mut self, host: Option<&mut (dyn RagdollHost + 'h)>) {
+        if host.as_deref().is_some_and(|host| host.host_action_failed()) { return; }
         if let Some(h) = host {
             h.release_controller();
+            if h.host_action_failed() { return; }
             self.sync_ragdoll_state(h);
         } else {
             self.ragdolling = false;
@@ -642,6 +644,7 @@ impl AnimationPlayer {
             self.release_ragdoll_controller(None);
             return;
         };
+        if host.host_action_failed() { return; }
         if !self.update_bones || !(host.has_character() && host.can_ragdoll()) || !self.contains_any_ragdoll_tracks() || self.active_ragdoll_track().is_none() {
             self.release_ragdoll_controller(Some(host));
             return;
@@ -651,9 +654,11 @@ impl AnimationPlayer {
 
     /// `updateRagdollInternal(deltaT)`.
     fn update_ragdoll_internal<'h>(&mut self, dt: f32, host: &mut (dyn RagdollHost + 'h)) {
+        if host.host_action_failed() { return; }
         // getOrCreateRagdollController (initRagdollController).
         if !host.has_controller() && host.has_character() && host.can_ragdoll() {
             host.alloc_controller();
+            if host.host_action_failed() { return; }
         }
         self.sync_ragdoll_state(host);
         if !host.has_controller() {
@@ -674,8 +679,10 @@ impl AnimationPlayer {
             let m = self.calculate_deferred_movement_from_ragdolls(host);
             self.deferred_movement_from_ragdoll = m;
             host.do_deferred_movement_from_ragdoll(self, m);
+            if host.host_action_failed() { return; }
         }
         host.update(self, dt);
+        if host.host_action_failed() { return; }
         self.sync_ragdoll_state(host);
     }
 
@@ -751,12 +758,14 @@ impl AnimationPlayer {
             self.release_ragdoll_controller(None);
             return;
         };
+        if host.host_action_failed() { return; }
         if !self.update_bones || !host.has_character() || !self.contains_any_ragdoll_tracks() || self.active_ragdoll_track().is_none() {
             self.release_ragdoll_controller(Some(host));
             return;
         }
         if host.has_controller() {
             host.post_update(self, dt);
+            if host.host_action_failed() { return; }
             self.sync_ragdoll_state(host);
         }
     }
@@ -803,7 +812,9 @@ impl AnimationPlayer {
     }
 
     fn update_internal<'h>(&mut self, dt: f32, vars: Option<&dyn AnimationVariableSource>, parent: Option<&AnimationPlayer>, mut host: Option<&mut (dyn RagdollHost + 'h)>) {
+        if host.as_deref().is_some_and(|host| host.host_action_failed()) { return; }
         self.update_ragdoll(dt, host.as_deref_mut());
+        if host.as_deref().is_some_and(|host| host.host_action_failed()) { return; }
         self.multi_track_update(dt, vars);
         if !self.update_bones {
             self.update_animation_non_visual_only(dt, parent.is_some());
@@ -1537,3 +1548,6 @@ impl AnimationPlayer {
         self.skin_transforms(Some(skinned_to)).iter().map(Matrix4f::to_mat4).collect()
     }
 }
+
+#[cfg(test)]
+mod host_abort_tests;

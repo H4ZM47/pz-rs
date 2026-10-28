@@ -6,10 +6,20 @@ use pz_bullet::pz::ballistics::CRand;
 use pz_bullet::{JniError, PzBullet};
 
 #[test]
-fn c_rand_is_the_minimal_standard_generator() {
+fn c_rand_uses_the_target_platform_sequence() {
     let mut r = CRand::default();
     let first: Vec<i32> = (0..5).map(|_| r.rand()).collect();
+    #[cfg(target_os = "windows")]
+    assert_eq!(first, [41, 18467, 6334, 26500, 19169]);
+    #[cfg(target_os = "linux")]
+    assert_eq!(first, [1804289383, 846930886, 1681692777, 1714636915, 1957747793]);
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     assert_eq!(first, [16807, 282475249, 1622650073, 984943658, 1144108930]);
+}
+
+#[test]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+fn macos_c_rand_is_the_minimal_standard_generator() {
     // 16807^n mod (2^31 - 1) after 10000 draws
     let mut x: u64 = 1;
     for _ in 0..10000 {

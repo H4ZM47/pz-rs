@@ -303,7 +303,11 @@ impl fmt::Debug for ScriptRef {
 
 impl ScriptRef {
     pub fn new<T: ScriptObject>(script: T) -> Self {
-        let rc = Rc::new(RefCell::new(script));
+        Self::from_shared(Rc::new(RefCell::new(script)))
+    }
+
+    /// A handle over the SAME actual definition allocation; no body snapshot.
+    pub fn from_shared<T: ScriptObject>(rc: Rc<RefCell<T>>) -> Self {
         ScriptRef { obj: rc.clone(), any: rc }
     }
 

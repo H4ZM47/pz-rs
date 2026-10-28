@@ -13,6 +13,8 @@ use pz_iso_render::fire::{FireLight, FireState};
 use pz_iso_render::hearth::FireplaceState;
 
 use crate::lighting::{CellLight, WorldLighting};
+use crate::{HostResult, RuntimeHostError};
+use pz_world::sprite::runtime::ObjectSprite;
 
 /// An object's `lightSource` in the cell's list.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -152,24 +154,48 @@ impl FireLightLinks {
 
 /// What `IsoFireplace.update`'s visual half reads of the world object
 /// (`obj`, an `ObjectKind::Fireplace`).
-pub fn fireplace_input<'a>(
-    obj: &'a pz_world::IsoObject,
+/// Owned scalars/strings captured at this one update phase. It is not a
+/// persistent sprite snapshot and does not retain a native RefCell guard.
+pub struct OwnedFireplaceInput {
+    pub lit: bool,
+    pub fuel_amount: i32,
+    pub sprite_name: String,
+    pub metal_drum: bool,
+    pub container_type: Option<String>,
+    pub collide_w: bool,
+    pub collide_n: bool,
+}
+impl OwnedFireplaceInput {
+    pub fn as_input(&self) -> pz_iso_render::hearth::FireplaceInput<'_> {
+        pz_iso_render::hearth::FireplaceInput {
+            lit: self.lit,
+            fuel_amount: self.fuel_amount,
+            sprite_name: &self.sprite_name,
+            metal_drum: self.metal_drum,
+            container_type: self.container_type.as_deref(),
+            collide_w: self.collide_w,
+            collide_n: self.collide_n,
+        }
+    }
+}
+pub fn fireplace_input(
+    obj: &pz_world::IsoObject,
     fp: &pz_world::objects::IsoFireplace,
-    sprites: &'a pz_world::IsoSpriteManager,
-) -> pz_iso_render::hearth::FireplaceInput<'a> {
-    let sp = obj.sprite.map(|s| &sprites.sprites[s]);
+    sprites: &pz_world::IsoSpriteManager,
+) -> HostResult<OwnedFireplaceInput> {
+    let sp = obj.sprite.try_read(sprites)?;
     let f = &sprites.tables.flag;
-    let has = |fl| sp.is_some_and(|s| s.properties.has(fl));
-    pz_iso_render::hearth::FireplaceInput {
+    Ok(OwnedFireplaceInput {
         lit: fp.lit,
         fuel_amount: fp.fuel_amount(),
-        sprite_name: sp.map_or("", |s| s.name()),
+        sprite_name: sp.as_deref().map_or("", |s| s.name()).to_string(),
         metal_drum: sp
+            .as_deref()
             .is_some_and(|s| s.properties.get(&sprites.alias, "CustomName") == Some("Metal Drum")),
-        container_type: obj.container.as_ref().and_then(|c| c.kind.as_deref()),
-        collide_w: has(f.collideW),
-        collide_n: has(f.collideN),
-    }
+        container_type: obj.container.as_ref().and_then(|c| c.kind.clone()),
+        collide_w: sp.as_deref().is_some_and(|s| s.properties.has(f.collideW)),
+        collide_n: sp.as_deref().is_some_and(|s| s.properties.has(f.collideN)),
+    })
 }
 
 /// A fireplace's or barbecue's visual state and light, kept with the world
@@ -203,16 +229,18 @@ impl HearthLink {
         dt: f32,
         rand: &dyn pz_iso_render::fire::RandSource,
         frame_size: &dyn Fn(&str) -> Option<(i32, i32)>,
-    ) {
+    ) -> HostResult<()> {
         let pz_world::ObjectKind::Fireplace(fp) = &mut obj.kind else {
-            return;
+            return Ok(());
         };
         fp.update_fuel(world_age_hours);
         let fp = fp.clone();
-        let input = fireplace_input(obj, &fp, sprites);
-        self.fireplace.update(&input, dt, rand, frame_size);
+        let input = fireplace_input(obj, &fp, sprites)?;
+        self.fireplace
+            .update(&input.as_input(), dt, rand, frame_size);
         self.light
             .sync_fireplace(lighting, &self.fireplace, at.0, at.1, at.2);
+        Ok(())
     }
 
     /// `IsoBarbecue.update()` of `obj`: the fuel step, the propane sprite
@@ -223,19 +251,35 @@ impl HearthLink {
         sprites: &pz_world::IsoSpriteManager,
         world_age_hours: f64,
         dt: f32,
-    ) {
-        let propane = obj.sprite.is_some_and(|s| {
-            sprites.sprites[s]
-                .properties
-                .has_name(&sprites.alias, "PropaneTank")
-        });
+    ) -> HostResult<()> {
         let pz_world::ObjectKind::Barbecue(b) = &mut obj.kind else {
-            return;
+            return Ok(());
         };
         b.update_fuel(world_age_hours);
         let lit = b.lit;
-        obj.sprite = b.sprite(obj.sprite, propane);
+        // Native update completes fuel/time before updateSprite's first
+        // isPropaneBBQ property read, including when that later read fails.
+        let propane = {
+            let sp = obj.sprite.try_read(sprites)?;
+            sp.as_deref().is_some_and(|sp| {
+                sp.properties.has_name(&sprites.alias, "PropaneTank")
+            })
+        };
+        if propane {
+            let current = match &obj.sprite {
+                ObjectSprite::None => None,
+                ObjectSprite::Tile(index) => Some(*index),
+                ObjectSprite::Native(_) | ObjectSprite::ArchiveUnmanaged(_) => {
+                    return Err(RuntimeHostError::Unsupported {
+                        operation: "native barbecue sprite replacement",
+                        kind: None,
+                    })
+                }
+            };
+            obj.sprite = ObjectSprite::from_tile(b.sprite(current, true));
+        }
         self.barbecue.update(lit, dt);
+        Ok(())
     }
 
     /// `removeFromWorld()`: the light goes.

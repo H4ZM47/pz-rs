@@ -8,15 +8,18 @@
 use super::chr;
 use super::{
     created_display_name, fstr, int_str, item_name, item_texture, mod_has, mod_num, mod_set,
-    mod_str, npe, script, script_display_name, sv, tr, tr_args, trc, Cx, Row, Tip, LABEL, WHITE,
+    mod_str, mod_value, npe, script, script_display_name, sv, tr, tr_args, trc, Cx, Row, Tip, LABEL, WHITE,
 };
 use crate::bind_items::{item_env, ItemRef};
 use pz_inventory::item::{ClothingData, FoodData, ItemKind};
-use pz_inventory::lua_table::LuaValue;
 use pz_inventory::{InventoryItem, ItemClass};
 use pz_kahlua::{LuaResult, Value};
 use pz_ui::tooltip::{Layout, ObjectTooltip};
 use std::collections::HashSet;
+
+#[cfg(test)]
+#[path = "kinds/moddata_tests.rs"]
+mod moddata_tests;
 
 /// The subclass's `DoTooltip(tooltipUI, layout)`.
 pub fn do_tooltip(
@@ -203,12 +206,12 @@ fn food(cx: &mut Cx<'_>, item: &ItemRef, layout: &mut Layout) -> LuaResult<()> {
     let too_dark = !player.is_nil() && chr::too_dark_to_read(cx.t, &player)?;
     let nutritionist =
         chr::has_trait(cx.t, &chr, "NUTRITIONIST")? || chr::has_trait(cx.t, &chr, "NUTRITIONIST2")?;
+    let no_label = mod_has(item, "NoLabel")?;
     let it = item.borrow();
     let ItemKind::Food(f) = &it.kind else {
         return Ok(());
     };
     let packaged = sv(&it, |s| s.packaged);
-    let no_label = mod_has(&it, "NoLabel");
     let can_read_package = packaged && !illiterate && !too_dark && !no_label;
     if pro_cook && f.is_cookable {
         layout
@@ -406,14 +409,17 @@ fn clothing(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout)
         }
     }
     // getVisual(): null without a ready ClothingItem, and getHole throws.
-    let holes = {
-        let mut it = item.borrow_mut();
+    if e.context().assets().is_some() { crate::bind_items::ensure_clothing_mod_data(item)?; }
+    let visual_result = (|| -> LuaResult<i32> {
+        let mut it = item.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item tooltip body").to_lua_error())?;
         let assets = e.context().assets();
-        match it.get_visual(assets, owner.as_ref(), e.visual_rng()) {
-            Some(v) => v.get_holes_number(),
+        match it.try_get_visual(assets, owner.as_ref(), e.visual_rng()).map_err(|error| error.to_lua_error())? {
+            Some(v) => Ok(v.get_holes_number()),
             None => return Err(npe()),
         }
-    };
+    })();
+    pz_inventory::shared::observe_item(item);
+    let holes = visual_result?;
     if holes > 0 {
         layout
             .add_item()
@@ -471,17 +477,19 @@ fn clothing(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout)
         }
     }
     let _ = tip;
-    let mut it = item.borrow_mut();
+    crate::bind_items::ensure_clothing_mod_data(item)?;
+    let result = (|| -> LuaResult<()> {
+    let mut it = item.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item tooltip body").to_lua_error())?;
     if it.has_tag("base:gasmask")
         || it.has_tag("base:respirator")
         || it.has_tag("base:improvisedgasmask")
     {
-        if it.has_filter() {
+        if it.try_has_filter().map_err(|error| error.to_lua_error())? {
             let name = it
-                .get_filter_type()
-                .and_then(find_script_display_name)
+                .try_get_filter_type().map_err(|error| error.to_lua_error())?
+                .as_deref().and_then(find_script_display_name)
                 .ok_or_else(npe)?;
-            let v = it.get_used_delta();
+            let v = it.try_get_used_delta().map_err(|error| error.to_lua_error())?;
             layout
                 .add_item()
                 .label(&format!("{}:", tr(&name)), LABEL)
@@ -493,12 +501,12 @@ fn clothing(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout)
         layout.add_item().label(&tr("Tooltip_NoFilter"), LABEL);
     }
     if it.has_tag("base:scba") {
-        if it.has_tank() {
+        if it.try_has_tank().map_err(|error| error.to_lua_error())? {
             let name = it
-                .get_tank_type()
-                .and_then(find_script_display_name)
+                .try_get_tank_type().map_err(|error| error.to_lua_error())?
+                .as_deref().and_then(find_script_display_name)
                 .ok_or_else(npe)?;
-            let v = it.get_used_delta();
+            let v = it.try_get_used_delta().map_err(|error| error.to_lua_error())?;
             layout
                 .add_item()
                 .label(&format!("{}:", tr(&name)), LABEL)
@@ -548,6 +556,9 @@ fn clothing(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout)
         }
     }
     Ok(())
+    })();
+    pz_inventory::shared::observe_item(item);
+    result
 }
 
 /// `ScriptManager.instance.getItem(name).getDisplayName()`.
@@ -559,8 +570,11 @@ fn find_script_display_name(name: &str) -> Option<String> {
 
 /// `HandWeapon.DoTooltip`.
 fn weapon(cx: &mut Cx<'_>, item: &ItemRef, layout: &mut Layout) -> LuaResult<()> {
-    if super::components::has_sharpness(&item.borrow()) {
-        let f = super::components::sharpness_mut(&mut item.borrow_mut());
+    if super::components::has_sharpness_ref(item)
+        .map_err(|error| pz_kahlua::LuaError::runtime(format!("{error:?}")))?
+    {
+        let f = super::components::sharpness_mut(item)
+            .map_err(|error| pz_kahlua::LuaError::runtime(format!("{error:?}")))?;
         layout
             .add_item()
             .label(&trc("Tooltip_weapon_Sharpness"), LABEL)
@@ -605,8 +619,9 @@ fn weapon(cx: &mut Cx<'_>, item: &ItemRef, layout: &mut Layout) -> LuaResult<()>
             }
         }
     }
-    if item.borrow().has_tag("base:fishingrod") {
-        fishing_rows(cx, &mut item.borrow_mut(), layout);
+    let fishing_rod = item.borrow().has_tag("base:fishingrod");
+    if fishing_rod {
+        fishing_rows(cx, item, layout)?;
     }
     let ranged = item.borrow().is_ranged();
     if ranged {
@@ -725,44 +740,46 @@ fn max_damage(it: &InventoryItem) -> f32 {
 
 /// The fishing rod's line, hook and bait rows (setting the defaults in
 /// the mod data as the original does).
-fn fishing_rows(cx: &Cx<'_>, it: &mut InventoryItem, layout: &mut Layout) {
+fn fishing_rows(cx: &Cx<'_>, item: &ItemRef, layout: &mut Layout) -> LuaResult<()> {
     let row = layout.add_item();
     row.label(&trc("Tooltip_fishing_line_Condition"), LABEL);
-    let f = match mod_num(it, "fishing_LineCondition") {
+    let f = match mod_num(item, "fishing_LineCondition")? {
         Some(v) => v as f32,
         None => {
-            if !mod_has(it, "fishing_LineCondition") {
-                mod_set(it, "fishing_LineCondition", LuaValue::Num(1.0));
-            }
+            mod_set(item, "fishing_LineCondition", Some(Value::Num(1.0)))?;
             1.0
         }
     };
     row.progress(f, rgb1(cx.bad_to_good(f)));
     let row = layout.add_item();
     row.label(&trc("Tooltip_fishing_line"), LABEL);
-    match mod_str(it, "fishing_LineType") {
+    match mod_value(item, "fishing_LineType")? {
         None => {
-            mod_set(it, "fishing_LineType", LuaValue::Str("FishingLine".into()));
-            let n = find_script_display_name("Base.FishingLine").unwrap_or_default();
+            mod_set(item, "fishing_LineType", Some(Value::str("FishingLine")))?;
+            let n = find_script_display_name("Base.FishingLine").ok_or_else(npe)?;
             row.value(&tr(&n), WHITE);
         }
         Some(line) => {
-            if super::find_script("FishingLine").is_none() || super::find_script(&line).is_none() {
+            if super::find_script("FishingLine").is_none() {
                 row.value(&tr("Tooltip_fishing_line"), WHITE);
             } else {
-                row.value(
-                    &tr(&find_script_display_name(&line).unwrap_or_default()),
-                    WHITE,
-                );
+                let line = match line {
+                    Value::Str(value) => value.to_string(),
+                    value => return Err(crate::bind_java_util::class_cast(&value, "java.lang.String")),
+                };
+                match find_script_display_name(&line) {
+                    Some(name) => row.value(&tr(&name), WHITE),
+                    None => row.value(&tr("Tooltip_fishing_line"), WHITE),
+                };
             }
         }
     }
     let row = layout.add_item();
     row.label(&trc("Tooltip_fishing_hook"), LABEL);
-    match mod_str(it, "fishing_HookType") {
+    match mod_str(item, "fishing_HookType")? {
         None => {
-            mod_set(it, "fishing_HookType", LuaValue::Str("FishingHook".into()));
-            let n = find_script_display_name("FishingHook").unwrap_or_default();
+            mod_set(item, "fishing_HookType", Some(Value::str("FishingHook")))?;
+            let n = find_script_display_name("FishingHook").ok_or_else(npe)?;
             row.value(&tr(&n), WHITE);
         }
         Some(hook) => {
@@ -778,7 +795,7 @@ fn fishing_rows(cx: &Cx<'_>, it: &mut InventoryItem, layout: &mut Layout) {
     }
     let row = layout.add_item();
     row.label(&trc("Tooltip_fishing_bait"), LABEL);
-    match mod_str(it, "fishing_Lure") {
+    match mod_str(item, "fishing_Lure")? {
         None => {
             row.value(&tr("UI_None"), [1.0, 0.0, 0.0, 1.0]);
         }
@@ -793,6 +810,7 @@ fn fishing_rows(cx: &Cx<'_>, it: &mut InventoryItem, layout: &mut Layout) {
             }
         }
     }
+    Ok(())
 }
 
 /// `WeaponPart.DoBatteryTooltip`.
@@ -932,16 +950,26 @@ fn container(cx: &mut Cx<'_>, item: &ItemRef, layout: &mut Layout) -> LuaResult<
 
 /// The rest of `InventoryContainer.DoTooltip(tooltipUI)`: one icon per
 /// item name of the contents (last first), in a row below the layout.
-pub fn container_icons(tip: &Tip<'_>, item: &ItemRef) {
+pub fn container_icons(tip: &Tip<'_>, item: &ItemRef) -> LuaResult<()> {
     let el = tip.el;
     let mut y = el.get_height() as i32;
     y -= tip.tt.pad_bottom.get();
     if el.get_width() < 160.0 {
         el.set_width(160.0);
     }
-    let items: Vec<ItemRef> = match &item.borrow().kind {
-        ItemKind::Container(c) => c.container.borrow().items.clone(),
-        _ => return,
+    let items: Vec<ItemRef> = {
+        let body = item
+            .try_borrow()
+            .map_err(|_| crate::bind_world_object::borrowed("tooltip container item"))?;
+        match &body.kind {
+            ItemKind::Container(c) => {
+                let contents = c.container.try_borrow().map_err(|_| {
+                    crate::bind_world_object::borrowed("tooltip contained item list")
+                })?;
+                contents.items.clone()
+            }
+            _ => return Ok(()),
+        }
     };
     if !items.is_empty() {
         let mut x = tip.tt.pad_left.get();
@@ -949,11 +977,15 @@ pub fn container_icons(tip: &Tip<'_>, item: &ItemRef) {
         let mut names = HashSet::new();
         let icon = 16.max(pz_ui::draw::font_height(Some(ObjectTooltip::font())));
         for i in items.iter().rev() {
-            let i = i.borrow();
-            if !names.insert(i.name.clone()) {
+            let name = i
+                .try_borrow()
+                .map_err(|_| crate::bind_world_object::borrowed("tooltip contained item name"))?
+                .name
+                .clone();
+            if !names.insert(name) {
                 continue;
             }
-            let tex = item_texture(&i);
+            let tex = item_texture(i)?;
             tip.tt.draw_texture_scaled_aspect(
                 el,
                 tex.as_ref(),
@@ -975,6 +1007,7 @@ pub fn container_icons(tip: &Tip<'_>, item: &ItemRef) {
     }
     y += tip.tt.pad_bottom.get();
     el.set_height(y as f64);
+    Ok(())
 }
 
 /// `Literature.DoTooltip`.
@@ -983,13 +1016,12 @@ fn literature(cx: &mut Cx<'_>, item: &ItemRef, layout: &mut Layout) -> LuaResult
     if chr.is_nil() {
         return Ok(());
     }
-    let (title, pages, full, lvl, levels, picture) = {
+    let (pages, full, lvl, levels, picture) = {
         let it = item.borrow();
         let ItemKind::Literature(l) = &it.kind else {
             return Ok(());
         };
         (
-            mod_str(&it, "literatureTitle"),
             l.number_of_pages,
             it.get_full_type(),
             sv(&it, |s| s.lvl_skill_trained),
@@ -997,6 +1029,7 @@ fn literature(cx: &mut Cx<'_>, item: &ItemRef, layout: &mut Layout) -> LuaResult
             it.has_tag("base:picture"),
         )
     };
+    let title = mod_str(item, "literatureTitle")?;
     let title_read = match &title {
         Some(t) => chr::is_literature_read(cx.t, &chr, t)?,
         None => false,
@@ -1047,8 +1080,8 @@ fn literature(cx: &mut Cx<'_>, item: &ItemRef, layout: &mut Layout) -> LuaResult
     let illiterate = chr::has_trait(cx.t, &chr, "ILLITERATE")?;
     // getLearnedRecipes() runs before the `learnedRecipe` test and moves
     // that mod data value into the item's list.
-    let learned = learned_recipes(&mut item.borrow_mut());
-    let learned_recipe = mod_str(&item.borrow(), "learnedRecipe");
+    let learned = learned_recipes(item)?;
+    let learned_recipe = mod_str(item, "learnedRecipe")?;
     if lvl != -1 {
         let max = lvl + levels - 1;
         let mut l = lvl.to_string();
@@ -1136,22 +1169,23 @@ fn literature(cx: &mut Cx<'_>, item: &ItemRef, layout: &mut Layout) -> LuaResult
 /// `Literature.getLearnedRecipes()`: a `learnedRecipe` mod data value
 /// becomes the item's own list (and is cleared); else the item's list or
 /// the script's.
-fn learned_recipes(it: &mut InventoryItem) -> Option<Vec<String>> {
-    use pz_inventory::lua_table::LuaKey;
-    if let Some(r) = mod_str(it, "learnedRecipe") {
-        if let Some(t) = it.table.as_mut() {
-            t.rawset(LuaKey::Str("learnedRecipe".into()), None);
-        }
-        if let ItemKind::Literature(l) = &mut it.kind {
+fn learned_recipes(item: &ItemRef) -> LuaResult<Option<Vec<String>>> {
+    if let Some(r) = mod_str(item, "learnedRecipe")? {
+        {
+            let mut it = item.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item tooltip body").to_lua_error())?;
+            if let ItemKind::Literature(l) = &mut it.kind {
             l.learned_recipes = Some(vec![r]);
+            }
         }
+        mod_set(item, "learnedRecipe", None)?;
     }
+    let it = item.try_borrow().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item tooltip body").to_lua_error())?;
     if let ItemKind::Literature(l) = &it.kind {
         if let Some(r) = &l.learned_recipes {
-            return Some(r.clone());
+            return Ok(Some(r.clone()));
         }
     }
-    sv(it, |s| s.learned_recipes.clone())
+    Ok(sv(&it, |s| s.learned_recipes.clone()))
 }
 
 /// `AnimalInventoryItem.DoTooltip`. TODO(animals): `IsoAnimal` is not

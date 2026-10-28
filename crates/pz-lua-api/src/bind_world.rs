@@ -26,13 +26,23 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
+mod cell_drag;
 pub mod lua_world;
+mod reachability;
+mod square_queries;
+pub mod power;
+
+#[cfg(test)]
+mod collection_deferral_tests;
 
 /// `IsoWorld.instance.metaGrid` and `IsoWorld.instance.currentCell`.
 #[derive(Default)]
 pub struct WorldState {
     pub meta_grid: Option<IsoMetaGrid>,
     pub cell: Option<IsoCell>,
+    /// `currentCell.weatherFx`, initialized by `initWeatherFx` and retired
+    /// with the cell. The simulation exists independently of GPU drawing.
+    pub weather_fx: Option<Rc<RefCell<pz_iso_render::weather_fx::IsoWeatherFx>>>,
 }
 
 thread_local! {
@@ -43,27 +53,43 @@ thread_local! {
     static HANDLES: RefCell<HashMap<Key, Weak<Handle>>> = RefCell::default();
 }
 
+// A Lua call can unwind to an interpreter drain while this actual WORLD
+// cell is still borrowed by its Rust caller. Do not collect at that boundary.
+fn with_world_state_cell<R>(f: impl FnOnce(&RefCell<WorldState>) -> R) -> R {
+    let _collection_deferral = pz_kahlua::gc::defer_collection();
+    WORLD.with(f)
+}
+
 /// Install (or clear) the meta grid Lua sees through `IsoWorld`.
 pub fn set_meta_grid(grid: Option<IsoMetaGrid>) {
-    WORLD.with(|w| w.borrow_mut().meta_grid = grid);
+    with_world_state_cell(|w| w.borrow_mut().meta_grid = grid);
     META_GEN.with(|g| g.set(g.get() + 1));
     HANDLES.with(|h| h.borrow_mut().retain(|k, _| !k.is_meta()));
 }
 
 /// Install (or clear) `IsoWorld.instance.currentCell`.
 pub fn set_cell(cell: Option<IsoCell>) {
-    WORLD.with(|w| w.borrow_mut().cell = cell);
+    let retired = with_world_state_cell(|w| {
+        let mut w = w.borrow_mut();
+        let weather = w.weather_fx.take();
+        let cell = std::mem::replace(&mut w.cell, cell);
+        (weather, cell)
+    });
     CELL_GEN.with(|g| g.set(g.get() + 1));
     HANDLES.with(|h| {
         h.borrow_mut()
             .retain(|k, _| k.is_meta() || *k == Key::World)
     });
+    // Live process queues can be the final owners of items carrying Lua
+    // parents. Their destructors must observe the new cell without an
+    // outstanding WORLD borrow.
+    drop(retired);
 }
 
 /// `IsoWorld.instance.getMetaGrid()`'s `(minX, minY, maxX, maxY)` in cells,
 /// `None` without a meta grid.
 pub fn meta_grid_cell_bounds() -> Option<(i32, i32, i32, i32)> {
-    WORLD.with(|w| {
+    with_world_state_cell(|w| {
         w.borrow()
             .meta_grid
             .as_ref()
@@ -74,7 +100,47 @@ pub fn meta_grid_cell_bounds() -> Option<(i32, i32, i32, i32)> {
 /// Access the world state (e.g. to load chunks into the cell). Must not be
 /// called from inside a bound method.
 pub fn with_world<R>(f: impl FnOnce(&mut WorldState) -> R) -> R {
-    WORLD.with(|w| f(&mut w.borrow_mut()))
+    with_world_state_cell(|w| f(&mut w.borrow_mut()))
+}
+
+/// Fallible access to the same actual world state from a native host service.
+/// Missing cell/meta fields remain genuine `None` for the caller to inspect.
+/// Collection stays deferred until the world guard has ended, including errors.
+pub fn try_with_world<R>(
+    f: impl FnOnce(&mut WorldState) -> pz_entity::runtime_load::HostResult<R>,
+) -> pz_entity::runtime_load::HostResult<R> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let _collection_deferral = pz_kahlua::gc::defer_collection();
+    WORLD
+        .try_with(|world| {
+            let mut world = world
+                .try_borrow_mut()
+                .map_err(|_| RuntimeHostError::Borrowed("Lua actual world state"))?;
+            f(&mut world)
+        })
+        .map_err(|_| RuntimeHostError::Unsupported {
+            operation: "Lua actual world state is unavailable",
+            kind: None,
+        })?
+}
+
+/// Read the actual current world without requiring a mutable WORLD guard.
+/// The closure must be a callback-free query; no Lua/lifecycle call may cross it.
+pub fn try_with_world_read<R>(
+    f: impl FnOnce(&WorldState) -> pz_entity::runtime_load::HostResult<R>,
+) -> pz_entity::runtime_load::HostResult<R> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let _collection_deferral = pz_kahlua::gc::defer_collection();
+    WORLD.try_with(|world| {
+        let world=world.try_borrow().map_err(|_|RuntimeHostError::Borrowed("Lua actual world read"))?;
+        f(&world)
+    }).map_err(|_|RuntimeHostError::Unsupported {operation:"Lua actual world read unavailable",kind:None})?
+}
+
+/// The current cell session, including clears/replacements of the same data.
+/// Retained host services use this token to reject a previous session's owners.
+pub fn cell_generation() -> u64 {
+    CELL_GEN.with(Cell::get)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -330,7 +396,7 @@ fn fastfloor_d(v: f64) -> i32 {
 }
 
 fn grid<R>(f: impl FnOnce(&mut IsoMetaGrid) -> LuaResult<R>) -> LuaResult<R> {
-    WORLD.with(|w| match w.borrow_mut().meta_grid.as_mut() {
+    with_world_state_cell(|w| match w.borrow_mut().meta_grid.as_mut() {
         Some(g) => f(g),
         None => Err(LuaError::runtime("IsoMetaGrid is not loaded")),
     })
@@ -338,14 +404,14 @@ fn grid<R>(f: impl FnOnce(&mut IsoMetaGrid) -> LuaResult<R>) -> LuaResult<R> {
 
 /// `IsoWorld.instance.currentCell`, NPE when there is none.
 fn cell<R>(f: impl FnOnce(&IsoCell) -> LuaResult<R>) -> LuaResult<R> {
-    WORLD.with(|w| match w.borrow().cell.as_ref() {
+    with_world_state_cell(|w| match w.borrow().cell.as_ref() {
         Some(c) => f(c),
         None => Err(npe()),
     })
 }
 
 fn square_exists(x: i32, y: i32, z: i32) -> bool {
-    WORLD.with(|w| {
+    with_world_state_cell(|w| {
         w.borrow()
             .cell
             .as_ref()
@@ -417,6 +483,16 @@ fn building_get(b: &ClassBuilder, name: &str, f: impl Fn(&BuildingDef) -> Value 
 }
 
 pub fn register(thread: &mut Thread) {
+    register_world(thread, None);
+}
+
+/// Expose the world and connect cursor mutation to the actual Lua session's
+/// registered SetDragItem event. Standalone read-only exposure needs no sink.
+pub fn register_with_events(thread: &mut Thread, events: crate::events::EventManager) {
+    register_world(thread, Some(events.add_event("SetDragItem")));
+}
+
+fn register_world(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::events::Event>>>) {
     register_array_list(thread);
     register_room_def(thread);
     register_room_rect(thread);
@@ -425,10 +501,11 @@ pub fn register(thread: &mut Thread) {
     register_meta_chunk(thread);
     register_meta_cell(thread);
     register_meta_grid(thread);
-    register_iso_cell(thread);
+    register_iso_cell(thread, drag_event);
     register_iso_chunk(thread);
     register_grid_square(thread);
     register_iso_world(thread);
+    crate::expose::global(thread, "getCell", |c| Ok(c.push(current_cell())));
     lua_world::register_zone(thread);
 }
 
@@ -1648,13 +1725,55 @@ fn self_cell(c: &NativeCall<'_>) -> LuaResult<()> {
     }
 }
 
-fn current_cell() -> Value {
-    let has = WORLD.with(|w| w.borrow().cell.is_some());
+/// The canonical Lua handle for the current world cell, or `nil` before
+/// a cell is installed and after it is unloaded.
+pub fn current_cell() -> Value {
+    let has = with_world_state_cell(|w| w.borrow().cell.is_some());
     opt(has.then_some(Key::Cell))
 }
 
-fn register_iso_cell(thread: &mut Thread) {
+fn register_iso_cell(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::events::Event>>>) {
     let b = expose_class(thread, "zombie.iso.IsoCell", Some("java.lang.Object"));
+    cell_drag::register(&b, drag_event);
+    for (name, remove) in [
+        ("addToProcessItems", false),
+        ("addToProcessItemsRemove", true),
+    ] {
+        void(&b, name, move |c| {
+            self_cell(c)?;
+            let items = crate::bind_process_items::argument_values(&c.arg(1));
+            let client = crate::bind_core::shared_core().borrow().is_client;
+            cell(|cl| {
+                if !remove && client {
+                    return Ok(());
+                }
+                for value in items {
+                    // The original casts each ArrayList element inside its
+                    // loop. A later bad element preserves earlier changes.
+                    let item = crate::bind_process_items::decode(&value)?;
+                    if remove {
+                        cl.process_items.queue_remove(item);
+                    } else {
+                        cl.process_items.add(item, client);
+                    }
+                }
+                Ok(())
+            })
+        });
+    }
+    for (name, remove) in [("getProcessItems", false), ("getProcessItemsRemove", true)] {
+        get(&b, name, move |c| {
+            self_cell(c)?;
+            let entries = cell(|cl| {
+                Ok(if remove {
+                    cl.process_items.remove.clone()
+                } else {
+                    cl.process_items.items.clone()
+                })
+            })?;
+            Ok(crate::bind_process_items::queue_value(&entries, remove))
+        });
+    }
     static_get(&b, "getInstance", |_| Ok(current_cell()));
     static_get(&b, "getCellSizeInChunks", |_| Ok(32.into()));
     static_get(&b, "getCellSizeInSquares", |_| Ok(256.into()));
@@ -1748,8 +1867,10 @@ fn register_iso_chunk(thread: &mut Thread) {
     get(&b, "getGridSquare", |c| {
         let (x, y, z) = (int_arg(c, 1), int_arg(c, 2), int_arg(c, 3));
         let k = chunk(c, |ch| {
-            ch.get_grid_square(x, y, z)
-                .map(|s| Key::Square(s.x, s.y, s.z))
+            ch.get_grid_square(x, y, z).map(|s| {
+                let s = s.borrow();
+                Key::Square(s.x, s.y, s.z)
+            })
         })?;
         Ok(opt(k))
     });
@@ -1764,7 +1885,7 @@ fn self_square(c: &NativeCall<'_>) -> LuaResult<(i32, i32, i32)> {
 fn square_room_id(x: i32, y: i32, z: i32) -> LuaResult<i64> {
     cell(|cl| {
         cl.get_grid_square(x, y, z)
-            .map(|s| s.room_id)
+            .map(|s| s.borrow().room_id)
             .ok_or_else(|| LuaError::runtime("IsoGridSquare is no longer loaded"))
     })
 }
@@ -1793,6 +1914,9 @@ fn square_building(x: i32, y: i32, z: i32) -> LuaResult<Option<usize>> {
 
 fn register_grid_square(thread: &mut Thread) {
     let b = expose_class(thread, "zombie.iso.IsoGridSquare", Some("java.lang.Object"));
+    reachability::register(&b);
+    square_queries::register(&b);
+    power::register(&b);
     static_get(&b, "getMatrixBit", |c| {
         let bit = |i| int_arg(c, i) as i8 as i32;
         let n = bit(1) + bit(2) * 3 + bit(3) * 9;
@@ -1919,7 +2043,7 @@ fn register_iso_world(thread: &mut Thread) {
     });
     get(&b, "getMetaGrid", |c| {
         self_world(c)?;
-        let has = WORLD.with(|w| w.borrow().meta_grid.is_some());
+        let has = with_world_state_cell(|w| w.borrow().meta_grid.is_some());
         Ok(opt(has.then_some(Key::MetaGrid)))
     });
     get(&b, "getMetaChunk", |c| {
@@ -2011,9 +2135,9 @@ mod tests {
         let mut ch = IsoChunk::new(32, 32);
         let mut sq = IsoGridSquare::new(259, 260, 0);
         sq.room_id = kitchen;
-        ch.set_square(3, 4, 0, Some(sq));
-        ch.set_square(4, 4, 0, Some(IsoGridSquare::new(260, 260, 0)));
-        ch.set_square(3, 4, 1, Some(IsoGridSquare::new(259, 260, 1)));
+        ch.set_square(3, 4, 0, Some((sq).into()));
+        ch.set_square(4, 4, 0, Some((IsoGridSquare::new(260, 260, 0)).into()));
+        ch.set_square(3, 4, 1, Some((IsoGridSquare::new(259, 260, 1)).into()));
         cell.chunks.insert((32, 32), ch);
         set_cell(Some(cell));
         TempDir(root)

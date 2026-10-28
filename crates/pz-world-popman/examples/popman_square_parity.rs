@@ -198,10 +198,15 @@ fn objects(sq: &IsoGridSquare, m: &IsoSpriteManager) -> String {
     sq.objects
         .iter()
         .map(|o| {
+            let o = o.borrow();
             format!(
                 "{}:{};",
                 o.kind.class_name(),
-                o.sprite.map_or("null", |s| m.sprites[s].name())
+                o.sprite
+                    .try_read(m)
+                    .expect("diagnostic sprite output requires resolved unborrowed metadata")
+                    .as_ref()
+                    .map_or("null", |sprite| sprite.name())
             )
         })
         .collect()
@@ -296,12 +301,14 @@ fn main() {
             eprintln!("{region}: no {}", path.display());
             continue;
         };
+        let blood_body_parts = pz_world::save::SaveTables::from_game_jar(&game.join("projectzomboid.jar")).expect("visual body tables").blood_body_parts;
         let mut cell = IsoCell::default();
         for wy in ry - 1..ry + rh + 1 {
             for wx in rx - 1..rx + rw + 1 {
                 let mut rand = JavaRandom::new(((wx as i64) << 32) ^ (wy as i64 & 0xffff_ffff));
                 let mut hooks = NoHooks;
                 let mut env = ChunkLoadEnv {
+                    blood_body_parts: blood_body_parts,
                     sprites: &mut sprites,
                     fix2x: &fix2x,
                     rand: &mut rand,
@@ -371,7 +378,7 @@ fn main() {
         for s in &squares {
             game_has.insert(s.at);
             match cell.get_grid_square(s.at.0, s.at.1, s.at.2) {
-                Some(sq) if objects(sq, &sprites) == s.objects => {}
+                Some(sq) if objects(&sq.borrow(), &sprites) == s.objects => {}
                 _ => {
                     bad.insert(s.at);
                 }
@@ -418,8 +425,9 @@ fn main() {
                 skipped += 1;
                 continue;
             }
-            let sq = cell.get_grid_square(x, y, z).unwrap();
-            let info = square_info(sq, &meta, &sprites);
+            let sq_owner = cell.get_grid_square(x, y, z).unwrap();
+            let sq = sq_owner.borrow();
+            let info = square_info(&sq, &meta, &sprites);
             let at = format!("{x},{y},{z}");
             t.get_mut("floor")
                 .unwrap()
@@ -441,11 +449,11 @@ fn main() {
                 .check(info.place.building == s.building, || {
                     format!("{at} game={:?} port={:?}", s.building, info.place.building)
                 });
-            let free = host.is_free(sq);
+            let free = host.is_free(&sq);
             t.get_mut("isFree").unwrap().check(free == s.free, || {
                 format!("{at} game={} port={free}", s.free)
             });
-            let wall = host.wall_type(sq);
+            let wall = host.wall_type(&sq);
             t.get_mut("wallType").unwrap().check(wall == s.wall, || {
                 format!("{at} game={} port={wall}", s.wall)
             });

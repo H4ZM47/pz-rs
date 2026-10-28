@@ -149,7 +149,15 @@ pub fn register(thread: &mut Thread) {
     zfield!(b, "isSitAgainstWall", "setSitAgainstWall", vars.sit_against_wall, bool);
     zfield!(b, "isHitLegsWhileOnFloor", "setHitLegsWhileOnFloor", vars.hit_legs_while_on_floor, bool);
     zfield!(b, "shouldDressInRandomOutfit", "setDressInRandomOutfit", zombie.dress_in_random_outfit, bool);
-    zfield!(b, "isReanimatedForGrappleOnly", "setReanimatedForGrappleOnly", zombie.reanimated_for_grapple_only, bool);
+    b.method("isReanimatedForGrappleOnly", |c| {
+        let value = chr_of(c)?.borrow().zombie.is_reanimated_for_grapple_only();
+        Ok(c.push(value))
+    });
+    b.method("setReanimatedForGrappleOnly", |c| {
+        let value = bool_arg(c, 1);
+        chr_of(c)?.borrow().zombie.set_reanimated_for_grapple_only(value);
+        Ok(0)
+    });
     zfield!(b, "getSpeedType", zombie.speed_type, int);
     zfield!(b, "getCrawlerType", zombie.crawler_type, int);
     zfield!(b, "getThumpTimer", zombie.thump_timer, int);

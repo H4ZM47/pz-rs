@@ -643,7 +643,8 @@ impl WorldRegionToMetaGrid {
             for (x, y, z) in squares(run, c) {
                 let ctx = &mut *run.ctx;
                 let room = ctx.meta.get_room_at(x, y, z).map(|r| r.id).unwrap_or(-1);
-                let sq = ctx.cell.get_grid_square_mut(x, y, z).unwrap();
+                let sq_owner = ctx.cell.get_grid_square_mut(x, y, z).unwrap();
+                let mut sq = sq_owner.borrow_mut();
                 // `setRoomID(roomID)`: `room = chunk.getRoom(roomID)`.
                 sq.room_id = room;
                 let mut room_idx = None;
@@ -656,6 +657,7 @@ impl WorldRegionToMetaGrid {
                             .and_then(|cell| cell.rooms.get(&room).copied());
                     }
                 }
+                drop(sq);
                 if let Some(eo) = ctx.meta.get_empty_outside_at(x, y, z).map(|r| r.id) {
                     let hide = ctx
                         .meta
@@ -664,11 +666,14 @@ impl WorldRegionToMetaGrid {
                     ctx.cell
                         .get_grid_square_mut(x, y, z)
                         .unwrap()
+                        .borrow_mut()
                         .roof_hide_building = hide;
                 }
                 if let Some(r) = room_idx {
-                    let sq = ctx.cell.get_grid_square(x, y, z).unwrap();
-                    ctx.world.room_square_updated(sq, r);
+                    let sq_owner = ctx.cell.get_grid_square(x, y, z).unwrap();
+                    let sq = sq_owner.borrow();
+                    drop(sq);
+                    ctx.world.room_square_updated(sq_owner, r);
                 }
             }
         }
@@ -676,14 +681,16 @@ impl WorldRegionToMetaGrid {
             for (x, y, z) in squares(run, c) {
                 let ctx = &mut *run.ctx;
                 let assoc = ctx.meta.get_associated_building_at(x, y).ok().flatten();
-                let sq = ctx.cell.get_grid_square_mut(x, y, z).unwrap();
+                let sq_owner = ctx.cell.get_grid_square_mut(x, y, z).unwrap();
+                let mut sq = sq_owner.borrow_mut();
                 sq.associated_building = assoc;
                 sq.recalc_properties(ctx.sprites);
-                ctx.render.properties_recalculated(sq);
+                drop(sq);
+                ctx.render.properties_recalculated(sq_owner);
                 let ch = ctx.cell.chunks.get_mut(&c).unwrap();
                 ch.check_physics_later(z);
                 ch.collision.clear();
-                let sq = ctx.cell.get_grid_square(x, y, z).unwrap();
+                let sq_owner = ctx.cell.get_grid_square(x, y, z).unwrap();
                 // `PolygonalMap2.instance.squareChanged(square)`.
                 let native = ctx.pathfind.uses_native_code();
                 if !native {
@@ -691,7 +698,7 @@ impl WorldRegionToMetaGrid {
                 }
                 ctx.render.invalidate_vispoly_chunk_level(c.0, c.1, z);
                 ctx.render.cutaways_square_changed(Some((x, y, z)));
-                ctx.world.ambient_walls_square_changed(sq);
+                ctx.world.ambient_walls_square_changed(sq_owner);
                 if native {
                     ctx.pathfind.square_changed(ctx.cell, (x, y, z));
                 }

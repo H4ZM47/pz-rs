@@ -105,6 +105,56 @@ fn string_methods_through_metatable() {
 }
 
 #[test]
+fn string_literals_keep_original_utf16_low_byte_decoding() {
+    // Installed LexState reads UTF-16 units, truncates each to a byte,
+    // then decodes the token as UTF-8. U+00E9 becomes invalid E9, while
+    // U+1D11E's D834 DD1E surrogate pair becomes ASCII 34 and control 1E.
+    let (values, _) = run(r#"return 'menu-é𝄞', "menu-é𝄞", [[menu-é𝄞]], [=[
+menu-é𝄞]=]"#);
+    assert_eq!(values.len(), 4);
+    for value in values {
+        assert_eq!(value.as_str(), Some("menu-\u{fffd}4\u{1e}"));
+    }
+}
+
+#[test]
+fn string_decimal_escapes_decode_utf8_bytes_and_stop_after_three_digits() {
+    let (values, _) = run(
+        r#"return "\195\169\240\157\132\158", "\255", "\000A\0019\1234",
+            [=[\195\169]=], "\a\b\f\n\r\t\v\\\"\'""#,
+    );
+    let strings: Vec<_> = values
+        .iter()
+        .map(|v| v.as_str().expect("string result"))
+        .collect();
+    assert_eq!(
+        strings,
+        [
+            "é𝄞",
+            "\u{fffd}",
+            "\0A\u{1}9{4",
+            r"\195\169",
+            "\u{7}\u{8}\u{c}\n\r\t\u{b}\\\"'"
+        ]
+    );
+}
+
+#[test]
+fn string_decimal_escape_above_byte_range_is_a_compile_error() {
+    for source in [r#"return "\256""#, r#"return "\999""#] {
+        let error = match stdlib::load_string(source, Some("string-escape"), TableRef::new()) {
+            Ok(_) => panic!("accepted out-of-range escape: {source}"),
+            Err(pz_kahlua::LuaError::Kahlua(Value::Str(message))) => message,
+            Err(error) => panic!("wrong compile error kind: {error:?}"),
+        };
+        assert!(
+            error.starts_with("string-escape:1: escape sequence too large near `"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn coroutines() {
     let src = r#"
         local co = coroutine.create(function(a, b)

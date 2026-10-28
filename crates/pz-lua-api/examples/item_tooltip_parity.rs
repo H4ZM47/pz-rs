@@ -191,11 +191,15 @@ fn layout_rows(layout: &Layout, o: &mut String) {
 fn collect(items: &[SavedItem], out: &mut Vec<InventoryItem>) {
     for it in items {
         if let SavedItem::Item(i) = it {
-            out.push((**i).clone());
-            if let ItemKind::Container(c) = &i.kind {
-                collect(&c.container.borrow().to_container().items, out);
-            }
+            collect_item(i, out);
         }
+    }
+}
+
+fn collect_item(i: &InventoryItem, out: &mut Vec<InventoryItem>) {
+    out.push(i.clone());
+    if let ItemKind::Container(c) = &i.kind {
+        collect(&c.container.borrow().to_container().items, out);
     }
 }
 
@@ -449,10 +453,12 @@ fn main() -> Result<(), String> {
             }
         };
         let mut items: Vec<InventoryItem> = Vec::new();
-        for sq in ch.squares() {
+        for sq_owner in ch.squares() {
+            let sq = sq_owner.borrow();
             for o in &sq.objects {
+                let o = o.borrow();
                 match &o.kind {
-                    ObjectKind::Mannequin(Some(m)) => {
+                    ObjectKind::Mannequin(m) => {
                         for c in m.container.iter() {
                             collect(&c.items, &mut items);
                         }
@@ -464,7 +470,11 @@ fn main() -> Result<(), String> {
                     }
                 }
                 if let ObjectKind::WorldInventory(w) = &o.kind {
-                    collect(std::slice::from_ref(&w.item), &mut items);
+                    let w = w.borrow();
+                    let item = w.item.borrow_item();
+                    if let Some(item) = item {
+                        collect_item(&item, &mut items);
+                    }
                 }
             }
             for bd in &sq.static_moving {

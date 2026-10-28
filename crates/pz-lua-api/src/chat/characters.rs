@@ -37,7 +37,7 @@ use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_text::UIFont;
 use std::any::Any;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 const ISO_GAME_CHARACTER: &str = crate::bind_character_sim::ISO_GAME_CHARACTER_CLASS;
@@ -530,7 +530,7 @@ fn register_character(thread: &mut Thread) {
     // `speakColour` is held by value: `getSpeakColour()` is a copy.
     b.method("getSpeakColour", |c| {
         let [r, g, bl, a] = chr_of(c)?.borrow().speak_colour;
-        let col = Color { r: Cell::new(r), g: Cell::new(g), b: Cell::new(bl), a: Cell::new(a) };
+        let col = Color::rgba(r, g, bl, a);
         Ok(c.push(Value::Object(Rc::new(col))))
     });
     b.method("setSpeakColour", |c| {

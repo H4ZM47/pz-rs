@@ -161,13 +161,15 @@ pub fn wall_type(sq: &IsoGridSquare, cell: &IsoCell, f: &WallFlags) -> i32 {
     if WallFlags::has(sq, f.wall_nw) {
         ty |= 5;
     }
-    if let Some(e) = cell.get_grid_square(sq.x + 1, sq.y, sq.z) {
-        if WallFlags::has(e, f.wall_w) || WallFlags::has(e, f.wall_nw) {
+    if let Some(e_owner) = cell.get_grid_square(sq.x + 1, sq.y, sq.z) {
+        let e = e_owner.borrow();
+        if WallFlags::has(&e, f.wall_w) || WallFlags::has(&e, f.wall_nw) {
             ty |= 8;
         }
     }
-    if let Some(s) = cell.get_grid_square(sq.x, sq.y + 1, sq.z) {
-        if WallFlags::has(s, f.wall_n) || WallFlags::has(s, f.wall_nw) {
+    if let Some(s_owner) = cell.get_grid_square(sq.x, sq.y + 1, sq.z) {
+        let s = s_owner.borrow();
+        if WallFlags::has(&s, f.wall_n) || WallFlags::has(&s, f.wall_nw) {
             ty |= 2;
         }
     }
@@ -384,18 +386,20 @@ impl<Z: ZombieOps> PopulationHost for WorldPopulationHost<'_, Z> {
 
     fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
         let v = self.view();
-        let sq = v.cell.get_grid_square(x, y, z)?;
-        Some(square_info(sq, v.meta, v.sprites))
+        let sq_owner = v.cell.get_grid_square(x, y, z)?;
+        let sq = sq_owner.borrow();
+        Some(square_info(&sq, v.meta, v.sprites))
     }
 
     /// The test in `getSquareForSittingZombie`, in the original's order.
     fn sitting_wall_type(&self, x: i32, y: i32, z: i32, from_x: f32, from_y: f32) -> Option<i32> {
         let v = self.view();
-        let sq = v.cell.get_grid_square(x, y, z)?;
-        if !self.is_free(sq) || square_place(sq, v.meta).building.is_some() {
+        let sq_owner = v.cell.get_grid_square(x, y, z)?;
+        let sq = sq_owner.borrow();
+        if !self.is_free(&sq) || square_place(&sq, v.meta).building.is_some() {
             return None;
         }
-        let wall = self.wall_type(sq);
+        let wall = self.wall_type(&sq);
         if wall == 0 {
             return None;
         }

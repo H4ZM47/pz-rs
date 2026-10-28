@@ -388,21 +388,117 @@ fn affinity_and_errors() {
     }
 }
 
+#[test]
+fn auto_vacuum_headers_are_rejected_for_writes_without_changing_the_file() {
+    for incremental in [false, true] {
+        let (_t, path) = tmp(if incremental {
+            "incremental-header"
+        } else {
+            "full-header"
+        });
+        // An empty auto-vacuum database has largest-root=1 before it
+        // needs its first ptrmap page. This fixture is authored here and
+        // exercises the guard even when sqlite3 is not installed.
+        let mut bytes = crate::writer::Writer::new(512, 0, crate::TextEncoding::Utf8).finish();
+        bytes[52..56].copy_from_slice(&1u32.to_be_bytes());
+        bytes[64..68].copy_from_slice(&u32::from(incremental).to_be_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(
+            matches!(Connection::open(&path), Err(Error::Unsupported(message)) if message.contains("auto-vacuum"))
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(!path.with_file_name("test.db-journal").exists());
+        assert!(Database::open(&path).unwrap().schema().unwrap().is_empty());
+        if let Some(check) = sqlite3(&path, "PRAGMA auto_vacuum") {
+            assert_eq!(check, if incremental { "2" } else { "1" });
+        }
+        // Opening an unsupported format must not even consume its
+        // recovery journal. Leave both files for a capable SQLite writer.
+        crate::pager::write_hot_journal_for_test(&path, &[(1, bytes.clone())], 1);
+        let journal = path.with_file_name("test.db-journal");
+        let journal_before = std::fs::read(&journal).unwrap();
+        assert!(
+            matches!(Connection::open(&path), Err(Error::Unsupported(message)) if message.contains("auto-vacuum"))
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(std::fs::read(&journal).unwrap(), journal_before);
+    }
+}
+
+#[test]
+fn sqlite_auto_vacuum_tables_stay_readable_and_intact_after_a_rejected_write_open() {
+    for mode in ["FULL", "INCREMENTAL"] {
+        let (_t, path) = tmp(&format!("auto-vacuum-{mode}"));
+        let sql = format!(
+            "PRAGMA auto_vacuum={mode}; PRAGMA page_size=512; VACUUM; \
+             CREATE TABLE example(id INTEGER PRIMARY KEY, data BLOB); \
+             CREATE INDEX example_data ON example(data); \
+             INSERT INTO example VALUES(7, zeroblob(8192));"
+        );
+        let output = match std::process::Command::new("sqlite3")
+            .arg(&path)
+            .arg(sql)
+            .output()
+        {
+            Ok(output) => output,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => panic!("cannot run sqlite3: {e}"),
+        };
+        assert!(
+            output.status.success(),
+            "sqlite3 fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            sqlite3(&path, "SELECT id, length(data) FROM example").as_deref(),
+            Some("7|8192")
+        );
+        let before = std::fs::read(&path).unwrap();
+        assert!(
+            crate::be32(&before, 52) > 1,
+            "the fixture must contain real ptrmap pages"
+        );
+        let db = Database::open(&path).unwrap();
+        let table = db.table("example").unwrap();
+        let rows = db.rows(&table).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].rowid, 7);
+        assert_eq!(rows[0].get(&table, 1), Value::Blob(vec![0; 8192]));
+        drop(db);
+        assert!(
+            matches!(Connection::open(&path), Err(Error::Unsupported(message)) if message.contains("auto-vacuum"))
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!path.with_file_name("test.db-journal").exists());
+        assert_eq!(
+            sqlite3(&path, "SELECT id, length(data) FROM example").as_deref(),
+            Some("7|8192")
+        );
+    }
+}
+
 /// Random inserts, updates (including rowid moves) and deletes against a
 /// model, with rows from empty to many overflow pages, on small pages so
 /// the trees grow several levels; checked by the reader and `sqlite3`.
 fn stress(page_size: u32, ops: usize, seed0: u64) {
     let (_t, path) = tmp(&format!("stress-{page_size}-{seed0}"));
     if page_size != 4096 {
-        // An empty file with the page size set, made by sqlite3 when present.
+        // Select the writer's supported format explicitly. SQLite builds
+        // may default to FULL auto-vacuum (SQLITE_DEFAULT_AUTOVACUUM),
+        // which requires ptrmap maintenance this writer cannot perform.
         let ok = std::process::Command::new("sqlite3")
             .arg(&path)
-            .arg(format!("PRAGMA page_size={page_size}; VACUUM;"))
+            .arg(format!(
+                "PRAGMA auto_vacuum=NONE; PRAGMA page_size={page_size}; VACUUM;"
+            ))
             .status()
             .is_ok_and(|s| s.success());
         if !ok {
             return;
         }
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(crate::be32(&bytes, 52), 0);
+        assert_eq!(crate::be32(&bytes, 64), 0);
     }
     let mut c = Connection::open(&path).unwrap();
     c.execute(VEHICLES).unwrap();

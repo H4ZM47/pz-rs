@@ -242,9 +242,10 @@ impl IsoSpriteManager {
         self.sprites.len() - 1
     }
 
-    /// `IsoSprite.CreateSprite(manager)`: a new sprite in neither map (no
-    /// `name`; `LoadFramesNoDirPageSimple` gives it its frames).
-    pub fn create_sprite(&mut self) -> SpriteIdx {
+    /// Explicit tile-arena data projection, not native unmanaged allocation.
+    /// Native CreateSprite uses runtime::create_runtime_sprite and keeps its
+    /// actual allocation outside this arena and both manager maps.
+    pub fn create_sprite_data_projection(&mut self) -> SpriteIdx {
         self.new_sprite()
     }
 

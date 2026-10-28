@@ -149,7 +149,7 @@ pub fn fire_check(
     let burning = c
         .square()
         .and_then(|(x, y, z)| w.sq(x, y, z))
-        .is_some_and(|sq| sq.has(w.flags.burning));
+        .is_some_and(|sq| sq.borrow().has(w.flags.burning));
     if !burning {
         return;
     }
@@ -231,12 +231,14 @@ pub fn spread_fire(
         return;
     }
     let Some(at) = c.square() else { return };
-    let Some(sq) = w.sq(at.0, at.1, at.2) else {
+    let Some(sq_owner) = w.sq(at.0, at.1, at.2) else {
         return;
     };
+    let sq = sq_owner.borrow();
     if sq.has(w.flags.burning) {
         return;
     }
+    drop(sq);
     if rand.next(frame.adjust_for_framerate(3000)) < c.fire_spread_probability() {
         mgr.start_fire(w, rand, at.0, at.1, at.2, false, 80, 0);
     }

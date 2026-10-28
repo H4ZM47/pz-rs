@@ -95,6 +95,13 @@ thread_local! {
     static MODULES: RefCell<HashMap<usize, Value>> = RefCell::new(HashMap::new());
 }
 
+/// Retire the previous Lua environment's canonical script/module objects
+/// before the engine installs a new ScriptManager and environment.
+pub(crate) fn reset_session_handles() {
+    HANDLES.with(|h| h.borrow_mut().clear());
+    MODULES.with(|m| m.borrow_mut().clear());
+}
+
 // ---- handles ----
 
 type Get = Rc<dyn for<'a> Fn(&'a dyn Any) -> Option<&'a dyn Any>>;
@@ -743,6 +750,24 @@ fn register_script_type(thread: &mut Thread) {
 
 // ---- BaseScriptObject, GameEntityScript, ComponentScript ----
 
+/// Consume a captured producer's first typed host fault only after its
+/// actual script guard ends. Fresh outer operations recover, nested ones
+/// never clear an already-recorded fault or run beyond it.
+fn with_texture_load_operation<T>(
+    sm: &ScriptManager,
+    f: impl FnOnce() -> LuaResult<T>,
+) -> LuaResult<T> {
+    let operation = sm.begin_texture_load_operation();
+    if let Some(error) = operation.host_fault() {
+        return Err(crate::bind_render::texture_error(error));
+    }
+    let result = f();
+    if let Some(error) = operation.host_fault() {
+        return Err(crate::bind_render::texture_error(error));
+    }
+    result
+}
+
 fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let b = expose_class(thread, BASE_SCRIPT_OBJECT_CLASS, None);
     method(&b, "getObsolete", |_, h| h.script(|s| s.get_obsolete().into_lua()));
@@ -802,7 +827,9 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let s = sm.clone();
     void(&b, "Load", move |c, h| {
         let (name, body) = (req_str(c, 1)?, req_str(c, 2)?);
-        h.script_mut(|o| o.load(&s, &name, &body))?.map_err(java_error)
+        with_texture_load_operation(&s, || {
+            h.script_mut(|o| o.load(&s, &name, &body))?.map_err(java_error)
+        })
     });
     void(&b, "PreReload", |_, h| h.script_mut(|o| o.pre_reload()));
     void(&b, "reset", |_, h| h.script_mut(|o| o.reset()));
@@ -1286,7 +1313,12 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
                 })
                 .collect(),
         };
-        s.reload_scripts(&types);
+        s.reload_scripts_with_textures(&types).map_err(|error| match error {
+            pz_scripts::CapturedScriptLoadError::Host(error) => crate::bind_render::texture_error(error),
+            pz_scripts::CapturedScriptLoadError::Native(error) => pz_kahlua::LuaError::Runtime {
+                class: "java.lang.RuntimeException", message: error.to_string(),
+            },
+        })?;
         Ok(0)
     });
     type Phase = fn(&ScriptManager);
@@ -1551,4 +1583,107 @@ mod tests {
         )
         .unwrap();
     }
+    #[test]
+    fn direct_actual_script_load_surfaces_texture_host_fault_and_fresh_call_can_recover() {
+        struct Restore(Option<pz_render::TextureRefLoader>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let old = pz_render::install_texture_ref_loader(self.0.take());
+                drop(old);
+                drop(pz_scripts::texture_capture::take_retired_textures());
+            }
+        }
+        let _restore = Restore(pz_render::install_texture_ref_loader(Some(Rc::new(
+            |_, _| {
+                Err(pz_render::TextureHostError::Borrowed(
+                    "direct Load provider",
+                ))
+            },
+        ))));
+        let sm = Rc::new(ScriptManager::new());
+        sm.enable_texture_capture();
+        let script = ScriptRef::new(Item::new());
+        let actual = script.downcast::<Item>().unwrap();
+        let mut t = thread(sm.clone());
+        t.globals()
+            .set_str("actualCapturedScript", script_value(Some(&script)));
+        run(
+            &mut t,
+            "function directCapturedLoad(name, body) return actualCapturedScript:Load(name, body) end",
+        )
+        .unwrap();
+        let call = t.globals().get_str("directCapturedLoad");
+        let before = actual.borrow().actual_weight;
+        let error = t.call(
+            &call,
+            &[
+                Value::str("Actual"),
+                Value::str("item Actual { Icon=Fault, Weight=9, }"),
+            ],
+        );
+        assert!(matches!(
+            error,
+            Err(LuaError::Runtime {
+                class: "pz.host.Borrowed",
+                ..
+            })
+        ));
+        assert_eq!(actual.borrow().icon.as_deref(), Some("Fault"));
+        assert_eq!(actual.borrow().actual_weight, before);
+        assert!(!actual.borrow().texture_capture_complete());
+        assert!(!sm.has_load_errors(false));
+        let old = pz_render::install_texture_ref_loader(Some(Rc::new(|_, _| Ok(None))));
+        drop(old);
+        assert!(t
+            .call(
+                &call,
+                &[
+                    Value::str("Actual"),
+                    Value::str("item Actual { Icon=Good, Weight=9, }")
+                ]
+            )
+            .unwrap()
+            .is_empty());
+        assert!(sm.texture_host_fault().is_none());
+        assert!(actual.borrow().texture_capture_complete());
+        assert_eq!(actual.borrow().actual_weight, 9.0);
+        let old = pz_render::install_texture_ref_loader(Some(Rc::new(|_, _| {
+            Err(pz_render::TextureHostError::Borrowed("DoParam provider"))
+        })));
+        drop(old);
+        run(
+            &mut t,
+            "function directCapturedParam(...) return actualCapturedScript:DoParam(...) end",
+        )
+        .unwrap();
+        let param = t.globals().get_str("directCapturedParam");
+        for args in [
+            vec![Value::str("Icon"), Value::str("ParamFault")],
+            vec![Value::str("Icon=ParamFault")],
+        ] {
+            assert!(matches!(
+                t.call(&param, &args),
+                Err(LuaError::Runtime {
+                    class: "pz.host.Borrowed",
+                    ..
+                })
+            ));
+            assert_eq!(actual.borrow().icon.as_deref(), Some("ParamFault"));
+            assert!(!actual.borrow().texture_capture_complete());
+        }
+        let old = pz_render::install_texture_ref_loader(Some(Rc::new(|_, _| Ok(None))));
+        drop(old);
+        assert!(t
+            .call(&param, &[Value::str("Icon"), Value::str("Recovered")])
+            .unwrap()
+            .is_empty());
+        assert!(sm.texture_host_fault().is_none());
+        assert!(actual.borrow().texture_capture_complete());
+        // A true Native parse error remains Native, rather than becoming the
+        // previous operation's host error or a successful void return.
+        assert!(
+            matches!(t.call(&call,&[Value::str("Actual"),Value::str("")]),Err(LuaError::Runtime{class,..}) if !class.starts_with("pz.host."))
+        );
+    }
+
 }

@@ -196,7 +196,13 @@ impl ModelSlot {
     /// breed's model script mesh and skin texture, `animalEffect`).
     pub fn single_body(mesh: &str, texture: &str, shader: Option<&str>) -> ModelSlot {
         let mut slot = ModelSlot::default();
-        let body = slot.push(ModelInstance::new(InstanceKind::Body, mesh, Some(texture), false, shader));
+        let body = slot.push(ModelInstance::new(
+            InstanceKind::Body,
+            mesh,
+            Some(texture),
+            false,
+            shader,
+        ));
         slot.model = body;
         slot.sub.push(body);
         slot
@@ -204,7 +210,7 @@ impl ModelSlot {
 
     /// `ModelManager.Add` / `Reset` for a human character: body model, then
     /// `DoCharacterModelParts`.
-    pub fn build(input: &CharacterModelInput) -> ModelSlot {
+    pub fn try_build(input: &CharacterModelInput) -> pz_inventory::ModDataResult<ModelSlot> {
         let mut slot = ModelSlot::default();
         let h = input.human;
         let body_mesh = if h.zombie && h.skeleton {
@@ -222,8 +228,13 @@ impl ModelSlot {
         body.model_script = input.body_model_script.clone();
         slot.model = slot.push(body);
         slot.populate(input);
-        slot.do_equipped(input);
-        slot
+        slot.try_do_equipped(input)?;
+        Ok(slot)
+    }
+
+    /// Legacy synchronous archive/test adapter. Live producers use try_build.
+    pub fn build(input: &CharacterModelInput) -> ModelSlot {
+        Self::try_build(input).expect("unborrowed equipped item ModData")
     }
 
     /// `PopTemplateManager.populateCharacterModelSlot`.
@@ -486,12 +497,12 @@ impl ModelSlot {
 
     /// `DoCharacterModelEquipped` on a fresh slot: attached items, then the
     /// hand items (action and override models first).
-    fn do_equipped(&mut self, input: &CharacterModelInput) {
+    fn try_do_equipped(&mut self, input: &CharacterModelInput) -> pz_inventory::ModDataResult<()> {
         let eq = input.equipped;
         for a in &eq.attached {
             let Some(model) = a
                 .item
-                .static_model_exception(input.scripts)
+                .try_static_model_exception(input.scripts)?
                 .filter(|m| !m.trim().is_empty())
             else {
                 continue;
@@ -602,7 +613,7 @@ impl ModelSlot {
             );
         }
         if let Some(p) = primary {
-            self.primary_hand = self.add_equipped_model_instance(
+            self.primary_hand = self.try_add_equipped_model_instance(
                 input,
                 p,
                 PRIMARY_BONE,
@@ -610,12 +621,12 @@ impl ModelSlot {
                 p.replacement_primary_clothing.as_ref(),
                 override_hands,
                 InstanceKind::PrimaryHand,
-            );
+            )?;
         }
         if let Some(s) = secondary {
             // `primaryItem != secondaryItem` (identity).
             if !primary.is_some_and(|p| std::ptr::eq(p.item, s.item)) {
-                self.secondary_hand = self.add_equipped_model_instance(
+                self.secondary_hand = self.try_add_equipped_model_instance(
                     input,
                     s,
                     SECONDARY_BONE,
@@ -623,13 +634,14 @@ impl ModelSlot {
                     s.replacement_second_clothing.as_ref(),
                     override_hands,
                     InstanceKind::SecondaryHand,
-                );
+                )?;
             }
         }
+        Ok(())
     }
 
     /// `addEquippedModelInstance`.
-    fn add_equipped_model_instance(
+    fn try_add_equipped_model_instance(
         &mut self,
         input: &CharacterModelInput,
         item: &HeldItem,
@@ -638,51 +650,64 @@ impl ModelSlot {
         replacement_clothing: Option<&Rc<ClothingItem>>,
         override_hands: bool,
         kind: InstanceKind,
-    ) -> Option<usize> {
+    ) -> pz_inventory::ModDataResult<Option<usize>> {
         let scripts = input.scripts;
         if item.clothing_item.is_none() && item.is_weapon() {
             // A weapon without a sprite: the original's `addStatic(null)`
             // fails.
-            let sprite = item.static_model(scripts)?;
-            let i = self.add_static_on_bone(input, &sprite, bone, kind, None)?;
+            let Some(sprite) = item.try_static_model(scripts)? else {
+                return Ok(None);
+            };
+            let Some(i) = self.add_static_on_bone(input, &sprite, bone, kind, None) else {
+                return Ok(None);
+            };
             self.add_weapon_part_models(input, item, i);
             if !input.equipped.simple_weapon_textures {
                 self.instances[i].texture_init = Some(item.texture_init());
             }
-            return Some(i);
+            return Ok(Some(i));
         }
         if let Some(r) = &replacement {
             let has_value = r
                 .mask_variable_value
                 .as_deref()
                 .is_some_and(|v| !v.is_empty());
-            if has_value && !(replacement_clothing.is_none() && !item.has_static_model(scripts)) {
-                let i = self.add_masking_model(input, item, r, replacement_clothing, bone, kind);
+            if has_value
+                && !(replacement_clothing.is_none() && !item.try_has_static_model(scripts)?)
+            {
+                let i =
+                    self.try_add_masking_model(input, item, r, replacement_clothing, bone, kind)?;
                 if let Some(i) = i {
                     if item.requires_smart_texture() {
                         self.instances[i].texture_init = Some(item.texture_init());
                     }
                 }
-                return i;
+                return Ok(i);
             }
         }
-        if override_hands && item.has_static_model(scripts) {
-            let model = item
-                .fluid_model(scripts)
-                .or_else(|| item.static_model(scripts))?;
-            let i = self.add_static_on_bone(input, &model, bone, kind, None)?;
+        if override_hands && item.try_has_static_model(scripts)? {
+            let model = match item.try_fluid_model(scripts)? {
+                Some(model) => Some(model),
+                None => item.try_static_model(scripts)?,
+            };
+            let Some(model) = model else {
+                return Ok(None);
+            };
+            let Some(i) = self.add_static_on_bone(input, &model, bone, kind, None) else {
+                return Ok(None);
+            };
             if item.requires_smart_texture() {
                 self.instances[i].texture_init = Some(item.texture_init());
             }
-            return Some(i);
+            return Ok(Some(i));
         }
-        None
+        Ok(None)
     }
 
     /// `addMaskingModel`: the replacement clothing item, or the item's
     /// static model with its texture choice (on the replacement's
     /// attachment, else on the hand bone); then the mask variable.
-    fn add_masking_model(
+    fn try_add_masking_model(
         &mut self,
         input: &CharacterModelInput,
         item: &HeldItem,
@@ -690,7 +715,7 @@ impl ModelSlot {
         replacement_clothing: Option<&Rc<ClothingItem>>,
         bone: &str,
         kind: InstanceKind,
-    ) -> Option<usize> {
+    ) -> pz_inventory::ModDataResult<Option<usize>> {
         let value = r.mask_variable_value.clone().unwrap_or_default();
         let result = match (replacement_clothing, &item.visual) {
             (Some(c), Some(v)) => {
@@ -706,9 +731,12 @@ impl ModelSlot {
                 i
             }
             _ => {
-                let model = item
-                    .static_model(input.scripts)
-                    .filter(|m| !m.trim().is_empty())?;
+                let Some(model) = item
+                    .try_static_model(input.scripts)?
+                    .filter(|m| !m.trim().is_empty())
+                else {
+                    return Ok(None);
+                };
                 let forced = match (&item.visual, &item.clothing_item) {
                     (Some(v), Some(c)) => usize::try_from(v.texture_choice)
                         .ok()
@@ -743,7 +771,7 @@ impl ModelSlot {
                 self.mask_variables.push((name.clone(), value));
             }
         }
-        result
+        Ok(result)
     }
 }
 

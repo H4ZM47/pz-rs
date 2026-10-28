@@ -318,22 +318,33 @@ fn main() {
             continue;
         };
         let mut i = 0;
-        while i < sq.objects.len() {
-            let o = &sq.objects[i];
-            let name = o.sprite.and_then(|s| sprites.sprites[s].name.clone());
+        while i < sq.borrow().objects.len() {
+            let o_owner = sq.borrow().objects[i].ref_handle();
+            let mut o = o_owner.borrow_mut();
+            let name = o.sprite.tile_projection().and_then(|s| sprites.sprites[s].name.clone());
             match java.get(i) {
                 Some(&(class, spr)) if class == o.kind.class_name() => {
                     if name.as_deref().unwrap_or("null") != spr {
                         if let Some(&s) = sprites.named_map.get(spr) {
-                            sq.objects[i].sprite = Some(s);
+                            o.sprite = Some(s).into();
                         }
                     }
                     i += 1;
                 }
                 _ => {
-                    let id = sq.objects.remove(i).id;
-                    sq.world_objects.retain(|&w| w != id);
-                    sq.special_objects.retain(|&w| w != id);
+                    drop(o);
+                    let removed = sq.borrow_mut().remove_object_slot(i);
+                    let id = removed.borrow().id;
+                    let entry = sq
+                        .borrow()
+                        .world_objects
+                        .borrow_mut()
+                        .remove_first_object(&o_owner);
+                    if let Some(pz_world::WorldObjectEntry::Object(owner)) = entry {
+                        sq.borrow_mut()
+                            .retire_object(pz_world::ObjectSlot::retain(&owner));
+                    }
+                    sq.borrow_mut().special_objects.retain(|&w| w != id);
                 }
             }
         }
@@ -344,7 +355,7 @@ fn main() {
             for y in 0..8 {
                 for x in 0..8 {
                     if let Some(sq) = ch.get_grid_square_mut(x, y, z) {
-                        sq.recalc_properties(&sprites);
+                        sq.borrow_mut().recalc_properties(&sprites);
                     }
                 }
             }
@@ -374,14 +385,21 @@ fn main() {
     let display = |full: &str| names.get(full).cloned();
     // `getUnequippedWeight()` of an item on the floor: its fluid is in the
     // world object.
-    let fluid_id = pz_entity::ComponentType::FluidContainer.id();
-    let weight = |o: &pz_world::IsoObject, i: &InventoryItem| {
-        let mut i = i.clone();
-        if let Some(b) = o.components.iter().find(|b| b.type_id == fluid_id) {
-            i.components.push(b.clone());
-            i.component_cache = None;
+    struct WorldFluidAmount(Option<f32>);
+    impl pz_inventory::context::ItemOwner for WorldFluidAmount {
+        fn world_item_fluid_amount(&self, _: &InventoryItem) -> Option<f32> {
+            self.0
         }
-        i.get_unequipped_weight(&ctx, &NoOwner)
+    }
+    let weight = |o: &pz_world::IsoObject, i: &InventoryItem| {
+        // Detached read-only diagnostic data; never reattach a copied fluid
+        // to an item to stand in for the world's actual component reference.
+        let values = o
+            .components
+            .values_snapshot(ectx)
+            .expect("world component diagnostic snapshot");
+        let amount = values.fluid_container().map(|fluid| fluid.get_amount());
+        i.get_unequipped_weight(&ctx, &WorldFluidAmount(amount))
     };
 
     let mut cand = Vec::new();
@@ -466,13 +484,15 @@ fn main() {
                 if player.square.is_none() {
                     s.push_str(" nosquare");
                 } else {
-                    let mut floor = FloorDropEnv::new(&mut env, 0.0);
+                    let mut floor = FloorDropEnv::new_data_projection(&mut env, 0.0);
                     match floor_drop::force_drop_too_heavy(
                         &mut player,
                         &mut floor,
                         true,
                         Some(&item),
-                    ) {
+                    )
+                    .expect("archive parity fixture needs successful real floor placement")
+                    {
                         None => s.push_str(" nofloor"),
                         Some(d) => {
                             drop_sq = Some(d.square);
@@ -487,18 +507,31 @@ fn main() {
             floor_drop::remove(&mut player, &item);
             drop_sq = Some(p);
             (dx, dy, dz) = (ox, oy, oh);
-            let placed = env.add_world_inventory_item(p, &item, ox, oy, oh, 0.0);
+            let placed = env.add_world_inventory_item_data_projection(p, &item, ox, oy, oh, 0.0);
             assert!(matches!(placed, WorldItemPlaced::Object(_)), "{placed:?}");
         }
         write!(s, " inv={}", inv.borrow().items.len()).unwrap();
         if let Some(dp) = drop_sq {
             let sq = cell.get_grid_square(dp.0, dp.1, dp.2).unwrap();
-            let id = *sq.world_objects.last().unwrap();
-            let idx = sq.object_index(id).unwrap();
-            let o = &sq.objects[idx];
+            let list = sq.borrow().world_objects.clone();
+            let entry = {
+                let list = list.borrow();
+                list.entry(list.len() - 1).unwrap()
+            };
+            let pz_world::WorldObjectEntry::Object(o_owner) = entry else {
+                panic!("placed item must be an actual world object");
+            };
+            let idx = sq
+                .borrow()
+                .objects
+                .iter()
+                .position(|o| o.ptr_eq_ref(&o_owner))
+                .unwrap();
+            let o = o_owner.borrow();
             let ObjectKind::WorldInventory(wi) = &o.kind else {
                 panic!()
             };
+            let wi = wi.borrow();
             let i = item.borrow();
             write!(
                 s,
@@ -533,15 +566,17 @@ fn main() {
                 i.get_full_type()
             )
             .unwrap();
-            let item_comps = !i.components.is_empty() || i.component_cache.is_some();
+            let item_comps = !i.components.is_empty();
             write!(
                 s,
                 " objFluid={} itemFluid={item_comps} idx={idx}/{} world={} special={} floorW={}",
                 o.has_components,
-                sq.objects.len(),
-                sq.world_objects.len(),
-                sq.special_objects.len(),
-                h(sq.get_total_weight_of_items_on_floor(weight))
+                sq.borrow().objects.len(),
+                sq.borrow().world_objects.borrow().len(),
+                sq.borrow().special_objects.len(),
+                h(sq.borrow()
+                    .get_total_weight_of_items_on_floor(weight)
+                    .unwrap())
             )
             .unwrap();
         }
@@ -573,10 +608,15 @@ fn main() {
         )
         .unwrap();
         if let Some(q) = cell.get_grid_square(p.0, p.1, p.2) {
-            if q.has_stairs(&sprites) || q.has_sloped_surface() {
+            if q.borrow().has_stairs(&sprites) || q.borrow().has_sloped_surface() {
                 app.push_str(" z=");
                 for (dx, dy) in pts {
-                    write!(app, "{};", h(q.get_apparent_z(dx, dy, &sprites, true))).unwrap();
+                    write!(
+                        app,
+                        "{};",
+                        h(q.borrow().get_apparent_z(dx, dy, &sprites, true))
+                    )
+                    .unwrap();
                 }
             }
         }

@@ -137,7 +137,8 @@ impl<I: 'static> GameCharacter<I> {
         let o: &GameCharacter<I> = o;
         // The view needs only shared access; reborrow the context.
         let view = {
-            let cx2 = StateCx { sm: cx.sm, chars: cx.chars, ctx: cx.ctx, world: &mut crate::character::state::NullWorld };
+            let mut no_world = crate::character::state::NullWorld;
+            let cx2 = StateCx::new(cx.sm, cx.chars, cx.ctx, &mut no_world);
             o.other_view(&cx2)?
         };
         Ok(Some(view))
@@ -170,7 +171,7 @@ impl<I: 'static> GameCharacter<I> {
         let Some(my_sq) = self.current_square_xyz() else { return Ok(None) };
         let Some(o) = self.other_of(other, cx)? else { return Ok(None) };
         let Some(o_sq) = o.square else { return Ok(None) };
-        if self.zombie.reanimated_for_grapple_only || self.zombie.useless || cx.world.square_smoke(my_sq) {
+        if self.zombie.is_reanimated_for_grapple_only() || self.zombie.useless || cx.world.square_smoke(my_sq) {
             self.set_zombie_target(None);
             self.zombie.spotted_last = None;
             return Ok(None);

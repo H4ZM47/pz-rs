@@ -1,4 +1,5 @@
 use super::*;
+use crate::bind_ui::element_of;
 use pz_kahlua::TableRef;
 
 fn thread() -> Thread {
@@ -238,7 +239,6 @@ fn style_api() {
     assert!(!eval(&mut t, "ok").truthy());
 }
 
-
 /// `setBoundsFromWorld` reads `IsoWorld.instance.getMetaGrid()`'s cell
 /// bounds and NPEs without a meta grid.
 #[test]
@@ -265,4 +265,76 @@ fn bounds_from_world_meta_grid() {
     let v = eval(&mut t, "api:getMinXInCells() .. ',' .. api:getMinYInCells() .. ',' .. api:getMaxXInCells() .. ',' .. api:getMaxYInCells()");
     assert_eq!(pz_kahlua::exec::java_value_of(&v), "2,3,40,50");
     crate::bind_world::set_meta_grid(None);
+}
+
+/// `render()` draws the background, the styled features and the bounds
+/// into the UI draw list.
+#[test]
+fn render_draws_features() {
+    let dir = temp_map();
+    let mut t = thread();
+    t.globals().set_str(
+        "file",
+        dir.join("worldmap.xml").to_string_lossy().to_string(),
+    );
+    run(
+        &mut t,
+        r#"
+        jo = UIWorldMap.new({})
+        api = jo:getAPIv3()
+        jo:setWidth(400) jo:setHeight(300)
+        api:setBoolean("Isometric", false)
+        api:addData(file)
+        api:setBoundsFromData()
+        api:resetView()
+        api:centerOn(517, 773)
+        api:setZoom(18)
+        local l = api:getStyleAPI():newPolygonLayer("b")
+        l:setFilter("building", "yes")
+        l:addFill(0, 255, 0, 0, 255)
+        "#,
+    );
+    let el = element_of(&eval(&mut t, "jo")).unwrap();
+    pz_ui::with_ui(|m| m.sprite.clear());
+    el.render(&mut t);
+    let red = pz_ui::with_ui(|m| {
+        m.sprite
+            .cmds
+            .iter()
+            .filter(|c| matches!(c, pz_ui::UiDrawCmd::Render(pz_render::DrawCmd::Sprite(s)) if s.color[0] == pz_render::color_to_abgr(1.0, 0.0, 0.0, 1.0)))
+            .count()
+    });
+    // The 10x10 square, as two triangles.
+    assert_eq!(red, 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn first_pyramid_creation_reads_actual_core_and_propagates_borrow_failure() {
+    let mut t = thread();
+    run(&mut t, "jo = UIWorldMap.new({}); api = jo:getAPIv3()");
+    assert!(!pz_worldmap::pyramid::class_initialized());
+    let core = crate::bind_core::shared_core();
+    let mut held = core.borrow_mut();
+    held.debug = true;
+    run(
+        &mut t,
+        "ok, message = pcall(function() api:addImagePyramid('missing-pyramid.zip') end)",
+    );
+    assert!(!eval(&mut t, "ok").truthy());
+    assert!(
+        matches!(eval(&mut t, "message"), Value::Str(message) if message.contains("Core is borrowed"))
+    );
+    assert!(!pz_worldmap::pyramid::class_initialized());
+    drop(held);
+    run(&mut t, "api:addImagePyramid('missing-pyramid.zip')");
+    assert_eq!(pz_worldmap::pyramid::initialize_class(false), 10_000);
+    let held = core.borrow_mut();
+    run(&mut t, "api:addImages('missing-image-directory')");
+    assert_eq!(
+        pz_worldmap::pyramid::initialize_class(false),
+        10_000,
+        "later calls do not requery a borrowed Core"
+    );
+    drop(held);
 }

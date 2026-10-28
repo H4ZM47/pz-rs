@@ -6,6 +6,9 @@
 //! world only implements what it has.
 
 use pz_scripts::ScriptManager;
+use pz_inventory::floor_drop::{HostResult, RuntimeHostError};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::character::{GameCharacter, SimContext};
 use crate::Characters;
@@ -916,15 +919,37 @@ pub struct StateCx<'a, I> {
     pub chars: &'a Characters,
     pub ctx: &'a dyn SimContext,
     pub world: &'a mut dyn StateWorld<I>,
+    // One immediate first-fault carrier per outer action. Reborrows share
+    // the same fault, so nested void State callbacks cannot hide it.
+    host_fault: Rc<RefCell<Option<RuntimeHostError>>>,
 }
 
 impl<'a, I> StateCx<'a, I> {
     pub fn new(sm: &'a ScriptManager, chars: &'a Characters, ctx: &'a dyn SimContext, world: &'a mut dyn StateWorld<I>) -> Self {
-        StateCx { sm, chars, ctx, world }
+        StateCx { sm, chars, ctx, world, host_fault: Rc::new(RefCell::new(None)) }
     }
 
     /// The same context with a shorter borrow (to pass on).
     pub fn reborrow(&mut self) -> StateCx<'_, I> {
-        StateCx { sm: self.sm, chars: self.chars, ctx: self.ctx, world: &mut *self.world }
+        StateCx { sm: self.sm, chars: self.chars, ctx: self.ctx, world: &mut *self.world, host_fault: self.host_fault.clone() }
+    }
+
+    /// Stop this action at its first host failure. No callback/event queue is
+    /// involved, and later failures must not replace the original domain.
+    pub fn record_host_error(&self, error: RuntimeHostError) {
+        let mut fault = self.host_fault.borrow_mut();
+        if fault.is_none() { *fault = Some(error); }
+    }
+
+    pub fn has_host_error(&self) -> bool { self.host_fault.borrow().is_some() }
+
+    /// Every production outer engine/Lua action boundary must return this
+    /// result before any further action/state work. Inspecting never clears
+    /// the first fault or turns failure into native absence.
+    pub fn host_result(&self) -> HostResult<()> {
+        match &*self.host_fault.borrow() {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
     }
 }

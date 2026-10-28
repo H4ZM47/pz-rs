@@ -6,6 +6,7 @@
 //! implements.
 
 use crate::chunk::IsoCell;
+use crate::object_slot::ObjectSlot;
 use crate::objects::ObjectKind;
 use crate::sprite::IsoFlagType;
 
@@ -114,13 +115,15 @@ pub fn is_square_to_extinguish(
     at: (i32, i32, i32),
     character_on_fire: &dyn Fn((i32, i32, i32)) -> bool,
 ) -> bool {
-    let Some(sq) = cell.get_grid_square(at.0, at.1, at.2) else {
+    let Some(sq_owner) = cell.get_grid_square(at.0, at.1, at.2) else {
         return false;
     };
+    let sq = sq_owner.borrow();
     if sq.has(burning)
         && sq
             .objects
             .iter()
+            .map(ObjectSlot::borrow)
             .any(|o| matches!(&o.kind, ObjectKind::Fire(f) if !f.perm))
     {
         return true;

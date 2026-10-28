@@ -7,6 +7,8 @@
 //! [`WorldState`] answers them over an [`IsoCell`]; sandbox options and the
 //! world's power state are runtime input ([`PowerSettings`]).
 
+use crate::object_slot::ObjectSlot;
+use crate::{IsoObjectRef, SquareRef};
 use pz_inventory::item::InventoryItem;
 
 use crate::chunk::{IsoCell, IsoGridSquare};
@@ -19,6 +21,80 @@ use crate::square::{
 
 // `IsoGenerator.GeneratorMinZ`/`GeneratorMaxZ` are the world's level range.
 use crate::chunk::{MAX_LEVEL, MIN_LEVEL};
+
+/// The class-static ranges read by `IsoGenerator.isPoweringSquare`.
+/// Sandbox edits take effect when the next generator is constructed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GeneratorPowerRange {
+    pub radius: i32,
+    pub vertical: i32,
+}
+
+impl Default for GeneratorPowerRange {
+    fn default() -> Self {
+        Self { radius: 20, vertical: 3 }
+    }
+}
+
+/// A pure host read of the actual sandbox instance, called at the native
+/// constructor phase. It must not call Lua or reenter the world.
+#[derive(Clone, Copy)]
+pub struct GeneratorRangeSource {
+    pub vertical: fn() -> crate::save::io::SaveResult<i32>,
+    pub radius: fn() -> crate::save::io::SaveResult<i32>,
+}
+
+thread_local! {
+    static GENERATOR_RANGE: std::cell::Cell<GeneratorPowerRange> = const {
+        std::cell::Cell::new(GeneratorPowerRange { radius: 20, vertical: 3 })
+    };
+    static GENERATOR_RANGE_SOURCE: std::cell::Cell<Option<GeneratorRangeSource>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+/// Replace the host source without resetting the native class-static latch.
+pub fn install_generator_range_source(source: Option<GeneratorRangeSource>) -> Option<GeneratorRangeSource> {
+    GENERATOR_RANGE_SOURCE.with(|current| current.replace(source))
+}
+
+pub fn generator_power_range() -> GeneratorPowerRange {
+    GENERATOR_RANGE.with(std::cell::Cell::get)
+}
+
+/// The two query fields represented from `IsoGenerator.setGeneratorRange`.
+/// Its derived generatorChunkRange and propagation lifecycle are separate.
+pub fn set_generator_power_range(range: GeneratorPowerRange) {
+    GENERATOR_RANGE.with(|current| current.set(range));
+}
+
+/// The cell-only constructor calls `setGeneratorRange` before any saved
+/// object body is read. The native setter writes vertical before reading
+/// radius, so a failing second read preserves that first write.
+pub fn generator_constructed() -> crate::save::io::SaveResult<()> {
+    let source = GENERATOR_RANGE_SOURCE.with(std::cell::Cell::get)
+        .ok_or_else(|| crate::save::io::SaveError("IsoGenerator sandbox range source is not installed".into()))?;
+    let vertical = (source.vertical)()?;
+    let mut range = generator_power_range();
+    range.vertical = vertical;
+    set_generator_power_range(range);
+    range.radius = (source.radius)()?;
+    set_generator_power_range(range);
+    Ok(())
+}
+
+impl GeneratorPowerRange {
+    fn reaches(self, g: (i32, i32, i32), x: i32, y: i32, z: i32) -> bool {
+        let min_z = MIN_LEVEL.max(g.2.wrapping_sub(self.vertical));
+        let max_z = MAX_LEVEL.min(g.2.wrapping_add(self.vertical));
+        if z < min_z || z > max_z {
+            return false;
+        }
+        let dx = (g.0 as f32 + 0.5) - (x as f32 + 0.5);
+        let dy = (g.1 as f32 + 0.5) - (y as f32 + 0.5);
+        dx * dx + dy * dy <= self.radius.wrapping_mul(self.radius) as f32
+    }
+}
 
 impl IsoBarricade {
     /// `getForwardIsoDirection()` (`getDir()`).
@@ -105,14 +181,13 @@ impl IsoThumpable {
 pub fn get_barricade_on_square(
     sq: Option<&IsoGridSquare>,
     dir: IsoDirections,
-) -> Option<&IsoBarricade> {
+) -> Option<IsoObjectRef> {
     let sq = sq?;
     sq.special_objects.iter().find_map(|&id| {
-        let o = &sq.objects[sq.object_index(id)?];
-        match &o.kind {
-            ObjectKind::Barricade(b) if b.forward_dir() == dir => Some(b),
-            _ => None,
-        }
+        let slot = &sq.objects[sq.object_index(id)?];
+        let matches =
+            matches!(&slot.borrow().kind, ObjectKind::Barricade(b) if b.forward_dir()==dir);
+        matches.then(|| slot.ref_handle())
     })
 }
 
@@ -130,15 +205,8 @@ pub fn barricade_able_north(obj: &IsoObject) -> Option<bool> {
 /// `IsoGenerator.isPoweringSquare(generatorX, generatorY, generatorZ, x, y,
 /// z)` for the sandbox generator range in `p`.
 pub fn is_powering_square(p: &PowerSettings, g: (i32, i32, i32), x: i32, y: i32, z: i32) -> bool {
-    let min_z = MIN_LEVEL.max(g.2 - p.generator_vertical_power_range);
-    let max_z = MAX_LEVEL.min(g.2 + p.generator_vertical_power_range);
-    if z < min_z || z > max_z {
-        return false;
-    }
-    let dx = (g.0 as f32 + 0.5) - (x as f32 + 0.5);
-    let dy = (g.1 as f32 + 0.5) - (y as f32 + 0.5);
-    let r = p.generator_tile_range;
-    dx * dx + dy * dy <= (r * r) as f32
+    GeneratorPowerRange { radius: p.generator_tile_range, vertical: p.generator_vertical_power_range }
+        .reaches(g, x, y, z)
 }
 
 /// World and sandbox values the power queries read (runtime input).
@@ -263,7 +331,7 @@ impl<'a> ObjectHooks<'a> {
 
     /// `getOppositeSquare()` of an edge element on `sq` (`getNorth()` or
     /// `getWest()` of the square).
-    pub fn opposite_square(&self, sq: &IsoGridSquare, north: bool) -> Option<&'a IsoGridSquare> {
+    pub fn opposite_square(&self, sq: &IsoGridSquare, north: bool) -> Option<SquareRef> {
         if north {
             self.squares.get_grid_square(sq.x, sq.y - 1, sq.z)
         } else {
@@ -277,7 +345,7 @@ impl<'a> ObjectHooks<'a> {
         &self,
         sq: &'s IsoGridSquare,
         north: bool,
-    ) -> (Option<&'s IsoBarricade>, Option<&'a IsoBarricade>) {
+    ) -> (Option<IsoObjectRef>, Option<IsoObjectRef>) {
         let (same, opposite) = if north {
             (IsoDirections::N, IsoDirections::S)
         } else {
@@ -285,7 +353,13 @@ impl<'a> ObjectHooks<'a> {
         };
         (
             get_barricade_on_square(Some(sq), same),
-            get_barricade_on_square(self.opposite_square(sq, north), opposite),
+            get_barricade_on_square(
+                self.opposite_square(sq, north)
+                    .as_ref()
+                    .map(|s| s.borrow())
+                    .as_deref(),
+                opposite,
+            ),
         )
     }
 
@@ -301,21 +375,24 @@ impl<'a> ObjectHooks<'a> {
     /// `IsoGridSquare.hasBlockedDoor(facing)` restricted to `IsoThumpable`:
     /// a thumpable in `objects` with `isBlockedDoor(facing)`.
     pub fn thumpable_door_blocked(&self, sq: &IsoGridSquare, facing: EdgeFacing) -> bool {
-        sq.objects.iter().any(|o| match &o.kind {
-            ObjectKind::Thumpable(t) => {
-                EdgeFacing::of_north(t.north) == facing
-                    && t.is_blocked_door(self.object_barricaded(sq, o))
-            }
-            _ => false,
-        })
+        sq.objects
+            .iter()
+            .map(ObjectSlot::borrow)
+            .any(|o| match &o.kind {
+                ObjectKind::Thumpable(t) => {
+                    EdgeFacing::of_north(t.north) == facing
+                        && t.is_blocked_door(self.object_barricaded(sq, &o))
+                }
+                _ => false,
+            })
     }
 
     /// `IsoThumpable.isWindow()` (`IsoObject.isWindow`): the sprite has
     /// `WindowN` or `WindowW`.
     pub fn object_is_window(&self, obj: &IsoObject) -> bool {
         let f = &self.sprites.tables.flag;
-        obj.sprite.is_some_and(|s| {
-            let p = &self.sprites.sprites[s].properties;
+        obj.sprite.metadata_projection(self.sprites).expect("synchronous window metadata read requires unborrowed native sprite").is_some_and(|s| {
+            let p = &s.properties;
             p.has(f.WindowN) || p.has(f.WindowW)
         })
     }
@@ -334,7 +411,7 @@ impl<'a> ObjectHooks<'a> {
                 return hoppable(s);
             }
         }
-        obj.sprite.is_some_and(hoppable) || t.is_hoppable
+        obj.sprite.metadata_projection(self.sprites).expect("synchronous hoppable metadata read requires unborrowed native sprite").is_some_and(|s| s.properties.has(f.HoppableN) || s.properties.has(f.HoppableW)) || t.is_hoppable
     }
 
     /// The `IsoThumpable` / `IsoBarricade` / `IsoFire` facts the square
@@ -419,7 +496,7 @@ impl<'a> WorldState<'a> {
         }
     }
 
-    fn square(&self, x: i32, y: i32, z: i32) -> Option<&'a IsoGridSquare> {
+    fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         self.cell.get_grid_square(x, y, z)
     }
 
@@ -429,7 +506,7 @@ impl<'a> WorldState<'a> {
     }
 
     /// See [`ObjectHooks::opposite_square`].
-    pub fn opposite_square(&self, sq: &IsoGridSquare, north: bool) -> Option<&'a IsoGridSquare> {
+    pub fn opposite_square(&self, sq: &IsoGridSquare, north: bool) -> Option<SquareRef> {
         self.objects().opposite_square(sq, north)
     }
 
@@ -438,7 +515,7 @@ impl<'a> WorldState<'a> {
         &self,
         sq: &'s IsoGridSquare,
         north: bool,
-    ) -> (Option<&'s IsoBarricade>, Option<&'a IsoBarricade>) {
+    ) -> (Option<IsoObjectRef>, Option<IsoObjectRef>) {
         self.objects().barricades_for(sq, north)
     }
 
@@ -500,10 +577,32 @@ impl<'a> WorldState<'a> {
     /// `IsoGridSquare.haveElectricity()`: a generator powers it (exterior
     /// squares only when the sandbox allows exterior generators).
     pub fn have_electricity(&self, sq: &IsoGridSquare) -> bool {
-        if !self.power.allow_exterior_generator && sq.is_exterior(self.sprites) {
+        Self::square_generator_electricity(
+            self.cell, self.sprites, sq, self.power.allow_exterior_generator,
+            GeneratorPowerRange {
+                radius: self.power.generator_tile_range,
+                vertical: self.power.generator_vertical_power_range,
+            },
+        )
+    }
+
+    /// The generator-only square query, shared with the Lua binding. No
+    /// fabricated hydro, clock or metagrid inputs are needed for this body.
+    pub fn square_generator_electricity(
+        cell: &IsoCell,
+        sprites: &IsoSpriteManager,
+        sq: &IsoGridSquare,
+        allow_exterior: bool,
+        range: GeneratorPowerRange,
+    ) -> bool {
+        if !allow_exterior && sq.is_exterior(sprites) {
             return false;
         }
-        self.is_generator_powering_square(sq.x, sq.y, sq.z)
+        cell.chunks.get(&(sq.x.div_euclid(8), sq.y.div_euclid(8)))
+            .and_then(|chunk| chunk.saved.generators.as_ref())
+            .is_some_and(|generators| generators.iter().any(|&(x, y, z)| {
+                range.reaches((x, y, z as i32), sq.x, sq.y, sq.z)
+            }))
     }
 
     /// `IsoLightSwitch.isBuildingSquare(square)`.
@@ -538,16 +637,17 @@ impl<'a> WorldState<'a> {
                     if dx == 0 && dy == 0 && dz == 0 {
                         continue;
                     }
-                    let Some(gs) = self.square(sq.x + dx, sq.y + dy, sq.z + dz) else {
+                    let Some(gs_owner) = self.square(sq.x + dx, sq.y + dy, sq.z + dz) else {
                         continue;
                     };
+                    let gs = gs_owner.borrow();
                     if pre_elec_shut
-                        && (self.is_building_square(Some(gs))
-                            || self.has_fascia_adjacent_to_building_square(gs))
+                        && (self.is_building_square(Some(&gs))
+                            || self.has_fascia_adjacent_to_building_square(&gs))
                     {
                         return true;
                     }
-                    if self.have_electricity(gs) {
+                    if self.have_electricity(&gs) {
                         return true;
                     }
                 }
@@ -570,23 +670,23 @@ impl<'a> WorldState<'a> {
     /// The light switch on `(x, y, z)` controlling a lamp
     /// (`IsoLightSource.switches.get(0)`): the first non-room switch there,
     /// else the first switch.
-    pub fn lamp_switch(
-        &self,
-        x: i32,
-        y: i32,
-        z: i32,
-    ) -> Option<(&'a IsoGridSquare, &'a IsoLightSwitch)> {
-        let sq = self.square(x, y, z)?;
-        let switches = || {
-            sq.objects.iter().filter_map(|o| match &o.kind {
-                ObjectKind::LightSwitch(s) => Some(s),
-                _ => None,
-            })
+    pub fn lamp_switch(&self, x: i32, y: i32, z: i32) -> Option<(SquareRef, IsoObjectRef)> {
+        let sq_owner = self.square(x, y, z)?;
+        let sq = sq_owner.borrow();
+        let sw = {
+            let body = &sq;
+            let switches = || {
+                body.objects
+                    .iter()
+                    .filter(|o| matches!(&o.borrow().kind, ObjectKind::LightSwitch(_)))
+            };
+            switches()
+                .find(|o| matches!(&o.borrow().kind,ObjectKind::LightSwitch(s) if !s.light_room))
+                .or_else(|| switches().next())?
+                .ref_handle()
         };
-        let sw = switches()
-            .find(|s| !s.light_room)
-            .or_else(|| switches().next())?;
-        Some((sq, sw))
+        drop(sq);
+        Some((sq_owner, sw))
     }
 
     /// `checkLights`' power for a lamp switched at `(x, y, z)`:
@@ -596,8 +696,13 @@ impl<'a> WorldState<'a> {
         let Some((sq, sw)) = self.lamp_switch(x, y, z) else {
             return false;
         };
-        let mut has_power = self.can_switch_light(sq, sw);
-        if sw.street_light && !self.has_grid_power(sq) {
+        let sq = sq.borrow();
+        let sw = sw.borrow();
+        let ObjectKind::LightSwitch(sw) = &sw.kind else {
+            return false;
+        };
+        let mut has_power = self.can_switch_light(&sq, sw);
+        if sw.street_light && !self.has_grid_power(&sq) {
             has_power = false;
         }
         has_power
@@ -607,7 +712,7 @@ impl<'a> WorldState<'a> {
     /// `lightSwitch.square.haveElectricity()` for a switch at `(x, y, z)`.
     pub fn room_switch_square_powered(&self, x: i32, y: i32, z: i32) -> bool {
         self.square(x, y, z)
-            .is_some_and(|sq| self.have_electricity(sq))
+            .is_some_and(|sq| self.have_electricity(&(sq).borrow()))
     }
 
     /// The players' torches (`checkPlayerTorches` for each player).
@@ -636,3 +741,6 @@ impl SquareHooks for WorldState<'_> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod generator_range_tests;

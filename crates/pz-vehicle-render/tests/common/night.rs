@@ -72,15 +72,15 @@ pub fn scene() -> (IsoCell, IsoSpriteManager, IsoMetaGrid) {
         for y in 8..32 {
             let mut sq = IsoGridSquare::new(x, y, 0);
             let id = sq.new_object_id();
-            sq.objects.push(IsoObject::new(
+            sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
                 id,
                 ObjectKind::Object,
                 Some(m.named_map["floor"]),
-            ));
+            )));
             cell.chunks
                 .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
                 .unwrap()
-                .set_square(x.rem_euclid(8), y.rem_euclid(8), 0, Some(sq));
+                .set_square(x.rem_euclid(8), y.rem_euclid(8), 0, Some((sq).into()));
         }
     }
     for wx in 1..=3 {
@@ -150,7 +150,7 @@ pub fn light_from(
     let mut cache = SpriteCache::new();
     for wx in 1..=3 {
         for wy in 1..=3 {
-            world.build_chunk(view, wx, wy, &mut cache, &mut NoTextures);
+            world.build_chunk(view, wx, wy, &mut cache, &mut NoTextures).unwrap();
         }
     }
     for f in 0..frames {
@@ -194,7 +194,7 @@ pub fn new_lighting(view: &WorldView<'_>, hooks: &dyn WorldHooks) -> WorldLighti
     let mut lighting = WorldLighting::new();
     for wx in 1..=3 {
         for wy in 1..=3 {
-            lighting.sync_chunk(view, wx, wy, hooks);
+            lighting.sync_chunk(view, wx, wy, hooks).unwrap();
         }
     }
     lighting

@@ -20,7 +20,13 @@ pub mod tile_depth;
 use std::rc::Rc;
 
 pub use image::{ImageData, Mask, MipLevel};
-pub use lua::{get_shared_texture, install_shared_texture_loader, LuaTexture};
+pub use lua::{
+    get_shared_texture, install_shared_texture_loader, LuaTexture,
+    TextureRef, TextureHostError, TextureResult, TextureLookup, TextureRefLoader,
+    TextureObserver, install_texture_ref_loader, install_texture_observer,
+    observe_texture_ref, try_get_texture_ref, get_shared_texture_ref, try_texture_descriptor,
+    warn_fail_find_texture, set_warn_fail_find_texture, take_retired_texture_loaders,
+};
 pub use manager::{SharedTextures, TextureData, TextureManager};
 pub use screen::{ScreenParams, ScreenTimer, ScreenUniforms, SearchModeShader};
 
@@ -181,6 +187,10 @@ pub enum DrawCmd {
     Quad { texture: Option<Texture>, x: f32, y: f32, w: f32, h: f32, color: Rgba },
     /// A quad as `SpriteRenderer` records it.
     Sprite(Sprite),
+    /// A captured VBO run's texture sampling overrides. `false` inherits
+    /// the uploaded texture's setting; nearest disables mip sampling.
+    /// Ordinary sprites keep their existing sampler.
+    SampledSprite { sprite: Sprite, nearest: bool, repeat: bool },
     SetBlend(Blend),
     /// `glBlendFunc(src, dst)` with GL enum values.
     BlendFunc(u32, u32),

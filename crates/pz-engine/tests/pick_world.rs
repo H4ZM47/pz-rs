@@ -159,16 +159,16 @@ impl Scene {
             for y in 8..16 {
                 let mut sq = IsoGridSquare::new(x, y, 0);
                 let id = sq.new_object_id();
-                sq.objects.push(IsoObject::new(
+                sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
                     id,
                     ObjectKind::Object,
                     Some(m.named_map["floor"]),
-                ));
+                )));
                 if (x, y) == CRATE {
                     let id = sq.new_object_id();
                     let mut o = IsoObject::new(id, ObjectKind::Object, Some(m.named_map["crate"]));
                     o.container = Some(pz_inventory::container::ItemContainer::new(Some("crate")));
-                    sq.objects.push(o);
+                    sq.objects.push(pz_world::ObjectSlot::new(o));
                 }
                 if (x, y) == DOOR {
                     let id = sq.new_object_id();
@@ -176,32 +176,36 @@ impl Scene {
                         open: true,
                         ..Default::default()
                     };
-                    sq.objects.push(IsoObject::new(
+                    sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
                         id,
                         ObjectKind::Door(door),
                         Some(m.named_map["door_w"]),
-                    ));
+                    )));
                 }
-                cell.chunks
-                    .get_mut(&(1, 1))
-                    .unwrap()
-                    .set_square(x % 8, y % 8, 0, Some(sq));
+                cell.chunks.get_mut(&(1, 1)).unwrap().set_square(
+                    x % 8,
+                    y % 8,
+                    0,
+                    Some((sq).into()),
+                );
             }
         }
         cell.recalc_chunk_squares(1, 1, &meta, &m);
         let mut render = RenderWorld::new();
         let mut cache = SpriteCache::new();
-        render.build_chunk(
-            &WorldView {
-                cell: &cell,
-                meta: &meta,
-                sprites: &m,
-            },
-            1,
-            1,
-            &mut cache,
-            &mut Textures,
-        );
+        render
+            .build_chunk(
+                &WorldView {
+                    cell: &cell,
+                    meta: &meta,
+                    sprites: &m,
+                },
+                1,
+                1,
+                &mut cache,
+                &mut Textures,
+            )
+            .unwrap();
         let cam = Camera::centred(12.0, 12.0, 0.0, 1280, 720, zoom);
         let infos = RenderInfos::new();
         {
@@ -307,7 +311,7 @@ fn picks_the_container_over_its_floor() {
     for zoom in [1.0, 2.0] {
         let s = Scene::new(zoom);
         let (x, y) = s.point(CRATE);
-        let c = context_pick(&s.pick(), x, y).expect("picked");
+        let c = context_pick(&s.pick(), x, y).unwrap().expect("picked");
         assert_eq!((c.square, c.tile.object_index), ([CRATE.0, CRATE.1, 0], 1));
         // Clicked at the image middle: (64, 180) in the frame.
         assert!(
@@ -316,7 +320,7 @@ fn picks_the_container_over_its_floor() {
             (c.lx, c.ly)
         );
         let (x, y) = s.point(DOOR);
-        let c = context_pick(&s.pick(), x, y).expect("door");
+        let c = context_pick(&s.pick(), x, y).unwrap().expect("door");
         assert_eq!((c.square, c.tile.object_index), ([DOOR.0, DOOR.1, 0], 1));
     }
 }
@@ -325,7 +329,7 @@ fn picks_the_container_over_its_floor() {
 fn click_objects_by_layer_then_square() {
     let s = Scene::new(1.0);
     let (x, y) = s.point(CRATE);
-    let objs = click_objects(&s.pick(), x, y);
+    let objs = click_objects(&s.pick(), x, y).unwrap();
     let order: Vec<_> = objs
         .iter()
         .map(|c| (c.tile.render.layer, c.square))
@@ -353,23 +357,37 @@ fn cutaway_and_hidden_objects_are_not_picked() {
     };
     // Faded out: the floor under it is picked instead.
     s.infos.update(0, slot, |i| i.target_alpha = 0.0);
-    let c = context_pick(&s.pick(), x, y).expect("floor");
+    let c = context_pick(&s.pick(), x, y).unwrap().expect("floor");
     assert_eq!(c.tile.object_index, 0);
     // Cut away (not a door, window frame or thumpable window): skipped.
     s.infos.update(0, slot, |i| {
         i.target_alpha = 1.0;
         i.cutaway = true;
     });
-    assert_eq!(context_pick(&s.pick(), x, y).unwrap().tile.object_index, 0);
+    assert_eq!(
+        context_pick(&s.pick(), x, y)
+            .unwrap()
+            .unwrap()
+            .tile
+            .object_index,
+        0
+    );
     // Not drawn (`setNotRendered`, or never recorded).
     s.infos.update(0, slot, |i| {
         i.cutaway = false;
         i.layer = Layer::None;
     });
-    assert_eq!(context_pick(&s.pick(), x, y).unwrap().tile.object_index, 0);
+    assert_eq!(
+        context_pick(&s.pick(), x, y)
+            .unwrap()
+            .unwrap()
+            .tile
+            .object_index,
+        0
+    );
     // Another object now at that index reads a fresh info.
     let fresh = RenderInfos::new();
     let mut p = s.pick();
     p.world.infos = &fresh;
-    assert!(context_pick(&p, x, y).is_none());
+    assert!(context_pick(&p, x, y).unwrap().is_none());
 }

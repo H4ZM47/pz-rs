@@ -6,7 +6,13 @@ fn main() {
     let (jar, class) = (a.next().expect("jar"), a.next().expect("class"));
     let jar = pz_classfile::Jar::open(jar).expect("open jar");
     let cf = pz_classfile::load_class(&jar, &class).expect("class");
-    for s in pz_classfile::static_inits(&cf).expect("clinit") {
-        println!("{}.{} = {:?}", s.class, s.field, s.value);
+    if a.next().as_deref() == Some("--effects") {
+        for effect in pz_classfile::method_effects(&cf, "<clinit>").expect("clinit effects") {
+            println!("{effect:?}");
+        }
+    } else {
+        for s in pz_classfile::static_inits(&cf).expect("clinit") {
+            println!("{}.{} = {:?}", s.class, s.field, s.value);
+        }
     }
 }

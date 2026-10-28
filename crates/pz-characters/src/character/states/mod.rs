@@ -127,6 +127,7 @@ pub fn all<I: 'static>() -> Vec<StateRef<I>> {
         player::collide_with_wall(),
         player::aim(),
         player::strafe(),
+        player::actions(),
         player_movement::instance(),
         climb_fence::climb_over_fence(),
         climb_window::climb_through_window(),

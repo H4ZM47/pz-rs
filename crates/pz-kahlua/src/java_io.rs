@@ -31,6 +31,27 @@ use std::io;
 pub struct JavaReader<'a> {
     buf: &'a [u8],
     pos: usize,
+    limit: usize,
+    notices: Vec<JavaIoNotice>,
+}
+
+/// Native diagnostics are returned as owned data so a host can emit them
+/// after its item/table guards end.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JavaIoNotice {
+    StringLengthBeyondRemaining { num_bytes: usize, remaining: usize },
+}
+
+impl JavaIoNotice {
+    /// Native channel is DebugType.General.error(Object), not an exception
+    /// logger or a thrown BufferUnderflowException.
+    pub fn native_message(&self) -> String {
+        match self {
+            Self::StringLengthBeyondRemaining { num_bytes, remaining } => format!(
+                "GameWindow.StringUTF.load> numBytes:{num_bytes} is higher than the remaining bytes in the buffer:{remaining}"
+            ),
+        }
+    }
 }
 
 fn eof() -> io::Error {
@@ -48,24 +69,65 @@ macro_rules! getter {
 
 impl<'a> JavaReader<'a> {
     pub fn new(buf: &'a [u8]) -> Self {
-        JavaReader { buf, pos: 0 }
+        JavaReader {
+            buf,
+            pos: 0,
+            limit: buf.len(),
+            notices: Vec::new(),
+        }
+    }
+    /// The slice must contain the actual initialized buffer capacity, not
+    /// merely its current limit. Bytes beyond the limit remain available to
+    /// native StringUTF's temporary limit extension.
+    pub fn with_limit(buf: &'a [u8], limit: usize) -> io::Result<Self> {
+        let mut reader = Self::new(buf);
+        reader.set_limit(limit)?;
+        Ok(reader)
     }
     pub fn position(&self) -> usize {
         self.pos
     }
     /// `position(p)`; past the limit is an error (`IllegalArgumentException`).
     pub fn set_position(&mut self, pos: usize) -> io::Result<()> {
-        if pos > self.buf.len() {
+        if pos > self.limit {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("newPosition > limit: ({pos} > {})", self.buf.len()),
+                format!(
+                    "IllegalArgumentException: newPosition > limit: ({pos} > {})",
+                    self.limit
+                ),
             ));
         }
         self.pos = pos;
         Ok(())
     }
     pub fn remaining(&self) -> usize {
-        self.buf.len() - self.pos
+        self.limit - self.pos
+    }
+    pub fn capacity(&self) -> usize {
+        self.buf.len()
+    }
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+    /// Like ByteBuffer.limit: reducing below position also reduces position.
+    /// A rejected limit leaves both fields unchanged.
+    pub fn set_limit(&mut self, limit: usize) -> io::Result<()> {
+        if limit > self.capacity() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "IllegalArgumentException: newLimit > capacity: ({limit} > {})",
+                    self.capacity()
+                ),
+            ));
+        }
+        self.limit = limit;
+        self.pos = self.pos.min(limit);
+        Ok(())
+    }
+    pub fn take_notices(&mut self) -> Vec<JavaIoNotice> {
+        std::mem::take(&mut self.notices)
     }
     pub fn take(&mut self, n: usize) -> io::Result<&'a [u8]> {
         if self.remaining() < n {
@@ -96,15 +158,26 @@ impl<'a> JavaReader<'a> {
         }
         let n = n as usize;
         if self.remaining() < n {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!(
-                    "GameWindow.StringUTF.load> numBytes:{n} is higher than the remaining bytes in the buffer:{}",
-                    self.remaining()
-                ),
-            ));
+            self.notices
+                .push(JavaIoNotice::StringLengthBeyondRemaining {
+                    num_bytes: n,
+                    remaining: self.remaining(),
+                });
         }
-        Ok(String::from_utf8_lossy(self.take(n)?).into_owned())
+        // Native saves the old limit, temporarily sets position+n, copies
+        // exactly that range, then restores the old limit. Extension can
+        // succeed up to capacity, and restoration can clamp position back.
+        let old_limit = self.limit;
+        let end = self.pos.checked_add(n).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "IllegalArgumentException: string limit overflow",
+            )
+        })?;
+        self.set_limit(end)?;
+        let bytes = self.take(n)?;
+        self.set_limit(old_limit)?;
+        Ok(String::from_utf8_lossy(bytes).into_owned())
     }
 
     /// `GameWindow.ReadString(DataInputStream)`.
@@ -279,5 +352,53 @@ mod tests {
         let u = JavaUuid::from_random_bytes([0xff; 16]);
         assert_eq!((u.msb >> 12) & 0xf, 4);
         assert_eq!((u.lsb as u64) >> 62, 2);
+    }
+
+    #[test]
+    fn native_utf_can_extend_to_capacity_then_restoring_limit_clamps_position() {
+        let bytes = [0, 4, b'a', b'b', b'c', b'd', 99];
+        let mut reader = JavaReader::with_limit(&bytes, 4).unwrap();
+        assert_eq!(reader.capacity(), 7);
+        assert_eq!(reader.read_string_utf().unwrap(), "abcd");
+        assert_eq!(reader.limit(), 4);
+        assert_eq!(reader.position(), 4);
+        assert_eq!(reader.remaining(), 0);
+        assert_eq!(
+            reader.take_notices(),
+            vec![JavaIoNotice::StringLengthBeyondRemaining {
+                num_bytes: 4,
+                remaining: 2
+            }]
+        );
+        assert!(reader.get_i8().is_err());
+        assert_eq!(reader.position(), 4);
+    }
+
+    #[test]
+    fn rejected_native_utf_limit_keeps_consumed_short_and_original_limit() {
+        let mut reader = JavaReader::new(&[0, 5, b'a', b'b']);
+        let error = reader.read_string_utf().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().starts_with("IllegalArgumentException:"));
+        assert_eq!(reader.position(), 2);
+        assert_eq!(reader.limit(), 4);
+        assert_eq!(
+            reader.take_notices(),
+            vec![JavaIoNotice::StringLengthBeyondRemaining {
+                num_bytes: 5,
+                remaining: 2
+            }]
+        );
+    }
+
+    #[test]
+    fn short_count_underflow_does_not_advance_or_invent_a_notice() {
+        let mut reader = JavaReader::new(&[0]);
+        assert_eq!(
+            reader.read_string_utf().unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        assert_eq!(reader.position(), 0);
+        assert!(reader.take_notices().is_empty());
     }
 }

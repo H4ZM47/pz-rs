@@ -231,8 +231,12 @@ impl GameLoadingState {
         }
         println!("triggerEvent OnGameTimeLoaded");
         cx.lua.trigger_event("OnGameTimeLoaded", &[]);
-        // TODO(port): `SGlobalObjects.initSystems()` / `CGlobalObjects.initSystems()`
-        // (the Lua global object systems), `IsoObjectPicker.Instance.Init()`,
+        // runInner initializes the server systems and their client initial
+        // state before the client systems. No world/cell borrow crosses Lua.
+        let events = cx.lua.events.clone();
+        pz_lua_api::global_objects::init_server_systems(&mut cx.lua.thread, &events);
+        pz_lua_api::global_objects::init_client_systems(&mut cx.lua.thread, &events);
+        // TODO(port): `IsoObjectPicker.Instance.Init()`,
         // `TutorialManager.instance.init()` / `CreateQuests()`.
         let saved = cx.world.as_ref().map_or(-1, |w| w.saved_world_version);
         let save_dir = Self::current_save_dir(cx);

@@ -18,7 +18,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use pz_entity::{EntityContext, FluidContainer};
-use pz_inventory::{InventoryItem, ItemKind};
+use pz_inventory::{InventoryItem, ItemKind, ModDataResult};
 use pz_scripts::objects::items::{Item, ItemReplacement};
 
 use crate::data::{ClothingItem, ItemVisual, Rgb, WHITE};
@@ -122,17 +122,28 @@ impl<'a> HeldItem<'a> {
 
     /// `getStaticModel()` ([`InventoryItem::get_static_model`]) with the
     /// model scripts.
-    pub fn static_model(&self, scripts: &dyn ModelScripts) -> Option<String> {
+    pub fn try_static_model(&self, scripts: &dyn ModelScripts) -> ModDataResult<Option<String>> {
         self.item
-            .get_static_model(&|n| model_script_name(scripts, n))
+            .try_get_static_model(&|n| model_script_name(scripts, n))
+    }
+    pub fn static_model(&self, scripts: &dyn ModelScripts) -> Option<String> {
+        self.try_static_model(scripts)
+            .expect("unborrowed held model ModData")
     }
 
     /// `getStaticModelException()`
     /// ([`InventoryItem::get_static_model_exception`]) with the model
     /// scripts.
-    pub fn static_model_exception(&self, scripts: &dyn ModelScripts) -> Option<String> {
+    pub fn try_static_model_exception(
+        &self,
+        scripts: &dyn ModelScripts,
+    ) -> ModDataResult<Option<String>> {
         self.item
-            .get_static_model_exception(&|n| model_script_name(scripts, n))
+            .try_get_static_model_exception(&|n| model_script_name(scripts, n))
+    }
+    pub fn static_model_exception(&self, scripts: &dyn ModelScripts) -> Option<String> {
+        self.try_static_model_exception(scripts)
+            .expect("unborrowed held model ModData")
     }
 
     /// `getItemReplacementPrimaryHand()`.
@@ -204,24 +215,27 @@ impl<'a> HeldItem<'a> {
 
     /// `item.hasComponent(FluidContainer) && getFilledRatio() > 0.5` with a
     /// `<worldStaticItem>_Fluid` model script: the model name to use.
-    pub(crate) fn fluid_model(&self, scripts: &dyn ModelScripts) -> Option<String> {
-        let f = self.fluid.as_ref()?;
-        if f.get_filled_ratio() <= 0.5 {
-            return None;
+    pub(crate) fn try_fluid_model(
+        &self,
+        scripts: &dyn ModelScripts,
+    ) -> ModDataResult<Option<String>> {
+        let Some(fluid) = self.fluid.as_ref() else {
+            return Ok(None);
+        };
+        if fluid.get_filled_ratio() <= 0.5 {
+            return Ok(None);
         }
         let name = format!(
             "{}_Fluid",
             self.item
-                .get_world_static_model()
+                .try_get_world_static_model()?
                 .as_deref()
                 .unwrap_or("null")
         );
-        scripts.model_script(&name).map(|_| name)
+        Ok(scripts.model_script(&name).map(|_| name))
     }
-
-    /// `StringUtils.isNullOrWhitespace(item.getStaticModel())`.
-    pub(crate) fn has_static_model(&self, scripts: &dyn ModelScripts) -> bool {
-        !blank(self.static_model(scripts).as_deref())
+    pub(crate) fn try_has_static_model(&self, scripts: &dyn ModelScripts) -> ModDataResult<bool> {
+        Ok(!blank(self.try_static_model(scripts)?.as_deref()))
     }
 }
 

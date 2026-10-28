@@ -61,7 +61,7 @@ impl GameRand for JavaRandom {
 /// in derelict and user-defined rooms (`IsoGridSquare.isNoPower`).
 struct GridOn;
 impl ObjectLoadHooks for GridOn {
-    fn square_powered(&mut self, _sq: &pz_world::IsoGridSquare, room: &pz_world::RoomDef) -> bool {
+    fn square_powered(&mut self, _sq: pz_world::SquareRef, room: &pz_world::RoomDef) -> bool {
         !room.name.to_lowercase().contains("derelict") && !room.user_defined
     }
 }
@@ -112,6 +112,7 @@ fn main() {
     for wx in wx0..=wx1 {
         for wy in wy0..=wy1 {
             let mut env = ChunkLoadEnv {
+                blood_body_parts: save_tables.blood_body_parts,
                 sprites: &mut sprites,
                 fix2x: &fix2x,
                 rand: &mut rand,

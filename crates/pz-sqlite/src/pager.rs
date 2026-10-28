@@ -42,6 +42,21 @@ fn put32(b: &mut [u8], at: usize, v: u32) {
     b[at..at + 4].copy_from_slice(&v.to_be_bytes());
 }
 
+fn check_write_format(header: &[u8]) -> Result<()> {
+    // A nonzero largest-root field means FULL or INCREMENTAL
+    // auto-vacuum, including an otherwise empty one-page file.
+    // These formats require reserved ptrmap pages, reverse pointer
+    // maintenance and root relocation. The allocator below implements
+    // only the ordinary freelist format.
+    // https://www.sqlite.org/fileformat.html#ptrmap
+    if header.len() >= 100 && &header[..16] == b"SQLite format 3\0" && be32(header, 52) != 0 {
+        return Err(Error::Unsupported(
+            "writing an auto-vacuum database (FULL or INCREMENTAL)".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn journal_path(path: &Path) -> PathBuf {
     let mut j = path.as_os_str().to_owned();
     j.push("-journal");
@@ -216,6 +231,12 @@ impl Pager {
             .create(true)
             .truncate(false)
             .open(path)?;
+        // Refuse an identifiable unsupported format before recovery can
+        // modify its database or remove its hot journal. Its owner must
+        // recover it with a writer that supports that format.
+        let mut header = [0u8; 100];
+        let read = read_at(&mut file, 0, &mut header)?;
+        check_write_format(&header[..read])?;
         let jpath = journal_path(path);
         if playback(&mut file, &jpath)? {
             finish_journal(&jpath)?;
@@ -243,6 +264,8 @@ impl Pager {
                     "writing a WAL-mode or newer-format database".into(),
                 ));
             }
+            // Recovery may have restored a different page-one header.
+            check_write_format(&b)?;
             p.page_size = h.page_size;
             p.usable = h.usable;
             p.enc = h.text_encoding;

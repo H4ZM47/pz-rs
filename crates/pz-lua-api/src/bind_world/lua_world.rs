@@ -13,7 +13,8 @@
 //! ([`shared_water_flow`]).
 
 use super::{
-    get, grid, java_err, key_of, npe, obj, opt, self_world, void, wrong, Key, ZoneClass, WORLD,
+    get, grid, java_err, key_of, npe, obj, opt, self_world, void, with_world_state_cell, wrong, Key,
+    ZoneClass,
 };
 use crate::bind_java_util::list_value;
 use crate::expose::{expose_class, global, int_arg, num_arg, str_arg, ClassBuilder};
@@ -134,14 +135,11 @@ fn zone_args(c: &NativeCall<'_>) -> (String, String, i32, i32, i32, i32, i32) {
 pub fn lot_directories(fs: &GameFs) -> LuaResult<Vec<String>> {
     // `GameClient.client` / `GameServer.server` replace `Core.gameMap`;
     // neither runs here.
-    let map = crate::bind_core::shared_core().borrow().game_map.clone();
-    if map == "DEFAULT" {
-        // TODO(port): `MapGroups.createGroups()` / `setWorld(0)` for a
-        // `DEFAULT` game map.
-        return Err(LuaError::runtime(
-            "TODO(port): IsoMetaGrid.getLotDirectories with Core.gameMap DEFAULT (MapGroups)",
-        ));
+    let is_default = crate::bind_core::shared_core().borrow().game_map == "DEFAULT";
+    if is_default {
+        crate::bind_map_groups::set_default_world()?;
     }
+    let map = crate::bind_core::shared_core().borrow().game_map.clone();
     Ok(pz_world::map_files::lot_directories(fs, &map))
 }
 
@@ -521,7 +519,7 @@ pub fn register_zone(thread: &mut Thread) {
     let field = |b: &ClassBuilder, name: &str, f: fn(&pz_world::zones::Zone) -> Value| {
         get(b, name, move |c| {
             let id = zone_of(c)?;
-            WORLD.with(|w| match w.borrow().meta_grid.as_ref() {
+            with_world_state_cell(|w| match w.borrow().meta_grid.as_ref() {
                 Some(g) => Ok(f(g.zone(id))),
                 None => Err(LuaError::runtime("IsoMetaGrid is not loaded")),
             })

@@ -256,7 +256,7 @@ impl World {
             .chunks
             .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
             .unwrap();
-        ch.set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some(sq));
+        ch.set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some((sq).into()));
         self.recalc(x, y, z);
     }
 
@@ -268,8 +268,11 @@ impl World {
     ) -> pz_world::objects::ObjectId {
         let id = sq.new_object_id();
         let special = !matches!(kind, ObjectKind::Object);
-        sq.objects
-            .push(IsoObject::new(id, kind, Some(self.m.named_map[name])));
+        sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
+            id,
+            kind,
+            Some(self.m.named_map[name]),
+        )));
         if special {
             sq.special_objects.push(id);
         }
@@ -277,9 +280,8 @@ impl World {
     }
 
     fn add(&mut self, x: i32, y: i32, z: i32, name: &str, kind: ObjectKind) {
-        let mut sq = self.cell.get_grid_square_mut(x, y, z).unwrap().clone();
-        self.add_to(&mut sq, name, kind);
-        *self.cell.get_grid_square_mut(x, y, z).unwrap() = sq;
+        let sq = self.cell.get_grid_square(x, y, z).unwrap();
+        self.add_to(&mut sq.borrow_mut(), name, kind);
         self.recalc(x, y, z);
     }
 
@@ -288,16 +290,17 @@ impl World {
         self.cell
             .get_grid_square_mut(x, y, z)
             .unwrap()
+            .borrow_mut()
             .recalc_properties(m);
     }
 
-    fn sq(&self, x: i32, y: i32, z: i32) -> &IsoGridSquare {
+    fn sq(&self, x: i32, y: i32, z: i32) -> pz_world::SquareRef {
         self.cell.get_grid_square(x, y, z).unwrap()
     }
 
     fn bits_with(&self, x: i32, y: i32, z: i32, hooks: &dyn SquareBitsHooks) -> u64 {
         let sb = SquareBits::new(&self.m, &self.meta, &self.cell, hooks).unwrap();
-        sb.get_bits(self.sq(x, y, z))
+        sb.get_bits(&self.sq(x, y, z).borrow())
     }
 
     fn bits(&self, x: i32, y: i32, z: i32) -> u64 {
@@ -306,7 +309,7 @@ impl World {
 
     fn cost(&self, x: i32, y: i32, z: i32) -> i16 {
         let sb = SquareBits::new(&self.m, &self.meta, &self.cell, &DefaultBitsHooks).unwrap();
-        sb.get_cost(self.sq(x, y, z))
+        sb.get_cost(&self.sq(x, y, z).borrow())
     }
 }
 
@@ -338,9 +341,17 @@ fn hoppable_and_tall_hoppable_walls() {
     w.put(12, 11, 0, &["floor"]);
     assert_eq!(w.bits(12, 10, 0), SOLID_FLOOR | COLLIDE_N | TALL_HOPPABLE_N);
     // Not under a roof.
-    w.cell.get_grid_square_mut(12, 9, 0).unwrap().have_roof = true;
+    w.cell
+        .get_grid_square_mut(12, 9, 0)
+        .unwrap()
+        .borrow_mut()
+        .have_roof = true;
     assert_eq!(w.bits(12, 10, 0), SOLID_FLOOR | COLLIDE_N);
-    w.cell.get_grid_square_mut(12, 9, 0).unwrap().have_roof = false;
+    w.cell
+        .get_grid_square_mut(12, 9, 0)
+        .unwrap()
+        .borrow_mut()
+        .have_roof = false;
     // Not when a sloped roof without eave is above either side.
     w.put(12, 9, 1, &["roof"]);
     assert_eq!(w.bits(12, 10, 0), SOLID_FLOOR | COLLIDE_N);
@@ -471,7 +482,13 @@ fn thumpables() {
     assert_eq!(w.bits(11, 9, 0), SOLID_FLOOR | COLLIDE_W);
     // A moved furniture item that is thumpable.
     w.put(12, 9, 0, &["floor", "barrel"]);
-    w.cell.get_grid_square_mut(12, 9, 0).unwrap().objects[1].moved_thumpable = true;
+    w.cell
+        .get_grid_square_mut(12, 9, 0)
+        .unwrap()
+        .borrow()
+        .objects[1]
+        .borrow_mut()
+        .moved_thumpable = true;
     assert_eq!(
         w.bits(12, 9, 0),
         SOLID_FLOOR | CAN_PATH_W | CAN_PATH_N | THUMPABLE | SOLID_TRANS
@@ -525,6 +542,63 @@ fn cost_of_trees_and_bushes() {
 }
 
 #[test]
+fn native_sprite_metadata_mutation_changes_bush_cost_and_open_door_edge() {
+    use pz_world::sprite::runtime::{create_runtime_sprite, ObjectSprite};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let world = World::new();
+    let native_manager = Rc::new(RefCell::new(IsoSpriteManager::new(world.m.tables.clone())));
+    let arena_before = native_manager.borrow().sprites.len();
+    let mut retired = Default::default();
+    let sprite = create_runtime_sprite(&native_manager, &world.m.tables, &mut retired).unwrap();
+    let bits = SquareBits::new(&world.m, &world.meta, &world.cell, &DefaultBitsHooks).unwrap();
+    {
+        let mut actual = sprite.borrow_mut();
+        actual.data.tileset_name = Some("f_bushes_1".into());
+        actual.data.properties.set_flag(bits.t.attachedE);
+    }
+    let mut object = IsoObject::new(
+        1,
+        ObjectKind::Door(IsoDoor {
+            north: true,
+            open: true,
+            ..Default::default()
+        }),
+        None,
+    );
+    object.sprite = ObjectSprite::Native(sprite.clone());
+    let mut square = IsoGridSquare::new(9, 9, 0);
+    square.objects.push(pz_world::ObjectSlot::new(object));
+    assert!(bits.has_bush(&square));
+    assert_eq!(bits.get_cost(&square), 5);
+    assert_eq!(
+        bits.door_sprite_edge(&square.objects[0].borrow(), true, true, false),
+        Some(IsoDirections::E)
+    );
+
+    {
+        let mut actual = sprite.borrow_mut();
+        actual.data.tileset_name = Some("different_tileset".into());
+        actual.data.properties.unset_flag(bits.t.attachedE);
+        actual.data.properties.set_flag(bits.t.attachedS);
+    }
+    assert!(!bits.has_bush(&square));
+    assert_eq!(bits.get_cost(&square), 0);
+    assert_eq!(
+        bits.door_sprite_edge(&square.objects[0].borrow(), true, true, false),
+        Some(IsoDirections::S)
+    );
+    assert!(Rc::ptr_eq(
+        square.objects[0].borrow().sprite.native_slot().unwrap(),
+        &sprite
+    ));
+    assert_eq!(native_manager.borrow().sprites.len(), arena_before);
+    let detached = { sprite.borrow_mut().take_slots_for_gc() };
+    drop(detached);
+}
+
+#[test]
 fn chunk_buffer_layout_and_square_update() {
     let mut w = World::new();
     w.put(9, 10, 0, &["floor", "tree"]);
@@ -557,7 +631,7 @@ fn chunk_buffer_layout_and_square_update() {
         0.5
     );
 
-    let u = sb.square_update(w.sq(10, 11, 1));
+    let u = sb.square_update(&w.sq(10, 11, 1).borrow());
     assert_eq!(
         (u.x, u.y, u.z, u.bits, u.cost),
         (10, 11, 33, SOLID_FLOOR, 0)
@@ -566,10 +640,10 @@ fn chunk_buffer_layout_and_square_update() {
         (u.slope_direction, u.slope_min, u.slope_max),
         (0, 0.25, 0.5)
     );
-    let u = sb.square_update(w.sq(9, 10, 0));
+    let u = sb.square_update(&w.sq(9, 10, 0).borrow());
     assert_eq!(u.slope_direction, NO_SLOPE_DIRECTION);
     assert_eq!(
-        sb.sloped_surface(w.sq(10, 11, 1)),
+        sb.sloped_surface(&w.sq(10, 11, 1).borrow()),
         Some(SlopedSurface {
             direction: IsoDirections::N,
             min: 0.25,
