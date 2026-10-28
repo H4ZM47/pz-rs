@@ -1488,6 +1488,17 @@ impl IsoWorld {
     /// observes the live world after the prelude and before the chunks,
     /// cell and population, so its changes reach the saved files.
     pub fn save_on_quit(&mut self, lua: &mut LuaManager) -> pz_characters::character::save::CharacterPersistenceResult<()> {
+        self.save_quit_phases(lua, false)
+    }
+
+    /// The first post-save block of `GameWindow.exit` checks the current
+    /// cell after saving. App.close performs the second, independent check.
+    /// Ordinary IngameState quit retains its existing unconditional callback.
+    pub(crate) fn save_on_window_close(&mut self, lua: &mut LuaManager) -> pz_characters::character::save::CharacterPersistenceResult<()> {
+        self.save_quit_phases(lua, true)
+    }
+
+    fn save_quit_phases(&mut self, lua: &mut LuaManager, require_current_cell: bool) -> pz_characters::character::save::CharacterPersistenceResult<()> {
         use pz_lua_api::world_save::{
             save_game_before_event, save_game_cell_actual as save_game_cell, save_game_finish, SaveGame, SaveReport,
         };
@@ -1624,9 +1635,12 @@ impl IsoWorld {
             }
             None => SaveReport::default(),
         };
-        // Quitting delivers this even when saving is disabled or the
-        // prelude threw, matching `world_save::save_on_quit`.
-        lua.trigger_event("OnPostSave", &[]);
+        // Ordinary quitting keeps its callback even when saving is disabled
+        // or the prelude threw. Window close rereads currentCell at this
+        // separate native block. The WORLD borrow ends before callbacks run.
+        if !require_current_cell || with_world(|w| w.cell.is_some()) {
+            lua.trigger_event("OnPostSave", &[]);
+        }
         for e in report.errors.drain(..) {
             self.log_update_error(e);
         }
