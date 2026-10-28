@@ -11,7 +11,7 @@
 //! through [`DeviceAudio`]; every side effect that does not return a value
 //! goes out as a [`DeviceEvent`].
 
-use crate::device::{DeviceData, DevicePresets};
+use crate::device::{DeviceData, DevicePresetsRef};
 
 /// `ZomboidRadio.staticSounds`.
 pub const STATIC_SOUNDS: [&str; 4] = ["<bzzt>", "<fzzt>", "<wzzt>", "<szzt>"];
@@ -393,20 +393,20 @@ impl DeviceData {
     /// everything else, including the loop sound id, is carried over).
     pub fn get_clone(&self) -> DeviceData {
         let mut c = self.clone();
-        c.presets = DevicePresets {
-            max_presets: self.presets.max_presets,
-            presets: self.presets.presets.clone(),
-        };
         c.runtime.emitter = None;
         c
     }
 
     /// `cloneDevicePresets(p)`.
-    pub fn clone_device_presets(&mut self, p: Option<&DevicePresets>) {
+    pub fn clone_device_presets(&mut self, p: Option<&DevicePresetsRef>) {
         self.presets.clear_presets();
         if let Some(p) = p {
-            for e in &p.presets {
+            let mut i = 0;
+            while i < p.len() {
+                let e = p.entry(i).unwrap();
+                let e = e.borrow();
                 self.presets.add_preset(&e.name, e.frequency);
+                i += 1;
             }
         }
     }
@@ -1153,6 +1153,16 @@ impl DeviceData {
         self.runtime.media_line_index += 1;
     }
 
+    /// The server transmit after native addBattery's final field writes.
+    pub fn transmit_battery_state(&self, env: &mut dyn DeviceEnv) {
+        transmit_server(env, DeviceState::Battery);
+    }
+
+    /// The server transmit after native addMediaItem's final field writes.
+    pub fn transmit_media_item_state(&self, env: &mut dyn DeviceEnv) {
+        transmit_server(env, DeviceState::MediaItem);
+    }
+
     /// `addBattery(bat)` for a `Base.Battery` with `current_uses`
     /// (`getCurrentUsesFloat()`): `true` when the battery goes into the
     /// device (the caller removes the item unless it is a client).
@@ -1434,8 +1444,9 @@ impl DeviceData {
 
     /// `IsoWaveSignal.saveState(bb)`'s fields.
     pub fn save_state(&self, w: &mut crate::io::Writer) {
-        w.i32(self.presets.presets.len() as i32);
-        for p in &self.presets.presets {
+        w.i32(self.presets.len() as i32);
+        for p in self.presets.list().borrow().iter() {
+            let p = p.borrow();
             w.string(&p.name);
             w.i32(p.frequency);
         }
@@ -1450,15 +1461,15 @@ impl DeviceData {
         for i in 0..n.max(0) {
             let name = r.string()?;
             let frequency = r.i32()?;
-            if (i as usize) < self.presets.presets.len() {
-                let p = &mut self.presets.presets[i as usize];
+            if let Some(p) = self.presets.entry(i as usize) {
+                let mut p = p.borrow_mut();
                 p.name = name;
                 p.frequency = frequency;
             } else {
                 self.presets.add_preset(&name, frequency);
             }
         }
-        while self.presets.presets.len() as i32 > n {
+        while self.presets.len() as i32 > n {
             self.presets.remove_preset(n);
         }
         self.set_turned_on_raw(r.bool()?);

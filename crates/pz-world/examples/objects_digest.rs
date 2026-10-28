@@ -203,7 +203,7 @@ fn object_line(m: &IsoSpriteManager, o: &IsoObject) -> String {
             d.device_volume.to_bits(),
             b(d.is_turned_on),
             d.power_delta.to_bits(),
-            d.presets.presets.len()
+            d.presets.len()
         ),
         _ => Ok(()),
     }

@@ -15,7 +15,9 @@
 
 use crate::bind_vehicles::{DeviceOwner, LuaDeviceData, DEVICE_DATA_CLASS};
 use crate::expose::{bool_arg, expose_class, int_arg, num_arg, str_arg, with_this};
-use pz_inventory::device::{DeviceData, DevicePresets, PresetEntry};
+use pz_inventory::device::{
+    DeviceData, DevicePresetsRef, PresetEntry, PresetEntryRef, PresetListRef,
+};
 use pz_inventory::device_sim::{
     DeviceEnv, DeviceEvent, IsoObjectPos, MainsPower, MediaLine, NetMode, ParentKind,
 };
@@ -56,7 +58,9 @@ pub trait LuaRadioText {
 /// The world side of the Lua radio classes.
 pub trait RadioLuaHooks {
     /// The device environment of a `DeviceData` (time, RNG, power,
-    /// sounds). Without one a minimal single-player environment is used.
+    /// sounds). Existing simulation calls use a minimal single-player
+    /// fallback. Battery/media insertion requires a provided environment
+    /// at its network and final transmission phases.
     fn device_env(&self, _owner: &DeviceOwner) -> Option<Box<dyn DeviceEnv>> {
         None
     }
@@ -81,8 +85,9 @@ impl LuaRadioText for KeyText {
     }
 }
 
-/// The preset entry objects of each device, by owner identity.
-type EntryCache = HashMap<(u8, usize), Vec<Weak<LuaPresetEntry>>>;
+/// Canonical userdata for the actual allocations; keys never encode a
+/// device slot or list index. Live userdata pins the corresponding owner.
+type EntryCache = HashMap<usize, Weak<LuaPresetEntry>>;
 
 thread_local! {
     static RADIO: RefCell<Option<Rc<RefCell<ZomboidRadio>>>> = const { RefCell::new(None) };
@@ -92,6 +97,8 @@ thread_local! {
     static TEXT: RefCell<Rc<dyn LuaRadioText>> = RefCell::new(Rc::new(KeyText));
     static HOOKS: RefCell<Rc<dyn RadioLuaHooks>> = RefCell::new(Rc::new(NoHooks));
     static PRESET_ENTRIES: RefCell<EntryCache> = RefCell::new(HashMap::new());
+    static PRESET_OWNERS: RefCell<HashMap<usize, Weak<LuaDevicePresets>>> = RefCell::new(HashMap::new());
+    static PRESET_LISTS: RefCell<HashMap<usize, Weak<crate::bind_java_util::JavaList>>> = RefCell::new(HashMap::new());
 }
 
 /// Makes `radio` the `ZomboidRadio.getInstance()` Lua sees (`None`:
@@ -664,13 +671,9 @@ fn register_media(thread: &mut Thread) {
     lget!("getB", |l| Value::Num(l.b() as f64));
 }
 
-/// A `PresetEntry`: one of a device's presets, or a free one made with
-/// `PresetEntry.new` (until it is added to a preset list).
-pub enum LuaPresetEntry {
-    Bound(DeviceOwner, usize),
-    Free(RefCell<PresetEntry>),
-}
-
+/// Lua's reference to the actual PresetEntry, retained after a remove,
+/// clear, replacement, or insertion of the same entry at several slots.
+pub struct LuaPresetEntry(pub PresetEntryRef);
 impl LuaObject for LuaPresetEntry {
     fn class_name(&self) -> &str {
         PRESET_ENTRY_CLASS
@@ -680,59 +683,8 @@ impl LuaObject for LuaPresetEntry {
     }
 }
 
-impl LuaPresetEntry {
-    fn get(&self) -> Option<PresetEntry> {
-        match self {
-            LuaPresetEntry::Free(e) => Some(e.borrow().clone()),
-            LuaPresetEntry::Bound(o, i) => LuaDeviceData(o.clone())
-                .with(|d| d.presets.presets.get(*i).cloned())
-                .flatten(),
-        }
-    }
-    fn update(&self, f: impl FnOnce(&mut PresetEntry)) {
-        match self {
-            LuaPresetEntry::Free(e) => f(&mut e.borrow_mut()),
-            LuaPresetEntry::Bound(o, i) => {
-                LuaDeviceData(o.clone()).with(|d| {
-                    if let Some(e) = d.presets.presets.get_mut(*i) {
-                        f(e);
-                    }
-                });
-            }
-        }
-    }
-}
-
-/// A key for the owner's identity.
-fn owner_key(o: &DeviceOwner) -> (u8, usize) {
-    match o {
-        DeviceOwner::Part(p) => (0, Rc::as_ptr(p) as *const () as usize),
-        DeviceOwner::Item(i) => (1, Rc::as_ptr(i) as *const () as usize),
-        DeviceOwner::World(w) => (2, Rc::as_ptr(w) as *const () as usize),
-    }
-}
-
-/// The entry object of preset `i` (the same object while it lives, so
-/// `remove(p)` finds it).
-fn bound_entry(o: &DeviceOwner, i: usize) -> Value {
-    let key = owner_key(o);
-    PRESET_ENTRIES.with(|m| {
-        let mut m = m.borrow_mut();
-        let v = m.entry(key).or_default();
-        if v.len() <= i {
-            v.resize_with(i + 1, Weak::new);
-        }
-        if let Some(e) = v[i].upgrade() {
-            return Value::Object(e);
-        }
-        let e = Rc::new(LuaPresetEntry::Bound(o.clone(), i));
-        v[i] = Rc::downgrade(&e);
-        Value::Object(e)
-    })
-}
-
-/// `DevicePresets` of a device.
-pub struct LuaDevicePresets(pub DeviceOwner);
+/// Lua's reference to the actual DevicePresets allocation.
+pub struct LuaDevicePresets(pub DevicePresetsRef);
 impl LuaObject for LuaDevicePresets {
     fn class_name(&self) -> &str {
         DEVICE_PRESETS_CLASS
@@ -742,40 +694,77 @@ impl LuaObject for LuaDevicePresets {
     }
 }
 
-fn presets_of(o: &DeviceOwner) -> Option<DevicePresets> {
+fn cached_owner<T>(
+    cache: &RefCell<HashMap<usize, Weak<T>>>,
+    key: usize,
+    make: impl FnOnce() -> T,
+) -> Rc<T> {
+    if let Some(v) = cache.borrow().get(&key).and_then(Weak::upgrade) {
+        return v;
+    }
+    let value = Rc::new(make());
+    let mut cache = cache.borrow_mut();
+    if cache.len() == cache.capacity() {
+        cache.retain(|_, value| value.strong_count() != 0);
+    }
+    cache.insert(key, Rc::downgrade(&value));
+    value
+}
+
+fn entry_value(entry: &PresetEntryRef) -> Value {
+    let key = Rc::as_ptr(entry) as usize;
+    PRESET_ENTRIES
+        .with(|cache| Value::Object(cached_owner::<LuaPresetEntry>(cache, key, || LuaPresetEntry(entry.clone()))))
+}
+
+fn preset_value(presets: &DevicePresetsRef) -> Value {
+    let key = Rc::as_ptr(presets.owner()) as usize;
+    PRESET_OWNERS.with(|cache| {
+        Value::Object(cached_owner::<LuaDevicePresets>(cache, key, || {
+            LuaDevicePresets(presets.clone())
+        }))
+    })
+}
+
+fn presets_of(o: &DeviceOwner) -> Option<DevicePresetsRef> {
     LuaDeviceData(o.clone()).with(|d| d.presets.clone())
 }
 
-fn entry_of(v: &Value) -> Option<PresetEntry> {
+fn entry_of(v: &Value) -> Option<PresetEntryRef> {
     match v {
-        Value::Object(o) => o.as_any().downcast_ref::<LuaPresetEntry>()?.get(),
+        Value::Object(o) => Some(o.as_any().downcast_ref::<LuaPresetEntry>()?.0.clone()),
         _ => None,
     }
 }
 
-/// `getPresets()`: a live `ArrayList` of the entries; adding or removing
-/// changes the device's presets.
-fn presets_list(o: &DeviceOwner) -> Value {
-    let (r, w) = (o.clone(), o.clone());
-    let read = move || {
-        let n = presets_of(&r).map_or(0, |p| p.presets.len());
-        (0..n).map(|i| bound_entry(&r, i)).collect()
-    };
-    let write: crate::bind_java_util::ListWrite = Box::new(move |items: Vec<Value>| {
-        let mut entries = Vec::with_capacity(items.len());
-        for v in &items {
-            match entry_of(v) {
-                Some(e) => entries.push(e),
-                None => return Err(crate::bind_java_util::class_cast(v, PRESET_ENTRY_CLASS)),
-            }
-        }
-        LuaDeviceData(w.clone()).with(|d| d.presets.presets = entries);
-        Ok(())
-    });
-    Value::Object(Rc::new(crate::bind_java_util::JavaList::live(
-        read,
-        Some(write),
-    )))
+/// The existing collection operation facade over this actual list. Each
+/// outward entry is the same owner; the facade's legacy refresh/iterator
+/// semantics are not a claim of full NativeArrayList equivalence.
+fn presets_list(list: &PresetListRef) -> Value {
+    let key = Rc::as_ptr(list) as usize;
+    PRESET_LISTS.with(|cache| {
+        Value::Object(cached_owner::<crate::bind_java_util::JavaList>(cache, key, || {
+            let (r, w) = (list.clone(), list.clone());
+            let read = move || {
+                let entries = r.borrow().clone();
+                entries.iter().map(entry_value).collect()
+            };
+            let write: crate::bind_java_util::ListWrite = Box::new(move |items: Vec<Value>| {
+                let mut entries = Vec::with_capacity(items.len());
+                for v in &items {
+                    match entry_of(v) {
+                        Some(e) => entries.push(e),
+                        None => {
+                            return Err(crate::bind_java_util::class_cast(v, PRESET_ENTRY_CLASS))
+                        }
+                    }
+                }
+                *w.borrow_mut() = entries;
+                Ok(())
+            });
+            crate::bind_java_util::JavaList::live(read, Some(write))
+        }))
+    })
 }
 
 fn register_presets(thread: &mut Thread) {
@@ -783,109 +772,87 @@ fn register_presets(thread: &mut Thread) {
     b.ctor(|c| {
         let name = str_arg(c, 0).map(|s| s.to_string()).unwrap_or_default();
         let frequency = int_arg(c, 1);
-        Ok(
-            c.push(Value::Object(Rc::new(LuaPresetEntry::Free(RefCell::new(
-                PresetEntry { name, frequency },
-            ))))),
-        )
+        let entry = Rc::new(RefCell::new(PresetEntry { name, frequency }));
+        Ok(c.push(entry_value(&entry)))
     });
     b.method("getName", |c| {
-        let e = with_this::<LuaPresetEntry, _>(c, |e| e.get())?;
-        Ok(c.push(opt_str(e.map(|e| e.name))))
+        let name = with_this::<LuaPresetEntry, _>(c, |e| e.0.borrow().name.clone())?;
+        Ok(c.push(Value::str(&name)))
     });
     b.method("getFrequency", |c| {
-        let e = with_this::<LuaPresetEntry, _>(c, |e| e.get())?;
-        Ok(c.push(e.map_or(0.0, |e| e.frequency as f64)))
+        let frequency = with_this::<LuaPresetEntry, _>(c, |e| e.0.borrow().frequency)?;
+        Ok(c.push(frequency as f64))
     });
     b.method("setName", |c| {
-        let n = str_arg(c, 1).map(|s| s.to_string()).unwrap_or_default();
-        with_this::<LuaPresetEntry, _>(c, |e| e.update(|p| p.name = n))?;
+        let name = str_arg(c, 1).map(|s| s.to_string()).unwrap_or_default();
+        with_this::<LuaPresetEntry, _>(c, |e| e.0.borrow_mut().name = name)?;
         Ok(0)
     });
     b.method("setFrequency", |c| {
-        let f = int_arg(c, 1);
-        with_this::<LuaPresetEntry, _>(c, |e| e.update(|p| p.frequency = f))?;
+        let frequency = int_arg(c, 1);
+        with_this::<LuaPresetEntry, _>(c, |e| e.0.borrow_mut().frequency = frequency)?;
         Ok(0)
     });
 
     let b = expose_class(thread, DEVICE_PRESETS_CLASS, None);
-    fn owner(c: &NativeCall<'_>) -> LuaResult<DeviceOwner> {
+    fn owner(c: &NativeCall<'_>) -> LuaResult<DevicePresetsRef> {
         with_this::<LuaDevicePresets, _>(c, |p| p.0.clone())
     }
-    fn with_p<R>(
-        c: &NativeCall<'_>,
-        f: impl FnOnce(&mut DevicePresets) -> R,
-    ) -> LuaResult<Option<R>> {
-        let o = owner(c)?;
-        Ok(LuaDeviceData(o).with(|d| f(&mut d.presets)))
-    }
     b.method("getPresets", |c| {
-        let o = owner(c)?;
-        Ok(c.push(presets_list(&o)))
+        let p = owner(c)?;
+        Ok(c.push(presets_list(&p.list())))
     });
     b.method("getMaxPresets", |c| {
-        let v = with_p(c, |p| p.max_presets)?.unwrap_or(0);
-        Ok(c.push(v as f64))
+        Ok(c.push(owner(c)?.max_presets() as f64))
     });
     b.method("setMaxPresets", |c| {
-        let m = int_arg(c, 1);
-        with_p(c, |p| p.max_presets = m)?;
+        owner(c)?.set_max_presets(int_arg(c, 1));
         Ok(0)
     });
     b.method("addPreset", |c| {
-        let (n, f) = (
-            str_arg(c, 1).map(|s| s.to_string()).unwrap_or_default(),
-            int_arg(c, 2),
-        );
-        with_p(c, |p| p.add_preset(&n, f))?;
+        let name = str_arg(c, 1).map(|s| s.to_string()).unwrap_or_default();
+        owner(c)?.add_preset(&name, int_arg(c, 2));
         Ok(0)
     });
     b.method("removePreset", |c| {
-        let i = int_arg(c, 1);
-        with_p(c, |p| p.remove_preset(i))?;
+        owner(c)?.remove_preset(int_arg(c, 1));
         Ok(0)
     });
     b.method("getPresetName", |c| {
-        let i = int_arg(c, 1);
-        let v = with_p(c, |p| p.preset_name(i))?.unwrap_or_default();
-        Ok(c.push(Value::str(&v)))
+        let name = owner(c)?.preset_name(int_arg(c, 1));
+        Ok(c.push(Value::str(&name)))
     });
     b.method("getPresetFreq", |c| {
-        let i = int_arg(c, 1);
-        let v = with_p(c, |p| p.preset_freq(i))?.unwrap_or(-1);
-        Ok(c.push(v as f64))
+        Ok(c.push(owner(c)?.preset_freq(int_arg(c, 1)) as f64))
     });
     b.method("setPresetName", |c| {
-        let (i, n) = (int_arg(c, 1), str_arg(c, 2).map(|s| s.to_string()));
-        with_p(c, |p| p.set_preset_name(i, n.as_deref()))?;
+        let name = str_arg(c, 2).map(|s| s.to_string());
+        owner(c)?.set_preset_name(int_arg(c, 1), name.as_deref());
         Ok(0)
     });
     b.method("setPresetFreq", |c| {
-        let (i, f) = (int_arg(c, 1), int_arg(c, 2));
-        with_p(c, |p| p.set_preset_freq(i, f))?;
+        owner(c)?.set_preset_freq(int_arg(c, 1), int_arg(c, 2));
         Ok(0)
     });
     b.method("setPreset", |c| {
-        let (i, n, f) = (
-            int_arg(c, 1),
-            str_arg(c, 2).map(|s| s.to_string()),
-            int_arg(c, 3),
-        );
-        with_p(c, |p| p.set_preset(i, n.as_deref(), f))?;
+        let name = str_arg(c, 2).map(|s| s.to_string());
+        owner(c)?.set_preset(int_arg(c, 1), name.as_deref(), int_arg(c, 3));
         Ok(0)
     });
     b.method("clearPresets", |c| {
-        with_p(c, |p| p.clear_presets())?;
+        owner(c)?.clear_presets();
         Ok(0)
     });
     b.method("getPresetsLua", |c| {
-        let ps = with_p(c, |p| p.presets.clone())?.unwrap_or_default();
+        let list = owner(c)?.list();
+        let entries = list.borrow().clone();
         let t = TableRef::new();
-        for (i, p) in ps.iter().enumerate() {
-            let s = TableRef::new();
-            s.set_str("name", Value::str(&p.name));
-            s.set_str("frequency", Value::Num(p.frequency as f64));
-            t.rawset(Value::Num(i as f64), Value::Table(s));
+        for (i, entry) in entries.iter().enumerate() {
+            let entry = entry.borrow();
+            let row = TableRef::new();
+            row.set_str("name", Value::str(&entry.name));
+            row.set_str("frequency", Value::Num(entry.frequency as f64));
+            t.rawset(Value::Num(i as f64), Value::Table(row));
         }
         Ok(c.push(Value::Table(t)))
     });
@@ -1016,14 +983,79 @@ fn lua_num(v: &Value) -> f64 {
     pz_kahlua::exec::raw_tonumber(v).unwrap_or(0.0)
 }
 
+/// Public-port capability failure for a positional DeviceOwner whose
+/// DeviceData disappeared. This is not a fabricated native NPE/default.
+fn missing_item_call_owner() -> LuaError {
+    LuaError::runtime("port capability unavailable: actual radio DeviceData owner for item call")
+}
+
+fn required_item_call_device<R>(
+    owner: &DeviceOwner,
+    f: impl FnOnce(&mut DeviceData) -> R,
+) -> LuaResult<R> {
+    LuaDeviceData(owner.clone())
+        .with(f)
+        .ok_or_else(missing_item_call_owner)
+}
+
+fn required_item_call_env<R>(
+    owner: &DeviceOwner,
+    f: impl FnOnce(&mut DeviceData, &mut dyn DeviceEnv) -> R,
+) -> LuaResult<R> {
+    // End this guard before invoking the environment factory, which can
+    // reenter. Check again when entering the actual environment operation.
+    required_item_call_device(owner, |_| ())?;
+    let mut env: Box<dyn DeviceEnv> = hooks().device_env(owner).ok_or_else(|| {
+        LuaError::runtime("port capability unavailable: actual radio DeviceEnv for item call")
+    })?;
+    required_item_call_device(owner, |device| f(device, &mut *env))
+}
+
+fn required_item_call_method(
+    thread: &mut Thread,
+    owner: &DeviceOwner,
+    object: &Value,
+    name: &str,
+    args: &[Value],
+) -> LuaResult<Value> {
+    required_item_call_device(owner, |_| ())?;
+    let function = thread.table_get(object, &Value::str(name))?;
+    required_item_call_device(owner, |_| ())?;
+    if function.is_nil() {
+        return Err(LuaError::runtime(format!(
+            "DeviceData: {}.{name} is not bound",
+            pz_kahlua::stdlib::java_class_name(object)
+        )));
+    }
+    let mut all = vec![object.clone()];
+    all.extend_from_slice(args);
+    let result = thread.call1(&function, &all)?;
+    required_item_call_device(owner, |_| ())?;
+    Ok(result)
+}
+
 /// `item:getContainer():DoRemoveItem(item)` (nothing without a
 /// container); `true` when there was a container.
-fn remove_from_container(t: &mut Thread, item: &Value) -> LuaResult<bool> {
-    let cont = call(t, item, "getContainer", &[])?;
+fn remove_from_container(
+    c: &mut NativeCall<'_>,
+    owner: &DeviceOwner,
+    item: &Value,
+) -> LuaResult<bool> {
+    // Both native callers obtain the container before the client gate.
+    let cont = required_item_call_method(c.thread, owner, item, "getContainer", &[])?;
     if cont.is_nil() {
         return Ok(false);
     }
-    call(t, &cont, "DoRemoveItem", std::slice::from_ref(item))?;
+    let client = required_item_call_env(owner, |_, env| env.net() == NetMode::Client)?;
+    if !client {
+        required_item_call_method(
+            c.thread,
+            owner,
+            &cont,
+            "DoRemoveItem",
+            std::slice::from_ref(item),
+        )?;
+    }
     Ok(true)
 }
 
@@ -1067,7 +1099,7 @@ fn register_device_data(thread: &mut Thread) {
     dget!("isTelevision", |d| Value::Bool(d.is_television));
     b.method("getDevicePresets", |c| {
         let o = this_owner(c)?;
-        Ok(c.push(Value::Object(Rc::new(LuaDevicePresets(o)))))
+        Ok(c.push(presets_of(&o).map_or(Value::Nil, |p| preset_value(&p))))
     });
     b.method("isVehicleDevice", |c| {
         Ok(c.push(matches!(this_owner(c)?, DeviceOwner::Part(_))))
@@ -1134,7 +1166,7 @@ fn register_device_data(thread: &mut Thread) {
             Value::Object(o) => o
                 .as_any()
                 .downcast_ref::<LuaDevicePresets>()
-                .and_then(|p| presets_of(&p.0)),
+                .map(|p| p.0.clone()),
             _ => None,
         };
         let o = this_owner(c)?;
@@ -1146,7 +1178,7 @@ fn register_device_data(thread: &mut Thread) {
             Value::Object(o) => o
                 .as_any()
                 .downcast_ref::<LuaDevicePresets>()
-                .and_then(|p| presets_of(&p.0)),
+                .map(|p| p.0.clone()),
             _ => None,
         };
         let o = this_owner(c)?;
@@ -1240,18 +1272,40 @@ fn register_device_data(thread: &mut Thread) {
     // bindings (`getFullType`, `getContainer():DoRemoveItem`,
     // `inventory:AddItem`).
     b.method("addBattery", |c| {
+        let owner = this_owner(c)?;
+        if required_item_call_device(&owner, |d| d.has_battery)? {
+            return Ok(0);
+        }
         let bat = c.arg(1);
         if bat.is_nil() {
             return Ok(0);
         }
-        let ft = lua_str(call(c.thread, &bat, "getFullType", &[])?).unwrap_or_default();
-        let has = with_env(c, |d, _| d.has_battery)?.unwrap_or(true);
-        if has || ft != "Base.Battery" {
+        let full_type = lua_str(required_item_call_method(
+            c.thread,
+            &owner,
+            &bat,
+            "getFullType",
+            &[],
+        )?)
+        .unwrap_or_default();
+        if full_type != "Base.Battery" {
             return Ok(0);
         }
-        remove_from_container(c.thread, &bat)?;
-        let uses = lua_num(&call(c.thread, &bat, "getCurrentUsesFloat", &[])?) as f32;
-        with_env(c, |d, e| d.add_battery(e, &ft, uses))?;
+        remove_from_container(c, &owner, &bat)?;
+        let uses = lua_num(&required_item_call_method(
+            c.thread,
+            &owner,
+            &bat,
+            "getCurrentUsesFloat",
+            &[],
+        )?) as f32;
+        // Native writes after removal; it does not repeat hasBattery's
+        // initial gate after the item/container calls.
+        required_item_call_device(&owner, |d| {
+            d.power_delta = uses;
+            d.has_battery = true;
+        })?;
+        required_item_call_env(&owner, |d, env| d.transmit_battery_state(env))?;
         Ok(0)
     });
     b.method("getBattery", |c| {
@@ -1288,21 +1342,51 @@ fn register_device_data(thread: &mut Thread) {
         Ok(0)
     });
     b.method("addMediaItem", |c| {
-        let m = c.arg(1);
-        if m.is_nil() {
+        let owner = this_owner(c)?;
+        if required_item_call_device(&owner, |d| d.media_index >= 0)? {
             return Ok(0);
         }
-        let rec = matches!(
-            call(c.thread, &m, "isRecordedMedia", &[])?,
-            Value::Bool(true)
-        );
-        let mt = lua_num(&call(c.thread, &m, "getMediaType", &[])?) as i8;
-        let idx = lua_num(&call(c.thread, &m, "getRecordedMediaIndex", &[])?) as i16;
-        let ft = lua_str(call(c.thread, &m, "getFullType", &[])?).unwrap_or_default();
-        let ok = with_env(c, |d, e| d.add_media_item(e, &ft, rec, mt, idx))?.unwrap_or(false);
-        if ok {
-            remove_from_container(c.thread, &m)?;
+        let media = c.arg(1);
+        if media.is_nil() {
+            return Ok(0);
         }
+        if !matches!(
+            required_item_call_method(c.thread, &owner, &media, "isRecordedMedia", &[])?,
+            Value::Bool(true)
+        ) {
+            return Ok(0);
+        }
+        let media_type = lua_num(&required_item_call_method(
+            c.thread,
+            &owner,
+            &media,
+            "getMediaType",
+            &[],
+        )?) as i8;
+        if !required_item_call_device(&owner, |d| d.media_type == media_type)? {
+            return Ok(0);
+        }
+        remove_from_container(c, &owner, &media)?;
+        let index = lua_num(&required_item_call_method(
+            c.thread,
+            &owner,
+            &media,
+            "getRecordedMediaIndex",
+            &[],
+        )?) as i16;
+        required_item_call_device(&owner, |d| d.media_index = index)?;
+        // Native stores mediaIndex before obtaining/storing mediaItem;
+        // an error in this later read must retain the earlier write.
+        let full_type = lua_str(required_item_call_method(
+            c.thread,
+            &owner,
+            &media,
+            "getFullType",
+            &[],
+        )?)
+        .unwrap_or_default();
+        required_item_call_device(&owner, |d| d.media_item = Some(full_type))?;
+        required_item_call_env(&owner, |d, env| d.transmit_media_item_state(env))?;
         Ok(0)
     });
     b.method("removeMediaItem", |c| {

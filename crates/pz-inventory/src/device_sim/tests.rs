@@ -601,7 +601,7 @@ fn state_round_trip_and_clone() {
     e.presets.add_preset("Y", 8);
     e.presets.add_preset("Z", 7);
     e.load_state(&mut crate::io::Reader::new(&bytes)).unwrap();
-    assert_eq!(e.presets.presets, d.presets.presets);
+    assert_eq!(e.presets.list(), d.presets.list());
     assert!(e.is_turned_on);
     assert_eq!(e.channel, 93200);
     assert_eq!(e.device_volume, 0.25);
@@ -833,4 +833,57 @@ fn replay(java: &str) -> String {
         ));
     }
     out
+}
+
+#[test]
+fn preset_state_load_updates_the_same_entries_and_detaches_removed_slots() {
+    let mut d = DeviceData::default();
+    d.presets.add_preset("old first", 1);
+    d.presets.add_preset("old tail", 2);
+    let first = d.presets.entry(0).unwrap();
+    let tail = d.presets.entry(1).unwrap();
+    let list = d.presets.list();
+    let saved = DeviceData::default();
+    saved.presets.add_preset("loaded", 3);
+    let mut writer = crate::io::Writer::new();
+    saved.save_state(&mut writer);
+    d.load_state(&mut crate::io::Reader::new(&writer.buf)).unwrap();
+    assert!(std::rc::Rc::ptr_eq(&list, &d.presets.list()));
+    assert!(std::rc::Rc::ptr_eq(&first, &d.presets.entry(0).unwrap()));
+    assert_eq!(first.borrow().name, "loaded");
+    assert_eq!(first.borrow().frequency, 3);
+    assert_eq!(tail.borrow().name, "old tail");
+    assert_eq!(d.presets.len(), 1);
+}
+
+#[test]
+fn device_clone_preserves_deep_snapshot_and_native_clone_emitter_rules() {
+    let mut d = DeviceData::default();
+    d.presets.add_preset("A", 1);
+    d.runtime.emitter = Some(17);
+    d.runtime.radio_loop_sound = 23;
+    let snapshot = d.clone();
+    let native = d.get_clone();
+    assert!(!std::rc::Rc::ptr_eq(d.presets.owner(), snapshot.presets.owner()));
+    assert!(!std::rc::Rc::ptr_eq(&d.presets.list(), &snapshot.presets.list()));
+    assert!(!std::rc::Rc::ptr_eq(&d.presets.entry(0).unwrap(), &snapshot.presets.entry(0).unwrap()));
+    assert_eq!(snapshot.runtime.emitter, Some(17));
+    assert_eq!(native.runtime.emitter, None);
+    assert_eq!(native.runtime.radio_loop_sound, 23);
+    d.presets.set_preset_name(0, Some("changed"));
+    assert_eq!(snapshot.presets.preset_name(0), "A");
+    assert_eq!(native.presets.preset_name(0), "A");
+}
+
+#[test]
+fn shared_preset_owner_self_clone_empties_before_source_read() {
+    let mut d = DeviceData::default();
+    d.presets.add_preset("A", 1);
+    let owner = d.presets.clone();
+    let list = owner.list();
+    let removed = owner.entry(0).unwrap();
+    d.clone_device_presets(Some(&owner));
+    assert!(owner.is_empty());
+    assert!(std::rc::Rc::ptr_eq(&list, &d.presets.list()));
+    assert_eq!(removed.borrow().name, "A");
 }

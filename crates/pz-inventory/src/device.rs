@@ -2,6 +2,8 @@
 //! as world objects).
 
 use crate::io::{Reader, SaveResult, Writer};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// `PresetEntry`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -10,107 +12,134 @@ pub struct PresetEntry {
     pub frequency: i32,
 }
 
-/// `DevicePresets`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The actual PresetEntry allocation, independent of its list position.
+pub type PresetEntryRef = Rc<RefCell<PresetEntry>>;
+/// The actual list allocation; removing a slot does not destroy an entry
+/// still held by another slot or caller.
+pub type PresetListRef = Rc<RefCell<Vec<PresetEntryRef>>>;
+
+/// `DevicePresets`' physical fields.
+#[derive(Debug, PartialEq, Eq)]
 pub struct DevicePresets {
     pub max_presets: i32,
-    pub presets: Vec<PresetEntry>,
+    pub presets: PresetListRef,
 }
 
 impl Default for DevicePresets {
     fn default() -> Self {
-        DevicePresets {
+        Self {
             max_presets: 10,
-            presets: Vec::new(),
+            presets: Rc::default(),
         }
     }
 }
 
-impl DevicePresets {
-    /// `removePreset(id)`.
-    pub fn remove_preset(&mut self, id: i32) {
-        if id >= 0 && (id as usize) < self.presets.len() {
-            self.presets.remove(id as usize);
+/// An owning reference to the same DevicePresets allocation. Clone shares
+/// that owner; `deep_copy` is the native copy-constructor operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevicePresetsRef(Rc<RefCell<DevicePresets>>);
+
+impl Default for DevicePresetsRef {
+    fn default() -> Self {
+        Self(Rc::new(RefCell::new(DevicePresets::default())))
+    }
+}
+
+impl DevicePresetsRef {
+    pub fn owner(&self) -> &Rc<RefCell<DevicePresets>> {
+        &self.0
+    }
+    pub fn list(&self) -> PresetListRef {
+        self.0.borrow().presets.clone()
+    }
+    pub fn max_presets(&self) -> i32 {
+        self.0.borrow().max_presets
+    }
+    pub fn set_max_presets(&self, n: i32) {
+        self.0.borrow_mut().max_presets = n;
+    }
+    pub fn len(&self) -> usize {
+        self.list().borrow().len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn entry(&self, i: usize) -> Option<PresetEntryRef> {
+        self.list().borrow().get(i).cloned()
+    }
+    pub fn clear_presets(&self) {
+        self.list().borrow_mut().clear();
+    }
+    pub fn remove_preset(&self, id: i32) {
+        let list = self.list();
+        let mut list = list.borrow_mut();
+        if id >= 0 && (id as usize) < list.len() {
+            list.remove(id as usize);
         }
     }
-
-    /// `getPresetName(id)` (`""` out of range).
     pub fn preset_name(&self, id: i32) -> String {
         usize::try_from(id)
             .ok()
-            .and_then(|i| self.presets.get(i))
-            .map(|p| p.name.clone())
+            .and_then(|i| self.entry(i))
+            .map(|p| p.borrow().name.clone())
             .unwrap_or_default()
     }
-
-    /// `getPresetFreq(id)` (-1 out of range).
     pub fn preset_freq(&self, id: i32) -> i32 {
         usize::try_from(id)
             .ok()
-            .and_then(|i| self.presets.get(i))
-            .map_or(-1, |p| p.frequency)
+            .and_then(|i| self.entry(i))
+            .map_or(-1, |p| p.borrow().frequency)
     }
-
-    /// `setPresetName(id, name)` (a null name is `"name-is-null"`).
-    pub fn set_preset_name(&mut self, id: i32, name: Option<&str>) {
-        let name = name.unwrap_or("name-is-null");
-        if let Some(p) = usize::try_from(id)
-            .ok()
-            .and_then(|i| self.presets.get_mut(i))
-        {
-            p.name = name.to_string();
+    pub fn set_preset_name(&self, id: i32, name: Option<&str>) {
+        if let Some(p) = usize::try_from(id).ok().and_then(|i| self.entry(i)) {
+            p.borrow_mut().name = name.unwrap_or("name-is-null").to_owned();
         }
     }
-
-    /// `setPresetFreq(id, frequency)`.
-    pub fn set_preset_freq(&mut self, id: i32, frequency: i32) {
-        if let Some(p) = usize::try_from(id)
-            .ok()
-            .and_then(|i| self.presets.get_mut(i))
-        {
+    pub fn set_preset_freq(&self, id: i32, frequency: i32) {
+        if let Some(p) = usize::try_from(id).ok().and_then(|i| self.entry(i)) {
+            p.borrow_mut().frequency = frequency;
+        }
+    }
+    pub fn set_preset(&self, id: i32, name: Option<&str>, frequency: i32) {
+        if let Some(p) = usize::try_from(id).ok().and_then(|i| self.entry(i)) {
+            let mut p = p.borrow_mut();
+            p.name = name.unwrap_or("name-is-null").to_owned();
             p.frequency = frequency;
         }
     }
-
-    /// `setPreset(id, name, frequency)`.
-    pub fn set_preset(&mut self, id: i32, name: Option<&str>, frequency: i32) {
-        let name = name.unwrap_or("name-is-null");
-        if let Some(p) = usize::try_from(id)
-            .ok()
-            .and_then(|i| self.presets.get_mut(i))
-        {
-            p.name = name.to_string();
-            p.frequency = frequency;
-        }
-    }
-
-    /// `clearPresets()`.
-    pub fn clear_presets(&mut self) {
-        self.presets.clear();
-    }
-
-    /// `addPreset`: skipped when the frequency or the name is present, or
-    /// when full.
-    pub fn add_preset(&mut self, name: &str, frequency: i32) {
-        if self
-            .presets
-            .iter()
-            .any(|p| p.frequency == frequency || p.name == name)
-        {
+    pub fn add_preset(&self, name: &str, frequency: i32) {
+        let list = self.list();
+        let mut list = list.borrow_mut();
+        if list.iter().any(|p| {
+            let p = p.borrow();
+            p.frequency == frequency || p.name == name
+        }) {
             return;
         }
-        if (self.presets.len() as i32) < self.max_presets {
-            self.presets.push(PresetEntry {
-                name: name.to_string(),
+        if (list.len() as i32) < self.max_presets() {
+            list.push(Rc::new(RefCell::new(PresetEntry {
+                name: name.to_owned(),
                 frequency,
-            });
+            })));
         }
+    }
+    pub fn deep_copy(&self) -> Self {
+        let copy = Self::default();
+        copy.set_max_presets(self.max_presets());
+        let list = self.list();
+        let entries = list
+            .borrow()
+            .iter()
+            .map(|p| Rc::new(RefCell::new(p.borrow().clone())))
+            .collect();
+        *copy.list().borrow_mut() = entries;
+        copy
     }
 }
 
 /// `DeviceData`: the saved state fields plus the runtime state of the
 /// device simulation (`crate::device_sim`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct DeviceData {
     pub device_name: String,
     pub two_way: bool,
@@ -126,7 +155,7 @@ pub struct DeviceData {
     pub channel: i32,
     pub min_channel_range: i32,
     pub max_channel_range: i32,
-    pub presets: DevicePresets,
+    pub presets: DevicePresetsRef,
     pub is_battery_powered: bool,
     pub has_battery: bool,
     pub power_delta: f32,
@@ -140,6 +169,39 @@ pub struct DeviceData {
     /// The fields that are not saved (counters, media playback, the
     /// emitter); see [`crate::device_sim`].
     pub runtime: crate::device_sim::DeviceRuntime,
+}
+
+impl Clone for DeviceData {
+    fn clone(&self) -> Self {
+        Self {
+            device_name: self.device_name.clone(),
+            two_way: self.two_way.clone(),
+            transmit_range: self.transmit_range.clone(),
+            mic_range: self.mic_range.clone(),
+            mic_is_muted: self.mic_is_muted.clone(),
+            base_volume_range: self.base_volume_range.clone(),
+            device_volume: self.device_volume.clone(),
+            is_portable: self.is_portable.clone(),
+            is_television: self.is_television.clone(),
+            is_high_tier: self.is_high_tier.clone(),
+            is_turned_on: self.is_turned_on.clone(),
+            channel: self.channel.clone(),
+            min_channel_range: self.min_channel_range.clone(),
+            max_channel_range: self.max_channel_range.clone(),
+            presets: self.presets.deep_copy(),
+            is_battery_powered: self.is_battery_powered.clone(),
+            has_battery: self.has_battery.clone(),
+            power_delta: self.power_delta.clone(),
+            use_delta: self.use_delta.clone(),
+            headphone_type: self.headphone_type.clone(),
+            media_index: self.media_index.clone(),
+            media_type: self.media_type.clone(),
+            no_transmit: self.no_transmit.clone(),
+            last_minute_stamp: self.last_minute_stamp.clone(),
+            media_item: self.media_item.clone(),
+            runtime: self.runtime.clone(),
+        }
+    }
 }
 
 impl Default for DeviceData {
@@ -160,7 +222,7 @@ impl Default for DeviceData {
             channel: 88000,
             min_channel_range: 200,
             max_channel_range: 1000000,
-            presets: DevicePresets::default(),
+            presets: DevicePresetsRef::default(),
             is_battery_powered: true,
             has_battery: true,
             power_delta: 1.0,
@@ -200,14 +262,17 @@ impl DeviceData {
         d.use_delta = r.f32()?;
         d.headphone_type = r.i32()?;
         if r.bool()? {
-            d.presets.presets.clear();
-            d.presets.max_presets = r.i32()?;
+            d.presets.clear_presets();
+            d.presets.set_max_presets(r.i32()?);
             let n = r.i32()?;
             for _ in 0..n.max(0) {
                 let name = r.string()?;
                 let frequency = r.i32()?;
-                if (d.presets.presets.len() as i32) < d.presets.max_presets {
-                    d.presets.presets.push(PresetEntry { name, frequency });
+                if (d.presets.len() as i32) < d.presets.max_presets() {
+                    d.presets
+                        .list()
+                        .borrow_mut()
+                        .push(Rc::new(RefCell::new(PresetEntry { name, frequency })));
                 }
             }
         }
@@ -243,9 +308,10 @@ impl DeviceData {
         w.f32(d.use_delta);
         w.i32(d.headphone_type);
         w.i8(1);
-        w.i32(d.presets.max_presets);
-        w.i32(d.presets.presets.len() as i32);
-        for p in &d.presets.presets {
+        w.i32(d.presets.max_presets());
+        w.i32(d.presets.len() as i32);
+        for p in d.presets.list().borrow().iter() {
+            let p = p.borrow();
             w.string(&p.name);
             w.i32(p.frequency);
         }
@@ -352,7 +418,7 @@ impl DeviceData {
 
     /// `generatePresets()`; `next` is `Rand.Next(bound)`.
     pub fn generate_presets(&mut self, lists: &dyn ChannelLists, next: &mut dyn FnMut(i32) -> i32) {
-        self.presets.presets.clear();
+        self.presets.clear_presets();
         let in_range =
             |d: &DeviceData, k: i32| k >= d.min_channel_range && k <= d.max_channel_range;
         if self.is_television {
@@ -392,9 +458,9 @@ impl DeviceData {
 
     /// `setRandomChannel()`; `next` is `Rand.Next(bound)`.
     pub fn set_random_channel(&mut self, next: &mut dyn FnMut(i32) -> i32) {
-        if !self.presets.presets.is_empty() {
-            let r = next_range(next, 0, self.presets.presets.len() as i32);
-            self.channel = self.presets.presets[r as usize].frequency;
+        if !self.presets.is_empty() {
+            let r = next_range(next, 0, self.presets.len() as i32);
+            self.channel = self.presets.entry(r as usize).unwrap().borrow().frequency;
         } else {
             self.channel = next_range(next, self.min_channel_range, self.max_channel_range);
             self.channel -= self.channel % 200;

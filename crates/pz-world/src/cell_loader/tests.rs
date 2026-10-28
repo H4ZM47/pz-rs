@@ -501,7 +501,7 @@ fn radios_draw_in_order() {
         .device_data()
         .unwrap()
         .clone();
-    assert_eq!(d.presets.presets.len(), 2);
+    assert_eq!(d.presets.len(), 2);
     assert_eq!(d.channel, 600);
     assert!((d.device_volume - 0.55).abs() < 1e-6);
     assert!(d.is_turned_on);

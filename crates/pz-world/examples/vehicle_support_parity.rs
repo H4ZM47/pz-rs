@@ -203,7 +203,8 @@ fn stats(i: &InventoryItem, ctx: &Ctx) -> String {
                 b(d.no_transmit)
             )
             .unwrap();
-            for p in &d.presets.presets {
+            for p in d.presets.list().borrow().iter() {
+                let p = p.borrow();
                 write!(o, "{}:{};", p.name, p.frequency).unwrap();
             }
         }
