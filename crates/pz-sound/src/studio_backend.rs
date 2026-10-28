@@ -5,7 +5,11 @@
 //! names are first seen while walking every event (paths sorted), which is
 //! only used to index per-parameter tables.
 
-use crate::backend::{AudioBackend, ChannelHandle, EventDescription, InstanceHandle, ParameterDescription, PlaybackState};
+use crate::backend::{
+    AudioBackend, ChannelHandle, EventDescription, InstanceHandle, ParameterDescription, PlaybackState, MODE_2D, MODE_3D,
+    MODE_LOOP_NORMAL,
+};
+use pz_audio::channels::Channels;
 use pz_audio::reader::Guid;
 use pz_audio::studio::{self, Studio};
 use std::collections::HashMap;
@@ -17,6 +21,11 @@ pub struct StudioBackend {
     descriptions: HashMap<String, Option<Rc<EventDescription>>>,
     parameters: HashMap<String, ParameterDescription>,
     guids: HashMap<u64, Guid>,
+    /// FMODManager's resolved-path cache. The first load determines looping.
+    /// A resolved file that failed to load is retained as 0.
+    sounds: HashMap<String, u64>,
+    /// Current `ZomboidFileSystem.getAbsolutePath` authority, called before cache lookup.
+    resolve: Box<dyn Fn(&str) -> Option<String>>,
 }
 
 fn state(s: studio::PlaybackState) -> PlaybackState {
@@ -36,7 +45,14 @@ fn id(h: InstanceHandle) -> Option<usize> {
 
 impl StudioBackend {
     pub fn new(studio: Arc<Mutex<Studio>>) -> Self {
-        let mut b = StudioBackend { studio, descriptions: HashMap::new(), parameters: HashMap::new(), guids: HashMap::new() };
+        let mut b = StudioBackend {
+            studio,
+            descriptions: HashMap::new(),
+            parameters: HashMap::new(),
+            guids: HashMap::new(),
+            sounds: HashMap::new(),
+            resolve: Box::new(|_| None),
+        };
         b.index_parameters();
         b
     }
@@ -60,6 +76,20 @@ impl StudioBackend {
                     global_index: n,
                 });
             }
+        }
+    }
+
+    /// Install the current `ZomboidFileSystem.getAbsolutePath` authority.
+    /// Without one, loose paths are unresolved; there is no working-directory fallback.
+    /// Keep its String result unchanged as the native cache key.
+    pub fn with_file_resolver(mut self, f: impl Fn(&str) -> Option<String> + 'static) -> Self {
+        self.resolve = Box::new(f);
+        self
+    }
+
+    fn channel(&mut self, ch: ChannelHandle, f: impl FnOnce(&mut Channels, u64)) {
+        if ch != 0 {
+            f(&mut self.studio.lock().unwrap().channels, ch - 1);
         }
     }
 
@@ -152,22 +182,83 @@ impl AudioBackend for StudioBackend {
         }
     }
 
-    // File sounds (`.ogg`/`.wav` clips) are not played by the studio yet.
-    fn load_sound(&mut self, _path: &str, _looped: bool) -> u64 {
-        0
+    /// `FMODManager.loadSound`: resolve first, then consult the resolved String cache.
+    fn load_sound(&mut self, path: &str, looped: bool) -> u64 {
+        let Some(resolved) = (self.resolve)(path) else { return 0 };
+        if let Some(&h) = self.sounds.get(&resolved) {
+            return h;
+        }
+        let file = std::fs::read(&resolved).ok()
+            .and_then(|b| pz_audio::sound_file::decode(&b).ok());
+        let h = match file {
+            // The native createSound modes are 16 or 18: both include FMOD_3D.
+            Some(f) => self.studio.lock().unwrap().channels.add_sound(f, looped, true) as u64 + 1,
+            None => 0,
+        };
+        self.sounds.insert(resolved, h);
+        h
     }
-    fn play_sound(&mut self, _sound: u64, _paused: bool) -> ChannelHandle {
-        0
+    fn play_sound(&mut self, sound: u64, paused: bool) -> ChannelHandle {
+        if sound == 0 {
+            return 0;
+        }
+        self.studio.lock().unwrap().channels.play(sound as usize - 1, paused).map_or(0, |c| c + 1)
     }
-    fn channel_set_volume(&mut self, _ch: ChannelHandle, _volume: f32) {}
-    fn channel_set_pitch(&mut self, _ch: ChannelHandle, _pitch: f32) {}
-    fn channel_set_mode(&mut self, _ch: ChannelHandle, _mode: u64) {}
-    fn channel_set_paused(&mut self, _ch: ChannelHandle, _paused: bool) {}
-    fn channel_is_playing(&mut self, _ch: ChannelHandle) -> bool {
-        false
+    fn channel_set_volume(&mut self, ch: ChannelHandle, volume: f32) {
+        self.channel(ch, |c, i| c.set_volume(i, volume));
     }
-    fn channel_stop(&mut self, _ch: ChannelHandle) {}
-    fn master_channel_group_set_volume(&mut self, _volume: f32) {}
+    fn channel_set_pitch(&mut self, ch: ChannelHandle, pitch: f32) {
+        self.channel(ch, |c, i| c.set_pitch(i, pitch));
+    }
+    fn channel_set_mode(&mut self, ch: ChannelHandle, mode: u64) {
+        self.channel(ch, |c, i| {
+            if mode & MODE_LOOP_NORMAL != 0 {
+                c.set_looped(i, true);
+            }
+            if mode & MODE_2D != 0 {
+                c.set_3d(i, false);
+            }
+            if mode & MODE_3D != 0 {
+                c.set_3d(i, true);
+            }
+        });
+    }
+    fn channel_set_paused(&mut self, ch: ChannelHandle, paused: bool) {
+        self.channel(ch, |c, i| c.set_paused(i, paused));
+    }
+    fn channel_is_playing(&mut self, ch: ChannelHandle) -> bool {
+        ch != 0 && self.studio.lock().unwrap().channels.is_playing(ch - 1)
+    }
+    fn channel_stop(&mut self, ch: ChannelHandle) {
+        self.channel(ch, |c, i| c.stop(i));
+    }
+    fn master_channel_group_set_volume(&mut self, volume: f32) {
+        self.studio.lock().unwrap().channels.master_volume = Some(volume);
+    }
+    fn master_channel_group_stop(&mut self) {
+        self.studio.lock().unwrap().channels.stop_all();
+    }
+    fn channel_set_non_bank_group(&mut self, ch: ChannelHandle) {
+        self.channel(ch, |c, i| c.set_non_bank(i));
+    }
+    fn non_bank_group_set_paused(&mut self, paused: bool) {
+        self.studio.lock().unwrap().channels.non_bank_paused = paused;
+    }
+    fn channel_set_3d_attributes(&mut self, ch: ChannelHandle, pos: [f32; 3], _vel: [f32; 3]) {
+        self.channel(ch, |c, i| c.set_position(i, pos));
+    }
+    fn channel_set_3d_level(&mut self, ch: ChannelHandle, level: f32) {
+        self.channel(ch, |c, i| c.set_3d_level(i, level));
+    }
+    fn channel_set_3d_min_max_distance(&mut self, ch: ChannelHandle, min: f32, max: f32) {
+        self.channel(ch, |c, i| c.set_min_max_distance(i, min, max));
+    }
+    fn channel_position_ms(&mut self, ch: ChannelHandle) -> u32 {
+        if ch == 0 {
+            return 0;
+        }
+        self.studio.lock().unwrap().channels.position_ms(ch - 1)
+    }
 
     fn instance_set_parameter_by_id(&mut self, inst: InstanceHandle, pid: (u32, u32), value: f32) {
         if let Some(i) = id(inst) {
