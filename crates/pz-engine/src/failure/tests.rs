@@ -68,3 +68,68 @@ fn rejected_or_dropped_error_payload_waits_for_the_outer_safe_drain() {
     drain();
     assert!(weak.upgrade().is_none() && safe.get());
 }
+
+
+#[test]
+fn engine_state_boundary_keeps_actual_animal_cause_and_first_error_domain() {
+    use pz_characters::character::{animal::AnimalDataError, state::StateFailure};
+    let original = Rc::new(AnimalDataError("NullPointerException: currentStage".into()));
+    let mut slot = None;
+    record_first(&mut slot, EngineError::state("IsoWorld.update", StateFailure::Animal(original.clone())));
+    record_first(&mut slot, EngineError::from("later diagnostic"));
+    let error = slot.as_ref().unwrap();
+    assert!(Rc::ptr_eq(error.state_failure().unwrap().animal().unwrap(), &original));
+    assert_eq!(error.to_string(), "IsoWorld.update: java.lang.NullPointerException: currentStage");
+    assert!(error.lua_error().is_none() && error.report_text().is_none());
+}
+
+#[test]
+fn retained_diagnostic_payload_uses_same_guard_free_engine_retirement() {
+    let _tail = Tail;
+    drain();
+    #[derive(Debug)] struct Cause;
+    impl std::fmt::Display for Cause { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("original") } }
+    impl std::error::Error for Cause {}
+    struct Probe { outer: Rc<RefCell<()>>, safe: Rc<Cell<bool>> }
+    impl LuaObject for Probe {
+        fn as_any(&self) -> &dyn Any { self }
+        fn class_name(&self) -> &str { "test.RetainedEngineDiagnostic" }
+    }
+    impl Drop for Probe { fn drop(&mut self) { self.safe.set(self.outer.try_borrow_mut().is_ok()); } }
+    let outer = Rc::new(RefCell::new(())); let safe = Rc::new(Cell::new(false));
+    let value = Rc::new(Probe { outer: outer.clone(), safe: safe.clone() }); let weak = Rc::downgrade(&value);
+    let fault = LuaError::with_cause(LuaError::Kahlua(Value::Object(value)), Rc::new(Cause));
+    let deferral = pz_kahlua::gc::defer_collection(); let held = outer.borrow_mut();
+    drop(EngineError::lua("retained callback", fault));
+    assert!(weak.upgrade().is_some() && !safe.get());
+    assert_eq!(pz_kahlua::native_list::drain_retired(), 0);
+    drop(held); drop(deferral); drain();
+    assert!(weak.upgrade().is_none() && safe.get());
+}
+
+
+#[test]
+fn weak_diagnostic_observer_does_not_skip_actual_payload_retirement() {
+    let _tail = Tail; drain();
+    #[derive(Debug)] struct Cause;
+    impl std::fmt::Display for Cause { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("original") } }
+    impl std::error::Error for Cause {}
+    struct Probe { outer: Rc<RefCell<()>>, safe: Rc<Cell<bool>> }
+    impl LuaObject for Probe {
+        fn as_any(&self) -> &dyn Any { self }
+        fn class_name(&self) -> &str { "test.WeakRetainedDiagnostic" }
+    }
+    impl Drop for Probe { fn drop(&mut self) { self.safe.set(self.outer.try_borrow_mut().is_ok()); } }
+    let outer = Rc::new(RefCell::new(())); let safe = Rc::new(Cell::new(false));
+    let value = Rc::new(Probe { outer: outer.clone(), safe: safe.clone() }); let weak_value = Rc::downgrade(&value);
+    let diagnostic = Rc::new(LuaError::Kahlua(Value::Object(value)));
+    let weak_diagnostic = Rc::downgrade(&diagnostic);
+    let fault = LuaError::WithCause { diagnostic, cause: Rc::new(Cause) };
+    let deferral = pz_kahlua::gc::defer_collection(); let held = outer.borrow_mut();
+    drop(EngineError::lua("weak retained callback", fault));
+    assert!(weak_diagnostic.upgrade().is_none(), "the actual last strong diagnostic owner was dropped");
+    assert!(weak_value.upgrade().is_some() && !safe.get(), "Value must remain pinned despite Weak diagnostic observer");
+    assert_eq!(pz_kahlua::native_list::drain_retired(), 0);
+    drop(held); drop(deferral); drain();
+    assert!(weak_value.upgrade().is_none() && safe.get());
+}

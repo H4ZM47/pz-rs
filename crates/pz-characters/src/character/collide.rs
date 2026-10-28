@@ -203,6 +203,11 @@ impl<I: 'static> GameCharacter<I> {
     /// `climbOverFence(dir)`: the world's checks, then
     /// `ClimbOverFenceState.setParams` and the `EventClimbFence` event.
     pub fn do_climb_over_fence(&mut self, dir: IsoDirections, cx: &mut StateCx<'_, I>) {
+        if self.is_animal() && self.animal.is_some() {
+            // IsoAnimal.climbOverFence(dir).
+            self.animal_climb_over_fence(dir, cx);
+            return;
+        }
         let Some(cur) = self.path.current_square else { return };
         let Some(f) = cx.world.fence_climb(&*self, self.is_zombie(), cur, dir) else { return };
         climb_fence::set_params(self, dir, f, cx);

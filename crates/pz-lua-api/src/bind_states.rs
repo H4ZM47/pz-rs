@@ -12,7 +12,7 @@
 //! nothing but the character itself by default) and the simulation context
 //! of [`crate::bind_character_sim`].
 
-use crate::bind_character_sim::{chr_of, with_ctx_host, LuaGameCharacter, ISO_GAME_CHARACTER_CLASS};
+use crate::bind_character_sim::{chr_of, with_ctx_state, LuaGameCharacter, ISO_GAME_CHARACTER_CLASS};
 use crate::bind_characters::{shared_characters, LuaItem};
 use crate::bind_registry::shared_script_manager;
 use crate::expose::{bool_arg, expose_class, num_arg, str_arg, with_this};
@@ -115,14 +115,14 @@ pub(crate) fn with_state_cx<R>(
     let sm = shared_script_manager();
     let chars = shared_characters();
     let world = WORLD.with(|w| w.borrow().clone());
-    with_ctx_host(c, &this, |ctx| {
+    with_ctx_state(c, &this, |ctx| {
         use pz_entity::runtime_load::RuntimeHostError;
         let chars = chars.try_borrow().map_err(|_| RuntimeHostError::Borrowed("state characters"))?;
         let mut world = world.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("state world"))?;
         let mut cx = StateCx::new(&sm, &chars, ctx, &mut *world);
         let mut chr = chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("state character"))?;
         let result = f(&mut chr, &mut cx);
-        cx.host_result()?;
+        cx.state_result()?;
         Ok(result)
     })
 }
@@ -341,5 +341,70 @@ mod tests {
         let p = pz_kahlua::compiler::compile(src, Some("t"), Some("t"), None).unwrap();
         let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
         t.pcall(&f, &[]).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e))).unwrap();
+    }
+}
+
+
+#[cfg(test)]
+mod retained_animal_cause_tests {
+    use super::*;
+    use pz_characters::character::state::StateFailure;
+    use pz_kahlua::{LuaError, vm::NativeFunction};
+
+    fn install_probe(t: &mut Thread, cause: Rc<pz_characters::character::animal::AnimalDataError>, later: Rc<std::cell::Cell<bool>>) -> Value {
+        let native = Value::Native(NativeFunction::new("retainedState", move |c| {
+            with_state_cx(c, |_, cx| {
+                cx.record_state_error(StateFailure::Animal(cause.clone()));
+                cx.record_host_error(pz_entity::runtime_load::RuntimeHostError::Borrowed("later fault"));
+            })?;
+            later.set(true);
+            Ok(0)
+        }));
+        t.globals().set_str("retainedState", native.clone());
+        native
+    }
+
+    fn assert_original(error: &LuaError, original: &Rc<pz_characters::character::animal::AnimalDataError>) {
+        let erased: Rc<dyn std::error::Error> = original.clone();
+        assert!(Rc::ptr_eq(error.retained_cause().expect("retained original cause"), &erased));
+        let source = std::error::Error::source(error).unwrap().downcast_ref::<pz_characters::character::animal::AnimalDataError>().unwrap();
+        assert!(std::ptr::eq(source, original.as_ref()));
+    }
+
+    #[test]
+    fn real_state_native_call_and_pcall_ex_keep_same_animal_cause_and_legacy_diagnostic() {
+        let (mut t, player, _) = crate::bind_character_sim::tests::setup_with(ScriptManager::new());
+        let original = Rc::new(pz_characters::character::animal::AnimalDataError("NullPointerException: item".into()));
+        let later = Rc::new(std::cell::Cell::new(false));
+        let native = install_probe(&mut t, original.clone(), later.clone());
+        let arg = crate::bind_character_sim::character_value(&player);
+        let diagnostic = crate::bind_registry::java_error(pz_scripts::ScriptError::new("java.lang.NullPointerException: item"));
+        let plain = Value::Native(NativeFunction::new("retainedState", move |_| Err(diagnostic.clone())));
+        let plain_call = t.call(&plain, std::slice::from_ref(&arg)).unwrap_err();
+        let error = t.call(&native, std::slice::from_ref(&arg)).unwrap_err();
+        assert_original(&error, &original);
+        assert_eq!(error.pcall_message().as_str(), plain_call.pcall_message().as_str());
+        assert_eq!(error.to_string(), plain_call.to_string());
+        let (message, _, error) = t.pcall_ex(&native, std::slice::from_ref(&arg)).unwrap_err();
+        assert_original(&error, &original);
+        assert_eq!(message.as_str(), plain_call.pcall_message().as_str());
+        assert!(!later.get());
+        assert!(player.try_borrow_mut().is_ok(), "conversion must occur after actual character guard");
+        assert!(WORLD.with(|world| world.borrow().try_borrow_mut().is_ok()));
+    }
+
+    #[test]
+    fn actual_lua_pcall_presents_the_existing_message_for_retained_animal_failure() {
+        let (mut t, _player, _) = crate::bind_character_sim::tests::setup_with(ScriptManager::new());
+        let original = Rc::new(pz_characters::character::animal::AnimalDataError("NullPointerException: item".into()));
+        let later = Rc::new(std::cell::Cell::new(false));
+        install_probe(&mut t, original, later.clone());
+        let diagnostic = crate::bind_registry::java_error(pz_scripts::ScriptError::new("java.lang.NullPointerException: item"));
+        t.globals().set_str("plainState", Value::Native(NativeFunction::new("retainedState", move |_| Err(diagnostic.clone()))));
+        let f = pz_kahlua::stdlib::load_string("local a,b=pcall(retainedState,player); local c,d=pcall(plainState,player); return a,b,c,d", Some("retained-state-pcall"), t.globals().clone()).unwrap();
+        let values = t.call(&f, &[]).unwrap();
+        assert!(matches!(values[0], Value::Bool(false)) && matches!(values[2], Value::Bool(false)));
+        assert_eq!(values[1].as_str(), values[3].as_str());
+        assert!(!later.get());
     }
 }

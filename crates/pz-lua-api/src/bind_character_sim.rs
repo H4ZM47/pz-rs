@@ -413,6 +413,34 @@ pub(crate) fn with_ctx_host<R>(
     with_ctx_result(c, chr, |_, ctx| f(ctx), crate::bind_world_object::host_error)
 }
 
+pub(crate) fn state_error(error: pz_characters::character::state::StateFailure) -> LuaError {
+    use pz_characters::character::state::StateFailure;
+    match error {
+        StateFailure::Host(error) => {
+            let diagnostic = crate::bind_world_object::host_error(error.clone());
+            LuaError::with_cause(diagnostic, Rc::new(StateFailure::Host(error)))
+        }
+        StateFailure::Animal(error) => {
+            // The old jerr/java_error projection is diagnostic only. It does
+            // not prove a native exception class or manufacture a Throwable.
+            let diagnostic = java_error(ScriptError::new(format!("java.lang.{}", error.0)));
+            LuaError::with_cause(diagnostic, error)
+        }
+        StateFailure::Script(error) => {
+            let diagnostic = java_error(error.as_ref().clone());
+            LuaError::with_cause(diagnostic, error)
+        }
+    }
+}
+
+pub(crate) fn with_ctx_state<R>(
+    c: &mut NativeCall<'_>,
+    chr: &Value,
+    f: impl FnOnce(&dyn SimContext) -> pz_characters::character::state::StateResult<R>,
+) -> LuaResult<R> {
+    with_ctx_result(c, chr, |_, ctx| f(ctx), state_error)
+}
+
 fn character_action_error(error: CharacterActionError) -> LuaError {
     match error {
         CharacterActionError::Script(error) => java_error(error),

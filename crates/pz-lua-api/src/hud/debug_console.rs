@@ -396,9 +396,10 @@ impl UIDebugConsole {
                 let _ = t.pcall(&f, &[]);
             }
             Err(e) => {
-                let msg = match &e {
+                let msg = match e.diagnostic() {
                     pz_kahlua::LuaError::Kahlua(v) => pz_kahlua::exec::java_value_of(v),
                     pz_kahlua::LuaError::Runtime { message, .. } => message.clone(),
+                    pz_kahlua::LuaError::WithCause { .. } => unreachable!("leaf diagnostic"),
                 };
                 self.spool_text(t, &msg);
             }

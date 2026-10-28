@@ -377,6 +377,20 @@ pub trait StateWorld<I> {
     fn virtualize_if_unloaded(&mut self, _chr: i32, _next_x: i32, _next_y: i32) -> bool {
         false
     }
+    /// An animal in `AnimalZoneState` walking toward an unloaded square
+    /// outside a building is virtualized
+    /// (`AnimalPopulationManager.virtualizeAnimal`, `IsoMovingObject.postupdate`);
+    /// true when that happened.
+    fn virtualize_animal_if_unloaded(&mut self, _chr: i32, _next_x: i32, _next_y: i32) -> bool {
+        false
+    }
+    /// The animal port's view of the world for the animal `chr`: the
+    /// definitions and pz-animals' `AnimalWorld` bound to that animal.
+    /// `None` (the default) leaves the animal logic out of an animal's
+    /// update; the character part still runs.
+    fn animal_host(&mut self, _chr: i32) -> Option<crate::character::animal::AnimalHost<'_>> {
+        None
+    }
     // ---- the character's animation (`pz_anim::StateAnimHooks` on the
     // world's animator and player for `chr`) ----
 
@@ -625,6 +639,73 @@ pub trait StateWorld<I> {
     /// `fence.destroyFence(dir)` at 0 or below (two zombies climbing over
     /// it at once, `ClimbOverFenceState`'s `OnFloor`).
     fn damage_fence(&mut self, _fence: pz_pathfind::mover::ObjectRef, _damage: i32, _dir: IsoDirections) {}
+
+    // ---- what animals read and do (`IsoAnimal`, `BaseAnimalBehavior`,
+    // the `ai/states/animals` states; the animal-only world objects are
+    // `pz-animals`' `AnimalWorld` through `animal_host`) ----
+
+    /// `square.isFree(false)` (the characters on it not counted).
+    fn square_is_free_ignoring_characters(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `a.isBlockedTo(b)`.
+    fn is_blocked_to(&self, _a: (i32, i32, i32), _b: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `a.isWindowTo(b)`.
+    fn is_window_to(&self, _a: (i32, i32, i32), _b: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `a.isWallTo(b)`.
+    fn is_wall_to(&self, _a: (i32, i32, i32), _b: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `square.haveRoof`.
+    fn square_have_roof(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `square.has(IsoFlagType.solidtrans)`.
+    fn square_has_solid_trans(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// The player (by character id) a world sound's source is, when it is
+    /// an `IsoPlayer` (`respondToSound`).
+    fn sound_source_player(&self, _source: &pz_audio::world_sound::SoundSource) -> Option<i32> {
+        None
+    }
+    /// The world sound's source is an `IsoRadio` or `IsoTelevision`.
+    fn sound_source_is_radio_or_television(&self, _source: &pz_audio::world_sound::SoundSource) -> bool {
+        false
+    }
+    /// `IsoAnimal.testCollideWithVehicles(vehicle, null)`'s vehicle part:
+    /// `vehicle.shouldCollideWithCharacters()`,
+    /// `testCollisionWithCharacter(animal, 0.3, pos) != null`, then
+    /// `hitAnimal(animal)` and `applyImpulseFromHitObject(animal, 1)`; true
+    /// when it hit.
+    fn vehicle_test_collide_animal(&mut self, _vehicle: i16, _animal: &mut GameCharacter<I>) -> bool {
+        false
+    }
+    /// `vehicle.getAnimals()` (character ids).
+    fn vehicle_animals(&self, _vehicle: i16) -> Vec<i32> {
+        Vec::new()
+    }
+    /// `getCell().getAnimals()` (character ids).
+    fn cell_animals(&self) -> Vec<i32> {
+        Vec::new()
+    }
+    /// `player.hitConsequences(null, animal, false, damage, false)`: an
+    /// animal's attack connecting with a player (`AnimalAttackState`).
+    fn animal_hit_player(&mut self, _player: i32, _animal: &mut GameCharacter<I>, _damage: f32) {}
+    /// `IsoThumpable.animalHit(animal)` and the thump sound
+    /// (`AnimalAttackState`); then `destroy()` when its health is at or
+    /// below 0. Answers whether it was destroyed, and whether it is a door
+    /// that is open afterwards.
+    fn thumpable_animal_hit(&mut self, _obj: pz_pathfind::mover::ObjectRef, _animal: i32) -> (bool, bool) {
+        (false, false)
+    }
+    /// `obj.Damage(damage)` and the thump sound (an animal thumping a door
+    /// or another object).
+    fn object_damage(&mut self, _obj: pz_pathfind::mover::ObjectRef, _damage: f32) {}
 
     // ---- windows, sheet ropes and walls (#208; the climb states are #204) ----
 
@@ -913,6 +994,66 @@ pub struct NullWorld;
 
 impl<I> StateWorld<I> for NullWorld {}
 
+/// The first original failure retained by an immediate state callback.
+/// Animal faults keep their existing data object; no native Throwable or
+/// diagnostic class is inferred from its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StateFailure {
+    Host(RuntimeHostError),
+    Animal(Rc<pz_animals::JavaException>),
+    Script(Rc<pz_scripts::ScriptError>),
+}
+
+pub type StateResult<T = ()> = Result<T, StateFailure>;
+
+impl StateFailure {
+    pub fn host(&self) -> Option<&RuntimeHostError> {
+        match self {
+            Self::Host(error) => Some(error),
+            _ => None,
+        }
+    }
+    pub fn animal(&self) -> Option<&Rc<pz_animals::JavaException>> {
+        match self {
+            Self::Animal(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+impl From<RuntimeHostError> for StateFailure {
+    fn from(error: RuntimeHostError) -> Self {
+        Self::Host(error)
+    }
+}
+impl From<pz_scripts::ScriptError> for StateFailure {
+    fn from(error: pz_scripts::ScriptError) -> Self {
+        Self::Script(Rc::new(error))
+    }
+}
+impl From<pz_animals::JavaException> for StateFailure {
+    fn from(error: pz_animals::JavaException) -> Self {
+        Self::Animal(Rc::new(error))
+    }
+}
+impl std::fmt::Display for StateFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Host(error) => write!(f, "{error:?}"),
+            Self::Animal(error) => std::fmt::Display::fmt(&crate::character::animal::jerr(error.as_ref().clone()), f),
+            Self::Script(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+impl std::error::Error for StateFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Animal(error) => Some(error.as_ref()),
+            Self::Script(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
+
 /// The context a state runs in.
 pub struct StateCx<'a, I> {
     pub sm: &'a ScriptManager,
@@ -921,7 +1062,7 @@ pub struct StateCx<'a, I> {
     pub world: &'a mut dyn StateWorld<I>,
     // One immediate first-fault carrier per outer action. Reborrows share
     // the same fault, so nested void State callbacks cannot hide it.
-    host_fault: Rc<RefCell<Option<RuntimeHostError>>>,
+    host_fault: Rc<RefCell<Option<StateFailure>>>,
 }
 
 impl<'a, I> StateCx<'a, I> {
@@ -937,16 +1078,25 @@ impl<'a, I> StateCx<'a, I> {
     /// Stop this action at its first host failure. No callback/event queue is
     /// involved, and later failures must not replace the original domain.
     pub fn record_host_error(&self, error: RuntimeHostError) {
+        self.record_state_error(StateFailure::Host(error));
+    }
+
+    pub fn record_animal_error(&self, error: pz_animals::JavaException) {
+        self.record_state_error(error.into());
+    }
+
+    pub fn record_state_error(&self, error: StateFailure) {
         let mut fault = self.host_fault.borrow_mut();
         if fault.is_none() { *fault = Some(error); }
     }
 
+    /// Existing state-machine stop guards cover every retained domain.
     pub fn has_host_error(&self) -> bool { self.host_fault.borrow().is_some() }
 
     /// Every production outer engine/Lua action boundary must return this
     /// result before any further action/state work. Inspecting never clears
     /// the first fault or turns failure into native absence.
-    pub fn host_result(&self) -> HostResult<()> {
+    pub fn state_result(&self) -> StateResult<()> {
         match &*self.host_fault.borrow() {
             Some(error) => Err(error.clone()),
             None => Ok(()),

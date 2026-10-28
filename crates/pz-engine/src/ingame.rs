@@ -504,7 +504,7 @@ impl GameState for IngameState {
                 if let Err(error) = w.update(cx.lua, &sim) {
                     // A typed character host fault is not an ordinary script
                     // update error. Stop this frame before later callbacks.
-                    crate::failure::record_first(cx.error, (format!("IsoWorld host fault: {error:?}")).into());
+                    crate::failure::record_first(cx.error, crate::failure::EngineError::state("IsoWorld.update", error));
                     return StateAction::Remain;
                 }
             }

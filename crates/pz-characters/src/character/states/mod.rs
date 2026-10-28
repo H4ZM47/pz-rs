@@ -7,6 +7,7 @@
 
 use super::state::{Param, StateId, StateRef};
 
+pub mod animal;
 pub mod climb_fence;
 pub mod climb_rope;
 pub mod climb_wall;
@@ -140,5 +141,6 @@ pub fn all<I: 'static>() -> Vec<StateRef<I>> {
     ]
     .into_iter()
     .chain(zombie::all())
+    .chain(animal::all())
     .collect()
 }

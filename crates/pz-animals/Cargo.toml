@@ -8,4 +8,5 @@ pz-kahlua.workspace = true
 pz-fs.workspace = true
 pz-world.workspace = true
 pz-core.workspace = true
+pz-inventory.workspace = true
 indexmap.workspace = true

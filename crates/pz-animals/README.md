@@ -1,7 +1,8 @@
 # pz-animals
 
-Animals (`zombie.characters.animals`). This crate is step 1 of the port: the
-definition tables and the genome rules. All data is read at runtime from the
+Animals (`zombie.characters.animals`). Step 1 of the port is the
+definition tables and the genome rules; step 2 is `AnimalData` and the
+animal logic of `IsoAnimal` that needs no character runtime. All data is read at runtime from the
 game's own Lua. Nothing is hard-coded.
 
 | Original | Rust | Data source |
@@ -72,6 +73,90 @@ are 18 gene definitions, 1 disorder list, 30 animal definitions (63 breeds in
 total), 2 track definitions, 5 migration groups, 94 parts lookups, 63 genome
 generations and 62 inheritances.
 
+## Step 2: animal state and logic
+
+| Original | Rust |
+|---|---|
+| `datas/AnimalData` (all of it except `getDebugBehaviorString`) | `data.rs`: fields in `AnimalData`, methods on `Animal` (`data_*`) |
+| `IsoAnimal` animal logic: `init(breed)`, `initStress`, `initTexture`, `initAge`, `setWild`, stress (`changeStress`, `updateStress`), acceptance (`addAcceptance`, `getAcceptanceLevel`, `petAnimal`), `checkZone`, `fertilize`, `addBaby`, `addEgg`/`createEgg`, `updateStatsAway`, `checkKilledByMetaPredator`, `hitConsequences` (meta, no attacker), size/weight/geriatric getters, `copyFrom`, `unloaded` | `animal.rs` (`Animal`) |
+| `BaseAnimalBehavior.pickRandomWanderInterval` | `Animal::pick_random_wander_interval` |
+| `IsoAnimal.load`/`save` | `save.rs`: `Animal::load` (bytes → live state), `Animal::to_saved` / `Animal::from_saved` (live state ↔ `pz_world::save::animal::IsoAnimal`) |
+
+`MigrationGroupDefinitions.initValueFromDef` was ported in step 1
+(`virtual_animal_values`).
+
+### What the character side provides (`env.rs`)
+
+* `AnimalCharacter`: the `IsoGameCharacter`/`IsoPlayer` state of the
+  animal — health field, hours survived, sex, hunger and thirst
+  (`Stats`, clamped), animation variables (`idleAction`, `eatingAnim`),
+  state event delay timer, position and direction, square, vehicle,
+  container, online id, plus `splatBloodFloorBig`, `setHitReaction` and the
+  fleece model reset. `CharacterValues` is a plain-data implementation for
+  new animals (babies, grown animals), tools and tests; the
+  `pz-characters` animal module implements the trait on `GameCharacter`.
+* `AnimalClock`: `GameTime` (`getHour`, `getMonth`, calendar millis,
+  `getMultiplier`, `getWorldAgeDaysSinceBegin`) and `Calendar` fields in
+  the JVM default zone.
+* `AnimalSandbox`: the `SandboxOptions.animal*` values and
+  `ServerOptions.ultraSpeedDoesnotAffectToAnimals`
+  (`AnimalSandbox::from_options` reads them by Java name).
+* `AnimalWorld`: rain and puddles, designation zones (zone lookup,
+  connected zones, sizes, dung/feather counts, troughs, food on ground,
+  water squares, animals, hutches), items (create, weight, drop, eggs,
+  eating: `FeedItem`), troughs, vehicles, hutches, blood splats, other
+  animals (`animal_mut`), and adding new or grown animals. `NoWorld` is an
+  animal that is nowhere.
+* `Rand` is `pz_world::GameRand`. Constructing an animal's character draws
+  `Rand` too (`new SurvivorDesc()` six coin flips, `IsoGameCharacter`
+  patience): `env::character_construction_draws`, called by
+  `Animal::construct` for babies and grown animals. `new IsoAnimal(cell)`
+  before `Animal::load` makes the same draws on the caller's side.
+
+`Animal::load` reads a saved animal the way the original does, with every
+`Rand` draw in place (init, one per loaded gene for `new AnimalGene()`,
+`setWild`). `Animal::from_saved` starts from a codec record and makes the
+same draws except `setWild`'s, which the codec already made through
+`SaveHooks` (for an animal saved wild, that draw then comes before the
+others).
+
+### Parity (step 2)
+
+`examples/animal_data_parity.rs` replays local oracle runs (never
+committed) of the original classes on a headless JVM (real
+`new IsoAnimal(cell)`, `init`, `AnimalData.update`, `load`/`save`, seeded
+`Rand`, a `GameTime` with a controlled clock, UTC):
+
+* `sim`: every definition × breed (63 animals) and 30 `init(null)`, each
+  simulated for 400 hours (two updates per hour for the first day) under
+  six sandbox variants, with scripted starving, feeding, forced and
+  natural fertilisation, milking, shearing, stress, `updateStatsAway(30)`
+  and health events. Every traced field (floats as bits), the next `Rand`
+  draw after every step, and every animal created (babies, grown animals)
+  are compared: 75 795 comparisons, 0 differences.
+* `save`: 95 real animals from the `apop` files of save copies (69 wild):
+  `Animal::load` → `to_saved` → codec save against the original's
+  `load` + `save`: state, consumed bytes, next `Rand` draw and saved bytes
+  all identical (380 comparisons, 0 differences). Against the bytes in the
+  file the original's own round trip changes `timeSinceLastUpdate` (the
+  save writes the calendar), the animal zone (not loaded headless), the
+  online id, clamped sizes and the wild stress redraw.
+
+Not covered by the oracle (no world headless; checked by unit tests and
+by reading): everything that needs a square, designation zone, hutch,
+trough, vehicle or item (`checkPoop`, `dropFeather`, eating and drinking,
+`eatAndDrinkAfterMeta`, eggs into hutches, inseminating other animals,
+the meta predator's kill). Item creation fails in the oracle (no
+scripts), as `NoWorld::create_item` does.
+
+Gaps left for later steps: `getDebugBehaviorString` (needs
+`BaseAnimalBehavior`), the network packets of `setAttachedPlayer` /
+`setAttachedTree`, and `AnimalVisual`. The codec's
+`pz_world::save::animal::IsoAnimal` reads used genes as the second
+allele (true for loaded animals only), so `to_saved` of a freshly
+initialised animal can disagree with the live animal on whether wool is
+saved.
+
 ## Plan
 
 The remaining steps, with what each needs and how each is checked.
@@ -91,6 +176,42 @@ Line references are to the decompiled sources (`zombie/...`).
 * The Lua bindings go in `pz-lua-api`.
 
 ### (a) IsoAnimal on pz-characters' `GameCharacter` (for the characters thread)
+
+**Status (step 2b, `pz-characters/src/character/animal/`).** Items 1, 3,
+4 and 5 below are in place: `GameCharacter::animal` (`AnimalFields`),
+`AnimalCharacter` on `GameCharacter`, `CtxClock` and
+`SimContext::animal_sandbox`, `update_animal` (behaviour left out), the
+override methods as `animal_*` branches, `AnimalMover`, the twelve states
+as no-op stand-ins (`states/animal.rs`), and `load_animal`/`save_animal`.
+Checked against the original: construction, `init` and 150 updates of
+every breed (63 animals, 9192 ticks), and load + save of the 95 `apop`
+animals of the save copies, with every `Rand` draw in place. Left for
+step 3: `BaseAnimalBehavior` (its update, `spotted` from
+`AnimalFields::spotted`, `killed`, `goAttack`), the state bodies, the tree,
+hook, mother, sound, luring and thump checks of `updateInternal`, and
+`testCollideWithVehicles`. Items 2 and 7 are the characters thread's.
+
+**Status (step 3, `pz-characters/src/character/animal/{behavior,actions}.rs`
+and `states/animal.rs`).** `BaseAnimalBehavior` (its fields are
+`pz-animals`' `behavior::AnimalBehavior` on `Animal`, with
+`callToHutch`/`canGoToHutch`), the twelve animal states, and the step-3
+parts of `updateInternal` (tree, mother, hook, `respondToSound`,
+`updateLured`, `tryThump`, `updateLOS` into `spotted`, vehicle collision,
+`killed`, the wild animal's bleeding and drop-dead timer, `pathTo*`,
+`pathFailed`, `canGoThere`). `AnimalData.eat()` hands its behaviour call
+back (`EatFollowUp`). Checked against the original: 30 animals for 330
+ticks each of behaviour and state updates on a square grid, with a player,
+a zombie and a second animal (wandering, sitting, idle actions, hunger,
+fleeing an attacker, a leash, being spotted by players and zombies,
+alerting, holding, `goAttack` against a player and an animal, the attack
+state's hit exchange), plus `decideRotation`, `setTurnAlertedValues`,
+`animalShouldThump` and `checkSit` with recorded inputs: 21,095
+comparisons, 0 differences; the step-2b checks pass with the behaviour
+running. Not checked by the oracle (the headless game has no path finder,
+animation, sound or the world objects): the path finder's own results, the
+eating and drinking objects (troughs, food, grass, puddles, rivers), the
+hutch, the follow-wall collisions, fence climbing, `AnimalZoneState`
+(step 4 has the zones), `respondToSound`, luring and the tree.
 
 `IsoAnimal extends IsoPlayer`. `pz-characters` already has
 `CharacterKind::Animal` (`character/mod.rs`), `is_animal()`, mover kind 4,
@@ -273,7 +394,7 @@ seeded `Random`, a scratch HOME, `-Duser.home` and
     reflection), then diff per-hour traces.
   * Round-trip `IsoAnimal.save/load` byte for byte, including the `Rand`
     consumed by `init` during load.
-* **Step 3.**
+* **Step 3.** (Done: see the step 3 status above.)
   * Oracle the pure helpers: `pickRandomWanderInterval`, `checkSit`,
     acceptance and stress math, `calcDamage`, `getHealthLoss`,
     `canEatThis`.

@@ -366,6 +366,23 @@ pub trait SimContext {
     fn world_age_hours(&self) -> f64 {
         0.0
     }
+    /// `GameTime.instance.getTimeOfDay()` (9.0 in a fresh game).
+    fn time_of_day(&self) -> f32 {
+        9.0
+    }
+    /// `GameTime.instance.getMonth()` (0-based; 7 in a fresh game).
+    fn month(&self) -> i32 {
+        7
+    }
+    /// `SandboxOptions.instance.getTimeSinceApo()`.
+    fn time_since_apo(&self) -> i32 {
+        1
+    }
+    /// The animal sandbox and server options (`SandboxOptions.animal*`,
+    /// `ServerOptions.ultraSpeedDoesnotAffectToAnimals`).
+    fn animal_sandbox(&self) -> pz_animals::AnimalSandbox {
+        pz_animals::AnimalSandbox::default()
+    }
     /// `IsoPlayer.allPlayersAsleep()`.
     fn all_players_asleep(&self) -> bool {
         false
@@ -747,6 +764,24 @@ pub trait SimContext {
     /// `DebugOptions.instance.character.debug.alwaysHitTarget`.
     fn debug_always_hit_target(&self) -> bool {
         false
+    }
+    /// The seed of a `new java.util.Random()` (the JVM's seed uniquifier
+    /// and `System.nanoTime()`; `BaseAnimalBehavior.shuffleList`).
+    fn new_random_seed(&self) -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0)
+            ^ 8_682_522_807_148_012
+    }
+    /// `RainManager.isRaining()` (what the animal code reads; it should
+    /// agree with `pz-animals`' `AnimalWorld::is_raining`).
+    fn rain_manager_is_raining(&self) -> bool {
+        self.is_raining()
+    }
+    /// `RainManager.getRainIntensity()`.
+    fn rain_manager_intensity(&self) -> f32 {
+        self.rain_intensity()
     }
     /// `DebugOptions.instance.character.debug.alwaysTripOverFence`.
     fn debug_always_trip_over_fence(&self) -> bool {

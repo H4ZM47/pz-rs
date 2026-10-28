@@ -257,7 +257,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `climbSheetRope()`: drops the heavy hand items, then
     /// `EventClimbRope`.
     pub fn climb_sheet_rope(&mut self, cx: &mut StateCx<'_, I>) {
-        if cx.has_host_error() { return; }
+    if cx.has_host_error() { return; }
         if !self.can_climb_sheet_rope(self.path.current_square, cx) {
             return;
         }
@@ -270,7 +270,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `climbDownSheetRope()`: drops the heavy hand items, then
     /// `EventClimbDownRope`.
     pub fn climb_down_sheet_rope(&mut self, cx: &mut StateCx<'_, I>) {
-        if cx.has_host_error() { return; }
+    if cx.has_host_error() { return; }
         if !self.can_climb_down_sheet_rope(self.path.current_square, cx) {
             return;
         }
@@ -292,7 +292,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `IsoPlayer.climbOverWall(dir)`: drops the heavy hand items, rolls
     /// the climb (`ClimbOverWallState.setParams`), then `EventClimbWall`.
     pub fn climb_over_wall(&mut self, dir: IsoDirections, cx: &mut StateCx<'_, I>) -> bool {
-        if cx.has_host_error() { return false; }
+    if cx.has_host_error() { return false; }
         if !self.can_climb_over_wall(dir, cx) {
             return false;
         }
@@ -479,7 +479,7 @@ mod tests {
         c.path.requests = vec![PathMoverRequest::ClimbOverWall(IsoDirections::N), PathMoverRequest::ClimbOverWall(IsoDirections::N)];
         let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
         c.run_path_requests(&mut cx);
-        assert_eq!(cx.host_result(), Err(RuntimeHostError::Borrowed("actual floor allocation")));
+        assert_eq!(cx.state_result().map_err(|error| error.host().cloned().expect("original Host domain")), Err(RuntimeHostError::Borrowed("actual floor allocation")));
         assert_eq!(c.path.requests.len(), 1);
         assert!(!c.state.action_context.has_event_occurred("EventClimbWall", None));
         assert!(climb_wall::END_Y.peek(&c.state.params).is_none());
