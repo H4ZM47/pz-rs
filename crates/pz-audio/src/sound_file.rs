@@ -37,54 +37,68 @@ fn decode_ogg(bytes: &[u8]) -> Result<SoundFile, String> {
 }
 
 fn decode_wav(bytes: &[u8]) -> Result<SoundFile, String> {
-    let u16le = |o: usize| u16::from_le_bytes([bytes[o], bytes[o + 1]]);
-    let u32le = |o: usize| u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
+    let mut chunks = crate::reader::Reader::new(bytes.get(12..).ok_or("truncated WAVE header")?);
     let mut fmt = None;
-    let mut pos = 12;
-    while pos + 8 <= bytes.len() {
-        let id = &bytes[pos..pos + 4];
-        let size = u32le(pos + 4) as usize;
-        let body = pos + 8;
-        let end = (body + size).min(bytes.len());
-        if id == b"fmt " && size >= 16 {
-            // (format, channels, rate, bits)
-            let mut format = u16le(body);
-            if format == 0xFFFE && size >= 26 {
-                format = u16le(body + 24);
+    while chunks.remaining() != 0 {
+        let id = chunks.bytes(4).map_err(|_| "truncated WAVE chunk header")?;
+        let size = chunks.u32().map_err(|_| "truncated WAVE chunk header")? as usize;
+        // Validate the advertised extent before inspecting any format fields.
+        // Reader checks both addition overflow and the actual remaining bytes.
+        let body = chunks.bytes(size).map_err(|_| "truncated WAVE chunk")?;
+        if id == b"fmt " {
+            let mut fields = crate::reader::Reader::new(body);
+            let mut format = fields.u16().map_err(|_| "truncated WAVE fmt")?;
+            let channels = fields.u16().map_err(|_| "truncated WAVE fmt")?;
+            let rate = fields.u32().map_err(|_| "truncated WAVE fmt")?;
+            fields.u32().map_err(|_| "truncated WAVE fmt")?; // byte rate
+            fields.u16().map_err(|_| "truncated WAVE fmt")?; // block alignment
+            let bits = fields.u16().map_err(|_| "truncated WAVE fmt")?;
+            if format == 0xFFFE {
+                let subformat = body.get(24..26).ok_or("truncated WAVE extensible fmt")?;
+                format = u16::from_le_bytes([subformat[0], subformat[1]]);
             }
-            fmt = Some((format, u16le(body + 2), u32le(body + 4), u16le(body + 14)));
+            if channels == 0 {
+                return Err("WAVE has zero channels".into());
+            }
+            if rate == 0 {
+                return Err("WAVE has zero sample rate".into());
+            }
+            fmt = Some((format, channels, rate, bits));
         } else if id == b"data" {
             let (format, channels, rate, bits) = fmt.ok_or("WAVE data before fmt")?;
-            let d = &bytes[body..end];
             let data: Vec<f32> = match (format, bits) {
-                (1, 8) => d.iter().map(|&b| (b as f32 - 128.0) / 128.0).collect(),
-                (1, 16) => d
+                (1, 8) => body.iter().map(|&b| (b as f32 - 128.0) / 128.0).collect(),
+                (1, 16) => body
                     .chunks_exact(2)
                     .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
                     .collect(),
-                (1, 24) => d
+                (1, 24) => body
                     .chunks_exact(3)
                     .map(|c| (i32::from_le_bytes([0, c[0], c[1], c[2]]) >> 8) as f32 / 8388608.0)
                     .collect(),
-                (1, 32) => d
+                (1, 32) => body
                     .chunks_exact(4)
                     .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f32 / 2147483648.0)
                     .collect(),
-                (3, 32) => d
+                (3, 32) => body
                     .chunks_exact(4)
                     .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
                     .collect(),
                 _ => return Err(format!("unsupported WAVE format {format}/{bits}-bit")),
             };
             return Ok(SoundFile {
-                pcm: Pcm {
-                    channels: channels.max(1),
-                    data,
-                },
+                pcm: Pcm { channels, data },
                 rate,
             });
         }
-        pos = body + size + (size & 1);
+        if size & 1 != 0 {
+            chunks
+                .bytes(1)
+                .map_err(|_| "truncated WAVE chunk padding")?;
+        }
     }
     Err("WAVE without data".into())
 }
+
+#[cfg(test)]
+mod tests;
