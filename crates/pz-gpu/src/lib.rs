@@ -30,6 +30,7 @@ mod outline;
 mod vehicle;
 mod vispoly;
 mod state;
+mod thumbnail;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -39,6 +40,7 @@ use pz_render::{DrawCmd, DrawList, TextureManager, WorldShader};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub use state::GlState;
+pub use thumbnail::THUMBNAIL_SIZE;
 use state::{PipeKey, Program, TargetKind};
 
 /// One `Core.DoStartFrameStuff` call and what was drawn after it.
