@@ -28,6 +28,7 @@ impl Fixture {
         set_cell(Some(authored_cell()));
         let mut thread = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut thread, None).unwrap();
+        crate::bind_java_util::register(&mut thread);
         super::super::register(&mut thread);
         let mut fixture = Self {
             thread,
@@ -186,4 +187,47 @@ fn is_outside_uses_current_sprite_owner_and_reports_unavailable_borrows() {
     );
     crate::bind_sprites::install_sprite_manager(Some(f.sprites.clone()));
     f.run("assert(a:isOutside())");
+}
+
+#[test]
+fn empty_square_lists_and_vehicle_container() {
+    let mut f = Fixture::new();
+    f.run(
+        r#"
+        assert(a:getWorldObjects():size() == 0)
+        assert(a:getObjects():size() == 0)
+        assert(a:getStaticMovingObjects():size() == 0)
+        assert(a:getVehicleContainer() == nil)
+    "#,
+    );
+}
+
+#[test]
+fn light_level_reads_installed_source_and_defaults_to_white() {
+    let mut f = Fixture::new();
+    install_square_light(None);
+    f.run("assert(a:getLightLevel(0) == 1)");
+    f.run("assert(not a:isSeen(0) and not a:isCanSee(0) and not a:isCouldSee(0))");
+    install_square_light(Some(Box::new(|player, x, y, z| {
+        assert_eq!((x, y, z), (1, 1, 0));
+        match player {
+            2 => Some(SquareLighting { light_level: 0.25, vis: 2 }),
+            3 => None,
+            _ => Some(SquareLighting { light_level: 0.5, vis: 5 }),
+        }
+    })));
+    f.run(
+        r#"
+        assert(a:getLightLevel(2) == 0.25)
+        assert(a:getLightLevel(-1) == 0.5)
+        assert(a:getLightLevel(3) == 1)
+        assert(a:isCanSee(2) and not a:isSeen(2) and not a:isCouldSee(2))
+        assert(a:isSeen(0) and not a:isCanSee(0) and a:isCouldSee(0))
+        local ok, err = pcall(function() return a:getLightLevel(4) end)
+        assert(not ok and string.find(tostring(err), 'ArrayIndexOutOfBounds', 1, true))
+        ok, err = pcall(function() return a:isCanSee(-1) end)
+        assert(not ok and string.find(tostring(err), 'ArrayIndexOutOfBounds', 1, true))
+    "#,
+    );
+    install_square_light(None);
 }
