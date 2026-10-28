@@ -61,6 +61,7 @@ pub fn render_square(
 ) -> HostResult<RenderSquare> {
     let mut rs = RenderSquare::new(sq.x, sq.y, sq.z);
     rs.cut = cutaway_info(w, sq);
+    rs.flies = sq.has_flies;
     for o in &sq.objects {
         let o = o
             .try_borrow()

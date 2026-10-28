@@ -11,6 +11,7 @@ pub mod bra;
 pub mod cell_drag;
 pub mod cell_loader;
 pub mod chunk;
+pub mod dead_body;
 pub mod chunk_data;
 pub mod chunk_vehicles;
 pub mod defs;

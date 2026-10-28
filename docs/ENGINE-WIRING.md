@@ -2020,3 +2020,23 @@ registered):
 - [ ] Reconcile and wire the preserved untracked `visited.rs` implementation,
       symbols, streets, player models and other overlays. Keep its source and
       the preserved module-only stash until that work is integrated.
+
+
+### Corpse-count and flies library subset (#216)
+
+- The library now has `dead_body::corpse_count` scalar chunk/level counts and
+  `dead_body::flies_sound` selection/fade algorithms. Flies retain actual
+  `SquareRef` fields; setters release square guards before render hooks.
+- The engine must implement `FliesWorld` current count/chunk/building/retained
+  square queries without keeping WORLD/RefCell guards across sound or render
+  calls. Player inputs carry the actual current `SquareRef`. Chunk activation,
+  count updates, emitters, sickness inputs and physical-reference tracing remain
+  to be connected; this PR does not enable those loops in the running game.
+- Corpse rot, the live corpse registry and reanimation callbacks are pending.
+  Current `static_moving` owns serializable body values. A native corpse owner
+  and checked callback/field services must precede those algorithms; neither a
+  cloned body nor a square/index or object ID is substitute native authority.
+- Original #216 rot/registry algorithms, tests and parity example are preserved
+  for follow-up, with exact Git input hashes in the private review packet.
+  Existing native DSP, error/diagnostic and renderer snapshot identity limits
+  remain separate from this bounded library port.

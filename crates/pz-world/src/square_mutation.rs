@@ -125,6 +125,9 @@ pub trait PathfindSquareHooks {
 
 /// What the render and lighting side is told about square changes.
 pub trait RenderSquareHooks {
+    /// `setHasFlies` on this same retained square, after its guard ends.
+    fn flies_changed(&mut self, _square: SquareRef, _flies: bool) {}
+
     /// `PerformanceSettings.fboRenderChunk`.
     fn fbo_render_chunk(&self) -> bool {
         false

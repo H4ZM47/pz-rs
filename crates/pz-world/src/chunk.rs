@@ -106,6 +106,8 @@ pub struct IsoGridSquare {
     pub collide_matrix: i32,
     pub path_matrix: i32,
     pub vision_matrix: i32,
+    /// Current `IsoGridSquare.hasFlies`, changed by FliesSound; not saved.
+    pub has_flies: bool,
 }
 
 impl IsoGridSquare {
@@ -160,6 +162,7 @@ impl IsoGridSquare {
             collide_matrix: self.collide_matrix,
             path_matrix: self.path_matrix,
             vision_matrix: self.vision_matrix,
+            has_flies: self.has_flies,
         })
     }
 
@@ -197,6 +200,7 @@ impl IsoGridSquare {
             collide_matrix: 0x7FF_FFFF,
             path_matrix: 0x7FF_FFFF,
             vision_matrix: 0,
+            has_flies: false,
         }
     }
 
@@ -386,6 +390,8 @@ pub struct IsoChunk {
     /// geometry the pathfinding side builds per level. Every
     /// `RecalcProperties` of one of the chunk's squares clears it.
     pub collision: ChunkCollision,
+    /// CorpseCount scalar per-level state, created/reset by explicit chunk activation.
+    pub corpse_count: Option<crate::dead_body::corpse_count::CorpseChunkCount>,
 }
 
 /// `CollideWithObstaclesPoly.ChunkData`: a lazily built entry per level
@@ -544,6 +550,7 @@ impl IsoChunk {
             vehicles: Default::default(),
             physics_check: vec![false],
             collision: ChunkCollision::default(),
+            corpse_count: None,
         }
     }
 
@@ -628,6 +635,7 @@ impl IsoChunk {
         }
         self.min_level = min_level;
         self.max_level = max_level;
+        if let Some(counts) = self.corpse_count.as_mut() { counts.retain_levels(min_level, max_level); }
         self.squares = levels;
         self.physics_check = physics;
     }

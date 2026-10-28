@@ -332,8 +332,7 @@ pub struct RenderSquare {
     /// `getPuddles()`, initialised (`IsoPuddlesGeometry.init`); `None`
     /// draws no puddles.
     pub puddles: Option<crate::puddles::PuddlesGeometry>,
-    /// `hasFlies()`: a rotting corpse lies here (owner: the corpse
-    /// simulation, `IsoDeadBody`'s `setHasFlies` on its square).
+    /// Snapshot of the actual square's `hasFlies()`, changed by FliesSound.
     pub flies: bool,
 }
 

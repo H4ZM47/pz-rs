@@ -230,6 +230,14 @@ fn chunk_of(x: i32, y: i32) -> (i32, i32) {
 }
 
 impl RenderSquareHooks for RenderInvalidation<'_> {
+    fn flies_changed(&mut self, square: pz_world::SquareRef, _flies: bool) {
+        let pos = { let sq = square.borrow(); (sq.x, sq.y, sq.z) };
+        // A retained old square can share coordinates with a replacement.
+        // The normal frame boundary rebuilds from the current actual square;
+        // never assign the old receiver's flag to a replacement snapshot.
+        self.pending.squares.insert(pos);
+    }
+
     fn fbo_render_chunk(&self) -> bool {
         self.fbo_render_chunk
     }
