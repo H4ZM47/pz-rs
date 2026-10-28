@@ -1956,6 +1956,7 @@ dependencies = [
  "pz-input",
  "pz-inventory",
  "pz-iso-render",
+ "pz-joml",
  "pz-kahlua",
  "pz-lighting",
  "pz-lua-api",

@@ -54,7 +54,7 @@ pub use invalidate::{check_changed_buildings, PendingRender, PuddleInputs, Rende
 pub use lighting::{
     default_player, grid_square, CellLight, LightingFrame, LightingSquares, PlayerFrameInput, WorldLighting,
 };
-pub use hud_camera::{CameraFrame, SharedCameraFrame};
+pub use hud_camera::{CameraFrame, PlayerCameraOffsets, SharedCameraFrame};
 pub use pick::{ObjectPick, PickClass, PickSpriteFlags, WorldPick};
 pub use render_world::{
     building_id, cutaway_info, puddle_square, render_square, seam_neighbours, wall_type,

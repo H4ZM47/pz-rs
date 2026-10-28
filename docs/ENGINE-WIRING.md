@@ -959,6 +959,15 @@ all installed assets, render paths or foreign platforms.
       (`IsoCamera.frameState` camCharacter/zoom and `cameras[0]`'s offsets;
       world-render thread). `UIManager`'s left button already goes through
       `gizmo_hit_test_hook` (#199).
+- [ ] Gizmo drawing: in the world frame's `late` callback
+      (`pz_iso_render::frame::world_frame_into_with`, where `IsoWorld.render`
+      draws after the cell), first call
+      `pz_engine::world_hud::render_gizmos(frame player, out)`, which turns
+      the `GizmoFrame` into `DrawCmd::VboRun`s for pz-gpu. The gizmo camera is
+      installed with the HUD camera (`install_hud_camera`); each frame also
+      set `SharedCameraFrame::offsets[0]` (`cameras[0].rightClickX/Y`,
+      `getTOffX/Y` while it differs from `getOffX/Y`, `deferedX/Y`;
+      world-render thread) (#203).
 - [ ] Chat (SP): characters thread implements `chat::ChatPlayer` and
       `chat::ChatElementOwner` for IsoPlayer (and installs `chat::ChatPlayers`
       for `IsoPlayer.players`/`getInstance`), gives each `IsoGameCharacter` a
