@@ -441,9 +441,10 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     app.close();
     assert!(app.world.is_none(), "native close retained the gameplay world");
     assert_eq!(app.current_state(), None);
-    assert_eq!(save_counts(app.lua.as_ref().unwrap()), (Some(1.0), Some(1.0)));
+    // `GameWindow.exit` delivers `OnPostSave` twice.
+    assert_eq!(save_counts(app.lua.as_ref().unwrap()), (Some(1.0), Some(2.0)));
     app.close();
-    assert_eq!(save_counts(app.lua.as_ref().unwrap()), (Some(1.0), Some(1.0)), "second close saved twice");
+    assert_eq!(save_counts(app.lua.as_ref().unwrap()), (Some(1.0), Some(2.0)), "second close saved twice");
     mannequin::check_saved(&save_dir, &expected_world_chunks);
 
     let db_path = save_dir.join("players.db");

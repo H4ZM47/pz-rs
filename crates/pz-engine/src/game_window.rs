@@ -162,6 +162,9 @@ impl App {
             if let Some(world) = self.world.as_mut() {
                 if let Err(error) = world.save_on_quit(lua) {
                     crate::failure::record_first(&mut self.error, (format!("PlayerDB save host failure: {error}")).into());
+                } else {
+                    // `GameWindow.exit` delivers `OnPostSave` a second time.
+                    lua.trigger_event("OnPostSave", &[]);
                 }
             }
         }
@@ -592,7 +595,19 @@ pub fn run_headless(launch: Launch, frames: u32) -> crate::failure::EngineResult
     if let Some(error) = app.error.take() {
         return Err(error);
     }
-    Ok(app.current_state())
+    let state = app.current_state();
+    close_headless(&mut app)?;
+    Ok(state)
+}
+
+/// The end of a headless run is the window closing: `GameWindow.exit`
+/// saves a game in progress (the local players, `GameWindow.save(true)`).
+fn close_headless(app: &mut App) -> crate::failure::EngineResult<()> {
+    app.close();
+    match app.error.take() {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 fn headless_app(launch: Launch) -> crate::failure::EngineResult<App> {
@@ -663,6 +678,7 @@ fn headless(launch: Launch, frames: u32, gpu: bool) -> crate::failure::EngineRes
         return Err(error);
     }
     let px = app.gpu.as_ref().map(|g| g.read_pixels());
+    close_headless(&mut app)?;
     Ok((w as u32, h as u32, px))
 }
 
