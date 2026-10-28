@@ -2137,7 +2137,9 @@ AnimalDefinitions = { animals = {
         assert_eq!(a.min_size(ctx).unwrap(), t.def("doe").unwrap().min_size);
         let mut gene = AnimalGene::new(&mut Lcg(1));
         gene.allele1.used = true; gene.allele1.current_value = 1.0;
-        a.full_genome.insert("maxSize".into(), gene);
+        a.full_genome.insert("maxsize".into(), gene);
+        assert_eq!(a.used_gene("maxSize").unwrap().current_value, 1.0, "admit the actual lowercased gene lookup");
+        assert!(a.data.current_stage.is_none(), "exercise the deliberately missing stage");
         a.data.size = 0.75;
         assert_eq!(a.data_set_size(0.5, ctx).unwrap_err(), JavaException("NullPointerException: currentStage".into()));
         assert_eq!(a.data.size, 0.75, "setter must not publish a failed bound");
