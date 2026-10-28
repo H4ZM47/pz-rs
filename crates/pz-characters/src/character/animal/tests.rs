@@ -232,7 +232,7 @@ fn los_spots_zombies_and_visible_players_but_not_animals() {
     let mut grapple = Chr::new(&sm, CharacterKind::Zombie);
     grapple.id = 11;
     grapple.path.current_square = Some((1, 1, 0));
-    grapple.zombie.reanimated_for_grapple_only = true;
+    grapple.zombie.reanimated_for_grapple_only.set(true);
     let mut p = Chr::new(&sm, CharacterKind::Player);
     p.id = 12;
     p.path.current_square = Some((1, 1, 0));

@@ -161,7 +161,7 @@ impl<I: 'static> GameCharacter<I> {
             let Some(o) = cx.world.character_mut(id) else {
                 continue;
             };
-            if o.is_zombie() && o.zombie.reanimated_for_grapple_only {
+            if o.is_zombie() && o.zombie.reanimated_for_grapple_only.get() {
                 continue;
             }
             if (o.vars.z - z).abs() > 1.0 {

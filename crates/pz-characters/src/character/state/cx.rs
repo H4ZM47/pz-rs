@@ -644,8 +644,6 @@ pub trait StateWorld<I> {
     // the `ai/states/animals` states; the animal-only world objects are
     // `pz-animals`' `AnimalWorld` through `animal_host`) ----
 
-    /// `getPathFindBehavior2().reset()` for `chr`.
-    fn path_reset(&mut self, _chr: &mut dyn PathMover) {}
     /// `square.isFree(false)` (the characters on it not counted).
     fn square_is_free_ignoring_characters(&self, _sq: (i32, i32, i32)) -> bool {
         false
