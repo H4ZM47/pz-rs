@@ -1920,13 +1920,26 @@ pub const RAIN_MANAGER_CLASS: &str = "zombie.iso.objects.RainManager";
 /// `RainManager`'s Lua-visible statics: `randRain`, `randRainMin`,
 /// `randRainMax`, `rainDesiredIntensity` and `stopRain`. The raindrop and
 /// splash particles live with the renderer (`pz-iso-render`).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RainStatics {
     pub rand_rain: i32,
     pub rand_rain_min: i32,
     pub rand_rain_max: i32,
     pub rain_desired_intensity: f32,
     pub stop_rain: bool,
+}
+
+impl Default for RainStatics {
+    fn default() -> Self {
+        Self {
+            rand_rain: 0,
+            rand_rain_min: 0,
+            rand_rain_max: 0,
+            // RainManager.<clinit> writes 1.0f before Lua can use the class.
+            rain_desired_intensity: 1.0,
+            stop_rain: false,
+        }
+    }
 }
 
 thread_local! {

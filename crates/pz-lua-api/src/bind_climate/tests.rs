@@ -436,3 +436,14 @@ fn rain_manager_statics_from_lua() {
     reset_rain_manager();
     assert!(!rain_statics().stop_rain);
 }
+
+#[test]
+fn rain_manager_fresh_class_state_matches_installed_initializer() {
+    // A fresh thread exercises the real thread-local producer, without
+    // inheriting another test's stopRaining mutations.
+    let initial = std::thread::spawn(rain_statics).join().unwrap();
+    assert_eq!(initial, RainStatics {
+        rand_rain: 0, rand_rain_min: 0, rand_rain_max: 0,
+        rain_desired_intensity: 1.0, stop_rain: false,
+    });
+}
