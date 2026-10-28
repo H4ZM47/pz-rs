@@ -697,6 +697,7 @@ pub fn register_with(thread: &mut Thread, constants: &[(&'static str, Vec<(Strin
     register_thunder(thread);
     register_forecaster(thread);
     register_misc(thread);
+    register_rain_manager(thread);
     for (fqn, fields) in constants {
         let b = expose_class(thread, fqn, None);
         for (name, v) in fields {
@@ -1912,6 +1913,94 @@ fn register_forecaster(thread: &mut Thread) {
             Ok(c.push(fv(v)))
         });
     }
+}
+
+pub const RAIN_MANAGER_CLASS: &str = "zombie.iso.objects.RainManager";
+
+/// `RainManager`'s Lua-visible statics: `randRain`, `randRainMin`,
+/// `randRainMax`, `rainDesiredIntensity` and `stopRain`. The raindrop and
+/// splash particles live with the renderer (`pz-iso-render`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RainStatics {
+    pub rand_rain: i32,
+    pub rand_rain_min: i32,
+    pub rand_rain_max: i32,
+    pub rain_desired_intensity: f32,
+    pub stop_rain: bool,
+}
+
+impl Default for RainStatics {
+    fn default() -> Self {
+        Self {
+            rand_rain: 0,
+            rand_rain_min: 0,
+            rand_rain_max: 0,
+            // RainManager.<clinit> writes 1.0f before Lua can use the class.
+            rain_desired_intensity: 1.0,
+            stop_rain: false,
+        }
+    }
+}
+
+thread_local! {
+    static RAIN: RefCell<RainStatics> = RefCell::new(RainStatics::default());
+}
+
+pub fn rain_statics() -> RainStatics {
+    RAIN.with(|r| *r.borrow())
+}
+
+/// `RainManager.reset()`'s state part (`isRaining = stopRain = false`).
+pub fn reset_rain_manager() {
+    RAIN.with(|r| r.borrow_mut().stop_rain = false);
+}
+
+/// `RainManager`, the static class Lua reaches as a global
+/// (`SRainBarrelSystem.checkRain`, the debug weather panels).
+fn register_rain_manager(thread: &mut Thread) {
+    let b = expose_class(thread, RAIN_MANAGER_CLASS, None);
+    // `ClimateManager.getInstance().isRaining()`.
+    b.static_fn("isRaining", |c| {
+        let v = with_gt(c, |g, _| g.climate.is_raining())?;
+        Ok(c.push(v))
+    });
+    // `ClimateManager.getInstance().getPrecipitationIntensity()`.
+    b.static_fn("getRainIntensity", |c| {
+        let v = with_gt(c, |g, _| g.climate.get_precipitation_intensity())?;
+        Ok(c.push(fv(v)))
+    });
+    b.static_fn("startRaining", |_| Ok(0));
+    // TODO(port): `GameServer.stopRain()` on a server.
+    b.static_fn("stopRaining", |c| {
+        RAIN.with(|r| {
+            let mut r = r.borrow_mut();
+            r.stop_rain = true;
+            r.rand_rain = r.rand_rain_max;
+            r.rain_desired_intensity = 0.0;
+        });
+        if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
+            sink(c.thread, "OnRainStop", &[]);
+        }
+        Ok(0)
+    });
+    b.static_fn("setRandRainMax", |c| {
+        let v = int_arg(c, 0);
+        RAIN.with(|r| {
+            let mut r = r.borrow_mut();
+            r.rand_rain = v;
+            r.rand_rain_max = v;
+        });
+        Ok(0)
+    });
+    b.static_fn("setRandRainMin", |c| {
+        let v = int_arg(c, 0);
+        RAIN.with(|r| r.borrow_mut().rand_rain_min = v);
+        Ok(0)
+    });
+    b.static_fn("reset", |_| {
+        reset_rain_manager();
+        Ok(0)
+    });
 }
 
 fn register_misc(thread: &mut Thread) {

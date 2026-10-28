@@ -76,6 +76,7 @@ use std::rc::Rc;
 mod direction_tests;
 #[cfg(test)]
 mod grapple_tests;
+mod control;
 mod key_ring;
 pub(crate) mod known_poison;
 mod reading;
@@ -1776,8 +1777,13 @@ fn register_character(
         ISO_ZOMBIE_CLASS,
         ISO_ANIMAL_CLASS,
     ] {
-        expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
+        let sub = expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
+        if class == ISO_PLAYER_CLASS || class == ISO_ANIMAL_CLASS {
+            control::register_player(&sub);
+        }
     }
+    control::register(&b);
+    control::register_globals(thread);
     known_poison::register(&b, sm, chars);
     reading::register(&b);
     read_flags::register(&b);

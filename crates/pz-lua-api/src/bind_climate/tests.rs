@@ -412,3 +412,38 @@ fn debug_callback_can_disable_puddle_fx_before_current_frame_advances() {
     assert_eq!(crate::bind_puddles::shared_puddles().borrow().state, Default::default());
     crate::bind_world::set_cell(None);
 }
+
+#[test]
+fn rain_manager_statics_from_lua() {
+    let mut t = setup();
+    let r = run(
+        &mut t,
+        "events = {} \
+         function onEvent(n) table.insert(events, n) end \
+         assert(RainManager.isRaining() == getClimateManager():isRaining()) \
+         assert(RainManager.getRainIntensity() == getClimateManager():getPrecipitationIntensity()) \
+         RainManager.setRandRainMin(3) RainManager.setRandRainMax(9) \
+         RainManager.startRaining() \
+         RainManager.stopRaining() \
+         return events[1], #events",
+    );
+    assert_eq!(r[0].as_str(), Some("OnRainStop"));
+    assert_eq!(r[1].as_num(), Some(1.0));
+    assert_eq!(
+        rain_statics(),
+        RainStatics { rand_rain: 9, rand_rain_min: 3, rand_rain_max: 9, rain_desired_intensity: 0.0, stop_rain: true }
+    );
+    reset_rain_manager();
+    assert!(!rain_statics().stop_rain);
+}
+
+#[test]
+fn rain_manager_fresh_class_state_matches_installed_initializer() {
+    // A fresh thread exercises the real thread-local producer, without
+    // inheriting another test's stopRaining mutations.
+    let initial = std::thread::spawn(rain_statics).join().unwrap();
+    assert_eq!(initial, RainStatics {
+        rand_rain: 0, rand_rain_min: 0, rand_rain_max: 0,
+        rain_desired_intensity: 1.0, stop_rain: false,
+    });
+}
