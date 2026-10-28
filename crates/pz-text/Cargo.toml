@@ -4,4 +4,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pz-script-parser.workspace = true
 pz-render.workspace = true

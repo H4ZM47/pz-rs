@@ -1,0 +1,6 @@
+[package]
+name = "pz-script-parser"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

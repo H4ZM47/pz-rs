@@ -6,7 +6,8 @@ use std::rc::Rc;
 use pz_render::{DrawList, Rgba, TextureLoader};
 
 use crate::font::{AngelCodeFont, FontError};
-use crate::script_parser::{self, java_trim};
+use pz_script_parser::java::trim as java_trim;
+use pz_script_parser as script_parser;
 use crate::translator::equals_ignore_case;
 use crate::UIFont;
 
@@ -45,36 +46,36 @@ fn fonts_from_string(
     let block = script_parser::parse(&script_parser::strip_comments(contents));
     let version = block
         .get_value("VERSION")
-        .and_then(|v| java_trim(&v.value()).parse::<i32>().ok())
+        .and_then(|v| java_trim(v.get_value()).parse::<i32>().ok())
         .unwrap_or(-1);
     if version != 1 {
         return Err("invalid or missing VERSION".into());
     }
     for b in &block.children {
-        if !equals_ignore_case(&b.r#type, "font") {
-            return Err(format!("unknown block type \"{}\"", b.r#type));
+        if !equals_ignore_case(b.type_str(), "font") {
+            return Err(format!("unknown block type \"{}\"", b.type_str()));
         }
         let Some(id) = b.id.clone().filter(|s| !is_blank(s)) else {
             eprintln!("WARN: missing or empty font id");
             continue;
         };
-        let fnt = b.get_value("fnt").map(|v| v.value());
+        let fnt = b.get_value("fnt").map(|v| v.get_value());
         let Some(fnt) = fnt.filter(|s| !is_blank(s)) else {
             eprintln!("WARN: missing or empty value \"fnt\"");
             continue;
         };
         let img = b
             .get_value("img")
-            .map(|v| v.value())
+            .map(|v| v.get_value())
             .filter(|s| !is_blank(s))
-            .map(|s| java_trim(&s).to_string());
+            .map(|s| java_trim(s).to_string());
         let ty = b
             .get_value("type")
-            .map(|v| java_trim(&v.value()).to_string())
+            .map(|v| java_trim(v.get_value()).to_string())
             .filter(|s| !is_blank(s));
         let font = FontsFileFont {
             id: id.clone(),
-            fnt: java_trim(&fnt).to_string(),
+            fnt: java_trim(fnt).to_string(),
             img,
             r#type: ty,
         };
@@ -83,8 +84,9 @@ fn fonts_from_string(
     Ok(())
 }
 
+/// `StringUtils.isNullOrWhitespace` on a non-null string.
 fn is_blank(s: &str) -> bool {
-    s.chars().all(char::is_whitespace)
+    pz_script_parser::java::is_null_or_whitespace(Some(s))
 }
 
 /// `TextManager.DeferedTextDraw`.

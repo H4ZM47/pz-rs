@@ -15,7 +15,6 @@ pub mod java;
 pub mod jfile;
 pub mod mods;
 pub mod pack;
-pub mod script_parser;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
