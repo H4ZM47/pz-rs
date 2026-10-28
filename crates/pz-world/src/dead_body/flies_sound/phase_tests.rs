@@ -205,7 +205,7 @@ impl PrefixWorld {
             base: World::new(),
             building_calls: std::cell::Cell::new(0),
             fail_building_at: None,
-            building_value: Some(7),
+            building_value: Some(BuildingIdx(7)),
         }
     }
 }
@@ -241,7 +241,7 @@ fn prime_prefix(flies: &mut FliesSound) {
     d.wx = 0;
     d.wy = 0;
     d.z = 0;
-    d.building = Some(7);
+    d.building = Some(BuildingIdx(7));
     d.deaf = false;
     d.force_update = false;
     d.refs = vec![A];
@@ -264,7 +264,7 @@ fn changed_deaf_publishes_prefix_and_resets_force_before_coordinate_failure() {
     assert!(d.deaf, "changed trait is published before any square query");
     assert!(!d.force_update, "native force reset precedes coordinate access");
     assert_eq!((d.wx, d.wy, d.z), (0, 0, 0));
-    assert_eq!(d.building, Some(7));
+    assert_eq!(d.building, Some(BuildingIdx(7)));
     assert_eq!(d.refs, vec![A]);
     assert_eq!(d.refs_prev, vec![A]);
     assert_eq!(world.building_calls.get(), 0, "changed deaf skips isSameLocation, then held coordinates stop the later building read");
@@ -305,7 +305,7 @@ fn building_failure_keeps_coordinate_prefix_and_distinct_repeat_query() {
         let d = &flies.player_data[0];
         assert!(!d.force_update);
         assert_eq!((d.wx, d.wy, d.z), (1, 0, 0), "coordinates publish before the actual building read");
-        assert_eq!(d.building, Some(7), "a failed later read does not publish a replacement building");
+        assert_eq!(d.building, Some(BuildingIdx(7)), "a failed later read does not publish a replacement building");
         assert_eq!(d.refs, vec![A], "refs.clear follows successful building publication");
         assert_eq!(d.refs_prev, vec![A]);
         assert_eq!(world.building_calls.get(), expected_queries);
