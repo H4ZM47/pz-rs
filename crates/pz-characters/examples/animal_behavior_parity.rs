@@ -35,7 +35,7 @@ use pz_animals::{
 };
 use pz_characters::character::animal::AnimalHost;
 use pz_characters::character::state::{
-    ActionGroups, SquareInfo, StateCx, StateRegistry, StateWorld,
+    ActionGroups, SquareInfo, StateCx, StateRegistry, StateResult, StateWorld,
 };
 use pz_characters::character::states::ids;
 use pz_characters::character::{CharacterKind, GameCharacter, SimContext, SimStatics};
@@ -545,16 +545,17 @@ fn events(
     s: &Setup,
     ctx: &Ctx,
     registry: &mut StateRegistry<i32>,
-) {
+) -> StateResult<()> {
     let hunger = s.chars.sim.character_stats.field("HUNGER").unwrap();
     let thirst = s.chars.sim.character_stats.field("THIRST").unwrap();
     for e in ev.split(',').filter(|e| !e.is_empty()) {
         let cx_world =
-            |c: &mut Chr, w: &mut World<'_>, f: &mut dyn FnMut(&mut Chr, &mut StateCx<'_, i32>)| {
+            |c: &mut Chr, w: &mut World<'_>, f: &mut dyn FnMut(&mut Chr, &mut StateCx<'_, i32>)| -> StateResult<()> {
                 w.owner_pos = (c.vars.x, c.vars.y);
                 w.mult = ctx.mult;
                 let mut cx = StateCx::new(&s.sm, &s.chars, ctx, w);
                 f(c, &mut cx);
+                cx.state_result()
             };
         match e {
             "sedt0" => c.vars.state_event_delay_timer = 0.0,
@@ -586,7 +587,7 @@ fn events(
             }
             "toAlerted" => {
                 let st = registry.get_or_opaque(ids::ANIMAL_ALERTED.0);
-                cx_world(c, w, &mut |c, cx| c.change_state(Some(st), cx));
+                cx_world(c, w, &mut |c, cx| c.change_state(Some(st), cx))?;
             }
             "zgone" => place(w.character_mut(ZOMBIE).unwrap(), 790.5, 790.5),
             "held" => c.animal_fields_mut().unwrap().animal.held_by = Some((1, 0)),
@@ -594,7 +595,7 @@ fn events(
             "thirsty" => {
                 c.stats.set(&thirst, 0.95);
             }
-            "goAttackP" => cx_world(c, w, &mut |c, cx| c.behavior_go_attack(PLAYER, cx)),
+            "goAttackP" => cx_world(c, w, &mut |c, cx| c.behavior_go_attack(PLAYER, cx))?,
             "calm" => {
                 let f_ = c.animal_fields_mut().unwrap();
                 f_.atk_target = None;
@@ -607,11 +608,11 @@ fn events(
                 f_.spotted_chr = None;
                 f_.animal.alerted = false;
                 f_.alerted_chr = None;
-                cx_world(c, w, &mut |c, cx| c.animal_stop_all_movement_now(cx));
+                cx_world(c, w, &mut |c, cx| c.animal_stop_all_movement_now(cx))?;
                 c.vars.state_event_delay_timer = 5000.0;
             }
             "goAttackB" => {
-                cx_world(c, w, &mut |c, cx| c.behavior_go_attack(OTHER, cx));
+                cx_world(c, w, &mut |c, cx| c.behavior_go_attack(OTHER, cx))?;
                 c.animal_fields_mut().unwrap().fighting_opponent = Some(OTHER);
             }
             "calm2" => {
@@ -626,16 +627,17 @@ fn events(
             }
             e if e.starts_with("spotP") => {
                 let d: f32 = e[5..].parse().unwrap();
-                cx_world(c, w, &mut |c, cx| c.behavior_spotted(PLAYER, d, cx));
+                cx_world(c, w, &mut |c, cx| c.behavior_spotted(PLAYER, d, cx))?;
             }
             e if e.starts_with("spotZ") => {
                 let d: f32 = e[5..].parse().unwrap();
                 place(w.character_mut(ZOMBIE).unwrap(), 812.5 - d, 812.5);
-                cx_world(c, w, &mut |c, cx| c.behavior_spotted(ZOMBIE, d, cx));
+                cx_world(c, w, &mut |c, cx| c.behavior_spotted(ZOMBIE, d, cx))?;
             }
             other => panic!("unknown event {other}"),
         }
     }
+    Ok(())
 }
 
 /// The oracle's `afterTick`.
@@ -646,7 +648,7 @@ fn after_tick(
     ctx: &Ctx,
     attack_ticks: &mut i32,
     registry: &mut StateRegistry<i32>,
-) {
+) -> StateResult<()> {
     w.owner_pos = (c.vars.x, c.vars.y);
     if c.animal_fields().unwrap().atk_target.is_some()
         && c.current_state_id() != Some(ids::ANIMAL_ATTACK)
@@ -655,6 +657,7 @@ fn after_tick(
         let st = registry.get_or_opaque(ids::ANIMAL_ATTACK.0);
         let mut cx = StateCx::new(&s.sm, &s.chars, ctx, w);
         c.change_state(Some(st), &mut cx);
+        cx.state_result()?;
     }
     if c.variable_boolean("bPathfind") {
         c.set_var_bool("bPathfind", false);
@@ -685,6 +688,7 @@ fn after_tick(
             let mut cx = StateCx::new(&s.sm, &s.chars, ctx, w);
             let d = c.default_state();
             c.change_state(d, &mut cx);
+            cx.state_result()?;
         }
     } else if st == Some(ids::ANIMAL_ATTACK) {
         if c.animal_fields().unwrap().atk_target.is_some() {
@@ -703,12 +707,14 @@ fn after_tick(
                 let state = c.current_state().unwrap();
                 let mut cx = StateCx::new(&s.sm, &s.chars, ctx, w);
                 state.anim_event(c, &mut cx, &ev);
+                cx.state_result()?;
             }
         }
         if c.animal_fields().unwrap().atk_target.is_none() {
             let mut cx = StateCx::new(&s.sm, &s.chars, ctx, w);
             let d = c.default_state();
             c.change_state(d, &mut cx);
+            cx.state_result()?;
         }
     } else if st == Some(ids::ANIMAL_ALERTED) {
         let f_ = c.animal_fields().unwrap();
@@ -716,13 +722,15 @@ fn after_tick(
             let mut cx = StateCx::new(&s.sm, &s.chars, ctx, w);
             let d = c.default_state();
             c.change_state(d, &mut cx);
+            cx.state_result()?;
         }
     } else {
         c.vars.collided_this_frame = false;
     }
+    Ok(())
 }
 
-fn main() {
+fn main() -> StateResult<()> {
     let a: Vec<String> = std::env::args().collect();
     let oracle = std::fs::read_to_string(&a[1]).expect("oracle dump");
     let mut s = setup(&oracle, std::path::Path::new(&a[2]));
@@ -769,11 +777,12 @@ fn main() {
                 world.others = vec![p, z];
                 let breed = defs.def(x[1]).and_then(|d| d.breed_by_name(x[2])).cloned();
                 pz_core::random::set_seed(seed + 5000);
-                if let Ok(mut b) = Chr::new_animal(&s.sm, &mut s.chars) {
+                {
+                    let mut b = Chr::new_animal(&s.sm, &mut s.chars)?;
                     b.id = OTHER;
                     place(&mut b, 790.5, 790.5);
                     b.path.current_square = None;
-                    let ok = {
+                    {
                         let mut host = world.animal_host(OTHER).unwrap();
                         b.init_animal(
                             x[1],
@@ -782,10 +791,9 @@ fn main() {
                             &mut s.groups,
                             &ctx,
                             &mut host,
-                        )
-                        .is_ok()
-                    };
-                    if ok {
+                        )?;
+                    }
+                    {
                         pz_animals::AnimalCharacter::set_dir(&mut b, pz_core::random::next(8));
                         OTHER_ANIMAL_ID
                             .with(|c| c.set(b.animal_fields().unwrap().animal.animal_id));
@@ -819,15 +827,18 @@ fn main() {
                 if let Some(mut b) = world.take_character(OTHER) {
                     place(&mut b, 790.5, 791.5);
                     b.animal_fields_mut().unwrap().exists_in_world = true;
-                    {
+                    let result = {
                         let mut cx = StateCx::new(&s.sm, &s.chars, &ctx, &mut world);
                         b.set_default_state(&mut cx);
-                    }
+                        cx.state_result()
+                    };
                     world.put_character(b);
+                    result?;
                 }
                 {
                     let mut cx = StateCx::new(&s.sm, &s.chars, &ctx, &mut world);
                     c.set_default_state(&mut cx);
+                    cx.state_result()?;
                 }
                 t.check(&format!("made {}", x[1]), x[7], &trace(&c, &world));
                 t.check(&format!("made next {}", x[1]), x[8], &next());
@@ -845,15 +856,17 @@ fn main() {
                     w.character_mut(PLAYER).unwrap().running = i >= 140;
                 }
                 let ctx_v = *ctx;
-                events(x[4], c, w, &s, &ctx_v, &mut registry);
+                events(x[4], c, w, &s, &ctx_v, &mut registry)?;
                 w.owner_pos = (c.vars.x, c.vars.y);
                 w.mult = ctx_v.mult;
                 {
                     let mut cx = StateCx::new(&s.sm, &s.chars, &ctx_v, w);
                     c.behavior_update(&mut cx);
+                    cx.state_result()?;
                     c.state_machine_update(&mut cx);
+                    cx.state_result()?;
                 }
-                after_tick(c, w, &s, &ctx_v, &mut attack_ticks, &mut registry);
+                after_tick(c, w, &s, &ctx_v, &mut attack_ticks, &mut registry)?;
                 let rt = trace(c, w);
                 if std::env::var("DUMP").is_ok_and(|d| d == format!("{}:{i}", x[1])) {
                     println!("JAVA {}\nRUST {}", x[5], rt);
@@ -922,6 +935,7 @@ fn main() {
                 pz_characters::character::states::animal::CW.set(&mut c.state.params, pre);
                 let cx = StateCx::new(&s.sm, &s.chars, &*ctx, w);
                 let r = pz_characters::character::states::animal::AnimalFollowWallState::decide_rotation(c, dir(x[3]), &cx);
+                cx.state_result()?;
                 t.check(
                     &format!("rot {} {} {} {}", x[1], x[2], x[3], x[4]),
                     &format!("{}\t{}", x[5], x[6]),
@@ -938,6 +952,7 @@ fn main() {
                 c.set_forward_iso_direction(dir);
                 let cx = StateCx::new(&s.sm, &s.chars, &*ctx, w);
                 pz_characters::character::states::animal::AnimalAlertedState::set_turn_alerted_values(c, (zx, zy), &cx);
+                cx.state_result()?;
                 t.check(
                     &format!("alertx {} {} {}", x[1], x[2], x[3]),
                     &format!("{}\t{}", x[5], x[6]),
@@ -972,6 +987,7 @@ fn main() {
                 ctx.mult = f32::from_bits(u32::from_str_radix(x[7], 16).unwrap());
                 let cx = StateCx::new(&s.sm, &s.chars, &*ctx, w);
                 let r = c.animal_should_thump(&cx);
+                cx.state_result()?;
                 t.check(
                     &format!("thump {} {k}", x[1]),
                     &format!("{}\t{}", x[5], x[6]),
@@ -997,6 +1013,7 @@ fn main() {
                 place(c, p, p);
                 let mut cx = StateCx::new(&s.sm, &s.chars, &*ctx, w);
                 c.behavior_check_sit(&mut cx);
+                cx.state_result()?;
                 let b = &c.animal_fields().unwrap().animal.behavior;
                 let r = format!(
                     "{}\t{}\t{}\t{}",
@@ -1022,4 +1039,5 @@ fn main() {
     if t.diffs > 0 {
         std::process::exit(1);
     }
+    Ok(())
 }

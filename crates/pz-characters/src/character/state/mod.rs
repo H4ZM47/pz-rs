@@ -45,7 +45,7 @@ pub mod vars;
 
 pub use cx::{
     BehaviorResult, CorpseInfo, EatTarget, FenceClimb, FenceInfo, FootFloor, GroundInfo, NullWorld, SheetRopeExit, SheetRopeSquare, SquareInfo,
-    StairsPieces, StateCx, StateWorld, TestResults, ThumpInfo, ThumpKind, ThumpTarget, WindowClimb, WindowInfo,
+    StairsPieces, StateCx, StateFailure, StateResult, StateWorld, TestResults, ThumpInfo, ThumpKind, ThumpTarget, WindowClimb, WindowInfo,
 };
 pub use action::ActionGroups;
 pub use machine::{StateMachine, StateMachineComponent, SubstateSlot};

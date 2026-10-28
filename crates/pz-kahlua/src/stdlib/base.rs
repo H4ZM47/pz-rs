@@ -412,9 +412,10 @@ pub fn register_compiler(env: &TableRef) {
             Ok(f) => Ok(c.push(f)),
             Err(e) => {
                 c.push(Value::Nil);
-                let msg = match e {
-                    LuaError::Kahlua(v) => v,
-                    LuaError::Runtime { message, .. } => Value::from(message),
+                let msg = match e.diagnostic() {
+                    LuaError::Kahlua(v) => v.clone(),
+                    LuaError::Runtime { message, .. } => Value::from(message.clone()),
+                    LuaError::WithCause { .. } => unreachable!("leaf diagnostic"),
                 };
                 c.push(msg);
                 Ok(2)
@@ -440,18 +441,20 @@ pub struct JavaException(pub LuaError);
 
 impl crate::value::LuaObject for JavaException {
     fn class_name(&self) -> &str {
-        match &self.0 {
+        match self.0.diagnostic() {
             LuaError::Kahlua(_) => "se.krka.kahlua.vm.KahluaException",
             LuaError::Runtime { class, .. } => class,
+            LuaError::WithCause { .. } => unreachable!("leaf diagnostic"),
         }
     }
     /// `Throwable.toString()`.
     fn to_lua_string(&self) -> String {
-        match &self.0 {
+        match self.0.diagnostic() {
             LuaError::Kahlua(v) => {
                 format!("se.krka.kahlua.vm.KahluaException: {}", java_value_of(v))
             }
             LuaError::Runtime { message, class } => format!("{class}: {message}"),
+            LuaError::WithCause { .. } => unreachable!("leaf diagnostic"),
         }
     }
     fn as_any(&self) -> &dyn std::any::Any {

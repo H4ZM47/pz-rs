@@ -53,3 +53,42 @@ fn plays_game_events_through_the_backend() {
     b.instance_release(inst);
     assert_eq!(b.instance_playback_state(inst), PlaybackState::Stopped);
 }
+
+#[test]
+#[ignore]
+fn plays_game_sound_files_through_the_backend() {
+    let Some(dir) = std::env::var_os("PZ_GAME_DIR") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let studio = Arc::new(Mutex::new(Studio::new(SetupHeaders::default())));
+    let root = dir.clone();
+    let mut b = StudioBackend::new(studio.clone()).with_file_resolver(move |p| {
+        Some(root.join(p).to_str().expect("UTF-8 installed fixture path").to_owned())
+    });
+
+    // Every loose file decodes.
+    let mut n = 0;
+    for e in std::fs::read_dir(dir.join("media/sound")).unwrap().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".ogg") || name.ends_with(".wav") {
+            assert_ne!(b.load_sound(&format!("media/sound/{name}"), false), 0, "{name}");
+            n += 1;
+        }
+    }
+    assert!(n > 100);
+    assert_eq!(b.load_sound("media/sound/NoSuchFile.ogg", false), 0);
+
+    let snd = b.load_sound("media/sound/9mmShot.ogg", false);
+    assert_eq!(b.load_sound("media/sound/9mmShot.ogg", false), snd, "cached");
+    let ch = b.play_sound(snd, true);
+    b.channel_set_volume(ch, 1.0);
+    b.channel_set_paused(ch, false);
+    assert!(b.channel_is_playing(ch));
+    let mut out = vec![0.0f32; 2 * 4800];
+    studio.lock().unwrap().mix(&mut out);
+    assert!(out.iter().any(|&x| x.abs() > 0.01));
+    assert!(b.channel_position_ms(ch) >= 99);
+    b.channel_stop(ch);
+    assert!(!b.channel_is_playing(ch));
+}

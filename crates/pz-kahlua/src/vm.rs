@@ -132,9 +132,49 @@ pub(crate) struct CallFrame {
 pub enum LuaError {
     Kahlua(Value),
     Runtime { message: String, class: &'static str },
+    /// A non-Lua original cause retained behind the current diagnostic.
+    /// This adds ownership only; it does not identify a native Throwable or
+    /// change this VM's existing catch/classification behavior.
+    WithCause { diagnostic: Rc<LuaError>, cause: Rc<dyn std::error::Error> },
 }
 
 impl LuaError {
+    /// Retain a cause whose reachable data contains no Lua owners. The
+    /// current producers are AnimalDataError, ScriptError and StateFailure's
+    /// scalar/String-only Host arm; generic Lua-bearing causes need tracing.
+    pub fn with_cause(diagnostic: LuaError, cause: Rc<dyn std::error::Error>) -> Self {
+        Self::WithCause { diagnostic: Rc::new(diagnostic), cause }
+    }
+    pub fn diagnostic(&self) -> &LuaError {
+        match self { Self::WithCause { diagnostic, .. } => diagnostic.diagnostic(), error => error }
+    }
+    pub fn retained_cause(&self) -> Option<&Rc<dyn std::error::Error>> {
+        match self { Self::WithCause { cause, .. } => Some(cause), _ => None }
+    }
+    /// Reproduce an existing diagnostic wrapper without dropping retained causes.
+    pub(crate) fn map_diagnostic(self, map: impl FnOnce(LuaError) -> LuaError) -> Self {
+        match self {
+            Self::WithCause { diagnostic, cause } => Self::WithCause {
+                diagnostic: Rc::new(Rc::unwrap_or_clone(diagnostic).map_diagnostic(map)), cause,
+            },
+            error => map(error),
+        }
+    }
+    /// Pin an actual Lua diagnostic Value through the existing safe retirement
+    /// queue, including a last-strong diagnostic Rc with Weak observers.
+    /// Retained causes in this bounded adapter must not hide Lua owners.
+    pub fn retire_diagnostic_values(&self) {
+        match self {
+            Self::Kahlua(value) => {
+                let mut retired = crate::native_list::NativeListRetired::new();
+                retired.keep_value(value);
+            }
+            Self::WithCause { diagnostic, .. } => {
+                diagnostic.retire_diagnostic_values();
+            }
+            Self::Runtime { .. } => (),
+        }
+    }
     pub fn kahlua(msg: impl Into<String>) -> Self {
         LuaError::Kahlua(Value::from(msg.into()))
     }
@@ -147,6 +187,7 @@ impl LuaError {
         match self {
             LuaError::Kahlua(v) => v.clone(),
             LuaError::Runtime { message, class } => Value::from(format!("{message} {class}")),
+            LuaError::WithCause { diagnostic, .. } => diagnostic.pcall_message(),
         }
     }
 }
@@ -157,7 +198,14 @@ impl fmt::Display for LuaError {
             LuaError::Kahlua(Value::Str(s)) => f.write_str(s),
             LuaError::Kahlua(v) => write!(f, "{v:?}"),
             LuaError::Runtime { message, .. } => f.write_str(message),
+            LuaError::WithCause { diagnostic, .. } => fmt::Display::fmt(diagnostic, f),
         }
+    }
+}
+
+impl std::error::Error for LuaError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.retained_cause().map(|cause| cause.as_ref())
     }
 }
 

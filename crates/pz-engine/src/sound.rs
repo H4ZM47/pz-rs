@@ -10,6 +10,16 @@ use std::sync::{Arc, Mutex};
 /// The banks `FMODManager.init` loads, in order (`media/sound/banks/Desktop`).
 const BANKS: [&str; 4] = ["ZomboidSound.strings", "ZomboidSound", "ZomboidSoundMP", "ZomboidMusic"];
 
+/// The same backend construction used by install, without starting a device.
+/// Resolve each load against the live GameFs, including subsequent mod overrides.
+fn backend_with_game_fs(
+    studio: Arc<Mutex<pz_audio::studio::Studio>>,
+    fs: Rc<RefCell<pz_fs::GameFs>>,
+) -> pz_sound::studio_backend::StudioBackend {
+    pz_sound::studio_backend::StudioBackend::new(studio)
+        .with_file_resolver(move |path| fs.borrow().absolute_path(path).map(str::to_owned))
+}
+
 /// Build the studio, start output and install the shared sound system.
 /// Returns the output stream, which plays for as long as it is kept.
 /// On failure the sound system stays silent and the error is returned.
@@ -25,7 +35,7 @@ pub fn install(game_dir: &Path, cache_dir: &Path, fs: Rc<RefCell<pz_fs::GameFs>>
     }
     let studio = Arc::new(Mutex::new(studio));
     let output = pz_audio::output::Output::start(studio.clone())?;
-    let backend = pz_sound::studio_backend::StudioBackend::new(studio);
+    let backend = backend_with_game_fs(studio, fs.clone());
     let count = backend.parameter_count();
     let env = pz_sound::game_sounds::SoundEnv {
         server: false,
@@ -41,3 +51,6 @@ pub fn install(game_dir: &Path, cache_dir: &Path, fs: Rc<RefCell<pz_fs::GameFs>>
     pz_lua_api::bind_audio::install_sound_system(Rc::new(RefCell::new(system)));
     Ok(output)
 }
+
+#[cfg(test)]
+mod tests;

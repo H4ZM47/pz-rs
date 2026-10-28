@@ -15,26 +15,10 @@
 //! With `--headless-frames N` (and optionally `--png`) the frames run
 //! without a window.
 
+mod install;
 mod main_screen;
 
 use std::path::PathBuf;
-
-/// Default install locations of the game's `Contents/Java` (macOS) or
-/// game directory (Windows/Linux).
-fn default_game_dirs() -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_default();
-    vec![
-        home.join("Library/Application Support/Steam/steamapps/common/ProjectZomboid/Project Zomboid.app/Contents/Java"),
-        home.join(".steam/steam/steamapps/common/ProjectZomboid/projectzomboid"),
-        home.join(".local/share/Steam/steamapps/common/ProjectZomboid/projectzomboid"),
-        PathBuf::from("C:/Program Files (x86)/Steam/steamapps/common/ProjectZomboid"),
-    ]
-}
-
-fn find_game_dir(arg: Option<PathBuf>) -> Option<PathBuf> {
-    let candidates = arg.into_iter().chain(std::env::var_os("PZ_GAME_DIR").map(PathBuf::from)).chain(default_game_dirs());
-    candidates.into_iter().find(|p| p.join("media").is_dir())
-}
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -80,15 +64,14 @@ fn main() {
             }
         }
     }
-    let Some(dir) = find_game_dir(game_dir) else {
-        eprintln!("Cannot find the Project Zomboid install (a directory containing media/). Use --game-dir or PZ_GAME_DIR.");
+    let Some(dir) = install::find_game_dir(game_dir) else {
+        eprintln!("Cannot find the Project Zomboid install (a directory containing media/) in the Steam libraries. Use --game-dir or PZ_GAME_DIR.");
         std::process::exit(2);
     };
     // Development cache dir: ~/Zomboid-rs unless --cache-dir is given. The
     // original game's ~/Zomboid is never written.
     let cache_dir = cache_dir.unwrap_or_else(|| {
-        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_default();
-        home.join("Zomboid-rs")
+        install::home_dir().join("Zomboid-rs")
     });
     let _ = std::fs::create_dir_all(&cache_dir);
     use pz_engine::game_window::{DevGame, Launch, Start};

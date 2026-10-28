@@ -322,15 +322,15 @@ impl Animal {
             }
         }
         let age_to_grow = stage_age_to_grow(self)? as f32;
-        let mut size_grow = (self.max_size(ctx) - self.min_size(ctx)) / age_to_grow;
+        let mut size_grow = (self.max_size(ctx)? - self.min_size(ctx)?) / age_to_grow;
         let mut weight_grow = (self.max_weight(ctx) - self.min_weight(ctx)) / age_to_grow;
         if self.small_enclosure {
             size_grow /= 8.0;
             weight_grow /= 8.0;
         }
         let h = chr.health();
-        let s = fmin(self.max_size(ctx), self.data.size + size_grow * h);
-        self.data_set_size(s, ctx);
+        let s = fmin(self.max_size(ctx)?, self.data.size + size_grow * h);
+        self.data_set_size(s, ctx)?;
         let w = fmin(self.max_weight(ctx), self.data.weight + weight_grow * h);
         self.data_set_weight(w, ctx);
         self.data_check_poop(meta, false, chr, env)?;
@@ -400,7 +400,7 @@ impl Animal {
         let Some(dung) = env.world.create_item(adef.dung.as_deref().unwrap_or("")) else {
             return npe("dung item");
         };
-        base_size *= self.data.size / self.max_size(ctx);
+        base_size *= self.data.size / self.max_size(ctx)?;
         env.world.scale_item_weight(dung, base_size);
         if let Some(sq) = self.drop_square(meta, chr, env) {
             env.world.add_world_item(sq, dung, 0.0, 0.0, 0.0);
@@ -559,7 +559,7 @@ impl Animal {
             self.data_check_eggs(cal, false, chr, env)?;
         }
         self.data_check_fertilized_time(ctx);
-        self.data_check_old(chr, ctx);
+        self.data_check_old(chr, ctx)?;
         self.data_update_weight(chr, ctx);
         Ok(())
     }
@@ -606,14 +606,15 @@ impl Animal {
         }
     }
 
-    fn data_check_old(&mut self, chr: &mut dyn AnimalCharacter, ctx: AnimalCtx<'_>) {
-        if !self.is_baby().unwrap_or(false)
+    fn data_check_old(&mut self, chr: &mut dyn AnimalCharacter, ctx: AnimalCtx<'_>) -> JResult<()> {
+        if !self.is_baby()?
             && self.max_age_geriatric(ctx) > 0.0
             && self.geriatric_percentage(ctx) >= 0.95
         {
             let h = chr.health() - 0.1;
             self.set_health(chr, h);
         }
+        Ok(())
     }
 
     /// `getHealthLoss(divide)` (`None` is a `null` divisor, taken as 1).
@@ -755,7 +756,7 @@ impl Animal {
             return Ok(());
         }
         if self.data.egg_time > 0 && cal_millis / 1000 > self.data.egg_time {
-            let region = self.data_region_hutch(ctx, env);
+            let region = self.data_region_hutch(ctx, env)?;
             let use_hutch = adef.hutches.is_some()
                 && region.is_some_and(|h| {
                     !env.world.hutch_door_closed(h) && env.world.hutch_has_room_for_eggs(h)
@@ -770,7 +771,7 @@ impl Animal {
                     self.data.eggs_today += 1;
                     self.data.egg_time = 0;
                 } else {
-                    self.behavior_call_to_hutch(None, true, chr, env);
+                    self.behavior_call_to_hutch(None, true, chr, env)?;
                 }
             } else if self.add_egg(false, chr, env)? {
                 self.data.eggs_today += 1;
@@ -1480,18 +1481,18 @@ impl Animal {
         _chr: &dyn AnimalCharacter,
         ctx: AnimalCtx<'_>,
     ) -> JResult<()> {
-        let min = self.min_size(ctx);
-        self.data_set_size(min, ctx);
-        let size_grow = (self.max_size(ctx) - self.min_size(ctx)) / stage_age_to_grow(self)? as f32;
+        let min = self.min_size(ctx)?;
+        self.data_set_size(min, ctx)?;
+        let size_grow = (self.max_size(ctx)? - self.min_size(ctx)?) / stage_age_to_grow(self)? as f32;
         let v = fmax(
-            self.min_size(ctx),
+            self.min_size(ctx)?,
             fmin(
-                self.max_size(ctx),
+                self.max_size(ctx)?,
                 self.data.size + size_grow * (self.data.age - self.adef_of(ctx).min_age) as f32,
             ),
         );
-        self.data_set_size(v, ctx);
-        self.data_set_size(0.1, ctx);
+        self.data_set_size(v, ctx)?;
+        self.data_set_size(0.1, ctx)?;
         Ok(())
     }
 
@@ -1583,11 +1584,11 @@ impl Animal {
             return Ok(());
         }
         let mut size_delta =
-            (self.data.size - self.min_size(ctx)) / (self.max_size(ctx) - self.min_size(ctx));
+            (self.data.size - self.min_size(ctx)?) / (self.max_size(ctx)? - self.min_size(ctx)?);
         if size_delta as f64 > 0.7 {
             size_delta -= 0.7;
             let s = n.data.size * (1.0 + size_delta);
-            n.data_set_size(s, ctx);
+            n.data_set_size(s, ctx)?;
         }
         n.invincible = self.invincible;
         env.world.replace_grown_animal(g);
@@ -1652,8 +1653,9 @@ impl Animal {
     }
 
     /// `setSize(size)`: clamped to the genome's range.
-    pub fn data_set_size(&mut self, size: f32, ctx: AnimalCtx<'_>) {
-        self.data.size = clamp(size, self.min_size(ctx), self.max_size(ctx));
+    pub fn data_set_size(&mut self, size: f32, ctx: AnimalCtx<'_>) -> JResult<()> {
+        self.data.size = clamp(size, self.min_size(ctx)?, self.max_size(ctx)?);
+        Ok(())
     }
 
     /// `setSizeForced(size)`.
@@ -1703,20 +1705,20 @@ impl Animal {
     }
 
     /// `getRegionHutch()`.
-    pub fn data_region_hutch(&self, ctx: AnimalCtx<'_>, env: &AnimalEnv<'_>) -> Option<ObjectRef> {
+    pub fn data_region_hutch(&self, ctx: AnimalCtx<'_>, env: &AnimalEnv<'_>) -> JResult<Option<ObjectRef>> {
         let types = self.adef_of(ctx).hutches.as_ref();
         for z in &self.connected_d_zone {
             for (h, ty) in env.world.zone_hutches(*z) {
                 let Some(types) = types else {
-                    // adef.hutches.size() on null.
-                    return None;
+                    // adef.hutches.size() is dereferenced only after a real hutch.
+                    return npe("adef.hutches");
                 };
                 if types.contains(&ty) {
-                    return Some(h);
+                    return Ok(Some(h));
                 }
             }
         }
-        None
+        Ok(None)
     }
 
     /// `getGeriatricPercentage()`.
@@ -1751,29 +1753,29 @@ impl Animal {
         (base as f32 * modifier) as i32 as f32
     }
 
-    fn size_bound(&self, base: f32, ctx: AnimalCtx<'_>) -> f32 {
+    fn size_bound(&self, base: f32, ctx: AnimalCtx<'_>) -> JResult<f32> {
         let Some(g) = self.used_gene("maxSize") else {
-            return base;
+            return Ok(base);
         };
         let mut base = base;
         if self.has_genetic_disorder("dwarf") {
-            base = if self.is_baby().unwrap_or(false) {
+            base = if self.is_baby()? {
                 base / 1.5
             } else {
                 base / 2.2
             };
         }
         let _ = ctx;
-        base * g.current_value
+        Ok(base * g.current_value)
     }
 
     /// `getMinSize()`.
-    pub fn min_size(&self, ctx: AnimalCtx<'_>) -> f32 {
+    pub fn min_size(&self, ctx: AnimalCtx<'_>) -> JResult<f32> {
         self.size_bound(self.adef_of(ctx).min_size, ctx)
     }
 
     /// `getMaxSize()`.
-    pub fn max_size(&self, ctx: AnimalCtx<'_>) -> f32 {
+    pub fn max_size(&self, ctx: AnimalCtx<'_>) -> JResult<f32> {
         self.size_bound(self.adef_of(ctx).max_size, ctx)
     }
 
@@ -1874,15 +1876,16 @@ impl Animal {
     }
 
     /// `getInventoryIconTextureName()`.
-    pub fn data_inventory_icon_texture_name(&self, chr: &dyn AnimalCharacter) -> Option<String> {
-        let b = self.breed()?;
-        if self.is_baby().unwrap_or(false) {
-            return b.inv_icon_baby.clone();
+    pub fn data_inventory_icon_texture_name(&self, chr: &dyn AnimalCharacter) -> JResult<Option<String>> {
+        // isBaby precedes every getBreed/dereference in the original.
+        let baby = self.is_baby()?;
+        if baby {
+            return Ok(self.breed().ok_or_else(|| JavaException("NullPointerException: breed".into()))?.inv_icon_baby.clone());
         }
         if chr.is_female() {
-            return b.inv_icon_female.clone();
+            return Ok(self.breed().ok_or_else(|| JavaException("NullPointerException: breed".into()))?.inv_icon_female.clone());
         }
-        b.inv_icon_male.clone()
+        Ok(self.breed().ok_or_else(|| JavaException("NullPointerException: breed".into()))?.inv_icon_male.clone())
     }
 
     /// `getAgeString(chr)`.
@@ -2105,4 +2108,92 @@ AnimalDefinitions = { animals = {
         assert!(a.data.max_milk_actual > before);
         assert_eq!(a.data.last_milk_timer, clock.calendar_millis());
     }
+
+    #[test]
+    fn missing_stage_stops_hour_before_weight_loss_after_completed_prefix() {
+        let t = tables(); let sb = sandbox(); let clock = Clock(5);
+        let mut rand = Lcg(1); let mut world = NoWorld;
+        let mut chr = CharacterValues::new(stat_defs());
+        chr.set_stat(AnimalStat::Hunger, 0.9);
+        let mut a = Animal::new(Some("doe".into()));
+        a.wild = true; a.data.weight = 12.0; a.data.last_impregnate_time = 2;
+        a.ignored_trough.push(44);
+        let mut env = AnimalEnv { ctx: AnimalCtx { defs: &t, clock: &clock, sandbox: &sb },
+            rand: &mut rand, world: &mut world, stat_defs: stat_defs(), patience_range: (20,150) };
+        let error = a.data_hour_grow(false, &mut chr, &mut env).unwrap_err();
+        assert_eq!(error, JavaException("NullPointerException: currentStage".into()));
+        assert!(a.ignored_trough.is_empty());
+        assert_eq!(a.data.last_impregnate_time, 1);
+        assert_eq!(a.data.weight, 12.0, "weight suffix must not execute");
+    }
+
+    #[test]
+    fn dwarf_size_failure_preserves_setter_and_actual_gene_absence_branch() {
+        let t = tables(); let sb = sandbox(); let clock = Clock(5);
+        let ctx = AnimalCtx { defs: &t, clock: &clock, sandbox: &sb };
+        let mut a = Animal::new(Some("doe".into()));
+        a.genetic_disorder.push("dwarf".into());
+        // No maxSize gene means the original never calls isBaby.
+        assert_eq!(a.min_size(ctx).unwrap(), t.def("doe").unwrap().min_size);
+        let mut gene = AnimalGene::new(&mut Lcg(1));
+        gene.allele1.used = true; gene.allele1.current_value = 1.0;
+        a.full_genome.insert("maxSize".into(), gene);
+        a.data.size = 0.75;
+        assert_eq!(a.data_set_size(0.5, ctx).unwrap_err(), JavaException("NullPointerException: currentStage".into()));
+        assert_eq!(a.data.size, 0.75, "setter must not publish a failed bound");
+        assert_eq!(a.max_size(ctx).unwrap_err(), JavaException("NullPointerException: currentStage".into()));
+    }
+
+    #[test]
+    fn inventory_icon_checks_stage_then_selected_breed_and_preserves_null_icon() {
+        let mut a = Animal::new(None);
+        let chr = CharacterValues::new(stat_defs());
+        assert_eq!(a.data_inventory_icon_texture_name(&chr).unwrap_err(), JavaException("NullPointerException: currentStage".into()));
+        let t = tables();
+        a.data.current_stage = Some(t.def("doe").unwrap().stages[0].clone());
+        assert_eq!(a.data_inventory_icon_texture_name(&chr).unwrap_err(), JavaException("NullPointerException: breed".into()));
+        a.data.breed = Some(t.def("doe").unwrap().breeds[0].clone());
+        assert_eq!(a.data_inventory_icon_texture_name(&chr).unwrap(), None);
+    }
+
+    #[test]
+    fn hutch_stage_failure_keeps_door_prefix_without_timer_or_action_suffix() {
+        use std::cell::Cell;
+        struct Hutch { closed: Cell<bool>, toggles: Cell<u32> }
+        impl crate::AnimalWorld for Hutch {
+            fn hutch_inside_count(&self, _: ObjectRef) -> i32 { 0 }
+            fn hutch_max_animals(&self, _: ObjectRef) -> i32 { 1 }
+            fn hutch_door_closed(&self, _: ObjectRef) -> bool { self.closed.get() }
+            fn hutch_toggle_door(&mut self, _: ObjectRef) {
+                self.closed.set(!self.closed.get()); self.toggles.set(self.toggles.get()+1);
+            }
+        }
+        let t = tables(); let sb = sandbox(); let clock = Clock(5);
+        let mut rand = Lcg(7); let before_rand = rand.0;
+        let mut world = Hutch { closed: Cell::new(true), toggles: Cell::new(0) };
+        let mut chr = CharacterValues::new(stat_defs()); let mut a = Animal::new(Some("doe".into()));
+        let mut env = AnimalEnv { ctx: AnimalCtx { defs: &t, clock: &clock, sandbox: &sb },
+            rand: &mut rand, world: &mut world, stat_defs: stat_defs(), patience_range: (20,150) };
+        assert_eq!(a.behavior_can_go_to_hutch(1, true, &mut chr, &mut env).unwrap_err(), JavaException("NullPointerException: currentStage".into()));
+        assert_eq!(a.behavior.hutch_path_timer, -1.0);
+        assert!(a.behavior.behavior_action.is_none() && !a.behavior.is_doing_behavior);
+        assert_eq!(rand.0, before_rand);
+        assert!(!world.closed.get()); assert_eq!(world.toggles.get(), 1);
+    }
+
+    #[test]
+    fn region_hutch_only_dereferences_nullable_types_after_a_real_hutch() {
+        struct Hutch;
+        impl crate::AnimalWorld for Hutch {
+            fn zone_hutches(&self, _: ObjectRef) -> Vec<(ObjectRef,String)> { vec![(1,"type".into())] }
+        }
+        let t = tables(); let sb = sandbox(); let clock = Clock(5); let mut rand = Lcg(7); let mut world = Hutch;
+        let mut a = Animal::new(Some("doe".into()));
+        let env = AnimalEnv { ctx: AnimalCtx { defs: &t, clock: &clock, sandbox: &sb },
+            rand: &mut rand, world: &mut world, stat_defs: stat_defs(), patience_range: (20,150) };
+        assert_eq!(a.data_region_hutch(env.ctx, &env).unwrap(), None);
+        a.connected_d_zone.push(4);
+        assert_eq!(a.data_region_hutch(env.ctx, &env).unwrap_err(), JavaException("NullPointerException: adef.hutches".into()));
+    }
+
 }

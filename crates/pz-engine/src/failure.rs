@@ -4,12 +4,19 @@ use std::fmt;
 
 pub enum EngineError {
     Report(String),
+    State { operation: &'static str, fault: pz_characters::character::state::StateFailure },
     Lua { operation: &'static str, fault: LuaError },
 }
 
 pub type EngineResult<T> = Result<T, EngineError>;
 
 impl EngineError {
+    pub fn state(operation: &'static str, fault: pz_characters::character::state::StateFailure) -> Self {
+        Self::State { operation, fault }
+    }
+    pub fn state_failure(&self) -> Option<&pz_characters::character::state::StateFailure> {
+        match self { Self::State { fault, .. } => Some(fault), _ => None }
+    }
     pub fn lua(operation: &'static str, fault: LuaError) -> Self {
         Self::Lua { operation, fault }
     }
@@ -25,10 +32,7 @@ impl EngineError {
 // Its actual Lua payload must not final-drop there, including unformatted tails.
 impl Drop for EngineError {
     fn drop(&mut self) {
-        if let Self::Lua { fault: LuaError::Kahlua(value), .. } = self {
-            let mut retired = pz_kahlua::native_list::NativeListRetired::new();
-            retired.keep_value(value);
-        }
+        if let Self::Lua { fault, .. } = self { fault.retire_diagnostic_values(); }
     }
 }
 
@@ -42,10 +46,12 @@ impl fmt::Display for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Report(text) => f.write_str(text),
+            Self::State { operation, fault } => write!(f, "{operation}: {fault}"),
             Self::Lua { operation, fault } => {
                 write!(f, "{operation}: ")?;
-                match fault {
+                match fault.diagnostic() {
                     LuaError::Runtime { message, class } => write!(f, "{class}: {message}"),
+                    LuaError::WithCause { .. } => unreachable!("leaf diagnostic"),
                     LuaError::Kahlua(Value::Str(text)) => f.write_str(text),
                     // These are diagnostic labels, not String.valueOf or
                     // KahluaException.getMessage implementations.
@@ -67,7 +73,11 @@ impl fmt::Display for EngineError {
 impl fmt::Debug for EngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Display::fmt(self, f) }
 }
-impl std::error::Error for EngineError {}
+impl std::error::Error for EngineError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self { Self::State { fault, .. } => Some(fault), Self::Lua { fault, .. } => Some(fault), _ => None }
+    }
+}
 
 /// Synchronous first-failure handoff. Callers return immediately after recording
 /// a failure; this is not an unchecked pending-error queue or catch policy.

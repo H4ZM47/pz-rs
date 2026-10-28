@@ -994,6 +994,66 @@ pub struct NullWorld;
 
 impl<I> StateWorld<I> for NullWorld {}
 
+/// The first original failure retained by an immediate state callback.
+/// Animal faults keep their existing data object; no native Throwable or
+/// diagnostic class is inferred from its text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StateFailure {
+    Host(RuntimeHostError),
+    Animal(Rc<pz_animals::JavaException>),
+    Script(Rc<pz_scripts::ScriptError>),
+}
+
+pub type StateResult<T = ()> = Result<T, StateFailure>;
+
+impl StateFailure {
+    pub fn host(&self) -> Option<&RuntimeHostError> {
+        match self {
+            Self::Host(error) => Some(error),
+            _ => None,
+        }
+    }
+    pub fn animal(&self) -> Option<&Rc<pz_animals::JavaException>> {
+        match self {
+            Self::Animal(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+impl From<RuntimeHostError> for StateFailure {
+    fn from(error: RuntimeHostError) -> Self {
+        Self::Host(error)
+    }
+}
+impl From<pz_scripts::ScriptError> for StateFailure {
+    fn from(error: pz_scripts::ScriptError) -> Self {
+        Self::Script(Rc::new(error))
+    }
+}
+impl From<pz_animals::JavaException> for StateFailure {
+    fn from(error: pz_animals::JavaException) -> Self {
+        Self::Animal(Rc::new(error))
+    }
+}
+impl std::fmt::Display for StateFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Host(error) => write!(f, "{error:?}"),
+            Self::Animal(error) => std::fmt::Display::fmt(&crate::character::animal::jerr(error.as_ref().clone()), f),
+            Self::Script(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+impl std::error::Error for StateFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Animal(error) => Some(error.as_ref()),
+            Self::Script(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
+}
+
 /// The context a state runs in.
 pub struct StateCx<'a, I> {
     pub sm: &'a ScriptManager,
@@ -1002,7 +1062,7 @@ pub struct StateCx<'a, I> {
     pub world: &'a mut dyn StateWorld<I>,
     // One immediate first-fault carrier per outer action. Reborrows share
     // the same fault, so nested void State callbacks cannot hide it.
-    host_fault: Rc<RefCell<Option<RuntimeHostError>>>,
+    host_fault: Rc<RefCell<Option<StateFailure>>>,
 }
 
 impl<'a, I> StateCx<'a, I> {
@@ -1018,16 +1078,25 @@ impl<'a, I> StateCx<'a, I> {
     /// Stop this action at its first host failure. No callback/event queue is
     /// involved, and later failures must not replace the original domain.
     pub fn record_host_error(&self, error: RuntimeHostError) {
+        self.record_state_error(StateFailure::Host(error));
+    }
+
+    pub fn record_animal_error(&self, error: pz_animals::JavaException) {
+        self.record_state_error(error.into());
+    }
+
+    pub fn record_state_error(&self, error: StateFailure) {
         let mut fault = self.host_fault.borrow_mut();
         if fault.is_none() { *fault = Some(error); }
     }
 
+    /// Existing state-machine stop guards cover every retained domain.
     pub fn has_host_error(&self) -> bool { self.host_fault.borrow().is_some() }
 
     /// Every production outer engine/Lua action boundary must return this
     /// result before any further action/state work. Inspecting never clears
     /// the first fault or turns failure into native absence.
-    pub fn host_result(&self) -> HostResult<()> {
+    pub fn state_result(&self) -> StateResult<()> {
         match &*self.host_fault.borrow() {
             Some(error) => Err(error.clone()),
             None => Ok(()),

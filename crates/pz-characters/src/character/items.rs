@@ -346,6 +346,16 @@ impl CharacterItems {
         self.secondary_hand_item.and_then(|id| self.item(id))
     }
 
+    /// `IsoPlayer.getActiveLightItem()`: the right hand (secondary), then
+    /// the left (primary), then attached items, the first emitting light.
+    /// Characters hold no `AttachedItems` yet, so only the hands count.
+    pub fn active_light_item(&self) -> Option<ItemRef> {
+        [self.secondary_hand_item(), self.primary_hand_item()]
+            .into_iter()
+            .flatten()
+            .find(|item| item.borrow().is_emitting_light())
+    }
+
     /// `wornItems.getLocation(item)` for the worn item `id`.
     pub fn worn_location(&self, id: i32) -> Option<Rc<RegistryKey>> {
         self.worn_items.as_ref().and_then(|w| w.location(&id))

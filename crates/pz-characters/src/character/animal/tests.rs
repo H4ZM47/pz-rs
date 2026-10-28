@@ -407,3 +407,103 @@ fn fleeing_from_an_attacker_paths_away() {
     assert!(c.variable_boolean("animalRunning"));
     assert_eq!(c.vars.attacked_by, Some(20));
 }
+
+
+#[test]
+fn missing_stage_behavior_fault_stops_selection_and_retains_first_original_cause() {
+    let (sm, chars, mut c) = animal(13);
+    c.animal_fields_mut().unwrap().def = Some(defs());
+    c.animal_fields_mut().unwrap().exists_in_world = true;
+    c.set_var_str("idleAction", "idle2");
+    c.vars.turn_delta_normal = 0.6;
+    let calls = Calls::default(); let mut w = world(&calls); let ctx = Recorder::default();
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+    c.behavior_check_behavior(&mut cx);
+    let first = cx.state_result().unwrap_err();
+    let first = first.animal().expect("actual animal domain").clone();
+    assert_eq!(first.0, "NullPointerException: currentStage");
+    assert_eq!(c.variable_string("idleAction"), "", "completed clear prefix");
+    assert!(!c.animal_fields().unwrap().animal.behavior.is_doing_behavior);
+    assert_eq!(c.vars.turn_delta_normal, 0.6, "selection suffix must not set 0.9");
+    cx.record_host_error(pz_inventory::floor_drop::RuntimeHostError::Borrowed("later"));
+    let again = cx.reborrow().state_result().unwrap_err();
+    assert!(Rc::ptr_eq(&first, again.animal().unwrap()));
+}
+
+#[test]
+fn actual_eat_state_keeps_failed_ground_target_and_completed_animation_prefix() {
+    struct BrokenFeed;
+    impl AnimalWorld for BrokenFeed {
+        fn world_item(&self, _: pz_animals::ObjectRef) -> Option<(pz_animals::ObjectRef,bool)> { Some((100,true)) }
+        fn feed_item(&self, _: pz_animals::ObjectRef) -> Option<pz_animals::env::FeedItem> { None }
+    }
+    struct FeedWorld { defs: AnimalDefinitionTables, feed: BrokenFeed }
+    impl StateWorld<i32> for FeedWorld {
+        fn animal_host(&mut self, _: i32) -> Option<AnimalHost<'_>> { Some(AnimalHost { defs: &self.defs, world: &mut self.feed }) }
+    }
+    let (sm, chars, mut c) = animal(14);
+    c.animal_fields_mut().unwrap().def = Some(defs());
+    c.animal_fields_mut().unwrap().animal.eat_from_ground = Some(200);
+    c.set_var_str("idleAction", "eat"); c.set_var_str("eatingAnim", "eat1"); c.vars.state_event_delay_timer = 44.0;
+    let mut tables = AnimalDefinitionTables::default();
+    tables.animal_defs.insert("fixture".into(), pz_animals::AnimalDefinitions::default());
+    c.animal_fields_mut().unwrap().animal.animal_type = Some("fixture".into());
+    let mut w = FeedWorld { defs: tables, feed: BrokenFeed }; let ctx = Recorder::default();
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+    let event = pz_anim::AnimEventRecord { state_name: None, layer_depth: -1, track: None,
+        event: Rc::new(pz_anim::AnimEvent::named("idleActionEnd", Default::default(), 0.0)) };
+    crate::character::states::animal::AnimalEatState::instance::<i32>().anim_event(&mut c, &mut cx, &event);
+    assert_eq!(cx.state_result().unwrap_err().animal().unwrap().0, "NullPointerException: item");
+    assert_eq!(c.variable_string("idleAction"), ""); assert_eq!(c.variable_string("eatingAnim"), "");
+    assert_eq!(c.animal_fields().unwrap().animal.eat_from_ground, Some(200), "failed eat must not reset target");
+    assert_eq!(c.vars.state_event_delay_timer, 44.0);
+}
+
+#[test]
+fn fertilize_fault_puts_actual_target_back_and_stops_action_reset() {
+    struct FertWorld { defs: AnimalDefinitionTables, rec: pz_animals::env::NoWorld, female: Option<Chr> }
+    impl StateWorld<i32> for FertWorld {
+        fn animal_host(&mut self, _: i32) -> Option<AnimalHost<'_>> { Some(AnimalHost { defs: &self.defs, world: &mut self.rec }) }
+        fn character_mut(&mut self, id: i32) -> Option<&mut Chr> { self.female.as_mut().filter(|c| c.id == id) }
+        fn take_character(&mut self, id: i32) -> Option<Chr> {
+            if self.female.as_ref().is_some_and(|c| c.id == id) { self.female.take() } else { None }
+        }
+        fn put_character(&mut self, c: Chr) { assert!(self.female.is_none()); self.female = Some(c); }
+    }
+    let (sm, mut chars, mut c) = animal(15); c.id = 1;
+    c.animal_fields_mut().unwrap().def = Some(defs());
+    let mut female = Chr::new_animal(&sm, &mut chars).unwrap(); female.id = 2;
+    female.animal_fields_mut().unwrap().animal.behavior.block_movement = true;
+    let behavior = &mut c.animal_fields_mut().unwrap().animal.behavior;
+    behavior.is_doing_behavior = true; behavior.behavior_action = Some(pz_animals::BehaviorAction::Fertilize);
+    behavior.behavior_object = Some(pz_animals::BehaviorObject::Animal(pz_animals::character_ref(2)));
+    behavior.timer_flee_again = 99.0;
+    let mut w = FertWorld { defs: AnimalDefinitionTables::default(), rec: pz_animals::env::NoWorld, female: Some(female) }; let ctx = Recorder::default();
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+    c.behavior_do_behavior_action(&mut cx);
+    assert_eq!(cx.state_result().unwrap_err().animal().unwrap().0, "NullPointerException: fertility gene");
+    assert_eq!(cx.world.character_mut(2).unwrap().id, 2, "same taken target is restored");
+    assert!(!cx.world.character_mut(2).unwrap().animal_fields().unwrap().animal.behavior.block_movement);
+    let behavior = &c.animal_fields().unwrap().animal.behavior;
+    assert!(!behavior.is_doing_behavior, "completed action prefix");
+    assert_eq!(behavior.behavior_action, Some(pz_animals::BehaviorAction::Fertilize));
+    assert_eq!(behavior.timer_flee_again, 99.0, "failed action must not reset suffix");
+}
+
+
+#[test]
+fn missing_stage_stops_both_ground_and_vehicle_eat_decisions() {
+    for vehicle in [None, Some(1)] {
+        let (sm, chars, mut c) = animal(16);
+        c.animal_fields_mut().unwrap().def = Some(defs());
+        c.path.vehicle = vehicle;
+        let hunger = chars.sim.character_stats.field("HUNGER").unwrap();
+        c.stats.set(&hunger, 0.9);
+        let calls = Calls::default(); let mut w = world(&calls); let ctx = Recorder::default();
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+        assert!(!c.behavior_check_eat_behavior(&mut cx));
+        assert_eq!(cx.state_result().unwrap_err().animal().unwrap().0, "NullPointerException: currentStage");
+        assert_eq!(c.stats.get(&hunger), 0.9, "failed decision must not eat");
+        assert!(c.animal_fields().unwrap().animal.behavior.behavior_action.is_none());
+    }
+}

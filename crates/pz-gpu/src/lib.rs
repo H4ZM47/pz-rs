@@ -30,6 +30,7 @@ mod outline;
 mod vehicle;
 mod vispoly;
 mod state;
+mod thumbnail;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -39,6 +40,7 @@ use pz_render::{DrawCmd, DrawList, TextureManager, WorldShader};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub use state::GlState;
+pub use thumbnail::THUMBNAIL_SIZE;
 use state::{PipeKey, Program, TargetKind};
 
 /// One `Core.DoStartFrameStuff` call and what was drawn after it.
@@ -403,7 +405,15 @@ impl Gpu {
             height: height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
+            // The original's GL back buffer is opaque. The first listed
+            // mode is not always Opaque (e.g. on some Wayland compositors),
+            // and a premultiplied surface shows the desktop through pixels
+            // with alpha below 1.
+            alpha_mode: if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+                wgpu::CompositeAlphaMode::Opaque
+            } else {
+                caps.alpha_modes[0]
+            },
             view_formats: vec![],
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
@@ -1682,6 +1692,7 @@ impl Gpu {
                 let key = self.key(f, Program::ProjectedF32);
                 f.push(key, Some(id), if *nearest { Tex2::Nearest } else { Tex2::None }, &self.state, g, v);
             }
+            DrawCmd::VboRun(run) => self.record_vbo_run(f, run),
             DrawCmd::PushAttrib => self.state_stack.push(self.state.clone()),
             DrawCmd::PopAttrib => {
                 if let Some(s) = self.state_stack.pop() {
@@ -1690,6 +1701,51 @@ impl Gpu {
             }
             other => self.state.apply(other),
         }
+    }
+
+    /// `VBORenderer.flush` for one run: the run's own model-view-projection
+    /// (vertices projected here; `vs_world` takes the window depth), its
+    /// depth test (`GL_LEQUAL`, the state's depth mask), the current blend
+    /// state, target and viewport. Quad strips draw as the triangles of
+    /// [`pz_render::vbo::VboRun::triangles`], lines one pixel wide.
+    fn record_vbo_run(&mut self, f: &mut FrameBuilder, run: &pz_render::vbo::VboRun) {
+        use pz_render::vbo::VboMode;
+        if run.vertices.is_empty() {
+            return;
+        }
+        let g = {
+            let m = f.mvp;
+            f.mvp = IDENTITY;
+            let mm = f.mvp_for_target();
+            f.mvp = m;
+            f.globals(&self.state, mm, 0.5)
+        };
+        let clip = run.clip_positions();
+        let verts: Vec<Vertex> = clip
+            .iter()
+            .zip(&run.vertices)
+            .map(|(c, v)| {
+                let w = c[3];
+                let col = v.color;
+                Vertex { pos: [c[0] / w, c[1] / w], uv: [0.0; 2], color: 0, uv1: [col[0], col[1]], uv2: [col[2], col[3]], depth: [(c[2] / w + 1.0) / 2.0, 0.0] }
+            })
+            .collect();
+        let program = match run.mode {
+            VboMode::Lines => Program::VboLines,
+            VboMode::QuadStrip => Program::VboTriangles,
+        };
+        let mut st = self.state.clone();
+        st.alpha_test = false;
+        st.depth_test = run.depth_test;
+        let key = PipeKey { program, target: f.target.kind(), ..st.pipe_key() };
+        let indices: Vec<u32> = match run.mode {
+            VboMode::Lines => (0..(verts.len() / 2 * 2) as u32).collect(),
+            VboMode::QuadStrip => run.triangles().into_iter().flatten().map(|i| i as u32).collect(),
+        };
+        if indices.is_empty() {
+            return;
+        }
+        f.push_indexed(key, None, Tex2::None, &st, g, &verts, &indices);
     }
 
     fn key(&self, f: &FrameBuilder, program: Program) -> PipeKey {
@@ -2337,6 +2393,14 @@ impl FrameBuilder {
     /// `split02`, else 1-3.
     #[allow(clippy::too_many_arguments)]
     fn push_split(&mut self, key: PipeKey, texture: Option<u32>, tex2: Tex2, st: &GlState, globals: u32, verts: [Vertex; 4], split02: bool) {
+        let idx = if split02 { quad_indices(0, 0, 0) } else { quad_indices(0, 0, 1) };
+        self.push_indexed(key, texture, tex2, st, globals, &verts, &idx);
+    }
+
+    /// Vertices with their indices (relative to the first), batched with
+    /// the previous draw when the state matches.
+    #[allow(clippy::too_many_arguments)]
+    fn push_indexed(&mut self, key: PipeKey, texture: Option<u32>, tex2: Tex2, st: &GlState, globals: u32, verts: &[Vertex], idx: &[u32]) {
         if self.passes.last().is_none_or(|p| p.target != self.target) {
             let at = self.batches.len();
             self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
@@ -2346,9 +2410,9 @@ impl FrameBuilder {
         let origin = self.origin;
         let tex3 = self.tex3;
         let base = self.vertices.len() as u32;
-        self.vertices.extend_from_slice(&verts);
+        self.vertices.extend_from_slice(verts);
         let start = self.indices.len() as u32;
-        self.indices.extend_from_slice(&if split02 { quad_indices(base, 0, 0) } else { quad_indices(base, 0, 1) });
+        self.indices.extend(idx.iter().map(|i| base + i));
         let end = self.indices.len() as u32;
         let pass = self.passes.last_mut().expect("pass");
         match self.batches.last_mut() {

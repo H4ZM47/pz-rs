@@ -285,3 +285,89 @@ fn pan_matches_measured_fmod_vbap_and_rolloff() {
     assert!(close(Rolloff::Inverse.gain(25.0, 2.0, 20.0), 0.1));
     assert!(close(Rolloff::InverseTapered.gain(15.0, 2.0, 20.0), 0.0772));
 }
+
+/// A 16-bit PCM WAVE file of `samples` (interleaved).
+fn wav16(channels: u16, rate: u32, samples: &[i16]) -> Vec<u8> {
+    let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let mut b = b"RIFF".to_vec();
+    b.extend((36 + data.len() as u32).to_le_bytes());
+    b.extend(b"WAVEfmt ");
+    b.extend(16u32.to_le_bytes());
+    b.extend(1u16.to_le_bytes());
+    b.extend(channels.to_le_bytes());
+    b.extend(rate.to_le_bytes());
+    b.extend((rate * channels as u32 * 2).to_le_bytes());
+    b.extend((channels * 2).to_le_bytes());
+    b.extend(16u16.to_le_bytes());
+    b.extend(b"data");
+    b.extend((data.len() as u32).to_le_bytes());
+    b.extend(data);
+    b
+}
+
+#[test]
+fn decodes_wave_files() {
+    let f = sound_file::decode(&wav16(2, 44100, &[16384, -16384, 0, 32767])).unwrap();
+    assert_eq!((f.rate, f.pcm.channels, f.pcm.frames()), (44100, 2, 2));
+    assert_eq!(f.pcm.data[..2], [0.5, -0.5]);
+    assert!(sound_file::decode(b"nonsense").is_err());
+}
+
+#[test]
+fn core_channels_play_loop_pitch_and_stop() {
+    use channels::Channels;
+    let one = |n: usize| sound_file::decode(&wav16(1, 48000, &vec![16384; n])).unwrap();
+    let mut c = Channels::default();
+    let s = c.add_sound(one(100), false, false);
+    let ch = c.play(s, true).unwrap();
+    let mut out = vec![0.0; 2 * 64];
+    c.mix(&mut out, |p| p);
+    assert!(out.iter().all(|&x| x == 0.0), "paused");
+    c.set_volume(ch, 0.5);
+    c.set_paused(ch, false);
+    c.mix(&mut out, |p| p);
+    assert_eq!((out[0], out[1]), (0.25, 0.25));
+    // 100 frames: done during the second block.
+    let mut out = vec![0.0; 2 * 64];
+    c.mix(&mut out, |p| p);
+    assert_eq!(out[2 * 35], 0.25);
+    assert_eq!(out[2 * 36], 0.0);
+    c.reap();
+    assert!(!c.is_playing(ch));
+    // A reused slot does not answer to the old id.
+    let ch2 = c.play(s, false).unwrap();
+    assert_ne!(ch, ch2);
+    assert!(c.is_playing(ch2) && !c.is_playing(ch));
+    c.set_looped(ch2, true);
+    c.set_pitch(ch2, 2.0);
+    for _ in 0..10 {
+        c.mix(&mut vec![0.0; 128], |p| p);
+    }
+    assert!(c.is_playing(ch2), "looping");
+    c.stop(ch2);
+    assert!(!c.is_playing(ch2));
+}
+
+#[test]
+fn core_channels_attenuate_in_3d() {
+    use channels::Channels;
+    let mut c = Channels::default();
+    let s = c.add_sound(sound_file::decode(&wav16(1, 48000, &[16384; 64])).unwrap(), false, false);
+    let level = |c: &mut Channels, pos: [f32; 3]| {
+        let ch = c.play(s, false).unwrap();
+        c.set_3d(ch, true);
+        c.set_min_max_distance(ch, 1.0, 100.0);
+        c.set_position(ch, pos);
+        let mut out = vec![0.0; 8];
+        c.mix(&mut out, |p| p);
+        c.stop(ch);
+        (out[0], out[1])
+    };
+    let (l, r) = level(&mut c, [0.0, 0.0, 4.0]);
+    // Inverse rolloff: 1/4 at four times the minimum distance.
+    assert!((l - r).abs() < 1e-6);
+    let (l1, _) = level(&mut c, [0.0, 0.0, 1.0]);
+    assert!((l / l1 - 0.25).abs() < 1e-4, "{l} {l1}");
+    let (l, r) = level(&mut c, [3.0, 0.0, 0.0]);
+    assert!(r > l, "right of the listener");
+}

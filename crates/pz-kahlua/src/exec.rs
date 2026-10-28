@@ -305,14 +305,17 @@ impl Thread {
                 // Rust host access/capability faults are a separate transport
                 // domain. A native metamethod must not turn one into a Java
                 // exception that an outer native file-error catch can swallow.
-                if matches!(&e, LuaError::Runtime { class, .. } if class.starts_with("pz.host.")) {
+                if matches!(e.diagnostic(), LuaError::Runtime { class, .. } if class.starts_with("pz.host.")) {
                     return e;
                 }
-                let (class, msg) = match &e {
-                    LuaError::Kahlua(v) => ("se.krka.kahlua.vm.KahluaException", java_value_of(v)),
-                    LuaError::Runtime { message, class } => (*class, message.clone()),
-                };
-                LuaError::runtime(format!("{class} {msg} in {}", nf.name))
+                e.map_diagnostic(|diagnostic| {
+                    let (class, msg) = match diagnostic {
+                        LuaError::Kahlua(v) => ("se.krka.kahlua.vm.KahluaException", java_value_of(&v)),
+                        LuaError::Runtime { message, class } => (class, message),
+                        LuaError::WithCause { .. } => unreachable!("leaf diagnostic"),
+                    };
+                    LuaError::runtime(format!("{class} {msg} in {}", nf.name))
+                })
             }),
             Value::Closure(c) => {
                 self.push_frame(c, base + 1, base, nargs, false)?;
@@ -1440,9 +1443,10 @@ impl Thread {
             (Err(e), None) => {
                 co.borrow_mut().status = CoStatus::Dead;
                 let trace = std::mem::take(&mut co.borrow_mut().stack_trace);
-                let msg = match &e {
+                let msg = match e.diagnostic() {
                     LuaError::Kahlua(v) => v.clone(),
                     LuaError::Runtime { message, .. } => Value::from(message.clone()),
+                    LuaError::WithCause { .. } => unreachable!("leaf diagnostic"),
                 };
                 Err((msg, trace))
             }

@@ -29,7 +29,7 @@ use std::rc::{Rc, Weak};
 mod cell_drag;
 pub mod lua_world;
 mod reachability;
-mod square_queries;
+pub mod square_queries;
 pub mod power;
 
 #[cfg(test)]

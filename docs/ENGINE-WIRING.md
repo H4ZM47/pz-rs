@@ -618,7 +618,8 @@ all installed assets, render paths or foreign platforms.
       `SetupHeaders::from_game_dir`, load the strings, Sound, SoundMP and
       Music banks, start `pz_audio::output::Output` on it, then
       `bind_audio::install_sound_system(SoundSystem::new(Box::new(backend), env, backend.parameter_count()))`
-      with `backend = StudioBackend::new(studio)` (pz-sound feature
+      with `backend = StudioBackend::new(studio).with_file_resolver(..)`
+      (resolving `media/sound/*` through GameFs) (pz-sound feature
       `studio`); set its `rand_next` and `media_file_exists` (#80/#82/#83).
 - [ ] Event and hook names read from the jar via pz-classfile instead of
       `events.rs` constants (#7).
@@ -1002,6 +1003,15 @@ all installed assets, render paths or foreign platforms.
       (`IsoCamera.frameState` camCharacter/zoom and `cameras[0]`'s offsets;
       world-render thread). `UIManager`'s left button already goes through
       `gizmo_hit_test_hook` (#199).
+- [ ] Gizmo drawing: in the world frame's `late` callback
+      (`pz_iso_render::frame::world_frame_into_with`, where `IsoWorld.render`
+      draws after the cell), first call
+      `pz_engine::world_hud::render_gizmos(frame player, out)`, which turns
+      the `GizmoFrame` into `DrawCmd::VboRun`s for pz-gpu. The gizmo camera is
+      installed with the HUD camera (`install_hud_camera`); each frame also
+      set `SharedCameraFrame::offsets[0]` (`cameras[0].rightClickX/Y`,
+      `getTOffX/Y` while it differs from `getOffX/Y`, `deferedX/Y`;
+      world-render thread) (#203).
 - [ ] Chat (SP): characters thread implements `chat::ChatPlayer` and
       `chat::ChatElementOwner` for IsoPlayer (and installs `chat::ChatPlayers`
       for `IsoPlayer.players`/`getInstance`), gives each `IsoGameCharacter` a
@@ -1234,6 +1244,15 @@ registered):
       writes `thumb.png`, then the renderer reloads that texture.
       `map_animals.bin` and the queued `metagrid/metacell_*.bin` are
       written with `map_zone.bin` (#167).
+      `capture_thumbnail(player)`: set the player's zoom and target zoom
+      to 1 (camera zoom, offscreen size), centre the camera, render that
+      player's world frame into the offscreen buffer (no screen pass, no
+      UI) and submit it, then return
+      `pz_engine::save_thumbnail::capture_thumbnail(gpu, PlayerScreen
+      {screen left/top/width/height of player}, PlayerScreen{.. of player
+      0}, ScreenParams{player's desaturation, timer})`; restore the old
+      zoom and centre again; the next frame redraws screen and UI, and
+      reload the `thumb.png` texture after `save_game` writes it (#173).
 - [x] Game load (`IsoWorld.init`): `world_gen.load_file(save_dir)`
       where `WorldGenParams.INSTANCE.load()` runs; after
       `GlobalModData.init`, `instance_tracker.load_file(save_dir,

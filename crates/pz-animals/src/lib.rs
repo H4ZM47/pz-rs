@@ -19,6 +19,7 @@ pub mod java;
 pub mod lua;
 pub mod migration;
 pub mod parts;
+pub mod population;
 pub mod save;
 pub mod tracks;
 

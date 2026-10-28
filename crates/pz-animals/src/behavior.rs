@@ -11,6 +11,7 @@
 
 use crate::animal::Animal;
 use crate::env::{AnimalCharacter, AnimalEnv, ObjectRef};
+use crate::java::JResult;
 
 /// `BehaviorAction`, in ordinal order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -158,7 +159,7 @@ impl Animal {
         force: bool,
         chr: &mut dyn AnimalCharacter,
         env: &mut AnimalEnv<'_>,
-    ) -> bool {
+    ) -> JResult<bool> {
         let ctx = env.ctx;
         let b = &mut self.behavior;
         if b.enter_hutch_timer_after_destroy > 0.0 {
@@ -166,7 +167,7 @@ impl Animal {
             if b.enter_hutch_timer_after_destroy < 0.0 {
                 b.enter_hutch_timer_after_destroy = 0.0;
             }
-            return false;
+            return Ok(false);
         }
         if !force {
             let adef = self.adef(ctx);
@@ -177,7 +178,7 @@ impl Animal {
                 && adef.is_inside_hutch_time(ctx.clock.hour())
                 && self.hutch.is_none();
             if !ok {
-                return false;
+                return Ok(false);
             }
         }
         let mut list = false;
@@ -185,11 +186,11 @@ impl Animal {
             Some(h) => Some(h),
             None => {
                 list = true;
-                self.data_region_hutch(ctx, env)
+                self.data_region_hutch(ctx, env)?
             }
         };
         let Some(hutch) = hutch else {
-            return false;
+            return Ok(false);
         };
         if force {
             self.behavior.forced_outside_hutch = ctx.clock.calendar_millis() + 7_200_001;
@@ -199,12 +200,12 @@ impl Animal {
         }
         for zone in self.connected_d_zone.clone() {
             for (h, _) in env.world.zone_hutches(zone) {
-                if self.behavior_can_go_to_hutch(h, force, chr, env) {
-                    return true;
+                if self.behavior_can_go_to_hutch(h, force, chr, env)? {
+                    return Ok(true);
                 }
             }
         }
-        false
+        Ok(false)
     }
 
     /// `getBehavior().canGoToHutch(hutch, force)`.
@@ -214,18 +215,18 @@ impl Animal {
         force: bool,
         chr: &mut dyn AnimalCharacter,
         env: &mut AnimalEnv<'_>,
-    ) -> bool {
+    ) -> JResult<bool> {
         if env.world.hutch_inside_count(hutch) >= env.world.hutch_max_animals(hutch) {
-            return false;
+            return Ok(false);
         }
         if force && env.world.hutch_door_closed(hutch) {
             env.world.hutch_toggle_door(hutch);
         }
         if env.world.hutch_door_closed(hutch) {
-            return false;
+            return Ok(false);
         }
         if self.behavior.hutch_path_timer <= -1.0 {
-            self.behavior.hutch_path_timer = if self.is_baby().unwrap_or(false) {
+            self.behavior.hutch_path_timer = if self.is_baby()? {
                 env.rand.next_float_range(10.0, 30.0)
             } else if chr.is_female() {
                 env.rand.next_float_range(350.0, 500.0)
@@ -240,7 +241,7 @@ impl Animal {
             .set_doing_behavior(true, chr.vehicle().is_some());
         self.behavior.behavior_action = Some(BehaviorAction::EnterHutch);
         self.behavior.behavior_object = Some(BehaviorObject::Hutch(hutch));
-        true
+        Ok(true)
     }
 }
 

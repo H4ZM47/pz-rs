@@ -11,6 +11,7 @@ pub mod game_window;
 pub mod ingame;
 pub mod iso_world;
 pub mod main_screen;
+pub mod save_thumbnail;
 pub mod sim;
 pub mod sound;
 pub mod ui_models;

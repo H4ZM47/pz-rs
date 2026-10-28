@@ -174,7 +174,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `DoLand(impactIsoSpeed)`: nothing while climbing or in a ragdoll
     /// fall, else the impact of a fall.
     pub fn do_land(&mut self, impact_iso_speed: f32, cx: &mut StateCx<'_, I>) {
-        if cx.has_host_error() { return; }
+    if cx.has_host_error() { return; }
         if self.vars.climbing || self.vars.ragdoll_fall {
             self.clear_fall_damage();
             return;
@@ -190,7 +190,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `handleLandingImpact(fallDamage)`, with `IsoPlayer`'s override (the
     /// `DeathFall` voice stops, a hard landing resets the boredom).
     pub fn handle_landing_impact(&mut self, cx: &mut StateCx<'_, I>) {
-        if cx.has_host_error() { return; }
+    if cx.has_host_error() { return; }
         if self.is_player() {
             let f = self.fall_damage;
             if f.is_damaging_fall() {
@@ -210,7 +210,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `IsoGameCharacter.handleLandingImpact(fallDamage)`.
     fn handle_landing_impact_character(&mut self, cx: &mut StateCx<'_, I>) {
-        if cx.has_host_error() { return; }
+    if cx.has_host_error() { return; }
         let f = self.fall_damage;
         let damaging = f.is_damaging_fall();
         let more_than_light = f.is_more_than_light_fall();
@@ -367,7 +367,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `fallenOnKnees()`.
     pub fn fallen_on_knees_soft(&mut self, cx: &mut StateCx<'_, I>) {
-        if cx.has_host_error() { return; }
+    if cx.has_host_error() { return; }
         self.fallen_on_knees(false, cx);
     }
 
@@ -375,7 +375,7 @@ impl<I: 'static> GameCharacter<I> {
     /// get dirty, and with bad luck the hand items drop and a part is
     /// torn and scratched (or, scratched already, deeply wounded).
     pub fn fallen_on_knees(&mut self, hard_fall: bool, cx: &mut StateCx<'_, I>) {
-        if cx.has_host_error() { return; }
+    if cx.has_host_error() { return; }
         let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
         if ctx.is_client() || self.is_god_mod(ctx) {
             return;
@@ -451,7 +451,7 @@ impl<I: 'static> GameCharacter<I> {
     /// the action queue stops, a sleeper wakes, the hand items drop, and
     /// the rest is the engine's ([`SimEvent::PlayerDeath`]).
     pub fn player_on_death(&mut self, cx: &mut StateCx<'_, I>) {
-        if cx.has_host_error() { return; }
+    if cx.has_host_error() { return; }
         cx.ctx.event(SimEvent::CharacterDeath);
         if cx.ctx.is_server() {
             return;
@@ -731,7 +731,7 @@ mod tests {
         c.set_primary_hand_item(&sm, Some(2));
         let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
         c.player_on_death(&mut cx);
-        assert_eq!(cx.host_result(), Err(pz_inventory::floor_drop::RuntimeHostError::Borrowed("actual floor allocation")));
+        assert_eq!(cx.state_result().map_err(|error| error.host().cloned().expect("original Host domain")), Err(pz_inventory::floor_drop::RuntimeHostError::Borrowed("actual floor allocation")));
         assert!(!c.asleep);
         assert!(c.items.primary_hand_item.is_none());
         assert_eq!(events(&ctx), [format!("{:?}", SimEvent::CharacterDeath), format!("{:?}", SimEvent::StopAllActionQueue), format!("{:?}", SimEvent::FadeIn(0.5))]);

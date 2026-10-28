@@ -7,7 +7,7 @@
 
 use pz_scripts::ScriptResult;
 
-use super::{jerr, Spotted};
+use super::Spotted;
 use crate::character::player::PlayerUpdate;
 use crate::character::state::{StateCx, StateRegistry};
 use crate::character::states::ids;
@@ -37,6 +37,7 @@ impl<I: 'static> GameCharacter<I> {
         if self.variable_boolean("bPathfind") && !self.is_current_state_id(ids::ANIMAL_PATH_FIND) {
             let s = registry.get_or_opaque(ids::ANIMAL_PATH_FIND.0);
             self.change_state(Some(s), cx);
+            if cx.has_host_error() { return Ok(()); }
         }
         // updateEmitter: sound.
         if self.current_square_xyz().is_some() {
@@ -46,6 +47,7 @@ impl<I: 'static> GameCharacter<I> {
             return Ok(());
         }
         self.animal_update_internal(out, cx)?;
+        if cx.has_host_error() { return Ok(()); }
         let turn = self
             .animal
             .as_ref()
@@ -82,10 +84,12 @@ impl<I: 'static> GameCharacter<I> {
             return self.animal_iso_player_update(out, cx);
         }
         self.animal_behavior_update(cx);
+        if cx.has_host_error() { return Ok(()); }
         if let Some(mut host) = cx.world.animal_host(self.id) {
             let r = self.with_animal_env(ctx, &mut host, |a, c, env| a.data_update(c, env));
-            if let Some(r) = r {
-                r.map_err(jerr)?;
+            if let Some(Err(error)) = r {
+                cx.record_animal_error(error);
+                return Ok(());
             }
         }
         if self.is_dead() {
@@ -119,9 +123,11 @@ impl<I: 'static> GameCharacter<I> {
             });
         }
         self.animal_update_lured(cx);
+        if cx.has_host_error() { return Ok(()); }
         // updateEmitter: sound.
         self.animal_try_thump(None, cx);
         self.animal_update_los(cx);
+        if cx.has_host_error() { return Ok(()); }
         if let Some(v) = self
             .animal
             .as_mut()
@@ -185,6 +191,7 @@ impl<I: 'static> GameCharacter<I> {
         }
         for s in spotted {
             self.behavior_spotted(s.chr, s.dist, cx);
+            if cx.has_host_error() { return; }
         }
     }
 
@@ -200,6 +207,7 @@ impl<I: 'static> GameCharacter<I> {
         if self.update_character_before_actions(cx)? {
             self.update_player_after_actions(out, cx)?;
         }
+        if cx.has_host_error() { return Ok(()); }
         if let Some(host) = cx.world.animal_host(self.id) {
             host.world.instance_manager_update();
         }

@@ -4,7 +4,6 @@
 pub mod font;
 pub mod jfmt;
 pub mod json;
-pub mod script_parser;
 pub mod text_manager;
 pub mod translator;
 

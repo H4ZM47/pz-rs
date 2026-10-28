@@ -147,6 +147,7 @@ impl<I: 'static> GameCharacter<I> {
         if self.vars.state_event_delay_timer < -1000.0 && self.animal_is_moving() {
             self.vars.state_event_delay_timer = 0.0;
             self.animal_stop_all_movement_now(cx);
+            if cx.has_host_error() { return; }
         }
         let adef = self.adef();
         if adef.sit_randomly {
@@ -207,6 +208,7 @@ impl<I: 'static> GameCharacter<I> {
         }
         if self.vars.state_event_delay_timer <= 0.0 {
             self.behavior_check_behavior(cx);
+            if cx.has_host_error() { return; }
             self.set_var_bool("animalRunning", false);
             let mut x_ref = self.vars.x as i32;
             let mut y_ref = self.vars.y as i32;
@@ -311,6 +313,7 @@ impl<I: 'static> GameCharacter<I> {
         b.behavior_object = Some(BehaviorObject::Character(character_ref(opponent)));
         self.set_doing_behavior(true);
         self.animal_stop_all_movement_now(cx);
+        if cx.has_host_error() { return; }
         self.animal_path_to_character(opponent, cx);
         if o.animal {
             let me = self.id;
@@ -380,6 +383,7 @@ impl<I: 'static> GameCharacter<I> {
         self.beh_mut().update_attack_timer(m);
         self.behavior_update_acceptance(cx);
         self.behavior_update_going_to_hutch(cx);
+        if cx.has_host_error() { return; }
         let (h, t) = self.hunger_thirst();
         if self.beh().behavior_check_timer > 150.0 && (h > 0.5 || t > 0.5) {
             self.beh_mut().behavior_check_timer = 150.0;
@@ -393,6 +397,7 @@ impl<I: 'static> GameCharacter<I> {
         } else {
             self.beh_mut().behavior_check_timer = 500.0;
             self.behavior_check_behavior(cx);
+            if cx.has_host_error() { return; }
         }
         if self.beh().is_doing_behavior {
             self.beh_mut().behavior_failsafe += m;
@@ -421,6 +426,7 @@ impl<I: 'static> GameCharacter<I> {
         self.beh_mut().hutch_path_timer -= m;
         if self.beh().hutch_path_timer <= 0.0 {
             self.animal_stop_all_movement_now(cx);
+            if cx.has_host_error() { return; }
             let target = cx.world.animal_host(self.id).and_then(|w| {
                 let sq = w.world.hutch_square(h).and_then(square_ref_xyz)?;
                 let (ex, ey) = w.world.hutch_enter_spot(h);
@@ -457,6 +463,7 @@ impl<I: 'static> GameCharacter<I> {
                 BehaviorAction::DrinkFromPuddle => self.behavior_drink_square(cx, false),
                 BehaviorAction::EatGrass => self.behavior_eat_grass(cx),
             }
+            if cx.has_host_error() { return; }
             self.behavior_reset_behavior_action();
         }
         self.beh_mut().timer_flee_again = 0.0;
@@ -477,6 +484,7 @@ impl<I: 'static> GameCharacter<I> {
         let adef = self.adef();
         if dist_proper((o.x, o.y), (self.vars.x, self.vars.y)) <= adef.attack_dist as f32 {
             self.animal_stop_all_movement_now(cx);
+            if cx.has_host_error() { return; }
             self.face_character(o.x, o.y);
             self.af_mut().atk_target = Some(o.id);
             self.beh_mut().attack_animal_timer = adef.attack_timer as f32;
@@ -565,6 +573,7 @@ impl<I: 'static> GameCharacter<I> {
         let Some(mut female) = cx.world.take_character(fid) else {
             return;
         };
+        let mut failure = None;
         if let Some(host) = cx.world.animal_host(self.id) {
             let clock = super::CtxClock(ctx);
             let sandbox = ctx.animal_sandbox();
@@ -574,15 +583,16 @@ impl<I: 'static> GameCharacter<I> {
                 sandbox: &sandbox,
             };
             if let (Some(ff), Some(mf)) = (female.animal.as_mut(), self.animal.as_mut()) {
-                let _ = ff.animal.fertilize(
+                failure = ff.animal.fertilize(
                     pz_animals::Male::Other(&mut mf.animal),
                     false,
                     actx,
                     &mut CtxRand(ctx),
-                );
+                ).err();
             }
         }
         cx.world.put_character(female);
+        if let Some(error) = failure { cx.record_animal_error(error); }
     }
 
     fn eat_anim(&mut self, cx: &mut StateCx<'_, I>) {
@@ -685,6 +695,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `eatGrass()`.
     fn behavior_eat_grass(&mut self, cx: &mut StateCx<'_, I>) {
         self.animal_stop_all_movement_now(cx);
+        if cx.has_host_error() { return; }
         self.eat_anim(cx);
         let a = &mut self.af_mut().animal;
         a.behavior.wander_mul_mod = 0.0;
@@ -737,23 +748,33 @@ impl<I: 'static> GameCharacter<I> {
                 c.vars.turn_delta_normal = 0.9;
             }
         };
-        if self.behavior_check_drink_behavior(cx) {
+        let selected = self.behavior_check_drink_behavior(cx);
+        if cx.has_host_error() { return; }
+        if selected {
             go(self);
             return;
         }
-        if self.behavior_check_eat_behavior(cx) {
+        let selected = self.behavior_check_eat_behavior(cx);
+        if cx.has_host_error() { return; }
+        if selected {
             go(self);
             return;
         }
-        if self.behavior_check_fertilize_female(cx) {
+        let selected = self.behavior_check_fertilize_female(cx);
+        if cx.has_host_error() { return; }
+        if selected {
             go(self);
             return;
         }
-        if self.behavior_call_to_hutch(cx) {
+        let selected = self.behavior_call_to_hutch(cx);
+        if cx.has_host_error() { return; }
+        if selected {
             go(self);
             return;
         }
-        if self.behavior_check_attack_behavior(cx) && self.path.vehicle.is_none() {
+        let selected = self.behavior_check_attack_behavior(cx);
+        if cx.has_host_error() { return; }
+        if selected && self.path.vehicle.is_none() {
             self.set_doing_behavior(true);
             self.vars.turn_delta_normal = 0.9;
         }
@@ -761,19 +782,24 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `callToHutch(null, false)`.
     fn behavior_call_to_hutch(&mut self, cx: &mut StateCx<'_, I>) -> bool {
-        self.animal_env(cx, |a, c, env| {
-            a.behavior_call_to_hutch(None, false, c, env)
-        })
-        .unwrap_or(false)
+        match self.animal_env(cx, |a, c, env| a.behavior_call_to_hutch(None, false, c, env)) {
+            Some(Ok(called)) => called,
+            Some(Err(error)) => { cx.record_animal_error(error); false }
+            // The existing absent-world profile remains an explicit host gate.
+            None => false,
+        }
     }
 
     /// `checkAttackBehavior()`.
     fn behavior_check_attack_behavior(&mut self, cx: &mut StateCx<'_, I>) -> bool {
-        if pz_animals::AnimalCharacter::is_female(self)
-            || self.af().animal.is_baby().unwrap_or(false)
-        {
+        if pz_animals::AnimalCharacter::is_female(self) {
             return false;
         }
+        let baby = match self.af().animal.is_baby() {
+            Ok(baby) => baby,
+            Err(error) => { cx.record_animal_error(error); return false; }
+        };
+        if baby { return false; }
         let adef = self.adef();
         if adef.dont_attack_other_male {
             return false;
@@ -829,6 +855,7 @@ impl<I: 'static> GameCharacter<I> {
                     continue;
                 }
                 self.behavior_go_attack(aid, cx);
+                if cx.has_host_error() { return false; }
                 self.af_mut().fighting_opponent = Some(aid);
                 return true;
             }
@@ -856,7 +883,9 @@ impl<I: 'static> GameCharacter<I> {
             }
             f.animal_stop_all_movement_now(cx);
         });
+        if cx.has_host_error() { return false; }
         self.animal_stop_all_movement_now(cx);
+        if cx.has_host_error() { return false; }
         let b = self.beh_mut();
         b.behavior_action = Some(BehaviorAction::Fertilize);
         b.behavior_object = Some(BehaviorObject::Animal(female));
@@ -921,10 +950,12 @@ impl<I: 'static> GameCharacter<I> {
         if far {
             let t = target.expect("far");
             self.animal_stop_all_movement_now(cx);
+            if cx.has_host_error() { return; }
             self.animal_path_to_location(t.0, t.1, t.2, cx);
         } else if !vehicle_check || self.path.vehicle.is_none() {
             self.set_doing_behavior(true);
             self.behavior_do_behavior_action(cx);
+            if cx.has_host_error() { return; }
         }
     }
 
@@ -955,9 +986,11 @@ impl<I: 'static> GameCharacter<I> {
             if self.path.vehicle.is_none() {
                 self.set_doing_behavior(true);
                 self.behavior_do_behavior_action(cx);
+                if cx.has_host_error() { return false; }
             }
         } else {
             self.animal_stop_all_movement_now(cx);
+            if cx.has_host_error() { return false; }
             self.animal_path_to_location(near_xyz.0, near_xyz.1, near_xyz.2, cx);
         }
         true
@@ -965,17 +998,25 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `checkDrinkBehavior()`.
     fn behavior_check_drink_behavior(&mut self, cx: &mut StateCx<'_, I>) -> bool {
+        let baby = match self.af().animal.is_baby() {
+            Ok(baby) => baby,
+            Err(error) => { cx.record_animal_error(error); return false; }
+        };
+        if baby { return false; }
         let (_, t) = self.hunger_thirst();
-        if self.af().animal.is_baby().unwrap_or(false)
-            || t < self.adef().thirst_hunger_trigger
+        if t < self.adef().thirst_hunger_trigger
             || self.af().fighting_opponent.is_some()
         {
             return false;
         }
-        if self.try_drink_from_river(cx) {
+        let selected = self.try_drink_from_river(cx);
+        if cx.has_host_error() { return false; }
+        if selected {
             return true;
         }
-        if self.try_drink_from_puddle(cx) {
+        let selected = self.try_drink_from_puddle(cx);
+        if cx.has_host_error() { return false; }
+        if selected {
             return true;
         }
         for z in self.af().animal.connected_d_zone.clone() {
@@ -1152,10 +1193,12 @@ impl<I: 'static> GameCharacter<I> {
         };
         if far {
             self.animal_stop_all_movement_now(cx);
+            if cx.has_host_error() { return; }
             self.animal_path_to_trough(t, cx);
         } else if !vehicle_check || self.path.vehicle.is_none() {
             self.set_doing_behavior(true);
             self.behavior_do_behavior_action(cx);
+            if cx.has_host_error() { return; }
         }
     }
 
@@ -1168,8 +1211,14 @@ impl<I: 'static> GameCharacter<I> {
         if self.path.vehicle.is_some() {
             return self.behavior_eat_from_vehicle(cx);
         }
-        if self.af().animal.is_baby().unwrap_or(false) && self.try_to_eat_from_mom(true, cx) {
-            return true;
+        let baby = match self.af().animal.is_baby() {
+            Ok(baby) => baby,
+            Err(error) => { cx.record_animal_error(error); return false; }
+        };
+        if baby {
+            let selected = self.try_to_eat_from_mom(true, cx);
+            if cx.has_host_error() { return false; }
+            if selected { return true; }
         }
         for z in self.af().animal.connected_d_zone.clone() {
             if self.try_eat_from_ground(z, cx) {
@@ -1185,7 +1234,9 @@ impl<I: 'static> GameCharacter<I> {
     /// `forceEatFromMom()`.
     pub fn behavior_force_eat_from_mom(&mut self, cx: &mut StateCx<'_, I>) {
         self.animal_stop_all_movement_now(cx);
+        if cx.has_host_error() { return; }
         self.try_to_eat_from_mom(false, cx);
+        if cx.has_host_error() { return; }
         self.beh_mut().behavior_check_timer = 500.0;
     }
 
@@ -1208,6 +1259,7 @@ impl<I: 'static> GameCharacter<I> {
             return false;
         }
         self.animal_stop_all_movement_now(cx);
+        if cx.has_host_error() { return false; }
         let msq = self.with_other(mid, cx, |m, cx| {
             if let Some(f) = m.animal.as_mut() {
                 f.animal.behavior.block_movement = true;
@@ -1215,6 +1267,7 @@ impl<I: 'static> GameCharacter<I> {
             m.animal_stop_all_movement_now(cx);
             m.path.current_square
         });
+        if cx.has_host_error() { return false; }
         if let Some(Some(s)) = msq {
             self.animal_path_to_location(s.0, s.1, s.2, cx);
         }
@@ -1236,6 +1289,7 @@ impl<I: 'static> GameCharacter<I> {
                 }
                 if let Some(bid) = character_ref_id(b) {
                     self.with_other(bid, cx, |c, cx| c.behavior_force_eat_from_mom(cx));
+                    if cx.has_host_error() { return false; }
                 }
             }
         }
@@ -1356,8 +1410,12 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `eatFromVehicle()`.
     pub fn behavior_eat_from_vehicle(&mut self, cx: &mut StateCx<'_, I>) -> bool {
+        let baby = match self.af().animal.is_baby() {
+            Ok(baby) => baby,
+            Err(error) => { cx.record_animal_error(error); return false; }
+        };
         let adef = self.adef();
-        if self.af().animal.is_baby().unwrap_or(false) && adef.need_mom {
+        if baby && adef.need_mom {
             if let Some(mid) = self.mother_id() {
                 let enough = cx
                     .world
@@ -1403,7 +1461,10 @@ impl<I: 'static> GameCharacter<I> {
         let Some(item) = items.and_then(|l| l.first().copied()) else {
             return false;
         };
-        self.animal_env(cx, |a, c, env| a.data_eat_item(item, false, c, env));
+        if let Some(Err(error)) = self.animal_env(cx, |a, c, env| a.data_eat_item(item, false, c, env)) {
+            cx.record_animal_error(error);
+            return false;
+        }
         true
     }
 
@@ -1926,7 +1987,9 @@ impl<I: 'static> GameCharacter<I> {
             || f.drink_from_river.is_some()
             || f.drink_from_puddle.is_some()
         {
-            self.animal_env(cx, |a, c, env| a.data_drink(c, env));
+            if let Some(Err(error)) = self.animal_env(cx, |a, c, env| a.data_drink(c, env)) {
+                cx.record_animal_error(error);
+            }
             return;
         }
         if let Some(o) = f.eat_from_ground {
@@ -1939,15 +2002,17 @@ impl<I: 'static> GameCharacter<I> {
                 return;
             }
         }
-        let follow = self
-            .animal_env(cx, |a, c, env| a.data_eat(c, env))
-            .and_then(|r| r.ok())
-            .unwrap_or(EatFollowUp::None);
+        let follow = match self.animal_env(cx, |a, c, env| a.data_eat(c, env)) {
+            Some(Ok(follow)) => follow,
+            Some(Err(error)) => { cx.record_animal_error(error); return; }
+            None => return,
+        };
         match follow {
             EatFollowUp::None => {}
             EatFollowUp::CheckBehavior => {
                 self.set_doing_behavior(false);
                 self.behavior_check_behavior(cx);
+                if cx.has_host_error() { return; }
             }
             EatFollowUp::ResetBehavior => {
                 self.set_doing_behavior(false);
@@ -1957,6 +2022,7 @@ impl<I: 'static> GameCharacter<I> {
                 if check {
                     self.set_doing_behavior(false);
                     self.behavior_check_behavior(cx);
+                    if cx.has_host_error() { return; }
                 }
                 self.with_animal(|a, c| a.data_reset_eating_check(c));
             }
@@ -1981,5 +2047,145 @@ mod tests {
             w.swap(i, c);
         }
         assert_eq!(v, w);
+    }
+
+    #[test]
+    fn attack_decision_checks_female_before_propagating_missing_stage() {
+        use pz_animals::AnimalCharacter;
+        use crate::character::{state::{StateCx, NullWorld}, tests::{fixture, Recorder}};
+        let (sm, mut chars) = fixture();
+        let mut c = GameCharacter::<i32>::new_animal(&sm, &mut chars).unwrap();
+        let ctx = Recorder::default(); let mut world = NullWorld;
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+        AnimalCharacter::set_female(&mut c, true);
+        assert!(!c.behavior_check_attack_behavior(&mut cx));
+        assert!(cx.state_result().is_ok(), "female short circuit must not call isBaby");
+        AnimalCharacter::set_female(&mut c, false);
+        assert!(!c.behavior_check_attack_behavior(&mut cx));
+        assert_eq!(cx.state_result().unwrap_err().animal().unwrap().0, "NullPointerException: currentStage");
+    }
+
+
+    // A real state-machine exit records the existing animal error domain.
+    // It witnesses native throw-like prefix stopping without inventing a
+    // Throwable implementation or changing the production diagnostic.
+    struct StopFault;
+    impl crate::character::state::State<i32> for StopFault {
+        fn id(&self) -> crate::character::state::StateId {
+            crate::character::state::StateId("authored.AnimalStopFault")
+        }
+        fn exit(&self, _: &mut GameCharacter<i32>, cx: &mut StateCx<'_, i32>) {
+            cx.record_animal_error(pz_animals::JavaException("authored animal stop state exit".into()));
+        }
+    }
+
+    struct SelectionWorld {
+        defs: pz_animals::AnimalDefinitionTables,
+        other: GameCharacter<i32>,
+        host_queries: usize,
+        path_resets: usize,
+        other_world: ConnectedAnimal,
+    }
+    struct ConnectedAnimal(i32);
+    impl pz_animals::AnimalWorld for ConnectedAnimal {
+        fn zone_animals_connected(&self, _: pz_animals::ObjectRef) -> Vec<pz_animals::ObjectRef> {
+            vec![character_ref(self.0)]
+        }
+    }
+    impl SelectionWorld {
+        fn new(other: GameCharacter<i32>) -> Self {
+            let id = other.id;
+            Self { defs: Default::default(), other, host_queries: 0, path_resets: 0, other_world: ConnectedAnimal(id) }
+        }
+    }
+    impl crate::character::state::StateWorld<i32> for SelectionWorld {
+        fn animal_host(&mut self, _: i32) -> Option<crate::character::animal::AnimalHost<'_>> {
+            self.host_queries += 1;
+            // Definitions and world callbacks borrow disjoint actual owners.
+            // The small callback object only supplies the connected animal.
+            Some(crate::character::animal::AnimalHost { defs: &self.defs, world: &mut self.other_world })
+        }
+        fn character_mut(&mut self, id: i32) -> Option<&mut GameCharacter<i32>> {
+            (self.other.id == id).then_some(&mut self.other)
+        }
+        fn path_reset(&mut self, _: &mut dyn pz_pathfind::mover::PathMover) {
+            self.path_resets += 1;
+        }
+    }
+
+    fn selection_animal(
+        sm: &pz_scripts::ScriptManager,
+        chars: &mut crate::Characters,
+        id: i32,
+        baby: bool,
+    ) -> GameCharacter<i32> {
+        let mut c = GameCharacter::<i32>::new_animal(sm, chars).unwrap();
+        c.id = id;
+        c.path.current_square = Some((id, 0, 0));
+        let f = c.animal_fields_mut().unwrap();
+        f.def = Some(crate::character::animal::AnimalDefValues::of(&pz_animals::AnimalDefinitions::default()));
+        f.exists_in_world = true;
+        f.animal.animal_type = Some("fixture".into());
+        f.animal.data.current_stage = Some(pz_animals::AnimalGrowStage {
+            next_stage: baby.then(|| "adult".into()),
+            ..Default::default()
+        });
+        pz_animals::AnimalCharacter::set_female(&mut c, false);
+        c
+    }
+
+    #[test]
+    fn failed_mother_stop_does_not_fall_through_to_food_selection() {
+        use crate::character::{state::{NullWorld, StateWorld}, tests::{fixture, Recorder}};
+        let (sm, mut chars) = fixture();
+        let mut c = selection_animal(&sm, &mut chars, 1, true);
+        c.animal_fields_mut().unwrap().animal.mother = Some(character_ref(2));
+        c.animal_fields_mut().unwrap().animal.connected_d_zone = vec![4];
+        let hunger = chars.sim.character_stats.field("HUNGER").unwrap();
+        c.stats.set(&hunger, 0.9);
+        c.vars.state_event_delay_timer = 23.0;
+        let mut mother = selection_animal(&sm, &mut chars, 2, false);
+        mother.animal_fields_mut().unwrap().initialized = true;
+        mother.animal_fields_mut().unwrap().animal.data.milk_qty = 1.0;
+        let ctx = Recorder::default();
+        let mut setup = NullWorld;
+        let mut setup_cx = StateCx::new(&sm, &chars, &ctx, &mut setup);
+        c.change_state(Some(&StopFault), &mut setup_cx);
+        mother.change_state(Some(crate::character::states::animal::AnimalIdleState::instance::<i32>()), &mut setup_cx);
+        assert!(setup_cx.state_result().is_ok());
+        let mut world = SelectionWorld::new(mother);
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+        assert!(!c.behavior_check_eat_behavior(&mut cx));
+        assert_eq!(cx.state_result().unwrap_err().animal().unwrap().0, "authored animal stop state exit");
+        assert_eq!(world.path_resets, 1, "completed stop prefix");
+        assert_eq!(world.host_queries, 0, "failed mother selection must not query ground/trough food");
+        assert_eq!(c.vars.state_event_delay_timer, 23.0, "failed mother selection must not run grass fallback");
+        assert!(c.animal_fields().unwrap().animal.behavior.behavior_action.is_none());
+        assert!(!world.character_mut(2).unwrap().animal_fields().unwrap().animal.behavior.block_movement);
+    }
+
+    #[test]
+    fn failed_attack_stop_keeps_action_prefix_without_publishing_opponents() {
+        use crate::character::{state::{NullWorld, StateWorld}, tests::{fixture, Recorder}};
+        let (sm, mut chars) = fixture();
+        let mut c = selection_animal(&sm, &mut chars, 1, false);
+        c.animal_fields_mut().unwrap().animal.connected_d_zone = vec![4];
+        let opponent = selection_animal(&sm, &mut chars, 2, false);
+        let ctx = Recorder::default();
+        let mut setup = NullWorld;
+        let mut setup_cx = StateCx::new(&sm, &chars, &ctx, &mut setup);
+        c.change_state(Some(&StopFault), &mut setup_cx);
+        assert!(setup_cx.state_result().is_ok());
+        let mut world = SelectionWorld::new(opponent);
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+        assert!(!c.behavior_check_attack_behavior(&mut cx));
+        assert_eq!(cx.state_result().unwrap_err().animal().unwrap().0, "authored animal stop state exit");
+        assert_eq!(world.path_resets, 1, "goAttack reached the actual stop prefix");
+        assert_eq!(world.host_queries, 1);
+        assert_eq!(c.animal_fields().unwrap().animal.behavior.behavior_action, Some(BehaviorAction::FightAnimal));
+        assert!(c.animal_fields().unwrap().fighting_opponent.is_none(), "caller must not publish fightingOpponent after failed goAttack");
+        let opponent = world.character_mut(2).unwrap().animal_fields().unwrap();
+        assert!(opponent.fighting_opponent.is_none());
+        assert!(!opponent.animal.behavior.block_movement);
     }
 }

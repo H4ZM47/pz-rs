@@ -473,11 +473,13 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `stopAllMovementNow()`.
     pub fn animal_stop_all_movement_now(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         self.vars.moving = false;
         cx.world.path_reset(self);
         self.path.path2 = None;
         let d = self.default_state();
         self.change_state(d, cx);
+        if cx.has_host_error() { return; }
         self.with_animal(|a, c| a.data_reset_eating_check(c));
         if let Some(f) = self.animal.as_mut() {
             f.pending_stop_all_movement = false;
@@ -490,6 +492,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `cancelLuring()`.
     pub fn animal_cancel_luring(&mut self, cx: &mut StateCx<'_, I>) {
         self.animal_stop_all_movement_now(cx);
+        if cx.has_host_error() { return; }
         let id = self.id;
         if let Some(p) = self.af().lured_by {
             if let Some(pc) = cx.world.character_mut(p) {

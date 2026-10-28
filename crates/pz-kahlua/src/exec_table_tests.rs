@@ -277,3 +277,27 @@ fn actual_lua_removed_owners_wait_for_both_outer_host_guards_and_explicit_bounda
         ));
     }
 }
+
+
+#[derive(Debug)]
+struct RetainedDiagnosticCause(&'static str);
+impl std::fmt::Display for RetainedDiagnosticCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.0) }
+}
+impl std::error::Error for RetainedDiagnosticCause {}
+
+#[test]
+fn existing_string_callback_exception_wrapper_retains_original_non_lua_cause() {
+    let mut t = thread();
+    let cause: Rc<dyn std::error::Error> = Rc::new(RetainedDiagnosticCause("original"));
+    let held = cause.clone();
+    t.globals().set_str("replacement", Value::Native(NativeFunction::new("replacement", move |_| {
+        Err(LuaError::with_cause(LuaError::Runtime { class: "java.lang.IllegalArgumentException", message: "detail".into() }, held.clone()))
+    })));
+    let f = function(&t, "return string.gsub('a','.',replacement)");
+    let (message, _, error) = t.pcall_ex(&f, &[]).unwrap_err();
+    assert!(Rc::ptr_eq(error.retained_cause().unwrap(), &cause));
+    assert!(message.as_str().unwrap().contains("java.lang.IllegalArgumentException"));
+    assert!(message.as_str().unwrap().contains("detail"));
+    assert_eq!(std::error::Error::source(&error).unwrap().to_string(), "original");
+}

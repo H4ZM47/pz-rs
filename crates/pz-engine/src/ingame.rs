@@ -403,6 +403,7 @@ impl GameState for IngameState {
         // the atlases and `FBORenderChunkManager.Reset`.
         // `IsoWorld.instance.KillCell()`: the cell and the world's state go.
         pz_lua_api::bind_world::set_cell(None);
+        pz_lua_api::bind_world::square_queries::install_square_light(None);
         // Native KillCell precedes DesignationZone.Reset/Animal.Reset. The
         // permanent class lists retain identity; reset only their contents.
         if let Some(world) = cx.world.as_mut() {
@@ -503,7 +504,7 @@ impl GameState for IngameState {
                 if let Err(error) = w.update(cx.lua, &sim) {
                     // A typed character host fault is not an ordinary script
                     // update error. Stop this frame before later callbacks.
-                    crate::failure::record_first(cx.error, (format!("IsoWorld host fault: {error:?}")).into());
+                    crate::failure::record_first(cx.error, crate::failure::EngineError::state("IsoWorld.update", error));
                     return StateAction::Remain;
                 }
             }

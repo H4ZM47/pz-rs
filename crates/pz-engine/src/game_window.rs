@@ -160,8 +160,12 @@ impl App {
         };
         if in_game {
             if let Some(world) = self.world.as_mut() {
-                if let Err(error) = world.save_on_quit(lua) {
+                if let Err(error) = world.save_on_window_close(lua) {
                     crate::failure::record_first(&mut self.error, (format!("PlayerDB save host failure: {error}")).into());
+                } else if pz_lua_api::bind_world::with_world(|w| w.cell.is_some()) {
+                    // Native exit rereads currentCell before this second
+                    // block: the first callback may clear or replace it.
+                    lua.trigger_event("OnPostSave", &[]);
                 }
             }
         }
@@ -191,6 +195,7 @@ impl App {
         // A close during loading does not pass through IngameState.KillCell.
         // Retire the in-process host's current cell after its owners stop.
         pz_lua_api::bind_world::set_cell(None);
+        pz_lua_api::bind_world::square_queries::install_square_light(None);
         for mut models in self.retired_models.drain(..) {
             models.clear();
             if let Some(gpu) = self.gpu.as_mut() {
@@ -592,7 +597,19 @@ pub fn run_headless(launch: Launch, frames: u32) -> crate::failure::EngineResult
     if let Some(error) = app.error.take() {
         return Err(error);
     }
-    Ok(app.current_state())
+    let state = app.current_state();
+    close_headless(&mut app)?;
+    Ok(state)
+}
+
+/// The end of a headless run is the window closing: `GameWindow.exit`
+/// saves a game in progress (the local players, `GameWindow.save(true)`).
+fn close_headless(app: &mut App) -> crate::failure::EngineResult<()> {
+    app.close();
+    match app.error.take() {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 fn headless_app(launch: Launch) -> crate::failure::EngineResult<App> {
@@ -640,13 +657,74 @@ fn run_headless_source(lua: &mut LuaManager, source: &str) -> crate::failure::En
 }
 
 fn run_frames(app: &mut App, frames: u32) {
-    for _ in 0..frames {
+    let script = headless_input_script();
+    let trace = std::env::var("PZ_HEADLESS_TRACE").ok().and_then(|n| n.parse::<u32>().ok());
+    for frame in 0..frames {
         if app.error.is_some() {
             break;
         }
+        for &(at, key, status) in &script {
+            if at == frame {
+                pz_input::with_input(|s| s.key(key, status));
+            }
+        }
         app.last_frame = Instant::now() - Duration::from_millis(33);
         app.frame();
+        if trace.is_some_and(|n| n > 0 && frame % n == 0) {
+            trace_frame(app, frame);
+        }
     }
+}
+
+/// Development harness: `PZ_HEADLESS_INPUT=<file>` feeds key events to the
+/// headless frames, one `<frame> <lwjgl key> down|up` per line (`#`
+/// comments).
+fn headless_input_script() -> Vec<(u32, i32, i32)> {
+    let Some(path) = std::env::var_os("PZ_HEADLESS_INPUT") else {
+        return Vec::new();
+    };
+    let Ok(src) = std::fs::read_to_string(&path) else {
+        eprintln!("PZ_HEADLESS_INPUT: cannot read {}", path.to_string_lossy());
+        return Vec::new();
+    };
+    src.lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let frame = it.next()?.parse().ok()?;
+            let key = it.next()?.parse().ok()?;
+            let status = match it.next()? {
+                "down" => 1,
+                "up" => 0,
+                _ => return None,
+            };
+            Some((frame, key, status))
+        })
+        .collect()
+}
+
+/// Development harness: `PZ_HEADLESS_TRACE=<n>` prints the local player's
+/// position and action state and the live zombie count every `n` frames.
+fn trace_frame(app: &App, frame: u32) {
+    let zombies = app.world.as_ref().map_or(0, |w| w.zombies.len());
+    let player = pz_lua_api::bind_players::player(0).and_then(|p| {
+        p.try_borrow().ok().map(|c| {
+            format!(
+                "player ({:.2},{:.2},{:.2}) state={}",
+                c.vars.x,
+                c.vars.y,
+                c.vars.z,
+                c.state.action_context.current_state_name()
+            )
+        })
+    });
+    eprintln!(
+        "[trace {frame}] state={:?} paused={} zombies={zombies} {}",
+        app.current_state(),
+        pz_lua_api::bind_climate::is_game_paused(),
+        player.unwrap_or_else(|| "no player".into())
+    );
 }
 
 fn headless(launch: Launch, frames: u32, gpu: bool) -> crate::failure::EngineResult<(u32, u32, Option<Vec<u8>>)> {
@@ -663,6 +741,7 @@ fn headless(launch: Launch, frames: u32, gpu: bool) -> crate::failure::EngineRes
         return Err(error);
     }
     let px = app.gpu.as_ref().map(|g| g.read_pixels());
+    close_headless(&mut app)?;
     Ok((w as u32, h as u32, px))
 }
 
@@ -673,3 +752,6 @@ mod session_tests;
 
 #[cfg(test)]
 mod error_boundary_tests;
+
+#[cfg(test)]
+mod close_save_tests;

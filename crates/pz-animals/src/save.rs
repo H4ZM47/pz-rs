@@ -121,7 +121,7 @@ impl Animal {
         chr.hours_survived = io(r.f64())?;
         a.time_since_last_update = io(r.i64())?;
         let size = io(r.f32())?;
-        a.data_set_size(size, ctx);
+        a.data_set_size(size, ctx)?;
         a.attach_back_to_mother = io(r.i32())?;
         if io(r.bool())? {
             a.attach_back_to_mother = io(r.i32())?;
@@ -214,7 +214,7 @@ impl Animal {
         a.data.age = saved.age;
         chr.hours_survived = saved.hours_survived;
         a.time_since_last_update = saved.time_since_last_update;
-        a.data_set_size(saved.size, ctx);
+        a.data_set_size(saved.size, ctx)?;
         a.attach_back_to_mother = saved.attach_back_to_mother;
         a.data.pregnant = saved.pregnant;
         a.data.pregnant_time = saved.pregnant_time;

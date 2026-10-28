@@ -110,6 +110,7 @@ impl<I: 'static> State<I> for AnimalIdleState {
             return;
         }
         owner.behavior_wander_idle(cx);
+        if cx.has_host_error() { return; }
         if let Some(t) = owner.af().animal.eat_from_trough {
             owner.face_animal_object(t, cx);
         }
@@ -220,6 +221,7 @@ impl<I: 'static> State<I> for AnimalWalkState {
                     <= owner.adef().attack_dist as f32
                 {
                     self.exit(owner, cx);
+                    if cx.has_host_error() { return; }
                 }
             }
         }
@@ -264,6 +266,7 @@ impl<I: 'static> State<I> for AnimalPathFindState {
             BehaviorResult::Failed => {
                 let (x, y, z) = owner.path_target(cx);
                 owner.animal_path_failed(cx);
+                if cx.has_host_error() { return; }
                 owner.af_mut().animal.should_follow_wall = true;
                 cx.world.path_to_location(owner, x, y, z);
                 owner.set_var_bool("bMoving", true);

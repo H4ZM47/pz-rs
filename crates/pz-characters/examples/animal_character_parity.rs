@@ -488,7 +488,8 @@ fn run_tick(oracle: &str, s: &mut Setup) {
                 let mut out = PlayerUpdate::default();
                 let ctx_ref: &dyn SimContext = &*ctx;
                 let mut cx = StateCx::new(&s.sm, &s.chars, ctx_ref, &mut world);
-                let r = c.update_animal(&mut registry, &mut out, &mut cx);
+                let result = c.update_animal(&mut registry, &mut out, &mut cx);
+                let r = cx.state_result().and(result.map_err(pz_characters::character::state::StateFailure::from));
                 let st = match r {
                     Ok(()) => chr_state(c, &s.chars),
                     Err(e) => format!("exc={e} {}", chr_state(c, &s.chars)),

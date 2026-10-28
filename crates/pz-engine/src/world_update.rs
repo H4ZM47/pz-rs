@@ -409,8 +409,8 @@ fn dispatch_player_animation_event(
     lua: &mut LuaManager,
     character: &LuaGameCharacterRef,
     event: &pz_anim::AnimEventRecord,
-    state_phase: impl FnOnce() -> HostResult<()>,
-) -> HostResult<()> {
+    state_phase: impl FnOnce() -> pz_characters::character::state::StateResult<()>,
+) -> pz_characters::character::state::StateResult<()> {
     state_phase()?;
     pz_lua_api::timed_actions::anim_event(
         &mut lua.thread,
@@ -463,7 +463,7 @@ impl IsoWorld {
 
     /// `IsoWorld.update()`: `updateInternal`, then `DesignationZone.update`
     /// (TODO(port): `DesignationZone`).
-    pub fn update(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> HostResult<()> {
+    pub fn update(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
         self.frame_no += 1;
         // TODO(port): `WorldSimulation.instance.update()`,
         // `HutchManager.updateAll`, `ImprovedFog.update`,
@@ -481,7 +481,7 @@ impl IsoWorld {
 
     /// `updateWorld()`: `IsoCell.update`, `IsoRegions.update`, then
     /// `MovingObjectUpdateScheduler.postupdate`.
-    fn update_world(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> HostResult<()> {
+    fn update_world(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
         self.update_cell(lua, sim)?;
         let player = pz_lua_api::bind_players::player_instance().map(|p| {
             let c = p.borrow();
@@ -504,7 +504,7 @@ impl IsoWorld {
     }
 
     /// `IsoCell.update()`.
-    fn update_cell(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> HostResult<()> {
+    fn update_cell(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
         // TODO(port): `MovingObjectUpdateScheduler.startFrame`,
         // `IsoSprite.alphaStep`, `ProcessSpottedRooms`.
         let alive: Vec<usize> = local_players()
@@ -550,7 +550,7 @@ impl IsoWorld {
     /// first, then the zombies, in list order. TODO(port): the simulation
     /// levels (`frameMod` buckets by distance); everything updates every
     /// frame.
-    fn update_characters(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> HostResult<()> {
+    fn update_characters(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
         let input = pz_player_input::EnginePlayerInput::capture();
         let sm = pz_lua_api::bind_registry::shared_script_manager();
         let chars = shared_characters();
@@ -603,7 +603,7 @@ impl IsoWorld {
                                     &mut u,
                                     &mut cx,
                                 );
-                                (cx.host_result(), step)
+                                (cx.state_result(), step)
                             })
                         },
                     )
@@ -629,7 +629,7 @@ impl IsoWorld {
                                             let chars = chars.borrow();
                                             let mut cx = StateCx::new(&sm, &chars, &player_sim, w);
                                             let result = p.borrow_mut().update_player_after_actions(&mut u, &mut cx);
-                                            (cx.host_result(), result)
+                                            (cx.state_result(), result)
                                         })
                                     });
                                     match result {
@@ -698,12 +698,12 @@ impl IsoWorld {
                         fill_square_environment(z, w.cell);
                         let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
                         let result = z.update_zombie(reg, action_groups, &mut cx);
-                        cx.host_result()?;
+                        cx.state_result()?;
                         if let Err(e) = result {
                             errors.push(format!("IsoZombie.update: {e}"));
                         }
                     }
-                    Ok::<_, pz_inventory::floor_drop::RuntimeHostError>(errors)
+                    Ok::<_, pz_characters::character::state::StateFailure>(errors)
                 })
             },
         );
@@ -725,7 +725,7 @@ impl IsoWorld {
     /// `MovingObjectUpdateScheduler.postupdate()`: `IsoPlayer.postupdate`
     /// and `IsoZombie.postupdate` (the move and its collisions, the action
     /// context).
-    fn postupdate_characters(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> HostResult<()> {
+    fn postupdate_characters(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
         let sm = pz_lua_api::bind_registry::shared_script_manager();
         let chars = shared_characters();
         let players = local_players();
@@ -752,14 +752,14 @@ impl IsoWorld {
                     pz_lua_api::bind_players::set_player_instance(Some(p.clone()));
                     let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
                     p.borrow_mut().postupdate_player(&mut cx);
-                    cx.host_result()?;
+                    cx.state_result()?;
                 }
                 for z in zombies.iter_mut() {
                     let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
                     z.postupdate_zombie(&mut cx);
-                    cx.host_result()?;
+                    cx.state_result()?;
                 }
-                Ok::<_, pz_inventory::floor_drop::RuntimeHostError>(())
+                Ok::<_, pz_characters::character::state::StateFailure>(())
             },
         );
         if let Some(Err(error)) = result {
@@ -821,8 +821,8 @@ impl IsoWorld {
         character: Option<&LuaGameCharacterRef>,
         sim: &FrameSim,
         player_events: Vec<pz_characters::character::player::PlayerEvent>,
-        error: pz_inventory::floor_drop::RuntimeHostError,
-    ) -> HostResult<T> {
+        error: pz_characters::character::state::StateFailure,
+    ) -> pz_characters::character::state::StateResult<T> {
         if let Some(character) = character {
             fire_player_events(lua, character, player_events);
         }
@@ -840,7 +840,7 @@ impl IsoWorld {
     /// `ModelManager.update`: advance the live models after simulation,
     /// delivering animation events to the same character and state world.
     /// Asset resolution runs before borrowing the character registry.
-    pub fn update_models(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> HostResult<()> {
+    pub fn update_models(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
         let mut models = self.models.take().unwrap_or_else(|| {
             crate::world_models::WorldModels::new(
                 &self.game_dir,
@@ -887,7 +887,7 @@ impl IsoWorld {
                                     let chars = chars.borrow();
                                     let mut cx = StateCx::new(&sm, &chars, sim, w);
                                     p.borrow_mut().on_anim_event(&event, &mut cx);
-                                    cx.host_result()
+                                    cx.state_result()
                                 },
                             );
                             result.unwrap_or(Ok(()))
@@ -926,9 +926,9 @@ impl IsoWorld {
                                 let mut cx = StateCx::new(&sm, &chars, sim, w);
                                 for event in events {
                                     chr.on_anim_event(&event, &mut cx);
-                                    cx.host_result()?;
+                                    cx.state_result()?;
                                 }
-                                Ok::<_, pz_inventory::floor_drop::RuntimeHostError>(())
+                                Ok::<_, pz_characters::character::state::StateFailure>(())
                             },
                         );
                         if let Some(Err(error)) = result {
@@ -1488,6 +1488,17 @@ impl IsoWorld {
     /// observes the live world after the prelude and before the chunks,
     /// cell and population, so its changes reach the saved files.
     pub fn save_on_quit(&mut self, lua: &mut LuaManager) -> pz_characters::character::save::CharacterPersistenceResult<()> {
+        self.save_quit_phases(lua, false)
+    }
+
+    /// The first post-save block of `GameWindow.exit` checks the current
+    /// cell after saving. App.close performs the second, independent check.
+    /// Ordinary IngameState quit retains its existing unconditional callback.
+    pub(crate) fn save_on_window_close(&mut self, lua: &mut LuaManager) -> pz_characters::character::save::CharacterPersistenceResult<()> {
+        self.save_quit_phases(lua, true)
+    }
+
+    fn save_quit_phases(&mut self, lua: &mut LuaManager, require_current_cell: bool) -> pz_characters::character::save::CharacterPersistenceResult<()> {
         use pz_lua_api::world_save::{
             save_game_before_event, save_game_cell_actual as save_game_cell, save_game_finish, SaveGame, SaveReport,
         };
@@ -1624,9 +1635,12 @@ impl IsoWorld {
             }
             None => SaveReport::default(),
         };
-        // Quitting delivers this even when saving is disabled or the
-        // prelude threw, matching `world_save::save_on_quit`.
-        lua.trigger_event("OnPostSave", &[]);
+        // Ordinary quitting keeps its callback even when saving is disabled
+        // or the prelude threw. Window close rereads currentCell at this
+        // separate native block. The WORLD borrow ends before callbacks run.
+        if !require_current_cell || with_world(|w| w.cell.is_some()) {
+            lua.trigger_event("OnPostSave", &[]);
+        }
         for e in report.errors.drain(..) {
             self.log_update_error(e);
         }
@@ -1874,7 +1888,7 @@ mod quit_save_tests {
             let chars = chars.borrow();
             let mut cx = StateCx::new(&sm, &chars, &sim, &mut state_world);
             character.borrow_mut().on_anim_event(&event, &mut cx);
-            cx.host_result()
+            cx.state_result()
         })
         .unwrap_err();
         let error = world
@@ -1889,7 +1903,7 @@ mod quit_save_tests {
         );
         assert!(sim.take_events().is_empty());
         assert_eq!(
-            error,
+            error.host().cloned().expect("original Host domain"),
             pz_inventory::floor_drop::RuntimeHostError::Borrowed("engine actual-state fixture")
         );
         assert_eq!(

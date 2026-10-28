@@ -708,6 +708,11 @@ impl<I: 'static> GameCharacter<I> {
         self.character_traits.get(CharacterTrait::constant(sm, field).as_ref())
     }
 
+    /// `isInventive`: `hasTrait(INVENTIVE, INVENTIVE_PROF)`.
+    pub fn is_inventive(&self, sm: &ScriptManager) -> ScriptResult<bool> {
+        Ok(self.has_trait(sm, "INVENTIVE")? || self.has_trait(sm, "INVENTIVE_PROF")?)
+    }
+
     /// `getStats().get(CharacterStat.<field>)`.
     pub fn stat(&self, chars: &Characters, field: &str) -> ScriptResult<f32> {
         Ok(self.stats.get(&chars.sim.character_stats.field(field)?))

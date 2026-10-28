@@ -76,6 +76,7 @@ use std::rc::Rc;
 mod direction_tests;
 #[cfg(test)]
 mod grapple_tests;
+mod control;
 mod key_ring;
 pub(crate) mod known_poison;
 mod reading;
@@ -410,6 +411,34 @@ pub(crate) fn with_ctx_host<R>(
     f: impl FnOnce(&dyn SimContext) -> HostResult<R>,
 ) -> LuaResult<R> {
     with_ctx_result(c, chr, |_, ctx| f(ctx), crate::bind_world_object::host_error)
+}
+
+pub(crate) fn state_error(error: pz_characters::character::state::StateFailure) -> LuaError {
+    use pz_characters::character::state::StateFailure;
+    match error {
+        StateFailure::Host(error) => {
+            let diagnostic = crate::bind_world_object::host_error(error.clone());
+            LuaError::with_cause(diagnostic, Rc::new(StateFailure::Host(error)))
+        }
+        StateFailure::Animal(error) => {
+            // The old jerr/java_error projection is diagnostic only. It does
+            // not prove a native exception class or manufacture a Throwable.
+            let diagnostic = java_error(ScriptError::new(format!("java.lang.{}", error.0)));
+            LuaError::with_cause(diagnostic, error)
+        }
+        StateFailure::Script(error) => {
+            let diagnostic = java_error(error.as_ref().clone());
+            LuaError::with_cause(diagnostic, error)
+        }
+    }
+}
+
+pub(crate) fn with_ctx_state<R>(
+    c: &mut NativeCall<'_>,
+    chr: &Value,
+    f: impl FnOnce(&dyn SimContext) -> pz_characters::character::state::StateResult<R>,
+) -> LuaResult<R> {
+    with_ctx_result(c, chr, |_, ctx| f(ctx), state_error)
 }
 
 fn character_action_error(error: CharacterActionError) -> LuaError {
@@ -789,6 +818,35 @@ fn register_inventory(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let ctx = CONTEXT.with(|c| c.borrow().clone());
         let v = chr_of(c)?.borrow().is_unlimited_carry(&*ctx);
         Ok(c.push(v))
+    });
+    // `IsoGameCharacter.getTorchStrength()` is 0; `IsoPlayer` (local, not an
+    // animal) reads its active light item.
+    b.method("getTorchStrength", |c| {
+        chr_of(c)?;
+        Ok(c.push(float_value(0.0)))
+    });
+    let p = expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS));
+    p.method("getActiveLightItem", |c| {
+        let i = chr_of(c)?.borrow().items.active_light_item();
+        Ok(c.push(i.as_ref().map_or(Value::Nil, crate::bind_items::item_value)))
+    });
+    p.method("getTorchStrength", |c| {
+        let i = chr_of(c)?.borrow().items.active_light_item();
+        let v = i.map_or(0.0, |i| i.borrow().get_light_strength());
+        Ok(c.push(float_value(v)))
+    });
+    // `IsoGameCharacter.isPlayerMoving()` is false; `IsoPlayer` reads its flag.
+    b.method("isPlayerMoving", |c| {
+        chr_of(c)?;
+        Ok(c.push(false))
+    });
+    p.method("isPlayerMoving", |c| {
+        let v = chr_of(c)?.borrow().player_moving;
+        Ok(c.push(v))
+    });
+    p.method("isTorchCone", |c| {
+        let i = chr_of(c)?.borrow().items.active_light_item();
+        Ok(c.push(i.is_some_and(|i| i.borrow().is_torch_cone())))
     });
     expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS)).method(
         "isGhostMode",
@@ -1747,8 +1805,13 @@ fn register_character(
         ISO_ZOMBIE_CLASS,
         ISO_ANIMAL_CLASS,
     ] {
-        expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
+        let sub = expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
+        if class == ISO_PLAYER_CLASS || class == ISO_ANIMAL_CLASS {
+            control::register_player(&sub);
+        }
     }
+    control::register(&b);
+    control::register_globals(thread);
     known_poison::register(&b, sm, chars);
     reading::register(&b);
     read_flags::register(&b);
@@ -1793,6 +1856,17 @@ fn register_character(
             Ok(c.push(value))
         });
     }
+    // `IsoMovingObject.isOutside()`: `current != null && current.isOutside()`.
+    b.method("isOutside", |c| {
+        let square = chr_of(c)?.borrow().current_square_xyz();
+        let v = match square {
+            Some((x, y, z)) if !crate::bind_world::square_value(x, y, z).is_nil() => {
+                crate::bind_world::square_queries::square_is_outside(x, y, z)?
+            }
+            _ => false,
+        };
+        Ok(c.push(v))
+    });
     b.method("getCell", |c| {
         chr_of(c)?;
         Ok(c.push(crate::bind_world::current_cell()))
@@ -1965,6 +2039,11 @@ fn register_character(
             }
         }
         Ok(c.push(any))
+    });
+    let s = sm.clone();
+    b.method("isInventive", move |c| {
+        let v = chr_of(c)?.borrow().is_inventive(&s).map_err(java_error)?;
+        Ok(c.push(v))
     });
     b.method("isUnlimitedEndurance", |c| {
         let ctx = CONTEXT.with(|c| c.borrow().clone());

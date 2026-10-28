@@ -353,6 +353,18 @@ What is needed, verbatim:
    `ISO_ANIMAL_CLASS` is registered with parent `IsoGameCharacter`. Java's
    parent is `IsoPlayer`.
 
+**Status (steps 4–5, `population/`).** `AnimalZone`'s polyline geometry
+and junctions over the meta grid's zones (`population::zone`),
+`VirtualAnimal` and its seven states, `AnimalChunk`/`AnimalCell` with the
+`apop_<x>_<y>.bin` codec, the worker/main/manager calls (`init`,
+`addChunkToWorld`, `removeChunkFromWorld`, `n_addAnimal`, `saveRealAnimals`,
+`save`, `saveToBufferMap`, `stop`) and `AnimalZones` (`createJunctions`,
+`spawnAnimalsOnZone`, `updateVirtualAnimals`, closest zone/junction), as one
+`AnimalPopulation<A>` generic over the host's animal. The live world is a
+`PopulationHost` (creating, saving and loading `IsoAnimal`s, `fromWorker`).
+Not yet: `ZoneGenerator.genAnimalsPath` (the procedural paths most animal
+zones come from), the engine host, and an oracle run.
+
 ### (b) Module split for steps 2–7
 
 | Step | Content | Where | Needs from other crates |

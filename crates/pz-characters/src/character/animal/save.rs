@@ -10,10 +10,10 @@
 //! stay `None`: `IsoAnimal.load` reads none.
 
 use pz_animals::{Animal, AnimalCtx, AnimalEnv, AnimalSandbox};
-use pz_scripts::ScriptResult;
+use crate::character::state::{StateFailure, StateResult};
 use pz_world::save::io::{Reader, Writer};
 
-use super::{jerr, AnimalDefValues, AnimalHost, CtxClock};
+use super::{ AnimalDefValues, AnimalHost, CtxClock};
 use crate::character::fire::CtxRand;
 use crate::character::state::{ActionGroups, StateRegistry};
 use crate::character::{GameCharacter, SimContext};
@@ -34,9 +34,9 @@ impl<I: 'static> GameCharacter<I> {
         groups: &mut ActionGroups,
         ctx: &dyn SimContext,
         host: &mut AnimalHost<'_>,
-    ) -> ScriptResult {
+    ) -> StateResult {
         let Some(f) = self.animal.as_ref() else {
-            return Err(crate::npe());
+            return Err(crate::npe().into());
         };
         let construction = f.construction;
         let clock = CtxClock(ctx);
@@ -53,7 +53,7 @@ impl<I: 'static> GameCharacter<I> {
             stat_defs: f.stat_defs.clone(),
             patience_range: (Self::PATIENCE_MIN, Self::PATIENCE_MAX),
         };
-        let mut loaded = Animal::load(r, world_version, &mut env).map_err(jerr)?;
+        let mut loaded = Animal::load(r, world_version, &mut env).map_err(StateFailure::from)?;
         loaded.chr.construction = construction;
         let def = loaded
             .animal
@@ -84,7 +84,7 @@ impl<I: 'static> GameCharacter<I> {
         w: &mut Writer,
         serialize: bool,
         mother_id: Option<i32>,
-    ) -> ScriptResult {
+    ) -> StateResult {
         let f = self.animal.as_ref().ok_or_else(crate::npe)?;
         let chr = self.animal_character_values(chars).ok_or_else(crate::npe)?;
         let clock = CtxClock(ctx);
@@ -94,8 +94,8 @@ impl<I: 'static> GameCharacter<I> {
             clock: &clock,
             sandbox: &sandbox,
         };
-        let rec = f.animal.to_saved(&chr, actx, mother_id).map_err(jerr)?;
+        let rec = f.animal.to_saved(&chr, actx, mother_id).map_err(StateFailure::from)?;
         rec.save(w, sctx, serialize)
-            .map_err(crate::character::save::io_error)
+            .map_err(crate::character::save::io_error).map_err(StateFailure::from)
     }
 }

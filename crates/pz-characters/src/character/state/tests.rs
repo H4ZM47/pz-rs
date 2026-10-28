@@ -74,7 +74,7 @@ fn immediate_shared_host_fault_stops_state_loop_and_preserves_first_error_domain
     take_log(&mut c);
     c.state_machine_update(&mut cx);
     assert_eq!(take_log(&mut c), ["fault execute"]);
-    assert_eq!(cx.host_result(), Err(pz_inventory::floor_drop::RuntimeHostError::Borrowed("state execute placement")));
+    assert_eq!(cx.state_result().map_err(|error| error.host().cloned().expect("original Host domain")), Err(pz_inventory::floor_drop::RuntimeHostError::Borrowed("state execute placement")));
     c.state_machine_update(&mut cx);
     c.state_anim_event(-1, &record("later event", -1, None), &mut cx);
     c.change_state(Some(&A), &mut cx);
@@ -95,7 +95,7 @@ fn fault_in_state_enter_stops_substate_publication_and_later_state_change_event(
     assert_eq!(c.current_state_id(), Some(StateId("t.HostFault")), "completed root assignment remains");
     assert_eq!(c.state_machine().sub_state_count(), 0);
     assert!(ctx.events.borrow().is_empty());
-    assert!(cx.host_result().is_err());
+    assert!(cx.state_result().map_err(|error| error.host().cloned().expect("original Host domain")).is_err());
 }
 
 fn take_log(c: &mut GameCharacter<()>) -> Vec<String> {

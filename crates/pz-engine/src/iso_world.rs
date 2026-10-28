@@ -509,6 +509,26 @@ impl IsoWorld {
         let sb = sandbox(lua).ok_or("SandboxOptions.instance")?;
         self.load_sandbox(lua, &sb);
         pz_lua_api::bind_world::power::install_sandbox(Some(sb.clone()));
+        // `IsoGridSquare.lighting[player]` for Lua: the renderer's decoded
+        // lighting (undecoded squares keep the constructor's).
+        let render = Rc::downgrade(&self.render);
+        pz_lua_api::bind_world::square_queries::install_square_light(Some(Box::new(
+            move |player, x, y, z| {
+                use pz_lua_api::bind_world::square_queries::SquareLighting;
+                if player == -1 {
+                    // `getLightLevel2()`: `LightingJNI.lightInts[1]`, not
+                    // tracked yet (as `StateLighting`).
+                    return Some(SquareLighting {
+                        light_level: pz_lighting::jni::light_level2(0),
+                        vis: 0,
+                    });
+                }
+                let render = render.upgrade()?;
+                let render = render.try_borrow().ok()?;
+                let light = render.as_ref()?.lighting.square_light(player, x, y, z)?;
+                Some(SquareLighting { light_level: light.light_level_value(), vis: light.vis })
+            },
+        )));
         // TODO(port): `ItemPickerJava.Parse()`.
         self.hydro_power_on = {
             let gt = pz_lua_api::bind_climate::shared_game_time();

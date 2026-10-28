@@ -37,6 +37,7 @@ mod tests;
 
 use std::rc::Rc;
 
+pub use pz_animals::JavaException as AnimalDataError;
 use pz_animals::env::{CharacterConstruction, CharacterValues};
 use pz_animals::{
     Animal, AnimalBreed, AnimalCharacter, AnimalClock, AnimalCtx, AnimalDefinitionTables,
@@ -255,7 +256,8 @@ impl AnimalClock for CtxClock<'_> {
     }
 }
 
-/// A `pz-animals` error as the character code's.
+/// The existing diagnostic projection only. Structural callers retain the
+/// original AnimalDataError separately; this does not authenticate a native class.
 pub(crate) fn jerr(e: pz_animals::JavaException) -> ScriptError {
     ScriptError::new(format!("java.lang.{}", e.0))
 }
@@ -365,9 +367,9 @@ impl<I: 'static> GameCharacter<I> {
         groups: &mut ActionGroups,
         ctx: &dyn SimContext,
         host: &mut AnimalHost<'_>,
-    ) -> ScriptResult<bool> {
+    ) -> crate::character::state::StateResult<bool> {
         let Some(fields) = self.animal.as_mut() else {
-            return Err(crate::npe());
+            return Err(crate::npe().into());
         };
         fields.animal.animal_type = Some(animal_type.to_string());
         let Some(d) = host.defs.def(animal_type) else {
@@ -379,7 +381,7 @@ impl<I: 'static> GameCharacter<I> {
         let ok = self
             .with_animal_env(ctx, host, |a, c, env| a.init(breed, c, env))
             .ok_or_else(crate::npe)?
-            .map_err(jerr)?;
+            .map_err(crate::character::state::StateFailure::from)?;
         if let Some(f) = self.animal.as_mut() {
             f.initialized = ok;
         }
