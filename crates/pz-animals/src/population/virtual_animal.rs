@@ -6,7 +6,7 @@ use pz_world::zones::ZoneId;
 use pz_world::IsoMetaGrid;
 
 use super::zone::{self, Junction};
-use super::{AnimalPopulation, PopCx};
+use super::{AnimalPopulation, PopCx, PopulationResult};
 use crate::java::JResult;
 
 /// `VirtualAnimalState`'s subclasses.
@@ -274,7 +274,7 @@ impl<A: super::HerdAnimal> AnimalPopulation<A> {
         &mut self,
         va: &mut VirtualAnimal<A>,
         cx: &mut PopCx<'_, A>,
-    ) -> JResult<()> {
+    ) -> PopulationResult<()> {
         let Some(group) = va.migration_group.as_deref() else {
             return Ok(());
         };
@@ -312,7 +312,7 @@ impl<A: super::HerdAnimal> AnimalPopulation<A> {
         state: VirtualAnimalState,
         va: &mut VirtualAnimal<A>,
         cx: &mut PopCx<'_, A>,
-    ) -> JResult<()> {
+    ) -> PopulationResult<()> {
         use VirtualAnimalState::*;
         match state {
             Sleep => {
@@ -487,7 +487,7 @@ impl<A: super::HerdAnimal> AnimalPopulation<A> {
         action: Option<&str>,
         distance: f32,
         cx: &mut PopCx<'_, A>,
-    ) -> JResult<()> {
+    ) -> PopulationResult<()> {
         let Some(closest) = self.closest_zone(&*cx.meta, va.x, va.y, action) else {
             for a in &mut va.animals {
                 a.set_animal_zone(None);
@@ -505,13 +505,13 @@ impl<A: super::HerdAnimal> AnimalPopulation<A> {
         distance: f32,
         mut zone: ZoneId,
         cx: &mut PopCx<'_, A>,
-    ) -> JResult<()> {
+    ) -> PopulationResult<()> {
         let mut pos = (0.0, 0.0);
         let t = zone::closest_point_on_polyline(cx.meta.zone(zone), va.x, va.y, &mut pos);
         let zone_length = zone::polyline_length(cx.meta.zone(zone));
         let move_forward_on_zone = va.move_forward_on_zone;
         let mut t2 = if move_forward_on_zone { t + distance / zone_length } else { t - distance / zone_length };
-        let junctions = zone::junctions_between(cx.meta, zone, t, t2);
+        let junctions = zone::junctions_between(cx.meta, zone, t, t2)?;
         if let Some(first) = junctions.first() {
             let end_point = first.first_point_on_zone1 || first.last_point_on_zone1;
             if let Some(j) = self.visit_junction(state, va, zone, end_point, &junctions, cx) {

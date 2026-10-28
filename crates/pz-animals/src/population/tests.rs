@@ -229,6 +229,10 @@ fn herd_walks_its_zone_and_enters_a_loaded_chunk() {
     if let ZoneKind::Animal(d) = &mut zone.kind {
         // Only the hand-made herd below.
         d.spawn_animal = false;
+        // Healthy movement fixture explicitly supplies the already-initialized
+        // list (native public `junctions = new ArrayList<>()`), rather than
+        // assuming a Java-default null list behaves as an empty one.
+        d.junctions=Some(Vec::new());
     }
     let z = meta.register_animal_zone_def(zone);
     let defs = defs();
@@ -308,4 +312,42 @@ fn reattaches_babies_to_mothers_on_load() {
     assert_eq!(herd.animals[0].mother_set, Some(4));
     assert_eq!(herd.animals[1].mother_set, None);
     assert_eq!(herd.time_to_eat, 30);
+}
+
+
+#[test]
+fn actual_null_junction_list_stops_population_movement_and_retains_completed_prefix() {
+    let mut meta=IsoMetaGrid::with_bounds(0,0,0,0);
+    let mut path=path(&[10,100,250,100],"Follow",None);
+    if let ZoneKind::Animal(data)=&mut path.kind {data.spawn_animal=false;}
+    let zone=meta.register_animal_zone_def(path);
+    let definitions=defs();let mut host=Host::new();let mut population=AnimalPopulation::<Beast>::default();
+    let mut cx=PopCx{meta:&mut meta,defs:&definitions,host:&mut host};
+    population.init(false,false,&mut cx);
+    assert!(matches!(&cx.meta.zone(zone).kind,ZoneKind::Animal(data) if data.junctions.is_none()));
+    let mut herd=population.new_virtual_animal(cx.host.rand());let uid=herd.uid;
+    herd.x=20.5;herd.y=100.5;herd.move_forward_on_zone=true;herd.migration_group=Some("deer".into());
+    herd.init_value_from_def(cx.defs).unwrap();
+    herd.animals.push(Beast{id:7,mother:0,zone:None,forward:None,mother_set:None});
+    population.add_animal(herd,&mut cx);
+    let failure=population.update_virtual_animals(&mut cx).unwrap_err();
+    assert!(matches!(failure,PopulationError::Junctions(zone::JunctionQueryFailure::NullJunctions{zone:actual}) if actual==zone));
+    let herd=&population.animals[&uid];
+    assert_eq!((herd.x,herd.y),(20.5,100.5));
+    assert_eq!(herd.state,Some(VirtualAnimalState::Follow));
+    assert_eq!(herd.next_eat_time,-1.0);assert_eq!(herd.next_rest_time,-1.0);
+    assert_eq!(herd.animals[0].zone,None);assert_eq!(herd.animals[0].forward,None);
+    assert!(!herd.removed);
+    drop(cx);assert!(host.to_world.is_empty());
+}
+
+#[test]
+fn null_and_existing_empty_junction_fields_have_distinct_query_outcomes() {
+    let mut meta=IsoMetaGrid::with_bounds(0,0,0,0);
+    let zone=meta.register_animal_zone_def(path(&[10,100,250,100],"Follow",None));
+    let failure=zone::junctions_between(&meta,zone,0.0,0.5).unwrap_err();
+    assert_eq!(failure,zone::JunctionQueryFailure::NullJunctions{zone});
+    let ZoneKind::Animal(data)=&mut meta.zone_mut(zone).kind else {panic!("actual animal zone")};
+    data.junctions=Some(Vec::new());
+    assert!(zone::junctions_between(&meta,zone,0.0,0.5).unwrap().is_empty());
 }

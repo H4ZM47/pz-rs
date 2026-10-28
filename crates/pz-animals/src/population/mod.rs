@@ -26,6 +26,33 @@ use pz_core::config::debug_log;
 use crate::{AnimalDefinitionTables, AnimalTracksType};
 pub use virtual_animal::{VirtualAnimal, VirtualAnimalState};
 
+/// Population callbacks keep the original definition/host JavaException
+/// separate from actual junction-field failures. Neither cause is flattened
+/// into a success value or a newly constructed exception string.
+#[derive(Debug)]
+pub enum PopulationError {
+    Java(JavaException),
+    Junctions(zone::JunctionQueryFailure),
+}
+pub type PopulationResult<T> = Result<T,PopulationError>;
+impl From<JavaException> for PopulationError {
+    fn from(original:JavaException)->Self {Self::Java(original)}
+}
+impl From<zone::JunctionQueryFailure> for PopulationError {
+    fn from(original:zone::JunctionQueryFailure)->Self {Self::Junctions(original)}
+}
+impl std::fmt::Display for PopulationError {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        match self {Self::Java(original)=>std::fmt::Display::fmt(original,f),Self::Junctions(original)=>std::fmt::Display::fmt(original,f)}
+    }
+}
+impl std::error::Error for PopulationError {
+    fn source(&self)->Option<&(dyn std::error::Error+'static)> {
+        Some(match self {Self::Java(original)=>original,Self::Junctions(original)=>original})
+    }
+}
+
+
 pub const SQUARES_PER_CHUNK: i32 = 8;
 pub const CHUNKS_PER_CELL: i32 = 32;
 pub const SQUARES_PER_CELL: i32 = 256;
@@ -1235,7 +1262,7 @@ impl<A: HerdAnimal> AnimalPopulation<A> {
     }
 
     /// `AnimalZones.updateVirtualAnimals()`.
-    pub fn update_virtual_animals(&mut self, cx: &mut PopCx<'_, A>) -> JResult<()> {
+    pub fn update_virtual_animals(&mut self, cx: &mut PopCx<'_, A>) -> PopulationResult<()> {
         let snapshot: Vec<(i32, i32)> = self.chunks_with_tracks.iter().copied().collect();
         let mut done = HashSet::new();
         for (wx, wy) in snapshot {

@@ -224,15 +224,36 @@ pub fn junctions(meta: &IsoMetaGrid, zone: ZoneId) -> Vec<Junction> {
         .unwrap_or_default()
 }
 
-/// `getJunctionsBetween(t1, t2, junctions)`. The original reads
-/// `this.junctions` without a null check; a zone without junctions has
-/// none between any two points here.
-pub fn junctions_between(meta: &IsoMetaGrid, zone: ZoneId, t1: f32, t2: f32) -> Vec<Junction> {
-    let length = polyline_length(meta.zone(zone));
-    junctions(meta, zone)
-        .into_iter()
-        .filter(|j| j.distance_from_start / length >= t1 && j.distance_from_start / length <= t2)
-        .collect()
+/// Data needed to preserve the actual failed receiver/field. This is not
+/// a fabricated Java Throwable or an invented helpful-NPE message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JunctionQueryFailure {
+    NonAnimalZone {zone:ZoneId},
+    NullJunctions {zone:ZoneId},
+}
+impl std::fmt::Display for JunctionQueryFailure {
+    fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {
+        match self {
+            Self::NonAnimalZone{..}=>f.write_str("AnimalZone.getJunctionsBetween requires an actual animal zone"),
+            Self::NullJunctions{..}=>f.write_str("AnimalZone.getJunctionsBetween: actual junctions field is null"),
+        }
+    }
+}
+impl std::error::Error for JunctionQueryFailure {}
+
+/// `getJunctionsBetween(t1, t2, junctions)`. Native first clears the output,
+/// reads length, then unconditionally dereferences the actual junction list.
+/// A genuinely null field must stop its caller before later movement; an
+/// existing empty list is a normal empty query. No nullable-to-empty default.
+pub fn junctions_between(meta:&IsoMetaGrid,zone:ZoneId,t1:f32,t2:f32)->Result<Vec<Junction>,JunctionQueryFailure> {
+    let actual=meta.zone(zone);
+    let length=polyline_length(actual);
+    let animal=animal(actual).ok_or(JunctionQueryFailure::NonAnimalZone{zone})?;
+    let junctions=animal.junctions.as_ref().ok_or(JunctionQueryFailure::NullJunctions{zone})?;
+    Ok(junctions.iter()
+        .map(|junction|Junction::of(meta,zone,junction))
+        .filter(|j|j.distance_from_start/length>=t1&&j.distance_from_start/length<=t2)
+        .collect())
 }
 
 fn has_junction(z: &Zone, pis: i32, other: ZoneId, pio: i32) -> bool {
