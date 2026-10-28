@@ -16,10 +16,13 @@ fn px(p: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
     p[i..i + 4].try_into().unwrap()
 }
 
-const PARAMS: ScreenParams = ScreenParams {
-    desaturation: 0.0,
-    timer: 0.0,
-};
+fn params() -> ScreenParams {
+    ScreenParams {
+        desaturation: 0.0,
+        timer: 0.0,
+        ..Default::default()
+    }
+}
 
 /// A synthetic world frame: an asymmetric layout in the offscreen buffer,
 /// then the screen pass that shows it.
@@ -59,7 +62,7 @@ fn world_frame(w: u32, h: u32) -> DrawList {
         w: w as f32,
         h: h as f32,
         tex: [0.0, 0.0, w as f32, h as f32],
-        params: PARAMS,
+        params: params(),
     });
     dl
 }
@@ -86,7 +89,7 @@ fn thumbnail_is_the_graded_middle_of_the_view() {
     // `sx = left + width / 2 - 128`, `sy = top + height / 2 - 128`.
     let (sx, sy) = (w as i32 / 2 - 128, h as i32 / 2 - 128);
     let thumb = g
-        .read_offscreen_thumbnail(sx, sy, PARAMS)
+        .read_offscreen_thumbnail(sx, sy, params())
         .unwrap()
         .expect("offscreen buffer");
     assert_eq!(thumb.len(), (THUMBNAIL_SIZE * THUMBNAIL_SIZE * 4) as usize);
@@ -167,7 +170,7 @@ fn thumbnail_rows_are_bottom_up() {
     dl.render_rect(0, 128, 256, 128, Rgba(0.0, 0.0, 1.0, 1.0));
     dl.cmds.push(DrawCmd::OffscreenEnd);
     g.render_frame(&[(FrameParams::ui(256, 256), &dl)], &mut tm);
-    let t = g.read_offscreen_thumbnail(0, 0, PARAMS).unwrap().unwrap();
+    let t = g.read_offscreen_thumbnail(0, 0, params()).unwrap().unwrap();
     let (bottom, top) = (px(&t, 256, 128, 10), px(&t, 256, 128, 245));
     assert!(top[0] > 200 && top[2] < 50, "{top:?}");
     assert!(bottom[2] > 200 && bottom[0] < 50, "{bottom:?}");
@@ -179,7 +182,7 @@ fn thumbnail_rows_are_bottom_up() {
 fn without_offscreen_buffer_the_back_buffer_is_read() {
     let Some(mut g) = gpu(64, 32) else { return };
     let mut tm = TextureManager::new();
-    assert_eq!(g.read_offscreen_thumbnail(0, 0, PARAMS).unwrap(), None);
+    assert_eq!(g.read_offscreen_thumbnail(0, 0, params()).unwrap(), None);
     let mut dl = DrawList::default();
     dl.render_rect(0, 0, 64, 16, Rgba(1.0, 0.0, 0.0, 1.0));
     dl.render_rect(0, 16, 32, 16, Rgba(0.0, 1.0, 0.0, 1.0));

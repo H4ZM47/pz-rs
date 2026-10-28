@@ -12,10 +12,13 @@ fn gpu(w: u32, h: u32) -> Option<Gpu> {
     }
 }
 
-const PARAMS: ScreenParams = ScreenParams {
-    desaturation: 0.0,
-    timer: 0.0,
-};
+fn params() -> ScreenParams {
+    ScreenParams {
+        desaturation: 0.0,
+        timer: 0.0,
+        ..Default::default()
+    }
+}
 
 fn px(t: &Thumbnail, x: i32, y: i32) -> [u8; 4] {
     let i = ((y * t.width + x) * 4) as usize;
@@ -49,7 +52,7 @@ fn thumbnail_of_a_world_frame() {
     dl.render_rect(200, 200, 60, 80, Rgba(0.0, 1.0, 0.0, 1.0));
     dl.cmds.push(DrawCmd::OffscreenEnd);
     g.render_frame(&[(FrameParams::ui(640, 480), &dl)], &mut tm);
-    let t = capture_thumbnail(&mut g, full(640, 480), full(640, 480), PARAMS).expect("thumbnail");
+    let t = capture_thumbnail(&mut g, full(640, 480), full(640, 480), params()).expect("thumbnail");
     assert_eq!((t.width, t.height, t.rgba.len()), (256, 256, 256 * 256 * 4));
     // Square x 192..448, y 112..368 of the view.
     let (bottom, top) = (px(&t, 200, 5), px(&t, 200, 250));
@@ -96,7 +99,7 @@ fn without_offscreen_buffer_reads_the_screen() {
         )],
         &mut tm,
     );
-    let t = capture_thumbnail(&mut g, full(200, 100), full(200, 100), PARAMS).expect("thumbnail");
+    let t = capture_thumbnail(&mut g, full(200, 100), full(200, 100), params()).expect("thumbnail");
     assert_eq!((t.width, t.height), (200, 100));
     assert_eq!(px(&t, 10, 0), [0, 0, 255, 255]);
     assert_eq!(px(&t, 10, 99), [255, 0, 0, 255]);
