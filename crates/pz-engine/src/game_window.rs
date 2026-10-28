@@ -191,6 +191,7 @@ impl App {
         // A close during loading does not pass through IngameState.KillCell.
         // Retire the in-process host's current cell after its owners stop.
         pz_lua_api::bind_world::set_cell(None);
+        pz_lua_api::bind_world::square_queries::install_square_light(None);
         for mut models in self.retired_models.drain(..) {
             models.clear();
             if let Some(gpu) = self.gpu.as_mut() {

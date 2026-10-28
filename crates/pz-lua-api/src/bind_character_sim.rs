@@ -790,6 +790,35 @@ fn register_inventory(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let v = chr_of(c)?.borrow().is_unlimited_carry(&*ctx);
         Ok(c.push(v))
     });
+    // `IsoGameCharacter.getTorchStrength()` is 0; `IsoPlayer` (local, not an
+    // animal) reads its active light item.
+    b.method("getTorchStrength", |c| {
+        chr_of(c)?;
+        Ok(c.push(float_value(0.0)))
+    });
+    let p = expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS));
+    p.method("getActiveLightItem", |c| {
+        let i = chr_of(c)?.borrow().items.active_light_item();
+        Ok(c.push(i.as_ref().map_or(Value::Nil, crate::bind_items::item_value)))
+    });
+    p.method("getTorchStrength", |c| {
+        let i = chr_of(c)?.borrow().items.active_light_item();
+        let v = i.map_or(0.0, |i| i.borrow().get_light_strength());
+        Ok(c.push(float_value(v)))
+    });
+    // `IsoGameCharacter.isPlayerMoving()` is false; `IsoPlayer` reads its flag.
+    b.method("isPlayerMoving", |c| {
+        chr_of(c)?;
+        Ok(c.push(false))
+    });
+    p.method("isPlayerMoving", |c| {
+        let v = chr_of(c)?.borrow().player_moving;
+        Ok(c.push(v))
+    });
+    p.method("isTorchCone", |c| {
+        let i = chr_of(c)?.borrow().items.active_light_item();
+        Ok(c.push(i.is_some_and(|i| i.borrow().is_torch_cone())))
+    });
     expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS)).method(
         "isGhostMode",
         |c| {
@@ -1793,6 +1822,17 @@ fn register_character(
             Ok(c.push(value))
         });
     }
+    // `IsoMovingObject.isOutside()`: `current != null && current.isOutside()`.
+    b.method("isOutside", |c| {
+        let square = chr_of(c)?.borrow().current_square_xyz();
+        let v = match square {
+            Some((x, y, z)) if !crate::bind_world::square_value(x, y, z).is_nil() => {
+                crate::bind_world::square_queries::square_is_outside(x, y, z)?
+            }
+            _ => false,
+        };
+        Ok(c.push(v))
+    });
     b.method("getCell", |c| {
         chr_of(c)?;
         Ok(c.push(crate::bind_world::current_cell()))
@@ -1965,6 +2005,11 @@ fn register_character(
             }
         }
         Ok(c.push(any))
+    });
+    let s = sm.clone();
+    b.method("isInventive", move |c| {
+        let v = chr_of(c)?.borrow().is_inventive(&s).map_err(java_error)?;
+        Ok(c.push(v))
     });
     b.method("isUnlimitedEndurance", |c| {
         let ctx = CONTEXT.with(|c| c.borrow().clone());
