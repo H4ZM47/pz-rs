@@ -160,10 +160,11 @@ impl App {
         };
         if in_game {
             if let Some(world) = self.world.as_mut() {
-                if let Err(error) = world.save_on_quit(lua) {
+                if let Err(error) = world.save_on_window_close(lua) {
                     crate::failure::record_first(&mut self.error, (format!("PlayerDB save host failure: {error}")).into());
-                } else {
-                    // `GameWindow.exit` delivers `OnPostSave` a second time.
+                } else if pz_lua_api::bind_world::with_world(|w| w.cell.is_some()) {
+                    // Native exit rereads currentCell before this second
+                    // block: the first callback may clear or replace it.
                     lua.trigger_event("OnPostSave", &[]);
                 }
             }
@@ -689,3 +690,6 @@ mod session_tests;
 
 #[cfg(test)]
 mod error_boundary_tests;
+
+#[cfg(test)]
+mod close_save_tests;
