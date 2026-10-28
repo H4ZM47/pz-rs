@@ -1,0 +1,8 @@
+[package]
+name = "pz-entity"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-classfile.workspace = true
+pz-scripts.workspace = true

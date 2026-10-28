@@ -1,0 +1,17 @@
+[package]
+name = "pz-worldmap"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+pz-joml.workspace = true
+pz-core.workspace = true
+quick-xml.workspace = true
+pz-render.workspace = true
+pz-text.workspace = true
+pz-clipper.workspace = true
+pz-classfile.workspace = true
+
+[dev-dependencies]
+png.workspace = true

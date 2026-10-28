@@ -4,9 +4,44 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pz-joml.workspace = true
+pz-sound = { path = "../pz-sound" }
+pz-radio.workspace = true
 pz-kahlua.workspace = true
 pz-core.workspace = true
+pz-characters.workspace = true
+pz-audio.workspace = true
+pz-anim.workspace = true
+pz-scripts.workspace = true
 pz-fs.workspace = true
+pz-erosion.workspace = true
 pz-render.workspace = true
 pz-text.workspace = true
+pz-sandbox.workspace = true
+pz-server-settings.workspace = true
 pz-ui.workspace = true
+pz-inventory.workspace = true
+indexmap.workspace = true
+pz-world.workspace = true
+pz-input.workspace = true
+pz-classfile.workspace = true
+pz-sqlite.workspace = true
+pz-network.workspace = true
+regex.workspace = true
+pz-popman.workspace = true
+pz-vehicles.workspace = true
+pz-video.workspace = true
+
+pz-entity.workspace = true
+pz-worldgen.workspace = true
+pz-worldmap.workspace = true
+pz-iso-render = { path = "../pz-iso-render" }
+pz-world-states = { path = "../pz-world-states" }
+
+[dev-dependencies]
+pz-world = { workspace = true, features = ["test-util"] }
+pz-sqlite = { workspace = true, features = ["writer"] }
+pz-clipper.workspace = true
+
+
+pz-bullet.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "pz-sqlite"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+
+[features]
+# Test-database writer, for other crates' tests.
+writer = []

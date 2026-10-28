@@ -1,0 +1,13 @@
+[package]
+name = "pz-sound"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# The pz-audio studio as the backend.
+studio = ["dep:pz-audio"]
+
+[dependencies]
+pz-audio = { path = "../pz-audio", optional = true, default-features = false }
+pz-core = { path = "../pz-core" }
+pz-scripts = { path = "../pz-scripts" }

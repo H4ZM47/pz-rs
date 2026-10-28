@@ -3,8 +3,9 @@
 
 use crate::events::{EventManager, EVENT_NAMES, HOOK_NAMES};
 use pz_fs::GameFs;
+use pz_kahlua::gc::{traceable, TracePayload, TraceVisitor};
 use pz_kahlua::vm::LuaClosure;
-use pz_kahlua::{stdlib, LuaError, NativeFunction, TableRef, Thread, Value};
+use pz_kahlua::{stdlib, LuaError, LuaResult, NativeCall, NativeFunction, TableRef, Thread, Value};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -20,9 +21,94 @@ pub struct Loader {
     pub errors: Vec<String>,
 }
 
+impl Loader {
+    /// `LuaManager.loaded.remove(path)`: the next `run_lua` runs it again.
+    pub fn forget(&mut self, path: &str) {
+        self.loaded.remove(&path.replace('\\', "/"));
+    }
+}
+
+impl TracePayload for Loader {
+    fn trace(&self, visitor: &mut TraceVisitor) {
+        for value in self.loaded_return.values() {
+            visitor.value(value);
+        }
+    }
+
+    fn detach(&mut self) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(std::mem::take(&mut self.loaded_return)))
+    }
+}
+
+struct LoaderCapture {
+    loader: Rc<RefCell<Loader>>,
+    // GameFs contains no Lua slots. Keep its real strong runtime ownership;
+    // it is intentionally outside the traced Lua/host graph.
+    fs: Rc<RefCell<GameFs>>,
+}
+
+impl TracePayload for LoaderCapture {
+    fn trace(&self, visitor: &mut TraceVisitor) {
+        visitor.owner(&self.loader);
+    }
+}
+
+fn require_script(capture: &RefCell<LoaderCapture>, c: &mut NativeCall<'_>) -> LuaResult<usize> {
+    let f = pz_kahlua::stdlib::string_arg(c, 1, "require")?;
+    let mut name = f.to_string();
+    if !name.ends_with(".lua") {
+        name.push_str(".lua");
+    }
+    let (loader, fs) = {
+        let capture = capture.borrow();
+        (capture.loader.clone(), capture.fs.clone())
+    };
+    let paths = loader.borrow().paths.clone();
+    for rel in paths {
+        let found = fs.borrow().resolve(&format!("{rel}{name}"));
+        if let Some(abs) = found {
+            let abs = abs.to_string_lossy().replace('\\', "/");
+            let r = run_lua(c.thread, &loader, &abs);
+            return Ok(c.push(r));
+        }
+    }
+    (c.thread.out)(&format!("require(\"{f}\") failed"));
+    Ok(c.push(Value::Nil))
+}
+
+fn reload_script(capture: &RefCell<LoaderCapture>, c: &mut NativeCall<'_>) -> LuaResult<usize> {
+    let f = pz_kahlua::stdlib::string_arg(c, 1, "reloadLuaFile")?.to_string();
+    if f.contains("..") {
+        (c.thread.log)("relative paths not allowed");
+        return Ok(c.push(Value::Nil));
+    }
+    let (loader, fs) = {
+        let capture = capture.borrow();
+        (capture.loader.clone(), capture.fs.clone())
+    };
+    let abs = {
+        let fs = fs.borrow();
+        if !fs.validate_prefix(&f) {
+            return Err(LuaError::Runtime {
+                message: format!("Invalid prefix found for: {f}"),
+                class: "java.lang.IllegalArgumentException",
+            });
+        }
+        let rel = f.replace('\\', "/");
+        match fs.resolve(&rel) {
+            Some(p) => p.to_string_lossy().replace('\\', "/"),
+            None => rel,
+        }
+    };
+    loader.borrow_mut().forget(&abs);
+    let r = run_lua(c.thread, &loader, &abs);
+    Ok(c.push(r))
+}
+
 pub struct LuaManager {
     pub thread: Thread,
-    pub fs: Rc<GameFs>,
+    /// `ZomboidFileSystem.instance`. Never hold a borrow across a Lua call.
+    pub fs: Rc<RefCell<GameFs>>,
     pub events: EventManager,
     pub hooks: EventManager,
     pub loader: Rc<RefCell<Loader>>,
@@ -31,49 +117,55 @@ pub struct LuaManager {
 impl LuaManager {
     /// `LuaManager.init()`: fresh environment, Kahlua stdlib (including the
     /// game's `stdlib.lua`), events, hooks and the exposed game API.
-    pub fn init(fs: Rc<GameFs>) -> Result<Self, LuaError> {
+    pub fn init(fs: Rc<RefCell<GameFs>>) -> Result<Self, LuaError> {
         let env = TableRef::new();
         let mut thread = Thread::new(env.clone());
-        let stdlib_src = fs.resolve("stdlib.lua").and_then(|p| std::fs::read(p).ok());
+        let stdlib_path = fs.borrow().resolve("stdlib.lua");
+        let stdlib_src = stdlib_path.and_then(|p| std::fs::read(p).ok());
         let stdlib_src = stdlib_src.map(|b| String::from_utf8_lossy(&b).into_owned());
         stdlib::install(&mut thread, stdlib_src.as_deref())?;
         let events = EventManager::register(&env, "Events", EVENT_NAMES);
         let hooks = EventManager::register(&env, "Hook", HOOK_NAMES);
-        let loader = Rc::new(RefCell::new(Loader::default()));
-        let mgr = LuaManager { thread, fs, events, hooks, loader };
+        let loader = traceable(Loader::default());
+        let mgr = LuaManager {
+            thread,
+            fs,
+            events,
+            hooks,
+            loader,
+        };
         mgr.register_require();
+        mgr.register_reload_lua_file();
         let mut mgr = mgr;
         crate::register_all(&mut mgr);
         Ok(mgr)
     }
 
     fn register_require(&self) {
-        let loader = self.loader.clone();
-        let fs = self.fs.clone();
         self.thread.globals().set_str(
             "require",
-            Value::Native(NativeFunction::new("require", move |c| {
-                let f = pz_kahlua::stdlib::string_arg(c, 1, "require")?;
-                let mut name = f.to_string();
-                if !name.ends_with(".lua") {
-                    name.push_str(".lua");
-                }
-                let paths = loader.borrow().paths.clone();
-                for rel in paths {
-                    if let Some(abs) = fs.resolve(&format!("{rel}{name}")) {
-                        let abs = abs.to_string_lossy().replace('\\', "/");
-                        let r = run_lua(c.thread, &loader, &abs);
-                        return Ok(c.push(r));
-                    }
-                }
-                (c.thread.out)(&format!("require(\"{f}\") failed"));
-                Ok(c.push(Value::Nil))
-            })),
+            Value::Native(NativeFunction::new_traced_capture(
+                "require", LoaderCapture { loader: self.loader.clone(), fs: self.fs.clone() }, require_script,
+            )),
+        );
+    }
+
+    /// `reloadLuaFile(filename)`: run a file again (dropped from `loaded`
+    /// first). A path with `..` is refused (`nil`); one outside the
+    /// install, the user folder and the mods is an error
+    /// (`validatePrefix`). The file is opened through
+    /// `ZomboidFileSystem.getString`, as `RunLuaInternal` does.
+    fn register_reload_lua_file(&self) {
+        self.thread.globals().set_str(
+            "reloadLuaFile",
+            Value::Native(NativeFunction::new_traced_capture(
+                "reloadLuaFile", LoaderCapture { loader: self.loader.clone(), fs: self.fs.clone() }, reload_script,
+            )),
         );
     }
 
     /// `LoadDirBase(sub)`: run every Lua file of `media/lua/<sub>` in
-    /// case-insensitive path order. TODO: mod directories.
+    /// case-insensitive path order, then each loaded mod's files.
     pub fn load_dir_base(&mut self, sub: &str) {
         let rel = format!("media/lua/{sub}/");
         {
@@ -82,13 +174,14 @@ impl LuaManager {
                 l.paths.push(rel);
             }
         }
-        let files = self.fs.lua_files(sub);
+        let files = self.fs.borrow().lua_files(sub);
         let mut done = HashSet::new();
         for f in files {
             if !done.insert(f.clone()) {
                 continue;
             }
-            let Some(abs) = self.fs.resolve(&f) else {
+            let abs = self.fs.borrow().absolute_path(&f).map(std::path::PathBuf::from);
+            let Some(abs) = abs else {
                 self.loader.borrow_mut().errors.push(format!("couldn't find \"{f}\""));
                 continue;
             };
@@ -149,10 +242,18 @@ fn run_lua_internal(thread: &mut Thread, loader: &Rc<RefCell<Loader>>, filename:
         }
     };
     let f = Value::Closure(LuaClosure::new(Rc::new(proto), thread.globals().clone()));
+    // `AttachedWeaponDefinitions.instance.dirty = true; DefaultClothing.instance.dirty = true;
+    // HairOutfitDefinitions.instance.dirty = true; UnderwearDefinition.instance.dirty = true;
+    // ZombiesZoneDefinition.dirty = true;`
+    crate::bind_appearance::mark_lua_definitions_dirty();
+    crate::bind_zombie_outfits::mark_dirty();
     let ret = match thread.pcall(&f, &[]) {
         Ok(v) => v.into_iter().next().unwrap_or_default(),
         Err((msg, trace)) => {
-            let m = format!("{filename}: {}\n{trace}", pz_kahlua::exec::java_value_of(&msg));
+            let m = format!(
+                "{filename}: {}\n{trace}",
+                pz_kahlua::exec::java_value_of(&msg)
+            );
             (thread.log)(&m);
             loader.borrow_mut().errors.push(m);
             Value::Nil
@@ -167,3 +268,6 @@ fn run_lua_internal(thread: &mut Thread, loader: &Rc<RefCell<Loader>>, filename:
     }
     ret
 }
+
+#[cfg(test)]
+mod gc_tests;

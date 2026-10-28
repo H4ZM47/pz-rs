@@ -1312,14 +1312,15 @@ fn captures(ms: &MatchState<'_>, whole: Option<(isize, isize)>) -> LuaResult<Vec
 /// `new RuntimeException(e)` around an exception: the message becomes the
 /// cause's `toString()`. Java `Error`s are not `Exception`s and pass through.
 fn wrap_exception(e: LuaError) -> LuaError {
-    match e {
+    e.map_diagnostic(|e| match e {
         LuaError::Kahlua(v) => {
             let msg = if v.is_nil() { "nil".to_string() } else { java_value_of(&v) };
             java_err("java.lang.RuntimeException", format!("se.krka.kahlua.vm.KahluaException: {msg}"))
         }
         LuaError::Runtime { message, class } if class.ends_with("Error") => LuaError::Runtime { message, class },
         LuaError::Runtime { message, class } => java_err("java.lang.RuntimeException", format!("{class}: {message}")),
-    }
+        LuaError::WithCause { .. } => unreachable!("leaf diagnostic"),
+    })
 }
 
 fn no_special_chars(p: &[u16]) -> bool {

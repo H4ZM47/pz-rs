@@ -23,7 +23,11 @@ pub trait LuaObject: Any {
     fn class_name(&self) -> &str;
     /// Java `toString()`.
     fn to_lua_string(&self) -> String {
-        format!("{}@{:x}", self.class_name(), self as *const Self as *const () as usize)
+        format!(
+            "{}@{:x}",
+            self.class_name(),
+            self as *const Self as *const () as usize
+        )
     }
     fn as_any(&self) -> &dyn Any;
     /// Superclasses and interfaces, nearest first, for metatable lookup
@@ -111,7 +115,11 @@ impl Value {
             (Value::Num(a), Value::Num(b)) => a == b,
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Nil, _) | (_, Value::Nil) => false,
-            _ => self.type_name() == other.type_name() && self.ptr_id() == other.ptr_id() && self.ptr_id() != 0,
+            _ => {
+                self.type_name() == other.type_name()
+                    && self.ptr_id() == other.ptr_id()
+                    && self.ptr_id() != 0
+            }
         }
     }
 }
@@ -165,7 +173,8 @@ impl From<TableRef> for Value {
 
 /// Table key with Java `HashMap` equality: `Double.equals` compares bit
 /// patterns after NaN canonicalisation (so `-0.0 != 0.0`, `NaN == NaN`),
-/// strings compare by content, everything else by identity.
+/// boxed Float keys use Float.equals, strings compare by content and
+/// other objects compare by identity. This differs from Lua raw equality.
 #[derive(Clone)]
 pub struct Key(pub Value);
 
@@ -186,6 +195,15 @@ impl PartialEq for Key {
             (Value::Str(a), Value::Str(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Nil, Value::Nil) => true,
+            (Value::Object(a), Value::Object(b)) => {
+                match (
+                    (&**a as &dyn Any).downcast_ref::<crate::table::BoxedFloat>(),
+                    (&**b as &dyn Any).downcast_ref::<crate::table::BoxedFloat>(),
+                ) {
+                    (Some(a), Some(b)) => a.canonical_bits() == b.canonical_bits(),
+                    _ => Rc::ptr_eq(a, b),
+                }
+            }
             (a, b) => a.type_name() == b.type_name() && a.ptr_id() == b.ptr_id() && a.ptr_id() != 0,
         }
     }
@@ -199,7 +217,91 @@ impl Hash for Key {
             Value::Bool(b) => b.hash(state),
             Value::Num(n) => Key::num_bits(*n).hash(state),
             Value::Str(s) => s.hash(state),
+            Value::Object(object) => {
+                if let Some(value) =
+                    (&**object as &dyn Any).downcast_ref::<crate::table::BoxedFloat>()
+                {
+                    value.canonical_bits().hash(state);
+                } else {
+                    self.0.ptr_id().hash(state);
+                }
+            }
             other => other.ptr_id().hash(state),
         }
+    }
+}
+
+#[cfg(test)]
+mod boxed_float_key_tests {
+    struct Opaque;
+    impl super::LuaObject for Opaque {
+        fn class_name(&self) -> &str {
+            panic!("key bookkeeping called class_name")
+        }
+        fn to_lua_string(&self) -> String {
+            panic!("key bookkeeping called to_lua_string")
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            panic!("key bookkeeping called as_any")
+        }
+        fn super_classes(&self) -> &[&'static str] {
+            panic!("key bookkeeping called super_classes")
+        }
+    }
+
+    #[test]
+    fn ordinary_userdata_keys_never_invoke_overridable_host_methods() {
+        let table = super::TableRef::new();
+        let first = super::Value::Object(std::rc::Rc::new(Opaque));
+        let second = super::Value::Object(std::rc::Rc::new(Opaque));
+        table.rawset(first.clone(), super::Value::Num(1.0));
+        table.rawset(second.clone(), super::Value::Num(2.0));
+        table.rawset(first.clone(), super::Value::Num(3.0));
+        assert_eq!(table.rawget(&first).as_num(), Some(3.0));
+        assert_eq!(table.rawget(&second).as_num(), Some(2.0));
+        assert_eq!(table.size(), 2);
+        assert!(table.entries()[0].0.raw_equals(&first));
+    }
+
+    use super::*;
+    use crate::table::BoxedFloat;
+
+    #[test]
+    fn equal_float_keys_replace_values_but_keep_the_first_actual_key_and_remain_distinct_from_double(
+    ) {
+        let first = BoxedFloat::value(1.0);
+        let second = BoxedFloat::value(1.0);
+        assert!(!first.raw_equals(&second));
+        let table = TableRef::new();
+        table.rawset(first.clone(), Value::str("first"));
+        table.rawset(second.clone(), Value::str("replacement"));
+        table.rawset(Value::Num(1.0), Value::str("double"));
+        let entries = table.entries();
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].0.raw_equals(&first));
+        assert!(!entries[0].0.raw_equals(&second));
+        assert_eq!(table.rawget(&second).as_str(), Some("replacement"));
+        assert_eq!(table.rawget(&Value::Num(1.0)).as_str(), Some("double"));
+        assert_eq!(first.type_name(), "userdata");
+        assert_eq!(first.as_num(), None);
+    }
+
+    #[test]
+    fn float_key_signed_zeros_are_distinct_and_nan_payloads_share_java_canonical_equality() {
+        let table = TableRef::new();
+        let plus = BoxedFloat::value(0.0);
+        let minus = BoxedFloat::value(-0.0);
+        table.rawset(plus.clone(), Value::str("positive"));
+        table.rawset(minus.clone(), Value::str("negative"));
+        let nan1 = BoxedFloat::value(f32::from_bits(0x7fc0_1234));
+        let nan2 = BoxedFloat::value(f32::from_bits(0xffc0_5678));
+        table.rawset(nan1.clone(), Value::str("nan1"));
+        table.rawset(nan2.clone(), Value::str("nan2"));
+        assert!(!nan1.raw_equals(&nan2));
+        assert_eq!(table.entries().len(), 3);
+        assert_eq!(table.rawget(&plus).as_str(), Some("positive"));
+        assert_eq!(table.rawget(&minus).as_str(), Some("negative"));
+        assert_eq!(table.rawget(&nan1).as_str(), Some("nan2"));
+        assert!(table.entries()[2].0.raw_equals(&nan1));
     }
 }

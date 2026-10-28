@@ -18,13 +18,23 @@
 use crate::element::UIElement;
 use crate::sprite::SpriteRenderer;
 use crate::text::TextRenderer;
-use pz_kahlua::{Thread, Value};
+use pz_kahlua::{LuaResult, Thread, Value};
 use pz_render::Blend;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 /// `LuaEventManager.triggerEvent(name, args...)`, supplied by pz-lua-api.
 pub type EventSink = Rc<dyn Fn(&mut Thread, &str, &[Value])>;
+
+/// `UIManager.updateTooltip(mx, my)`, supplied by pz-lua-api.
+pub type TooltipHook = Rc<dyn Fn(&mut Thread, i32, i32) -> LuaResult<()>>;
+
+/// `Gizmos.getInstance().hitTest(mx, my)`, supplied by pz-lua-api: true
+/// when a gizmo drag takes the left button.
+pub type GizmoHitTestHook = Rc<dyn Fn(&mut Thread, i32, i32) -> bool>;
+
+/// `Core.UnfocusActiveTextEntryBox()`, supplied by pz-lua-api.
+pub type UnfocusHook = Rc<dyn Fn(&mut Thread)>;
 
 /// `zombie.input.Mouse` as the UI reads it. The engine writes `x`, `y`,
 /// `down` and `wheel` each frame and calls [`MouseState::end_frame`] after
@@ -210,6 +220,29 @@ pub struct UIManager {
     pub text: Option<Rc<dyn TextRenderer>>,
     /// `LuaEventManager.triggerEvent`.
     pub events: Option<EventSink>,
+    /// `Core.UnfocusActiveTextEntryBox()`, supplied by the text entry
+    /// binding (`Core.currentTextEntryBox` lives there).
+    pub unfocus_text_entry: Option<UnfocusHook>,
+    /// `UIManager.speedControls` (`zombie.ui.SpeedControls`, built by the
+    /// in-game `init` in pz-lua-api's `hud`).
+    pub speed_controls: Option<Rc<UIElement>>,
+    /// `UIManager.clock`.
+    pub clock: Option<Rc<UIElement>>,
+    /// `UIManager.toolTip`.
+    pub tool_tip: Option<Rc<UIElement>>,
+    /// `UIManager.debugConsole`.
+    pub debug_console: Option<Rc<UIElement>>,
+    /// `UIManager.MoodleUI[4]`.
+    pub moodle_ui: [Option<Rc<UIElement>>; 4],
+    /// `UIManager.ProgressBar[4]`.
+    pub progress_bar: [Option<Rc<UIElement>>; 4],
+    /// `UIManager.resize()`'s HUD layout, supplied with the HUD widgets.
+    pub resize_hook: Option<Rc<dyn Fn()>>,
+    /// `UIManager.updateTooltip(mx, my)`, supplied with the shared tooltip
+    /// (it needs the world's picked object).
+    pub update_tooltip_hook: Option<TooltipHook>,
+    /// See [`GizmoHitTestHook`].
+    pub gizmo_hit_test_hook: Option<GizmoHitTestHook>,
     /// Fixed clock for tests (`System.currentTimeMillis`).
     pub time_override_ms: Option<i64>,
 }
@@ -264,6 +297,16 @@ impl Default for UIManager {
             sprite: SpriteRenderer::default(),
             text: None,
             events: None,
+            unfocus_text_entry: None,
+            speed_controls: None,
+            clock: None,
+            tool_tip: None,
+            debug_console: None,
+            moodle_ui: Default::default(),
+            progress_bar: Default::default(),
+            resize_hook: None,
+            update_tooltip_hook: None,
+            gizmo_hit_test_hook: None,
             time_override_ms: None,
         }
     }
@@ -317,7 +360,8 @@ impl UIManager {
         with_ui(|m| m.events = s);
     }
 
-    fn trigger(t: &mut Thread, name: &str, args: &[Value]) {
+    /// `LuaEventManager.triggerEvent(name, args...)` through the sink.
+    pub fn trigger(t: &mut Thread, name: &str, args: &[Value]) {
         if let Some(sink) = with_ui(|m| m.events.clone()) {
             sink(t, name, args);
         }
@@ -383,6 +427,8 @@ impl UIManager {
             m.show_paused_message = true;
             m.ui.clear();
             m.debug_ui.clear();
+            m.clock = None;
+            m.moodle_ui = Default::default();
             m.fade_before_ui = false;
             m.visible_all_ui = true;
             for f in &mut m.player_fade_info {
@@ -393,15 +439,23 @@ impl UIManager {
         });
     }
 
-    /// `resize()`. TODO(world): repositions clock, moodles and speed
-    /// controls; returns early without a clock, which is always the case
-    /// until those are ported.
-    pub fn resize() {}
+    /// `resize()`: the HUD layout (clock, moodles, speed controls) through
+    /// the hook its widgets install; nothing without a clock.
+    pub fn resize() {
+        if with_ui(|m| m.clock.is_none()) {
+            return;
+        }
+        if let Some(h) = with_ui(|m| m.resize_hook.clone()) {
+            h();
+        }
+    }
 
     // ---- per-frame update ----
 
-    /// `UIManager.update()`.
-    pub fn update(t: &mut Thread) {
+    /// `UIManager.update()`. A failed actual tooltip phase preserves the
+    /// completed update prefix, including `updating = true`; no native finally
+    /// resets it or runs later work after that fault.
+    pub fn update(t: &mut Thread) -> LuaResult<()> {
         let now = now_ms();
         let Some((mx, my)) = with_ui(|m| {
             if m.suspend {
@@ -428,7 +482,7 @@ impl UIManager {
             m.updating = true;
             Some((m.mouse.x, m.mouse.y))
         }) else {
-            return;
+            return Ok(());
         };
 
         let consumed = Self::update_mouse_buttons(t, mx, my);
@@ -465,9 +519,13 @@ impl UIManager {
             m.last_mouse_y = my;
         });
         Self::update_ui_elements(t);
-        // TODO(world): updateTooltip (ObjectTooltip over picked objects),
-        // handleZoomKeys, IsoCamera last offsets.
+        // updateTooltip (the shared tooltip over picked objects).
+        if let Some(h) = with_ui(|m| m.update_tooltip_hook.clone()) {
+            h(t, mx, my)?;
+        }
+        // TODO(world): handleZoomKeys, IsoCamera last offsets.
         with_ui(|m| m.updating = false);
+        Ok(())
     }
 
     /// The z-order pass of `update()`: always-on-top and `bringToTop`ped
@@ -484,9 +542,12 @@ impl UIManager {
                 continue;
             }
             if ui.is_follow_game_world() {
-                tutorial.push(ui);
+                tutorial.push(ui.clone());
             }
-            // TODO(world): ObjectTooltip instances move to the end.
+            if ui.ext::<crate::tooltip::ObjectTooltip>().is_some() {
+                let rem = self.ui.remove(i as usize);
+                self.ui.push(rem);
+            }
             i -= 1;
         }
         let mut moved = Vec::new();
@@ -546,12 +607,20 @@ impl UIManager {
         let mut consumed_click = false;
         let mut consumed_rclick = false;
         for btn in 0..mouse.button_count() {
-            // TODO(world): btn 0 Gizmos.hitTest.
             let mut consumed = false;
+            if btn == 0 {
+                if let Some(h) = with_ui(|m| m.gizmo_hit_test_hook.clone()) {
+                    consumed = h(t, mx, my);
+                }
+            }
             let pressed = mouse.is_button_pressed(btn);
             let released = !pressed && mouse.is_button_released(btn);
             if pressed || released {
-                // TODO: btn 0 press calls Core.UnfocusActiveTextEntryBox().
+                if pressed && btn == 0 {
+                    if let Some(f) = with_ui(|m| m.unfocus_text_entry.clone()) {
+                        f(t);
+                    }
+                }
                 let uis = Self::get_ui();
                 let mut i = uis.len() as isize - 1;
                 while i >= 0 && !consumed {
@@ -723,9 +792,12 @@ impl UIManager {
             }
             el.render(t);
         }
+        with_ui(|m| m.rendering = false);
+        if let Some(tip) = with_ui(|m| m.tool_tip.clone()) {
+            tip.render(t);
+        }
         with_ui(|m| {
-            m.rendering = false;
-            // TODO(world): tooltip render, "IGUI_GamePaused" box.
+            // TODO(world): the "IGUI_GamePaused" box (GameTime.isGamePaused).
             if !m.fade_before_ui {
                 m.render_fade_overlay();
             }

@@ -1,10 +1,22 @@
 //! `BaseLib` and `LuaCompiler.register` (loadstring).
 
 use super::*;
-use crate::exec::java_value_of;
+use crate::exec::{java_value_of, table_access_error, table_length, table_raw_set};
 use crate::number::kahlua_tonumber;
 use crate::vm::LuaClosure;
 use std::rc::Rc;
+
+/// `BaseLib.printCallback`: also handed each printed line.
+pub type PrintCallback = Rc<dyn Fn(&mut crate::Thread, &str)>;
+
+thread_local! {
+    static PRINT_CALLBACK: std::cell::RefCell<Option<PrintCallback>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `BaseLib.setPrintCallback(callback)`.
+pub fn set_print_callback(cb: Option<PrintCallback>) {
+    PRINT_CALLBACK.with(|c| *c.borrow_mut() = cb);
+}
 
 pub fn register(env: &TableRef) {
     reg(env, "pcall", |c| {
@@ -38,6 +50,9 @@ pub fn register(env: &TableRef) {
             s.push_str(&java_value_of(&r));
         }
         (c.thread.out)(&s);
+        if let Some(cb) = PRINT_CALLBACK.with(|c| c.borrow().clone()) {
+            cb(c.thread, &s);
+        }
         Ok(0)
     });
     reg(env, "select", |c| {
@@ -75,7 +90,10 @@ pub fn register(env: &TableRef) {
         }
         let Value::Str(s) = &o else {
             return Err(LuaError::Runtime {
-                message: format!("class {} cannot be cast to class java.lang.String", java_class_name(&o)),
+                message: format!(
+                    "class {} cannot be cast to class java.lang.String",
+                    java_class_name(&o)
+                ),
                 class: "java.lang.ClassCastException",
             });
         };
@@ -91,7 +109,7 @@ pub fn register(env: &TableRef) {
     });
     reg(env, "getmetatable", |c| {
         lua_assert(c.nargs() >= 1, "Not enough arguments")?;
-        let m = c.thread.metatable(&c.arg(0));
+        let m = c.thread.metatable(&c.arg(0))?;
         Ok(c.push(m))
     });
     reg(env, "setmetatable", |c| {
@@ -108,7 +126,9 @@ pub fn register(env: &TableRef) {
     });
     reg(env, "error", |c| {
         if c.nargs() >= 1 {
-            let st = opt_string_arg(c, 2).map(|s| s.to_string()).unwrap_or_default();
+            let st = opt_string_arg(c, 2)
+                .map(|s| s.to_string())
+                .unwrap_or_default();
             c.thread.current.borrow_mut().stack_trace = st;
             return Err(LuaError::Kahlua(c.arg(0)));
         }
@@ -119,8 +139,16 @@ pub fn register(env: &TableRef) {
         let t = table_cast(&c.arg(0))?;
         let di = if c.nargs() >= 2 { c.arg(1) } else { Value::Nil };
         let dj = if c.nargs() >= 3 { c.arg(2) } else { Value::Nil };
-        let i = if di.is_nil() { 1 } else { from_double(&di)? as i32 as i64 };
-        let j = if dj.is_nil() { t.len() } else { from_double(&dj)? as i32 as i64 };
+        let i = if di.is_nil() {
+            1
+        } else {
+            from_double(&di)? as i32 as i64
+        };
+        let j = if dj.is_nil() {
+            table_length(&t)?
+        } else {
+            from_double(&dj)? as i32 as i64
+        };
         let n = 1 + j - i;
         if n <= 0 {
             c.set_top(0)?;
@@ -129,7 +157,9 @@ pub fn register(env: &TableRef) {
         let n = n as usize;
         c.set_top(n)?;
         for b in 0..n {
-            let v = t.get_int(i + b as i64);
+            let v = t
+                .try_rawget(&Value::Num((i + b as i64) as f64))
+                .map_err(table_access_error)?;
             c.set(b, v);
         }
         Ok(n)
@@ -161,7 +191,11 @@ pub fn register(env: &TableRef) {
                 }
                 match &frames[idx as usize].closure {
                     Some(cl) => *cl.env.borrow_mut() = new_env,
-                    None => return Err(LuaError::runtime(format!("No closure found at this level: {level}"))),
+                    None => {
+                        return Err(LuaError::runtime(format!(
+                            "No closure found at this level: {level}"
+                        )))
+                    }
                 }
             }
         }
@@ -169,12 +203,18 @@ pub fn register(env: &TableRef) {
         Ok(1)
     });
     reg(env, "getfenv", |c| {
-        let o = if c.nargs() >= 1 { c.arg(0) } else { Value::Num(1.0) };
+        let o = if c.nargs() >= 1 {
+            c.arg(0)
+        } else {
+            Value::Num(1.0)
+        };
         let res = match &o {
             Value::Nil | Value::Native(_) => c.thread.current.borrow().env.clone(),
             Value::Closure(cl) => Some(cl.env.borrow().clone()),
             _ => {
-                let Some(d) = raw_tonumber(&o) else { return Err(LuaError::runtime("Expected number")) };
+                let Some(d) = raw_tonumber(&o) else {
+                    return Err(LuaError::runtime("Expected number"));
+                };
                 let level = d as i32;
                 lua_assert(level >= 0, "level must be non-negative")?;
                 let frames = &c.thread.frames;
@@ -198,21 +238,27 @@ pub fn register(env: &TableRef) {
     reg(env, "rawset", |c| {
         lua_assert(c.nargs() >= 3, "Not enough arguments")?;
         let t = table_cast(&c.arg(0))?;
-        t.rawset(c.arg(1), c.arg(2));
+        table_raw_set(&t, &c.arg(1), &c.arg(2))?;
         c.set_top(1)?;
         Ok(1)
     });
     reg(env, "rawget", |c| {
         lua_assert(c.nargs() >= 2, "Not enough arguments")?;
         let t = table_cast(&c.arg(0))?;
-        let v = t.rawget(&c.arg(1));
+        let v = t.try_rawget(&c.arg(1)).map_err(table_access_error)?;
         Ok(c.push(v))
     });
     reg(env, "collectgarbage", |c| {
         let option = if c.nargs() > 0 { c.arg(0) } else { Value::Nil };
         match option.as_str() {
-            None if option.is_nil() => Ok(0),
-            Some("step") | Some("collect") => Ok(0),
+            None if option.is_nil() => {
+                crate::gc::request_collection();
+                Ok(0)
+            }
+            Some("step") | Some("collect") => {
+                crate::gc::request_collection();
+                Ok(0)
+            }
             Some("count") => {
                 // Memory statistics in KiB: used, free, total.
                 c.set_top(3)?;
@@ -221,12 +267,18 @@ pub fn register(env: &TableRef) {
                 c.set(2, Value::Num(0.0));
                 Ok(3)
             }
-            _ => Err(LuaError::runtime(format!("invalid option: {}", java_value_of(&option)))),
+            _ => Err(LuaError::runtime(format!(
+                "invalid option: {}",
+                java_value_of(&option)
+            ))),
         }
     });
     reg(env, "debugstacktrace", |c| {
         let level = opt_number_arg(c, 2).map(|d| d as i32).unwrap_or(0).max(0) as usize;
-        let count = opt_number_arg(c, 3).map(|d| d as i32).unwrap_or(i32::MAX).max(0) as usize;
+        let count = opt_number_arg(c, 3)
+            .map(|d| d as i32)
+            .unwrap_or(i32::MAX)
+            .max(0) as usize;
         let halt = opt_number_arg(c, 4).map(|d| d as i32).unwrap_or(0).max(0) as usize;
         let frames = &c.thread.frames;
         let mut s = String::new();
@@ -241,7 +293,9 @@ pub fn register(env: &TableRef) {
     });
     reg(env, "bytecodeloader", |c| {
         let modname = string_arg(c, 1, "loader")?;
-        Ok(c.push(format!("Could not find the bytecode for '{modname}' in classpath")))
+        Ok(c.push(format!(
+            "Could not find the bytecode for '{modname}' in classpath"
+        )))
     });
 }
 
@@ -249,38 +303,75 @@ fn frame_line(fr: &crate::vm::CallFrame) -> String {
     if let Some(cl) = &fr.closure {
         let lines = &cl.prototype.lines;
         if fr.pc >= 1 && fr.pc - 1 < lines.len() {
-            return format!("at {}:{}\n", cl.prototype.name.as_deref().unwrap_or("null"), lines[fr.pc - 1]);
+            return format!(
+                "at {}:{}\n",
+                cl.prototype.name.as_deref().unwrap_or("null"),
+                lines[fr.pc - 1]
+            );
         }
         return String::new();
     }
-    fr.native.as_ref().map(|n| format!("at {}\n", n.name)).unwrap_or_default()
+    fr.native
+        .as_ref()
+        .map(|n| format!("at {}\n", n.name))
+        .unwrap_or_default()
 }
 
 fn from_double(v: &Value) -> LuaResult<f64> {
     match v {
         Value::Num(n) => Ok(*n),
         other => Err(LuaError::Runtime {
-            message: format!("class {} cannot be cast to class java.lang.Double", java_class_name(other)),
+            message: format!(
+                "class {} cannot be cast to class java.lang.Double",
+                java_class_name(other)
+            ),
             class: "java.lang.ClassCastException",
         }),
     }
 }
 
 /// `BaseLib.setmetatable(thread, o, newMeta, raw)`.
-pub fn setmetatable(thread: &mut Thread, o: &Value, meta: Option<TableRef>, raw: bool) -> LuaResult<()> {
+pub fn setmetatable(
+    thread: &mut Thread,
+    o: &Value,
+    meta: Option<TableRef>,
+    raw: bool,
+) -> LuaResult<()> {
+    let result = setmetatable_value(thread, o, &meta, raw);
+    let mut retired = crate::table::RetiredTableValues::new();
+    if let Some(meta) = meta {
+        retired.push(Value::Table(meta));
+    }
+    crate::gc::retire_table_values(retired);
+    result
+}
+
+fn setmetatable_value(
+    thread: &mut Thread,
+    o: &Value,
+    meta: &Option<TableRef>,
+    raw: bool,
+) -> LuaResult<()> {
     lua_assert(!o.is_nil(), "Expected table, got nil")?;
-    let old = thread.raw_metatable(o);
+    let old = thread.raw_metatable(o)?;
     if !raw {
         if let Some(old) = &old {
-            if !thread.table_get(&Value::Table(old.clone()), &Value::str("__metatable"))?.is_nil() {
+            if !thread
+                .table_get(&Value::Table(old.clone()), &Value::str("__metatable"))?
+                .is_nil()
+            {
                 return Err(LuaError::runtime("cannot change a protected metatable"));
             }
         }
     }
     match o {
         Value::Table(t) => {
-            t.set_metatable(meta);
-            Ok(())
+            let mut retired = crate::table::RetiredTableValues::new();
+            let result = t
+                .try_set_metatable(meta, &mut retired)
+                .map_err(table_access_error);
+            crate::gc::retire_table_values(retired);
+            result
         }
         _ => Err(LuaError::runtime("Could not set metatable for object")),
     }
@@ -301,17 +392,30 @@ pub fn register_compiler(env: &TableRef) {
         let src = match c.arg(0) {
             Value::Str(s) => s,
             Value::Nil => return fail(c, "No source given"),
-            other => return fail(c, &format!("class {} cannot be cast to class java.lang.String", java_class_name(&other))),
+            other => {
+                return fail(
+                    c,
+                    &format!(
+                        "class {} cannot be cast to class java.lang.String",
+                        java_class_name(&other)
+                    ),
+                )
+            }
         };
-        let name = if c.nargs() >= 2 { c.arg(1).as_str().map(str::to_string) } else { None };
+        let name = if c.nargs() >= 2 {
+            c.arg(1).as_str().map(str::to_string)
+        } else {
+            None
+        };
         let env = c.thread.current_env();
         match load_string(&src, name.as_deref(), env) {
             Ok(f) => Ok(c.push(f)),
             Err(e) => {
                 c.push(Value::Nil);
-                let msg = match e {
-                    LuaError::Kahlua(v) => v,
-                    LuaError::Runtime { message, .. } => Value::from(message),
+                let msg = match e.diagnostic() {
+                    LuaError::Kahlua(v) => v.clone(),
+                    LuaError::Runtime { message, .. } => Value::from(message.clone()),
+                    LuaError::WithCause { .. } => unreachable!("leaf diagnostic"),
                 };
                 c.push(msg);
                 Ok(2)
@@ -337,16 +441,20 @@ pub struct JavaException(pub LuaError);
 
 impl crate::value::LuaObject for JavaException {
     fn class_name(&self) -> &str {
-        match &self.0 {
+        match self.0.diagnostic() {
             LuaError::Kahlua(_) => "se.krka.kahlua.vm.KahluaException",
             LuaError::Runtime { class, .. } => class,
+            LuaError::WithCause { .. } => unreachable!("leaf diagnostic"),
         }
     }
     /// `Throwable.toString()`.
     fn to_lua_string(&self) -> String {
-        match &self.0 {
-            LuaError::Kahlua(v) => format!("se.krka.kahlua.vm.KahluaException: {}", java_value_of(v)),
+        match self.0.diagnostic() {
+            LuaError::Kahlua(v) => {
+                format!("se.krka.kahlua.vm.KahluaException: {}", java_value_of(v))
+            }
             LuaError::Runtime { message, class } => format!("{class}: {message}"),
+            LuaError::WithCause { .. } => unreachable!("leaf diagnostic"),
         }
     }
     fn as_any(&self) -> &dyn std::any::Any {

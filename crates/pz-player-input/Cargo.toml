@@ -1,0 +1,12 @@
+[package]
+name = "pz-player-input"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-characters.workspace = true
+pz-core.workspace = true
+pz-input.workspace = true
+pz-lua-api.workspace = true
+pz-render.workspace = true
+pz-ui.workspace = true

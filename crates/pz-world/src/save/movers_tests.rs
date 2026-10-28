@@ -1,0 +1,683 @@
+//! Vehicles, pushables and animal tracks: hand-made records saved,
+//! loaded and saved again.
+
+use super::chunk_file::{load_chunk, save_chunk};
+use super::io::{Reader, Writer};
+use super::items::{AllItems, ItemBlob};
+use super::lua_table::{LuaKey, LuaTable, LuaValue};
+use super::movers::{AnimalTracks, IsoPushableObject};
+use super::vehicle::*;
+use super::visual::MovingBase;
+use super::*;
+use crate::chunk::{IsoChunk, IsoGridSquare};
+use crate::objects::*;
+use crate::sprite::test_tables;
+
+fn sprites() -> IsoSpriteManager {
+    let mut m = IsoSpriteManager::new(test_tables());
+    for (i, n) in ["floor_0", "crate_0"].iter().enumerate() {
+        let s = m.add_sprite(n, 300 + i as i32);
+        m.sprites[s].name = Some(n.to_string());
+    }
+    m
+}
+
+fn raw_item(reg: i16, id: i32) -> ItemBlob {
+    let mut d = reg.to_be_bytes().to_vec();
+    d.push(0xff);
+    d.extend_from_slice(&id.to_be_bytes());
+    d.extend_from_slice(&[1, 2, 3]);
+    ItemBlob::Raw(d)
+}
+
+fn table(k: &str, v: &str) -> LuaTable {
+    let mut t = LuaTable::default();
+    t.rawset(LuaKey::Str(k.into()), Some(LuaValue::Str(v.into())));
+    t
+}
+
+fn part(id: &str, condition: i32) -> VehiclePart {
+    VehiclePart {
+        part_id: id.into(),
+        created: true,
+        condition,
+        suspension_compression: 0.6,
+        ..VehiclePart::new()
+    }
+}
+
+pub(crate) fn vehicle() -> BaseVehicle {
+    let mut engine = part("Engine", 70);
+    engine.mod_data = Some(table("a", "b"));
+    let mut trunk = part("TruckBed", 40);
+    let mut c = ItemContainer::new(Some("TruckBed"));
+    c.capacity = 55;
+    c.items.push(raw_item(7, 11));
+    trunk.container = Some(c);
+    trunk.item = Some(raw_item(8, 12));
+    let mut light = part("HeadlightLeft", 90);
+    light.light = Some(VehicleLight {
+        active: true,
+        offset_x: 0.5,
+        ..VehicleLight::default()
+    });
+    let mut door = part("DoorFrontLeft", 50);
+    door.door = Some(VehicleDoor {
+        open: false,
+        locked: true,
+        lock_broken: false,
+    });
+    let mut win = part("Windshield", 30);
+    win.window = Some(VehicleWindow {
+        open: true,
+        open_delta: 1.0,
+    });
+    let mut radio = part("Radio", 100);
+    radio.device_data = Some(pz_inventory::device::DeviceData::default());
+    radio.components.push(ComponentBlob {
+        type_id: 5,
+        data: vec![9, 9],
+    });
+    BaseVehicle {
+        base: MovingBase {
+            offset_x: 64.0,
+            offset_y: 192.0,
+            x: 100.25,
+            y: 200.75,
+            z: 0.0,
+            dir: 3,
+            mod_data: Some(table("owner", "x")),
+        },
+        saved_physics_z: 0.5,
+        saved_rot: [0.0, 0.0, 0.0, 1.0],
+        script_name: "Base.CarNormal".into(),
+        skin_index: 2,
+        engine: Some(VehicleEngine {
+            running: true,
+            loudness: 40,
+            quality: 60,
+            power: 2500,
+        }),
+        front_end_durability: 100,
+        rear_end_durability: 90,
+        current_front_end_durability: 80,
+        current_rear_end_durability: 70,
+        key_id: 1234,
+        key_spawned: 1,
+        headlights_on: true,
+        created: true,
+        sound_horn_on: false,
+        sound_back_move_on: false,
+        lightbar_lights_mode: 0,
+        lightbar_siren_mode: 0,
+        parts: vec![engine, trunk, light, door, win, radio],
+        key_is_on_door: false,
+        hotwired: true,
+        hotwired_broken: false,
+        keys_in_ignition: true,
+        rust: 0.25,
+        color_hue: 0.5,
+        color_saturation: 0.75,
+        color_value: 1.0,
+        vehicle_id: -1,
+        loaded_vehicle_id: -1,
+        mechanical_id: 42,
+        alarmed: true,
+        alarm_start_time: 3.5,
+        alarm_chosen_sound: Some("AlarmA".into()),
+        siren_start_time: 1.5,
+        current_key: Some(raw_item(9, 13)),
+        blood_intensity: vec![("Front".into(), 3), ("Rear".into(), 1)],
+        towing: Some(VehicleTowing {
+            vehicle_id: 7,
+            attachment_self: "trailer".into(),
+            attachment_other: "trailerfront".into(),
+            z_offset: 0.1,
+        }),
+        regulator_speed: 30.0,
+        previously_entered: true,
+        previously_moved: false,
+        animals: vec![0],
+    }
+}
+
+fn save(v: &BaseVehicle, square: Option<(i32, i32)>) -> Vec<u8> {
+    let mut w = Writer::new();
+    v.save(&mut w, 33, square, None, &AllItems).unwrap();
+    w.buf
+}
+
+fn load(b: &[u8]) -> BaseVehicle {
+    let mut r = Reader::new(b);
+    assert!(r.bool().unwrap());
+    assert_eq!(r.i8().unwrap(), 33);
+    let v = BaseVehicle::load(&mut r, WORLD_VERSION, (64.0, 192.0), &AllItems).unwrap();
+    assert_eq!(r.remaining(), 0);
+    v
+}
+
+#[test]
+fn vehicle_round_trip() {
+    let v = vehicle();
+    let b = save(&v, None);
+    let back = load(&b);
+    assert_eq!(back.parts, v.parts);
+    assert_eq!(back.engine, v.engine);
+    assert_eq!(back.towing, v.towing);
+    assert_eq!(back.base, v.base);
+    assert_eq!(back.current_key, v.current_key);
+    assert_eq!(back.animals, v.animals);
+    // Without a script (as right after loading) no alarm sound is saved.
+    assert_eq!(back.alarm_chosen_sound, None);
+    assert_eq!(save(&back, None), b);
+    // With the script's sounds the chosen sound is kept.
+    let list = vec!["AlarmA".to_string()];
+    let sounds = AlarmSounds {
+        alarm_enable: true,
+        alarm: &list,
+        alarm_loop: &[],
+    };
+    let mut w = Writer::new();
+    v.save(&mut w, 33, None, Some(&sounds), &AllItems).unwrap();
+    assert_eq!(load(&w.buf).alarm_chosen_sound.as_deref(), Some("AlarmA"));
+    assert_ne!(w.buf, b);
+    // A sound the script lacks needs a random pick.
+    let mut w = Writer::new();
+    let other = vec!["AlarmB".to_string()];
+    let sounds = AlarmSounds {
+        alarm_enable: true,
+        alarm: &other,
+        alarm_loop: &[],
+    };
+    assert!(back
+        .save(&mut w, 33, None, Some(&sounds), &AllItems)
+        .is_err());
+}
+
+#[test]
+fn vehicle_load_changes() {
+    let mut v = vehicle();
+    v.base.z = 40.0;
+    v.base.dir = 11;
+    v.engine.as_mut().unwrap().quality = 150;
+    v.lightbar_lights_mode = 7;
+    v.lightbar_siren_mode = 2;
+    v.parts[2].condition = 150;
+    v.parts.push(part("lightbar", 0));
+    v.saved_physics_z = 9.0;
+    v.vehicle_id = 77;
+    let back = load(&save(&v, None));
+    assert_eq!(back.base.z, 31.0);
+    assert_eq!(back.base.dir, 3);
+    assert_eq!(back.engine.as_ref().unwrap().quality, 100);
+    assert_eq!(back.lightbar_lights_mode, 3);
+    // The lightbar part at condition 0 turns the siren off.
+    assert_eq!(back.lightbar_siren_mode, 0);
+    assert_eq!(back.parts[2].condition, 100);
+    // Physics height clamped into level 31.
+    assert_eq!(back.saved_physics_z, 31.0 * 2.44949);
+    assert_eq!(back.loaded_vehicle_id, 77);
+    assert_eq!(back.vehicle_id, -1);
+    // Without an Engine part, the engine fields save as zeros.
+    let mut v = vehicle();
+    v.parts.remove(0);
+    let back = load(&save(&v, None));
+    assert_eq!(back.engine, None);
+    let mut v = vehicle();
+    v.saved_physics_z = f32::NAN;
+    v.base.z = 1.0;
+    // A NaN height makes the origin the vehicle's z, which is what is
+    // saved; loading clamps it into the level.
+    assert_eq!(v.physics_origin_y(), 1.0);
+    let back = load(&save(&v, None));
+    assert_eq!(back.saved_physics_z, 2.44949);
+    // Blood intensity is written in HashMap order; a towing link with id
+    // -1 is not written.
+    let mut v = vehicle();
+    v.blood_intensity = vec![("Rear".into(), 1), ("Front".into(), 3)];
+    v.towing.as_mut().unwrap().vehicle_id = -1;
+    let back = load(&save(&v, None));
+    assert_eq!(back.towing, None);
+    let mut keys: Vec<&str> = back.blood_intensity.iter().map(|e| e.0.as_str()).collect();
+    let mut sorted = keys.clone();
+    pz_inventory::java::sort_string_hash_map(&mut sorted, |k| k);
+    assert_eq!(keys, sorted);
+    keys.sort();
+    assert_eq!(keys, ["Front", "Rear"]);
+}
+
+#[test]
+fn vehicle_square_clamps_position() {
+    let v = vehicle();
+    let back = load(&save(&v, Some((90, 210))));
+    assert_eq!(back.base.x, 90.0 + 1.0 - 5.0e-4);
+    assert_eq!(back.base.y, 210.0 + 5.0e-4);
+    let back = load(&save(&v, Some((100, 200))));
+    assert_eq!((back.base.x, back.base.y), (100.25, 200.75));
+}
+
+#[test]
+fn rotation_round_trips() {
+    assert_eq!(
+        rotation_round_trip([0.0, 0.0, 0.0, 1.0]),
+        [0.0, 0.0, 0.0, 1.0]
+    );
+    // Unnormalised: the matrix rows are normalised again.
+    assert_eq!(
+        rotation_round_trip([0.0, 0.0, 0.0, 2.0]),
+        [0.0, 0.0, 0.0, 1.0]
+    );
+    // Half turns take the non-trace branches.
+    assert_eq!(
+        rotation_round_trip([0.0, 1.0, 0.0, 0.0]),
+        [0.0, 1.0, 0.0, 0.0]
+    );
+    assert_eq!(
+        rotation_round_trip([1.0, 0.0, 0.0, 0.0]),
+        [1.0, 0.0, 0.0, 0.0]
+    );
+    assert_eq!(
+        rotation_round_trip([0.0, 0.0, 1.0, 0.0]),
+        [0.0, 0.0, 1.0, 0.0]
+    );
+    let h = std::f32::consts::FRAC_1_SQRT_2;
+    let q = rotation_round_trip([0.0, h, 0.0, h]);
+    for (a, b) in q.iter().zip([0.0, h, 0.0, h]) {
+        assert!((a - b).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn vehicle_rows() {
+    let v = vehicle();
+    let mut row = VehicleRow {
+        id: 1,
+        wx: 12,
+        wy: 25,
+        x: 100.25,
+        y: 200.75,
+        world_version: WORLD_VERSION,
+        in_meta: false,
+        data: save(&v, None),
+    };
+    assert_eq!(row.square(), Some((100, 200)));
+    let back = row.load(33, (64.0, 192.0), &AllItems).unwrap().unwrap();
+    assert_eq!(back.script_name, "Base.CarNormal");
+    assert!(row.load(32, (64.0, 192.0), &AllItems).unwrap().is_none());
+    row.x = 120.0;
+    assert_eq!(row.square(), None);
+    row.data[0] = 0;
+    assert!(row.load(33, (64.0, 192.0), &AllItems).unwrap().is_none());
+}
+
+#[test]
+fn animal_tracks_and_pushables_in_chunks() {
+    let m = sprites();
+    let t = SaveTables::for_tests();
+    let s = SaveSettings::default();
+    let ctx = SaveCtx {
+        sprites: &m,
+        tables: &t,
+        settings: &s,
+        items: &AllItems,
+        hooks: &NoSaveHooks,
+        meta: None,
+    };
+    let mut ch = IsoChunk::new(10, 20);
+    for x in 0..8 {
+        for y in 0..8 {
+            ch.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(80 + x, 160 + y, 0)).into()),
+            );
+        }
+    }
+    let sq_owner = ch.get_grid_square_mut(1, 1, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
+    let mut track = IsoObject::new(
+        sq.new_object_id(),
+        ObjectKind::AnimalTrack(Box::new(AnimalTracks {
+            animal_type: "deer".into(),
+            track_type: "footstep".into(),
+            x: 81,
+            y: 161,
+            dir: Some(4),
+            added_time: 123_456,
+            added_to_world: true,
+        })),
+        Some(m.named_map["floor_0"]),
+    );
+    track.mod_data = Some(table("k", "v"));
+    let id = track.id;
+    sq.objects.push((track).into());
+    sq.special_objects.push(id);
+    let base = |x: f32, offsets: (f32, f32)| MovingBase {
+        offset_x: offsets.0,
+        offset_y: offsets.1,
+        x,
+        y: 161.5,
+        z: 0.0,
+        dir: 9,
+        mod_data: None,
+    };
+    let mut push = IsoObject::new(
+        sq.new_object_id(),
+        ObjectKind::Pushable(Box::new(IsoPushableObject {
+            wheelie_bin: false,
+            base: base(81.5, (12.0, -60.0)),
+        })),
+        Some(m.named_map["crate_0"]),
+    );
+    let mut c = ItemContainer::new(Some("crate"));
+    c.items.push(raw_item(3, 4));
+    push.container = Some(c);
+    sq.objects.push((push).into());
+    let bin = IsoObject::new(
+        sq.new_object_id(),
+        ObjectKind::Pushable(Box::new(IsoPushableObject {
+            wheelie_bin: true,
+            base: base(81.25, (0.0, 0.0)),
+        })),
+        None,
+    );
+    sq.objects.push((bin).into());
+    drop(sq);
+    let b = save_chunk(&ch, &ctx).unwrap();
+    let back = load_chunk(&b, 10, 20, &ctx).unwrap().chunk;
+    let sq_owner = back.get_grid_square(1, 1, 0).unwrap();
+    let sq = sq_owner.borrow();
+    assert_eq!(sq.objects.len(), 3);
+    assert_eq!(sq.special_objects, vec![sq.objects[0].borrow().id]);
+    let ObjectKind::AnimalTrack(tr) = &sq.objects[0].borrow().kind else {
+        panic!("{:?}", sq.objects[0].borrow().kind);
+    };
+    assert_eq!(tr.animal_type, "deer");
+    assert_eq!(tr.dir, Some(4));
+    let ObjectKind::Pushable(p) = &sq.objects[1].borrow().kind else {
+        panic!();
+    };
+    // The constructor's offsets replace the saved ones; dir is masked.
+    assert_eq!((p.base.offset_x, p.base.offset_y), (64.0, 192.0));
+    assert_eq!(p.base.dir, 1);
+    assert_eq!(sq.objects[1].borrow().sprite, Some(m.named_map["crate_0"]));
+    assert_eq!(
+        sq.objects[1]
+            .borrow()
+            .container
+            .as_ref()
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
+    // A wheelie bin saved without a container gets its own back.
+    let ObjectKind::Pushable(w) = &sq.objects[2].borrow().kind else {
+        panic!();
+    };
+    assert!(w.wheelie_bin);
+    assert_eq!((w.base.offset_x, w.base.offset_y), (-26.0, -248.0));
+    let wc = sq.objects[2].borrow().container.as_ref().unwrap().clone();
+    assert_eq!(wc.kind.as_deref(), Some("wheeliebin"));
+    let b2 = save_chunk(&back, &ctx).unwrap();
+    let back2 = load_chunk(&b2, 10, 20, &ctx).unwrap().chunk;
+    assert_eq!(save_chunk(&back2, &ctx).unwrap(), b2);
+    // A pushable whose sprite is unknown cannot be saved.
+    let mut bad = back2;
+    bad.get_grid_square_mut(1, 1, 0)
+        .unwrap()
+        .borrow_mut()
+        .objects[1]
+        .borrow_mut()
+        .sprite = crate::objects::ObjectSprite::None;
+    assert!(save_chunk(&bad, &ctx).is_err());
+}
+
+/// A chunk file with `vehicles` spliced into its (empty) vehicle list.
+fn with_vehicles(file: &[u8], rooms: usize, vehicles: &[(i8, i8, i8, Vec<u8>)]) -> Vec<u8> {
+    let at = file.len() - 8 * rooms - 4 - 2 - 2;
+    let mut out = file[..at].to_vec();
+    out.extend_from_slice(&(vehicles.len() as i16).to_be_bytes());
+    for (x, y, z, b) in vehicles {
+        out.extend_from_slice(&[*x as u8, *y as u8, *z as u8]);
+        out.extend_from_slice(b);
+    }
+    out.extend_from_slice(&file[at + 2..]);
+    let len = out.len() as i32;
+    out[5..9].copy_from_slice(&len.to_be_bytes());
+    let crc = super::io::crc32(&out[17..]) as i64;
+    out[9..17].copy_from_slice(&crc.to_be_bytes());
+    out
+}
+
+#[test]
+fn chunk_vehicle_lists() {
+    let m = sprites();
+    let t = SaveTables::for_tests();
+    let s = SaveSettings::default();
+    let ctx = SaveCtx {
+        sprites: &m,
+        tables: &t,
+        settings: &s,
+        items: &AllItems,
+        hooks: &NoSaveHooks,
+        meta: None,
+    };
+    let mut ch = IsoChunk::new(10, 20);
+    for x in 0..8 {
+        for y in 0..8 {
+            ch.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(80 + x, 160 + y, 0)).into()),
+            );
+        }
+    }
+    ch.saved.spawned_rooms = vec![5];
+    let plain = save_chunk(&ch, &ctx).unwrap();
+    let class = t.class_id("Vehicle");
+    let mut w = Writer::new();
+    vehicle()
+        .save(&mut w, class, None, None, &AllItems)
+        .unwrap();
+    let file = with_vehicles(
+        &plain,
+        1,
+        &[
+            (2, 3, 0, w.buf.clone()),
+            (0, 0, 0, vec![0]),
+            (7, 7, 0, w.buf),
+        ],
+    );
+    let back = load_chunk(&file, 10, 20, &ctx).unwrap();
+    assert!(back.crc_ok);
+    let vs: Vec<_> = back.chunk.vehicles.loaded().collect();
+    // The entry with a clear serialise flag is skipped.
+    assert_eq!(vs.len(), 2);
+    assert_eq!(back.chunk.vehicles.len(), 2);
+    assert_eq!(
+        vs[0].origin,
+        crate::chunk_vehicles::VehicleOrigin::ChunkFile { x: 2, y: 3, z: 0 }
+    );
+    assert_eq!(vs[0].square, Some((82, 163, 0)));
+    assert_eq!(vs[1].vehicle.script_name, "Base.CarNormal");
+    // Saving writes the empty list, as the original.
+    assert_eq!(save_chunk(&back.chunk, &ctx).unwrap(), plain);
+    // Another class in the list cannot be read.
+    let file = with_vehicles(
+        &plain,
+        1,
+        &[(0, 0, 0, vec![1, t.class_id("Pushable") as u8])],
+    );
+    assert!(load_chunk(&file, 10, 20, &ctx).is_err());
+}
+
+#[test]
+fn chunk_vehicle_list_from_rows_and_moves() {
+    use crate::chunk::IsoCell;
+    use crate::chunk_vehicles::{LoadedVehicle, VehicleHandle, VehicleOrigin};
+    use std::rc::Rc;
+    let mut ch = IsoChunk::new(10, 20);
+    for x in 0..8 {
+        for y in 0..8 {
+            ch.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(80 + x, 160 + y, 0)).into()),
+            );
+        }
+    }
+    let row = |id: i32, x: f32, y: f32| VehicleRow {
+        id,
+        wx: 10,
+        wy: 20,
+        x,
+        y,
+        world_version: 249,
+        in_meta: false,
+        data: Vec::new(),
+    };
+    let a = ch.vehicle_loaded(&row(7, 83.9, 161.2), vehicle());
+    // Outside the chunk's squares: no square (-0.5 truncates to 0, so it
+    // takes 1.5 to leave).
+    let b = ch.vehicle_loaded(&row(8, 78.5, 161.0), vehicle());
+    assert_eq!(ch.vehicles.len(), 2);
+    let l: Vec<Rc<LoadedVehicle>> = ch.vehicles.loaded().collect();
+    assert_eq!(l[0].origin, VehicleOrigin::Database { sql_id: 7 });
+    assert_eq!(l[0].square, Some((83, 161, 0)));
+    assert_eq!(l[1].square, None);
+    assert!(ch.vehicles.contains(&a) && ch.vehicles.contains(&b));
+
+    // The runtime takes over entry 0 with its own object.
+    struct Runtime(i32);
+    let r: VehicleHandle = Rc::new(Runtime(1));
+    let old = ch.vehicles.replace(0, r.clone());
+    assert!(Rc::ptr_eq(&old, &a));
+    assert_eq!(
+        ch.vehicles
+            .of_type::<Runtime>()
+            .map(|v| v.0)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    assert_eq!(ch.vehicles.loaded().count(), 1);
+
+    let mut cell = IsoCell::default();
+    cell.chunks.insert((10, 20), ch);
+    cell.chunks.insert((11, 20), IsoChunk::new(11, 20));
+    // Moving to a chunk that is not loaded keeps it where it is.
+    assert!(!cell.update_vehicle_chunk(&r, (10, 20), (12, 20)));
+    assert!(cell.update_vehicle_chunk(&r, (10, 20), (11, 20)));
+    assert!(!cell.chunk_vehicles(10, 20).unwrap().contains(&r));
+    assert!(cell.chunk_vehicles(11, 20).unwrap().contains(&r));
+    assert_eq!(cell.chunk_vehicles(10, 20).unwrap().len(), 1);
+    assert!(cell.remove_vehicle_from_chunk(&r, (11, 20)));
+    assert!(!cell.remove_vehicle_from_chunk(&r, (11, 20)));
+    assert!(cell.chunk_vehicles(11, 20).unwrap().is_empty());
+}
+
+#[test]
+fn vehicles_db_load_chunk() {
+    use super::vehicles_db::{init_used_ids, load_chunk};
+    use crate::chunk_vehicles::{LoadedVehicle, VehicleOrigin};
+    use pz_sqlite::{Connection, Value};
+    let dir = std::env::temp_dir().join(format!("pz-world-vdb-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut c = Connection::open(dir.join("vehicles.db")).unwrap();
+    c.execute("CREATE TABLE vehicles (id   INTEGER PRIMARY KEY NOT NULL,wx    INTEGER,wy    INTEGER,x    FLOAT,y    FLOAT,inMeta BOOLEAN NULL DEFAULT FALSE,worldversion    INTEGER,data BLOB);").unwrap();
+    c.execute("CREATE INDEX ivwx ON vehicles (wx);").unwrap();
+    c.execute("CREATE INDEX ivwy ON vehicles (wy);").unwrap();
+    let t = SaveTables::for_tests();
+    let mut w = Writer::new();
+    vehicle()
+        .save(&mut w, t.class_id("Vehicle"), None, None, &AllItems)
+        .unwrap();
+    let good = w.buf;
+    let mut off = good.clone();
+    off[0] = 0;
+    // A vehicle header followed by a truncated body.
+    let broken = good[..20].to_vec();
+    let rows: [(i64, i64, f64, Value); 8] = [
+        (9, 10, 81.5, Value::Blob(good.clone())),
+        (3, 10, 83.5, Value::Blob(good.clone())),
+        (2, 11, 90.0, Value::Blob(good.clone())),
+        (6, 10, 84.0, Value::Blob(broken)),
+        (5, 10, 85.0, Value::Blob(off)),
+        (1, 10, 70.0, Value::Blob(good.clone())),
+        (11, 12, 97.0, Value::Null),
+        (10, 12, 96.0, Value::Blob(good.clone())),
+    ];
+    for (id, wx, x, data) in rows {
+        c.insert(
+            "vehicles",
+            &[
+                ("id", Value::Integer(id)),
+                ("wx", Value::Integer(wx)),
+                ("wy", Value::Integer(20)),
+                ("x", Value::Real(x)),
+                ("y", Value::Real(161.5)),
+                ("inMeta", Value::Integer(0)),
+                ("worldversion", Value::Integer(i64::from(WORLD_VERSION))),
+                ("data", data),
+            ],
+        )
+        .unwrap();
+    }
+    let (used, seen) = init_used_ids(&mut c).unwrap();
+    assert_eq!(
+        used.into_iter().collect::<Vec<_>>(),
+        [1, 2, 3, 5, 6, 9, 10, 11]
+    );
+    assert_eq!(
+        seen.into_iter().collect::<Vec<_>>(),
+        [20 << 16 | 10, 20 << 16 | 11, 20 << 16 | 12]
+    );
+
+    let m = sprites();
+    let s = SaveSettings::default();
+    let ctx = SaveCtx {
+        sprites: &m,
+        tables: &t,
+        settings: &s,
+        items: &AllItems,
+        hooks: &NoSaveHooks,
+        meta: None,
+    };
+    let mut ch = IsoChunk::new(10, 20);
+    ch.set_square(3, 1, 0, Some((IsoGridSquare::new(83, 161, 0)).into()));
+    let r = load_chunk(Some(&mut c), &mut ch, &ctx);
+    // In id order; serialise off is skipped, the broken row is deleted.
+    let ids: Vec<_> = ch
+        .vehicles
+        .loaded()
+        .map(|v| match v.origin {
+            VehicleOrigin::Database { sql_id } => sql_id,
+            _ => -1,
+        })
+        .collect();
+    assert_eq!(ids, [1, 3, 9]);
+    assert_eq!(r.added.len(), 3);
+    assert_eq!(r.removed.iter().map(|r| r.0).collect::<Vec<_>>(), [6]);
+    assert!(r.error.is_none());
+    let l: Vec<std::rc::Rc<LoadedVehicle>> = ch.vehicles.loaded().collect();
+    assert_eq!(l[1].square, Some((83, 161, 0)));
+    assert_eq!(l[0].square, None);
+    assert_eq!(l[0].vehicle.script_name, "Base.CarNormal");
+    let (used, _) = init_used_ids(&mut c).unwrap();
+    assert!(!used.contains(&6) && used.contains(&5));
+
+    // A NULL blob ends the loop after the rows before it.
+    let mut ch = IsoChunk::new(12, 20);
+    let r = load_chunk(Some(&mut c), &mut ch, &ctx);
+    assert_eq!(ch.vehicles.len(), 1);
+    assert_eq!(r.error.as_deref(), Some("java.lang.NullPointerException"));
+    // No connection (no save): nothing.
+    let mut ch = IsoChunk::new(10, 20);
+    assert!(load_chunk(None, &mut ch, &ctx).added.is_empty() && ch.vehicles.is_empty());
+    drop(c);
+    let _ = std::fs::remove_dir_all(&dir);
+}

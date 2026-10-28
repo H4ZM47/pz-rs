@@ -1,13 +1,27 @@
 use super::*;
 use std::path::PathBuf;
 
+/// Check Java's native line separators before comparing option contents.
+fn option_contents(text: &str) -> String {
+    let contents = text.replace("\r\n", "\n");
+    let expected = if cfg!(windows) { contents.replace('\n', "\r\n") } else { contents.clone() };
+    assert_eq!(text, expected, "options must use the platform's native line endings");
+    contents
+}
+
 /// A fresh, empty directory under the system temp dir.
 fn temp_dir(tag: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let d = std::env::temp_dir().join(format!("pz-engine-core-{tag}-{}-{nanos}-{n}", std::process::id()));
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let d = std::env::temp_dir().join(format!(
+        "pz-engine-core-{tag}-{}-{nanos}-{n}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&d).unwrap();
     d
 }
@@ -85,9 +99,18 @@ fn defaults() {
     assert_eq!(c.get_iso_cursor_alpha(), 0.5);
     assert_eq!(c.get_terms_of_service_version(), -1);
     assert_eq!(c.get_option_zoom_levels1x(), "");
-    assert_eq!(c.get_default_zoom_levels(), vec![250, 225, 200, 175, 150, 125, 100, 75, 50, 25]);
-    assert_eq!(c.get_object_highlited_color(), ColorInfo::new(0.98, 0.56, 0.11, 1.0));
-    assert_eq!(c.get_world_item_highlight_color(), ColorInfo::new(0.5, 1.0, 1.0, 1.0));
+    assert_eq!(
+        c.get_default_zoom_levels(),
+        vec![250, 225, 200, 175, 150, 125, 100, 75, 50, 25]
+    );
+    assert_eq!(
+        c.get_object_highlited_color(),
+        ColorInfo::new(0.98, 0.56, 0.11, 1.0)
+    );
+    assert_eq!(
+        c.get_world_item_highlight_color(),
+        ColorInfo::new(0.5, 1.0, 1.0, 1.0)
+    );
     assert_eq!(c.get_option_single_context_menu(3), Some(false));
     assert_eq!(c.get_option_single_context_menu(4), None);
     assert_eq!(c.get_auto_zoom(0), Some(false));
@@ -98,8 +121,16 @@ fn defaults() {
     assert_eq!(c.get_key("Forward"), 0);
     assert!(!c.is_key("Forward", 0));
     assert!(c.is_default_options());
-    assert_eq!(c.option("worldItemHighlightColor").unwrap().get_value_as_string(), "0.5,1.0,1.0");
-    assert_eq!(c.option("autozoom").unwrap().get_value_as_string(), "false,false,false,false");
+    assert_eq!(
+        c.option("worldItemHighlightColor")
+            .unwrap()
+            .get_value_as_string(),
+        "0.5,1.0,1.0"
+    );
+    assert_eq!(
+        c.option("autozoom").unwrap().get_value_as_string(),
+        "false,false,false,false"
+    );
 }
 
 #[test]
@@ -115,13 +146,16 @@ fn first_run_creates_options_ini() {
     let dir = temp_dir("first");
     let mut c = core_in(&dir);
     assert!(!c.load_options().unwrap());
-    let text = std::fs::read_to_string(dir.join("options.ini")).unwrap();
+    let text = option_contents(&std::fs::read_to_string(dir.join("options.ini")).unwrap());
     assert!(text.starts_with("version=8\n3DGroundItem=true\n"), "{text}");
     assert!(text.contains("\nzoomLevels1x=50;75;125;150;175;200\n"));
     assert!(text.contains("\nlanguage=EN\n"));
     assert!(text.contains("\nwidth=1280\n"));
     assert!(text.ends_with("zoomLevels2x=50;75;125;150;175;200"));
-    assert_eq!(text.contains("macosIgnoreMouseWheelAcceleration"), cfg!(target_os = "macos"));
+    assert_eq!(
+        text.contains("macosIgnoreMouseWheelAcceleration"),
+        cfg!(target_os = "macos")
+    );
     // No multi-line `controller=` entry without active controllers.
     assert!(!text.contains("controller="));
     std::fs::remove_dir_all(&dir).unwrap();
@@ -147,7 +181,10 @@ fn round_trip_sample() {
     assert_eq!(c.get_option_min_chat_opaque(), 0.7);
     assert_eq!(c.get_option_code_font_size(), "Large");
     assert_eq!(c.current_code_font, "CodeLarge");
-    assert_eq!(c.active_controller_guids, vec!["030000004c050000e60c000000010000".to_string()]);
+    assert_eq!(
+        c.active_controller_guids,
+        vec!["030000004c050000e60c000000010000".to_string()]
+    );
     assert_eq!(c.get_option_controller_button_style(), 2);
     assert_eq!(c.get_option_controller_button_style_string(), "PS4");
     assert_eq!(c.get_option_font_size(), 3);
@@ -158,29 +195,45 @@ fn round_trip_sample() {
     assert_eq!(c.get_option_single_context_menu(1), Some(true));
     assert!(c.get_option_texture_compression() || !c.allow_option_texture_compression());
     assert_eq!(c.get_option_voice_record_device_name(), "Some Mic");
-    assert_eq!(c.get_object_highlited_color(), ColorInfo::new(0.25, 0.5, 0.75, 1.0));
-    assert_eq!(c.get_option_zoom_levels2x(), "250;225;200;175;150;125;75;50;25");
+    assert_eq!(
+        c.get_object_highlited_color(),
+        ColorInfo::new(0.25, 0.5, 0.75, 1.0)
+    );
+    assert_eq!(
+        c.get_option_zoom_levels2x(),
+        "250;225;200;175;150;125;75;50;25"
+    );
     // controllerButtonStyle changed on load: its on-change event fired.
     let events = c.take_events();
-    assert!(events
-        .contains(&CoreEvent { name: "OptionControllerButtonStyleChanged", args: vec![EventArg::Str("PS4".into())] }));
+    assert!(events.contains(&CoreEvent {
+        name: "OptionControllerButtonStyleChanged",
+        args: vec![EventArg::Str("PS4".into())]
+    }));
 
     // loadOptions saved; the result reloads to the same state and re-saves
     // identically.
     let first = std::fs::read_to_string(dir.join("options.ini")).unwrap();
-    assert!(first.starts_with("version=8\n3DGroundItem=false\n"));
-    assert!(!first.contains("unknownOption"));
-    assert!(first.contains("\nminChatOpaque=0.699999988079071\n"));
-    assert!(first.contains("\nchatFadeTime=2.5\n"));
-    assert!(first.contains("\nmpTextColor=0.6980392336845398,0.6549019813537598,0.6627451181411743\n"));
-    assert!(first.contains("\ncontroller=030000004c050000e60c000000010000\n"));
-    assert!(first.contains("\ndoneNewSaveFolder=true\n"));
+    let contents = option_contents(&first);
+    assert!(contents.starts_with("version=8\n3DGroundItem=false\n"));
+    assert!(!contents.contains("unknownOption"));
+    assert!(contents.contains("\nminChatOpaque=0.699999988079071\n"));
+    assert!(contents.contains("\nchatFadeTime=2.5\n"));
+    assert!(
+        contents.contains("\nmpTextColor=0.6980392336845398,0.6549019813537598,0.6627451181411743\n")
+    );
+    assert!(contents.contains("\ncontroller=030000004c050000e60c000000010000\n"));
+    assert!(contents.contains("\ndoneNewSaveFolder=true\n"));
     let mut c2 = core_in(&dir);
     assert!(c2.load_options().unwrap());
     let second = std::fs::read_to_string(dir.join("options.ini")).unwrap();
     assert_eq!(first, second);
     for o in c.options().iter().chain(c.fake_options()) {
-        assert_eq!(o.get_value_as_string(), c2.option(o.name()).unwrap().get_value_as_string(), "option {}", o.name());
+        assert_eq!(
+            o.get_value_as_string(),
+            c2.option(o.name()).unwrap().get_value_as_string(),
+            "option {}",
+            o.name()
+        );
     }
 
     // Setters are saved.
@@ -212,7 +265,7 @@ fn version_migration() {
     assert!(!c.option("textureCompression").unwrap().get_bool());
     assert!(!c.get_option_do_wind_sprite_effects());
     assert!(!c.get_option_zoom());
-    let text = std::fs::read_to_string(dir.join("options.ini")).unwrap();
+    let text = option_contents(&std::fs::read_to_string(dir.join("options.ini")).unwrap());
     assert!(text.starts_with("version=8\n"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -220,7 +273,11 @@ fn version_migration() {
 #[test]
 fn uncapped_fps_is_reset_on_load() {
     let dir = temp_dir("uncapped");
-    std::fs::write(dir.join("options.ini"), "version=8\nuncappedFPS=true\nframeRate=244\n").unwrap();
+    std::fs::write(
+        dir.join("options.ini"),
+        "version=8\nuncappedFPS=true\nframeRate=244\n",
+    )
+    .unwrap();
     let mut c = core_in(&dir);
     c.load_options().unwrap();
     assert!(!c.performance.uncapped_fps);
@@ -233,9 +290,13 @@ fn uncapped_fps_is_reset_on_load() {
 /// byte for byte. The original file is only read.
 #[test]
 fn real_options_ini_round_trips() {
-    let Some(home) = std::env::var_os("HOME") else { return };
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
     let real = Path::new(&home).join("Zomboid").join("options.ini");
-    let Ok(original) = std::fs::read_to_string(&real) else { return };
+    let Ok(original) = std::fs::read_to_string(&real) else {
+        return;
+    };
     let dir = temp_dir("real");
     std::fs::write(dir.join("options.ini"), &original).unwrap();
     let mut c = core_in(&dir);
@@ -290,7 +351,10 @@ fn zoom_and_screen() {
     c.set_option_zoom_levels2x(Some("50;75;125"));
     c.init_fbos();
     assert!(c.offscreen_buffer.created);
-    assert_eq!(c.offscreen_buffer.zoom_levels.as_deref(), Some(&[1.25f32, 1.0, 0.75, 0.5][..]));
+    assert_eq!(
+        c.offscreen_buffer.zoom_levels.as_deref(),
+        Some(&[1.25f32, 1.0, 0.75, 0.5][..])
+    );
     assert_eq!(c.get_max_zoom(), 1.25);
     assert_eq!(c.get_min_zoom(), 0.5);
     assert_eq!(c.get_next_zoom(0, 1), 1.25);
@@ -303,7 +367,12 @@ fn zoom_and_screen() {
         c.take_events(),
         vec![CoreEvent {
             name: "OnResolutionChange",
-            args: vec![EventArg::Num(1280.0), EventArg::Num(720.0), EventArg::Num(1920.0), EventArg::Num(1080.0)]
+            args: vec![
+                EventArg::Num(1280.0),
+                EventArg::Num(720.0),
+                EventArg::Num(1920.0),
+                EventArg::Num(1080.0)
+            ]
         }]
     );
     c.set_screen_size(1920, 1080);
@@ -323,17 +392,26 @@ fn setters_validate_like_java() {
     c.set_option_context_menu_font(Some("Huge"));
     assert_eq!(c.get_option_context_menu_font(), "Medium");
     c.set_option_min_chat_opaque(0.7);
-    assert_eq!(c.option("minChatOpaque").unwrap().get_value_as_string(), "0.699999988079071");
+    assert_eq!(
+        c.option("minChatOpaque").unwrap().get_value_as_string(),
+        "0.699999988079071"
+    );
     c.set_option_gamepad_binding_preset(Some("Custom"));
     assert_eq!(
         c.take_events(),
-        vec![CoreEvent { name: "OptionGamepadBindingPresetChanged", args: vec![EventArg::Str("Custom".into())] }]
+        vec![CoreEvent {
+            name: "OptionGamepadBindingPresetChanged",
+            args: vec![EventArg::Str("Custom".into())]
+        }]
     );
     c.set_option_gamepad_binding_preset(Some("Custom"));
     assert!(c.take_events().is_empty());
     c.set_mp_text_color(ColorInfo::new(0.5, 0.25, 1.0, 1.0));
     assert_eq!(c.get_mp_text_color(), ColorInfo::new(0.5, 0.25, 1.0, 1.0));
-    assert_eq!(c.option("mpTextColor").unwrap().get_value_as_string(), "0.5,0.25,1.0");
+    assert_eq!(
+        c.option("mpTextColor").unwrap().get_value_as_string(),
+        "0.5,0.25,1.0"
+    );
     c.set_game_mode("LastStand");
     assert!(!c.add_zombie_on_cell_load);
     c.set_console_dot_txt_size_kb(1);

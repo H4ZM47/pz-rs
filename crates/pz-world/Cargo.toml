@@ -1,0 +1,27 @@
+[package]
+name = "pz-world"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# Hand-authored test helpers (e.g. `sprite::types::test_tables`) for other crates' tests.
+test-util = []
+
+[dependencies]
+pz-fs.workspace = true
+pz-core.workspace = true
+pz-inventory.workspace = true
+pz-kahlua.workspace = true
+pz-render.workspace = true
+pz-classfile.workspace = true
+pz-entity.workspace = true
+pz-scripts.workspace = true
+pz-sqlite.workspace = true
+quick-xml.workspace = true
+
+[dev-dependencies]
+pz-sqlite = { workspace = true, features = ["writer"] }
+pz-scripts.workspace = true
+pz-entity.workspace = true
+pz-classfile.workspace = true
+pz-kahlua.workspace = true

@@ -1,0 +1,1541 @@
+//! Chunk files built from hand-made chunks: save, load, save again.
+
+mod load_order;
+
+use super::chunk_file::{
+    chunk_path, do_load_gridsquare, load_chunk, save_chunk, ChunkLoadHook, HookCtx,
+};
+use super::io::{Reader, Writer};
+use super::items::{AllItems, ItemBlob, ItemRegistry};
+use super::lua_table::{LuaKey, LuaTable, LuaValue};
+use super::object_io::{load_object, save_object};
+use super::visual::{CorpseVisual, HumanVisual, IsoDeadBody, MovingBase};
+use super::*;
+use crate::chunk::{FloorBloodSplat, IsoChunk, IsoGridSquare};
+use crate::erosion_data::ErosionSquareData;
+use crate::objects::*;
+use crate::sprite::{test_tables, PropertyValueMap};
+use crate::ObjectSlot;
+
+fn sprites() -> IsoSpriteManager {
+    let mut m = IsoSpriteManager::new(test_tables());
+    for (i, n) in [
+        "floor_0",
+        "door_0",
+        "door_1",
+        "window_0",
+        "tree_0",
+        "overlay_blood_0",
+        "wall_0",
+        "carpentry_01_8",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let s = m.add_sprite(n, 100 + i as i32);
+        m.sprites[s].name = Some(n.to_string());
+    }
+    m
+}
+
+fn blob(reg: i16, id: i32, extra: &[u8]) -> ItemBlob {
+    let mut d = reg.to_be_bytes().to_vec();
+    d.push(0xff);
+    d.extend_from_slice(&id.to_be_bytes());
+    d.extend_from_slice(extra);
+    ItemBlob::Raw(d)
+}
+
+fn ctx<'a>(
+    m: &'a IsoSpriteManager,
+    t: &'a SaveTables,
+    s: &'a SaveSettings,
+    items: &'a dyn ItemRegistry,
+) -> SaveCtx<'a> {
+    SaveCtx {
+        sprites: m,
+        tables: t,
+        settings: s,
+        items,
+        hooks: &NoSaveHooks,
+        meta: None,
+    }
+}
+
+// These archive fixtures explicitly provide an authored sandbox source for
+// the real generator constructor; production never falls back to this data.
+struct GeneratorRangeFixture {
+    source: Option<crate::world_state::GeneratorRangeSource>,
+    range: crate::world_state::GeneratorPowerRange,
+}
+
+impl GeneratorRangeFixture {
+    fn new() -> Self {
+        let range = crate::world_state::generator_power_range();
+        let source = crate::world_state::install_generator_range_source(Some(
+            crate::world_state::GeneratorRangeSource {
+                vertical: || Ok(3),
+                radius: || Ok(20),
+            },
+        ));
+        Self { source, range }
+    }
+}
+
+impl Drop for GeneratorRangeFixture {
+    fn drop(&mut self) {
+        crate::world_state::install_generator_range_source(self.source);
+        crate::world_state::set_generator_power_range(self.range);
+    }
+}
+
+fn body(parts: usize) -> IsoDeadBody {
+    let mut c = ItemContainer::new(Some("inventorymale"));
+    c.id = 42;
+    c.items.push(blob(9, 77, &[1, 2, 3]));
+    c.items.push(blob(9, 78, &[1, 2, 3]));
+    IsoDeadBody {
+        base: MovingBase {
+            offset_x: 64.0,
+            offset_y: 192.0,
+            x: 10.5,
+            y: 20.25,
+            z: 0.0,
+            dir: 3,
+            mod_data: None,
+        },
+        female: false,
+        was_zombie: true,
+        animal: None,
+        object_id: (5, 4),
+        persistent_outfit_id: 123,
+        desc: None,
+        visual: CorpseVisual::Human(Box::new(HumanVisual::new(parts))),
+        container: Some(c),
+        worn_items: vec![("base:shirt".into(), 1)],
+        attached_items: vec![],
+        death_time: 1.5,
+        reanimate_time: 0.0,
+        fall_on_front: true,
+        killed_by_fall: false,
+        was_skeleton: false,
+        angle: 0.5,
+        zombie_rot_stage_at_death: 1,
+        animal_rot_stage_at_death: 0,
+        rotten_texture: String::new(),
+        skel_inv_icon: String::new(),
+        crawling: false,
+        fake_dead: false,
+        ragdoll: None,
+        burn_timer: 0.0,
+    }
+}
+
+/// A chunk with one square of each kind of content.
+fn sample_chunk(m: &IsoSpriteManager, t: &SaveTables) -> IsoChunk {
+    let idx = |n: &str| m.named_map[n];
+    let mut ch = IsoChunk::new(10, 20);
+    ch.saved.floor_blood_splats.push(FloorBloodSplat {
+        x: 2.0,
+        y: 3.0,
+        z: 0.0,
+        kind: 2,
+        world_age: 1.0,
+        index: 4,
+    });
+    ch.saved.generators = Some(vec![(80, 160, 0)]);
+    ch.saved.spawned_rooms = vec![7, 9];
+    ch.saved.attachments_partial = Some(vec![(1, 2, 3)]);
+    for x in 0..8 {
+        for y in 0..8 {
+            ch.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(80 + x, 160 + y, 0)).into()),
+            );
+        }
+    }
+    let sq_owner = ch.get_grid_square_mut(0, 0, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
+    sq.erosion = Some(ErosionSquareData {
+        init: true,
+        soil: 2,
+        ..Default::default()
+    });
+    sq.seen = [true, false, true, false];
+    sq.have_roof = true;
+    let mut floor = IsoObject::new(sq.new_object_id(), ObjectKind::Object, Some(idx("floor_0")));
+    floor.attach_anim_sprite(idx("wall_0"));
+    floor.name = Some(ObjectName::Str("Grass".into()));
+    floor.custom_color = Some([0.5, 1.0, 0.0]);
+    let mut md = LuaTable::default();
+    md.rawset(LuaKey::Str("k".into()), Some(LuaValue::Num(1.0)));
+    floor.mod_data = Some(md);
+    floor.wall_blood_splats = Some(vec![WallBloodSplat {
+        world_age: 0.5,
+        sprite: Some(idx("overlay_blood_0")),
+    }]);
+    let mut c = ItemContainer::new(Some("crate"));
+    c.items.push(blob(3, 1, &[9]));
+    floor.container = Some(c);
+    floor.components.push_encoded_blob(ComponentBlob {
+        type_id: 17,
+        data: vec![1, 2],
+    }, 249).unwrap();
+    floor.has_components = true;
+    sq.objects.push((floor).into());
+    let door = IsoDoor {
+        north: true,
+        health: 500,
+        max_health: 500,
+        open_sprite: Some(idx("door_1")),
+        closed_sprite: Some(idx("door_0")),
+        has_curtain: true,
+        curtain_open: true,
+        ..Default::default()
+    };
+    let mut d = IsoObject::new(
+        sq.new_object_id(),
+        ObjectKind::Door(door),
+        Some(idx("door_0")),
+    );
+    d.outline_on_mouseover = true;
+    d.key_id = 77;
+    let did = d.id;
+    sq.objects.push((d).into());
+    sq.special_objects.push(did);
+    let sq_owner = ch.get_grid_square_mut(1, 0, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
+    let wi = IsoWorldInventoryObject {
+        xoff: 0.25,
+        yoff: 0.5,
+        zoff: 0.0,
+        offset_x: 0.0,
+        offset_y: 0.0,
+        item: blob(4, 11, &[]).into(),
+        drop_time: 2.0,
+        ignore_remove_sandbox: true,
+        extended_placement: false,
+    };
+    let mut o = IsoObject::new(
+        sq.new_object_id(),
+        ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(wi)),
+        None,
+    );
+    o.sprite = crate::objects::ObjectSprite::ArchiveUnmanaged(object_io::UNREGISTERED_SPRITE_ID);
+    let slot = ObjectSlot::new(o);
+    sq.world_objects
+        .borrow_mut()
+        .push_object(&slot.ref_handle());
+    sq.objects.push(slot);
+    let tree = IsoTree {
+        size: 1,
+        log_yield: 3,
+        damage: 120,
+    };
+    let id = sq.new_object_id();
+    sq.objects
+        .push((IsoObject::new(id, ObjectKind::Tree(tree), Some(idx("tree_0")))).into());
+    let th = IsoThumpable {
+        is_door: true,
+        light_source_fuel: Some(12),
+        locked_by_code: 1234,
+        ..Default::default()
+    };
+    let mut o = IsoObject::new(
+        sq.new_object_id(),
+        ObjectKind::Thumpable(Box::new(th)),
+        Some(idx("wall_0")),
+    );
+    o.key_id = 5;
+    sq.objects.push((o).into());
+    let gen = IsoGenerator {
+        connected: true,
+        activated: false,
+        fuel: 4.0,
+        condition: 90,
+        last_hour: 7,
+        total_power_using: 0.0,
+    };
+    let id = sq.new_object_id();
+    sq.objects
+        .push((IsoObject::new(id, ObjectKind::Generator(gen), Some(idx("wall_0")))).into());
+    let id = sq.new_object_id();
+    sq.objects.push(
+        (IsoObject::new(
+            id,
+            ObjectKind::Barricade(IsoBarricade {
+                dir: 2,
+                plank_health: [100, 0, 0, 0],
+                metal_health: 0,
+                metal_bar_health: 0,
+            }),
+            None,
+        ))
+        .into(),
+    );
+    sq.static_moving.push(body(t.blood_body_parts));
+    sq.burnt_out = true;
+    ch
+}
+
+#[test]
+fn chunk_round_trip() {
+    let _generator_ranges = GeneratorRangeFixture::new();
+    let m = sprites();
+    let t = SaveTables::for_tests();
+    // Saved ages are clamped to the world age on load.
+    let s = SaveSettings {
+        world_age_hours: 50.0,
+        ..Default::default()
+    };
+    let c = ctx(&m, &t, &s, &AllItems);
+    let ch = sample_chunk(&m, &t);
+    let bytes = save_chunk(&ch, &c).unwrap();
+    assert!(chunk_file::validate_header(&bytes));
+    let loaded = load_chunk(&bytes, 10, 20, &c).unwrap();
+    assert!(loaded.crc_ok);
+    assert_eq!(loaded.world_version, WORLD_VERSION);
+    let back = loaded.chunk;
+    assert_eq!(back.saved.floor_blood_splats.len(), 1);
+    assert_eq!(back.saved.next_splat_index, 4);
+    assert_eq!(back.saved.generators, Some(vec![(80, 160, 0)]));
+    let sq_owner = back.get_grid_square(0, 0, 0).unwrap();
+    let sq = sq_owner.borrow();
+    assert_eq!(sq.objects.len(), 2);
+    assert_eq!(sq.special_objects, vec![sq.objects[1].borrow().id]);
+    assert_eq!(sq.seen, [true, false, true, false]);
+    // "Grass" is saved as the shortcut.
+    assert_eq!(sq.objects[0].borrow().name, Some(ObjectName::Grass));
+    assert_eq!(sq.objects[0].borrow().components.len(), 1);
+    let ObjectKind::Door(d) = &sq.objects[1].borrow().kind else {
+        panic!()
+    };
+    assert!(d.has_curtain && d.curtain_open && !d.curtain_inside);
+    assert_eq!(sq.objects[1].borrow().key_id, 77);
+    let sq1_owner = back.get_grid_square(1, 0, 0).unwrap();
+    let sq1 = sq1_owner.borrow();
+    assert_eq!(sq1.world_objects.borrow().len(), 1);
+    assert!(sq1
+        .world_objects
+        .borrow()
+        .contains_object(&sq1.objects[0].ref_handle()));
+    assert_eq!(sq1.static_moving.len(), 1);
+    assert_eq!(
+        sq1.static_moving[0]
+            .container
+            .as_ref()
+            .unwrap()
+            .item_count(),
+        2
+    );
+    let ObjectKind::Tree(tr) = &sq1.objects[1].borrow().kind else {
+        panic!()
+    };
+    assert_eq!((tr.log_yield, tr.damage), (3, 120));
+    // The generator's modData gains an unsaveable entry: the table is
+    // written (empty) on the next save too.
+    assert!(sq1.objects[3].borrow().mod_data.is_some());
+    // Saving the loaded chunk reproduces the bytes.
+    assert_eq!(save_chunk(&back, &c).unwrap(), bytes);
+    // Empty squares above ground are not saved; the levels shrink.
+    let mut ch2 = sample_chunk(&m, &t);
+    ch2.set_square(0, 0, 3, Some((IsoGridSquare::new(80, 160, 3)).into()));
+    assert_eq!(ch2.max_level, 3);
+    let b2 = save_chunk(&ch2, &c).unwrap();
+    assert_eq!(b2, bytes);
+    assert_eq!(
+        chunk_path(std::path::Path::new("s"), 10, 20),
+        std::path::Path::new("s/map/10/20.bin")
+    );
+}
+
+#[test]
+fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
+    use pz_inventory::shared;
+    use pz_inventory::{InventoryItem, ItemClass, ItemTemplate};
+    use std::rc::Rc;
+
+    struct Reg([Rc<ItemTemplate>; 2]);
+    impl ItemRegistry for Reg {
+        fn template(&self, id: i16) -> Option<Rc<ItemTemplate>> {
+            match id {
+                1 => Some(self.0[0].clone()),
+                2 => Some(self.0[1].clone()),
+                _ => None,
+            }
+        }
+        fn rand_next(&self, _: i32) -> i32 {
+            17
+        }
+    }
+    fn floor(ch: &IsoChunk) -> crate::floor_object::FloorObjectRef {
+        let object = ch.get_grid_square(0, 0, 0).unwrap().borrow().objects[0].ref_handle();
+        let body = object.borrow();
+        let ObjectKind::WorldInventory(wi) = &body.kind else {
+            panic!()
+        };
+        wi.ref_handle()
+    }
+
+    let reg = Reg([
+        Rc::new(ItemTemplate::new(ItemClass::Container, "Base", "Bag")),
+        Rc::new(ItemTemplate::new(ItemClass::Key, "Base", "Key1")),
+    ]);
+    let m = sprites();
+    let tables = SaveTables::for_tests();
+    let settings = SaveSettings::default();
+    let ctx = ctx(&m, &tables, &settings, &reg);
+    let bag = shared::new_item(InventoryItem::create(reg.0[0].clone(), 1));
+    let key = shared::new_item(InventoryItem::create(reg.0[1].clone(), 2));
+    shared::add_item(&shared::inventory_of(&bag.borrow()).unwrap(), &key);
+    let mut chunk = IsoChunk::new(10, 20);
+    let mut sq = IsoGridSquare::new(80, 160, 0);
+    let id = sq.new_object_id();
+    let mut obj = IsoObject::new(
+        id,
+        ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
+            IsoWorldInventoryObject {
+                xoff: 0.25,
+                yoff: 0.5,
+                zoff: 0.0,
+                offset_x: 0.0,
+                offset_y: 0.0,
+                item: crate::floor_item::FloorItem::retain(&bag),
+                drop_time: 0.0,
+                ignore_remove_sandbox: false,
+                extended_placement: false,
+            },
+        )),
+        None,
+    );
+    obj.sprite = crate::objects::ObjectSprite::ArchiveUnmanaged(object_io::UNREGISTERED_SPRITE_ID);
+    let slot = ObjectSlot::new(obj);
+    sq.world_objects
+        .borrow_mut()
+        .push_object(&slot.ref_handle());
+    sq.objects.push(slot);
+    chunk.set_square(0, 0, 0, Some((sq).into()));
+    let live = floor(&chunk);
+    let mut snapshot = IsoChunk::new(10, 20);
+    snapshot.set_square(
+        0,
+        0,
+        0,
+        Some(
+            chunk
+                .get_grid_square(0, 0, 0)
+                .unwrap()
+                .borrow()
+                .try_archive_copy()
+                .unwrap()
+                .into(),
+        ),
+    );
+    assert!(!Rc::ptr_eq(&live, &floor(&snapshot)));
+    {
+        let mut payload = live.borrow_mut();
+        payload.xoff = 0.625;
+        payload.yoff = 0.75;
+        payload.zoff = 0.125;
+        payload.offset_x = 3.0;
+        payload.offset_y = 4.0;
+        payload.drop_time = 123.5;
+        payload.ignore_remove_sandbox = true;
+        payload.extended_placement = true;
+    }
+    key.borrow_mut().set_key_id(913, &reg);
+    bag.borrow_mut().favorite = true;
+    // These render offsets are saved, then intentionally discarded on
+    // load by the existing native-compatible codec.
+    let mut object_bytes = Writer::new();
+    save_object(
+        &mut object_bytes,
+        &ctx,
+        &chunk.get_grid_square(0, 0, 0).unwrap().borrow().objects[0].borrow(),
+    )
+    .unwrap();
+    let mut object_reader = Reader::new(&object_bytes.buf);
+    assert_eq!(object_reader.i8().unwrap(), 1);
+    assert_eq!(
+        object_reader.i8().unwrap(),
+        ctx.class_id("WorldInventoryItem").unwrap()
+    );
+    let stored_offsets: Vec<f32> = (0..5).map(|_| object_reader.f32().unwrap()).collect();
+    assert_eq!(stored_offsets, [0.625, 0.75, 0.125, 3.0, 4.0]);
+    let bytes = save_chunk(&chunk, &ctx).unwrap();
+    let loaded = load_chunk(&bytes, 10, 20, &ctx).unwrap().chunk;
+    let loaded_payload = floor(&loaded);
+    assert!(Rc::ptr_eq(&loaded_payload, &floor(&loaded)));
+    assert!(!Rc::ptr_eq(&live, &loaded_payload));
+    {
+        let payload = loaded_payload.borrow();
+        assert_eq!(
+            (payload.xoff, payload.yoff, payload.zoff),
+            (0.625, 0.75, 0.125)
+        );
+        assert_eq!((payload.offset_x, payload.offset_y), (0.0, 0.0));
+        assert_eq!(payload.drop_time, 123.5);
+        assert!(payload.ignore_remove_sandbox && payload.extended_placement);
+    }
+    let actual = loaded_payload.borrow().item.item_ref().unwrap();
+    assert!(!Rc::ptr_eq(&actual, &bag));
+    assert!(actual.borrow().favorite);
+    let contents = shared::inventory_of(&actual.borrow()).unwrap();
+    assert!(Rc::ptr_eq(
+        &contents
+            .borrow()
+            .containing_item
+            .as_ref()
+            .unwrap()
+            .clone(),
+        &actual
+    ));
+    let loaded_key = contents.borrow().items[0].clone();
+    assert_eq!(loaded_key.borrow().get_key_id(), 913);
+    loaded_key.borrow_mut().set_key_id(707, &reg);
+    loaded_payload.borrow_mut().xoff = 0.875;
+    loaded_payload.borrow_mut().drop_time = 456.0;
+    loaded_payload.borrow_mut().extended_placement = false;
+    let reloaded = load_chunk(&save_chunk(&loaded, &ctx).unwrap(), 10, 20, &ctx)
+        .unwrap()
+        .chunk;
+    let latest =
+        shared::inventory_of(&floor(&reloaded).borrow().item.borrow_item().unwrap()).unwrap();
+    assert_eq!(latest.borrow().items[0].borrow().get_key_id(), 707);
+    assert_eq!(floor(&reloaded).borrow().xoff, 0.875);
+    assert_eq!(floor(&reloaded).borrow().drop_time, 456.0);
+    assert!(!floor(&reloaded).borrow().extended_placement);
+    assert_eq!(floor(&snapshot).borrow().xoff, 0.25);
+    assert_eq!(floor(&snapshot).borrow().drop_time, 0.0);
+    assert!(
+        !floor(&snapshot)
+            .borrow()
+            .item
+            .borrow_item()
+            .unwrap()
+            .favorite
+    );
+    assert_eq!(key.borrow().get_key_id(), 913);
+}
+
+#[test]
+fn load_transforms() {
+    let _generator_ranges = GeneratorRangeFixture::new();
+    let m = sprites();
+    let t = SaveTables::for_tests();
+    let s = SaveSettings {
+        world_age_hours: 100.0,
+        world_item_removal_list: vec!["Base.Hat".into()],
+        ..Default::default()
+    };
+    struct Reg;
+    impl ItemRegistry for Reg {
+        fn exists(&self, r: i16) -> bool {
+            r != 3
+        }
+        fn full_type(&self, r: i16) -> Option<String> {
+            Some(if r == 4 { "Base.Hat" } else { "Base.Other" }.into())
+        }
+    }
+    let c0 = ctx(&m, &t, &s, &AllItems);
+    let ch = sample_chunk(&m, &t);
+    // An attached overlay_blood sprite becomes a wall blood splat.
+    ch.get_grid_square(0, 0, 0).unwrap().borrow().objects[0]
+        .borrow_mut()
+        .attach_anim_sprite(m.named_map["overlay_blood_0"]);
+    // An empty attached-sprite list is saved with a zero count and loads
+    // back as no list.
+    ch.get_grid_square(0, 0, 0).unwrap().borrow().objects[1]
+        .borrow_mut()
+        .attached_anim_sprite = Some(Vec::new());
+    let bytes = save_chunk(&ch, &c0).unwrap();
+    let c = ctx(&m, &t, &s, &Reg);
+    let back = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
+    let sq_owner = back.get_grid_square(0, 0, 0).unwrap();
+    let sq = sq_owner.borrow();
+    let f = sq.objects[0].borrow();
+    assert_eq!(f.attached_anim_sprite.as_ref().unwrap().len(), 1);
+    let splats = f.wall_blood_splats.as_ref().unwrap();
+    assert_eq!(splats.len(), 2);
+    // Attached sprites load before the saved splats.
+    assert_eq!(splats[0].world_age, 100.0);
+    assert_eq!(splats[1].world_age, 0.5);
+    // The container lost the item the registry cannot create.
+    assert_eq!(f.container.as_ref().unwrap().item_count(), 0);
+    assert_eq!(sq.objects[1].borrow().attached_anim_sprite, None);
+    // The hat on the floor (dropped at hour 2) is past the 24h removal, but
+    // its ignoreRemoveSandbox flag keeps it.
+    assert_eq!(
+        back.get_grid_square(1, 0, 0)
+            .unwrap()
+            .borrow()
+            .world_objects
+            .borrow()
+            .len(),
+        1
+    );
+    let mut ch = sample_chunk(&m, &t);
+    if let ObjectKind::WorldInventory(w) = &mut ch
+        .get_grid_square_mut(1, 0, 0)
+        .unwrap()
+        .borrow_mut()
+        .objects[0]
+        .borrow_mut()
+        .kind
+    {
+        w.borrow_mut().ignore_remove_sandbox = false;
+    }
+    let bytes = save_chunk(&ch, &c0).unwrap();
+    let back = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
+    let sq1_owner = back.get_grid_square(1, 0, 0).unwrap();
+    let sq1 = sq1_owner.borrow();
+    assert!(sq1.world_objects.borrow().is_empty());
+    assert!(!sq1
+        .objects
+        .iter()
+        .map(ObjectSlot::borrow)
+        .any(|o| matches!(o.kind, ObjectKind::WorldInventory(_))));
+}
+
+#[test]
+fn errors_and_versions() {
+    let _generator_ranges = GeneratorRangeFixture::new();
+    let m = sprites();
+    let t = SaveTables::for_tests();
+    let s = SaveSettings::default();
+    let c = ctx(&m, &t, &s, &AllItems);
+    let mut bytes = save_chunk(&sample_chunk(&m, &t), &c).unwrap();
+    bytes[1..5].copy_from_slice(&250i32.to_be_bytes());
+    assert!(load_chunk(&bytes, 10, 20, &c).is_err());
+    bytes[1..5].copy_from_slice(&WORLD_VERSION.to_be_bytes());
+    bytes[40] ^= 1;
+    // A CRC mismatch is only reported.
+    if let Ok(l) = load_chunk(&bytes, 10, 20, &c) {
+        assert!(!l.crc_ok);
+    }
+    assert!(load_chunk(&bytes[..30], 10, 20, &c).is_err());
+    // Unsupported classes.
+    let mut w = Writer::new();
+    w.i8(1);
+    w.i8(t.class_id("Zombie"));
+    assert!(load_object(&mut Reader::new(&w.buf), &c, WORLD_VERSION, 1).is_err());
+    let mut w = Writer::new();
+    w.i8(0);
+    assert_eq!(
+        load_object(&mut Reader::new(&w.buf), &c, WORLD_VERSION, 1).unwrap(),
+        None
+    );
+    assert!(SaveTables::from_text("1:Player\nbloodBodyParts=3").is_err());
+    let tt = SaveTables::from_text("0:IsoObject\n5:Door\nbloodBodyParts=3").unwrap();
+    assert_eq!(tt.class_id("Door"), 5);
+    assert_eq!(tt.class_id("Nope"), 0);
+}
+
+#[test]
+fn erosion_hook_order() {
+    let _generator_ranges = GeneratorRangeFixture::new();
+    struct Log(Vec<(i32, i32, i32)>, bool);
+    impl ChunkLoadHook for Log {
+        fn load_grid_square(
+            &mut self,
+            _c: &mut IsoChunk,
+            x: i32,
+            y: i32,
+            z: i32,
+            _ctx: &mut HookCtx<'_>,
+        ) {
+            self.0.push((x, y, z));
+        }
+        fn chunk_loaded(&mut self, _c: &mut IsoChunk, _ctx: &mut HookCtx<'_>) {
+            self.1 = true;
+        }
+    }
+    let mut m = sprites();
+    let t = SaveTables::for_tests();
+    let mut ch = sample_chunk(&m, &t);
+    let cell = crate::chunk::IsoCell::default();
+    let mut ctx = HookCtx {
+        sprites: &mut m,
+        neighbours: &cell,
+    };
+    let mut log = Log(Vec::new(), false);
+    do_load_gridsquare(&mut ch, Some(&mut log), &mut ctx);
+    assert_eq!(log.0, vec![(0, 0, 0), (1, 0, 0)]);
+    assert!(log.1);
+    do_load_gridsquare(&mut ch, None, &mut ctx);
+}
+
+#[test]
+fn finish_chunk_load_recalculates_before_hook() {
+    let _generator_ranges = GeneratorRangeFixture::new();
+    struct Seen(Vec<bool>, bool);
+    impl ChunkLoadHook for Seen {
+        fn load_grid_square(
+            &mut self,
+            c: &mut IsoChunk,
+            x: i32,
+            y: i32,
+            z: i32,
+            ctx: &mut HookCtx<'_>,
+        ) {
+            // The chunk is out of the cell while hooks run.
+            self.1 |= ctx
+                .neighbours
+                .get_grid_square(c.wx * 8 + x, c.wy * 8 + y, z)
+                .is_some();
+            let sq_owner = c.get_grid_square(x, y, z).unwrap();
+            let sq = sq_owner.borrow();
+            let mut fresh = sq.try_archive_copy().unwrap();
+            fresh.recalc_properties(ctx.sprites);
+            self.0
+                .push(format!("{:?}", fresh.properties) == format!("{:?}", sq.properties));
+        }
+        fn chunk_loaded(&mut self, _c: &mut IsoChunk, _ctx: &mut HookCtx<'_>) {}
+    }
+    let mut m = sprites();
+    let t = SaveTables::for_tests();
+    let ch = sample_chunk(&m, &t);
+    let (wx, wy) = (ch.wx, ch.wy);
+    let mut cell = crate::chunk::IsoCell::default();
+    cell.chunks.insert((wx, wy), ch);
+    let meta = crate::meta_grid::IsoMetaGrid::empty();
+    let mut seen = Seen(Vec::new(), false);
+    crate::save::chunk_file::finish_chunk_load(&mut cell, wx, wy, &meta, &mut m, Some(&mut seen));
+    assert!(!seen.0.is_empty() && seen.0.iter().all(|&b| b));
+    assert!(!seen.1);
+    assert!(cell.chunks.contains_key(&(wx, wy)));
+}
+
+/// A hand-assembled `zombie/iso/IsoObject` whose `initFactory` adds the
+/// factories `(id, name)` in order, the first stored to a field as the
+/// original does, followed by `extra` code before `return`.
+fn init_factory_class(factories: &[(i8, &str)], extra: &[u8]) -> Vec<u8> {
+    let mut pool: Vec<Vec<u8>> = Vec::new();
+    let u = |n: u16| n.to_be_bytes();
+    fn utf8(pool: &mut Vec<Vec<u8>>, s: &str) -> u16 {
+        let mut v = vec![1, 0, s.len() as u8];
+        v.extend_from_slice(s.as_bytes());
+        pool.push(v);
+        pool.len() as u16
+    }
+    fn tagged(pool: &mut Vec<Vec<u8>>, tag: u8, a: u16, b: Option<u16>) -> u16 {
+        let mut v = vec![tag];
+        v.extend(a.to_be_bytes());
+        if let Some(b) = b {
+            v.extend(b.to_be_bytes());
+        }
+        pool.push(v);
+        pool.len() as u16
+    }
+    let class = |pool: &mut Vec<Vec<u8>>, name: &str| {
+        let n = utf8(pool, name);
+        tagged(pool, 7, n, None)
+    };
+    let member = |pool: &mut Vec<Vec<u8>>, tag: u8, class: u16, name: &str, desc: &str| {
+        let n = utf8(pool, name);
+        let d = utf8(pool, desc);
+        let nt = tagged(pool, 12, n, Some(d));
+        tagged(pool, tag, class, Some(nt))
+    };
+    let this = class(&mut pool, "zombie/iso/IsoObject");
+    let object = class(&mut pool, "java/lang/Object");
+    let fac_desc =
+        "(Lzombie/iso/IsoObject$IsoObjectFactory;)Lzombie/iso/IsoObject$IsoObjectFactory;";
+    let add = member(&mut pool, 10, this, "addIsoObjectFactory", fac_desc);
+    let field = member(
+        &mut pool,
+        9,
+        this,
+        "factoryIsoObject",
+        "Lzombie/iso/IsoObject$IsoObjectFactory;",
+    );
+    let mut code = Vec::new();
+    for (i, &(id, name)) in factories.iter().enumerate() {
+        let anon = class(&mut pool, &format!("zombie/iso/IsoObject${}", i + 1));
+        let init = member(&mut pool, 10, anon, "<init>", "(BLjava/lang/String;)V");
+        let n = utf8(&mut pool, name);
+        let s = tagged(&mut pool, 8, n, None);
+        code.push(0xbb);
+        code.extend(u(anon));
+        code.push(0x59);
+        if (-1..=5).contains(&id) {
+            code.push((id + 3) as u8);
+        } else {
+            code.extend([0x10, id as u8]);
+        }
+        code.push(0x13);
+        code.extend(u(s));
+        code.push(0xb7);
+        code.extend(u(init));
+        code.push(0xb8);
+        code.extend(u(add));
+        if i == 0 {
+            code.push(0xb3);
+            code.extend(u(field));
+        } else {
+            code.push(0x57);
+        }
+    }
+    code.extend(extra);
+    code.push(0xb1);
+    let method = utf8(&mut pool, "initFactory");
+    let void = utf8(&mut pool, "()V");
+    let code_attr = utf8(&mut pool, "Code");
+    let mut b = vec![0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 61];
+    b.extend(u(pool.len() as u16 + 1));
+    for c in &pool {
+        b.extend(c);
+    }
+    b.extend(u(0x21));
+    b.extend(u(this));
+    b.extend(u(object));
+    b.extend(u(0)); // interfaces
+    b.extend(u(0)); // fields
+    b.extend(u(1)); // methods
+    b.extend(u(0x0a)); // private static
+    b.extend(u(method));
+    b.extend(u(void));
+    b.extend(u(1));
+    b.extend(u(code_attr));
+    b.extend(((12 + code.len()) as u32).to_be_bytes());
+    b.extend(u(4));
+    b.extend(u(0));
+    b.extend((code.len() as u32).to_be_bytes());
+    b.extend(&code);
+    b.extend(u(0)); // exception table
+    b.extend(u(0)); // code attributes
+    b.extend(u(0)); // class attributes
+    b
+}
+
+#[test]
+fn reads_init_factory_calls() {
+    let fs = [(0, "IsoObject"), (1, "Player"), (40, "ButcherHook")];
+    let cf = pz_classfile::ClassFile::parse(&init_factory_class(&fs, &[])).unwrap();
+    let got = super::factory_calls(&cf).unwrap();
+    let want: Vec<(i8, String)> = fs.iter().map(|&(i, n)| (i, n.to_string())).collect();
+    assert_eq!(got, want);
+    // An instruction the reader does not model is an error, not a guess.
+    let cf = pz_classfile::ClassFile::parse(&init_factory_class(&fs, &[0x00])).unwrap();
+    assert!(super::factory_calls(&cf).is_err());
+    let t = SaveTables::for_tests();
+    assert_eq!(
+        SaveTables::from_text(&t.to_text()).unwrap().factory,
+        t.factory
+    );
+    let o = crate::ObjectTables::new(vec![1, 1, 2, 3, 4, 5, 6, 8], vec![(0, 0), (1, 5)]).unwrap();
+    assert_eq!(
+        crate::ObjectTables::from_text(&o.to_text())
+            .unwrap()
+            .to_text(),
+        o.to_text()
+    );
+}
+
+#[test]
+fn barricades_choose_sprite() {
+    let _generator_ranges = GeneratorRangeFixture::new();
+    let b = |dir: i8, planks: usize, metal: i32, bars: i32| {
+        let mut plank_health = [0; 4];
+        plank_health[..planks].fill(1000);
+        IsoBarricade {
+            dir,
+            plank_health,
+            metal_health: metal,
+            metal_bar_health: bars,
+        }
+        .sprite_name()
+    };
+    // N, W, S, E with one to four planks.
+    assert_eq!(b(0, 1, 0, 0).as_deref(), Some("carpentry_01_9"));
+    assert_eq!(b(2, 2, 0, 0).as_deref(), Some("carpentry_01_10"));
+    assert_eq!(b(4, 3, 0, 0).as_deref(), Some("carpentry_01_5"));
+    assert_eq!(b(6, 4, 0, 0).as_deref(), Some("carpentry_01_6"));
+    // The metal sheet wins over planks; at 2500 health it is damaged.
+    assert_eq!(
+        b(2, 2, 5000, 0).as_deref(),
+        Some("constructedobjects_01_24")
+    );
+    assert_eq!(
+        b(4, 0, 2500, 0).as_deref(),
+        Some("constructedobjects_01_31")
+    );
+    assert_eq!(b(0, 0, 0, 1).as_deref(), Some("constructedobjects_01_53"));
+    assert_eq!(b(6, 3, 0, 1).as_deref(), Some("constructedobjects_01_52"));
+    assert_eq!(b(6, 0, 0, 0).as_deref(), Some("media/ui/missing-tile.png"));
+    // Diagonals have no tile.
+    assert_eq!(b(1, 1, 0, 0), None);
+    assert_eq!(b(5, 0, 0, 1), None);
+    assert_eq!(b(3, 0, 0, 0).as_deref(), Some("media/ui/missing-tile.png"));
+    // The sample chunk's one-plank west barricade loads with its tile.
+    let m = sprites();
+    let t = SaveTables::for_tests();
+    let s = SaveSettings {
+        world_age_hours: 50.0,
+        ..Default::default()
+    };
+    let c = ctx(&m, &t, &s, &AllItems);
+    let bytes = save_chunk(&sample_chunk(&m, &t), &c).unwrap();
+    let back = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
+    let sq1_owner = back.get_grid_square(1, 0, 0).unwrap();
+    let sq1 = sq1_owner.borrow();
+    let bar = sq1
+        .objects
+        .iter()
+        .map(ObjectSlot::borrow)
+        .find(|o| matches!(o.kind, ObjectKind::Barricade(_)))
+        .unwrap();
+    assert_eq!(bar.sprite, Some(m.named_map["carpentry_01_8"]));
+    // The sprite is not saved: the bytes come back the same.
+    assert_eq!(save_chunk(&back, &c).unwrap(), bytes);
+}
+
+#[test]
+fn world_item_removal_list() {
+    let mut s = SaveSettings::default();
+    s.set_world_item_removal_list("Base.Hat, Base.Glasses ,\tBase.Wo rm,");
+    assert_eq!(
+        s.world_item_removal_list,
+        ["Base.Hat", "Base.Glasses", "Base.Worm"]
+    );
+    let mut e = SaveSettings::default();
+    e.set_world_item_removal_list("");
+    assert_eq!(e.world_item_removal_list, [""]);
+    e.set_world_item_removal_list(" , ");
+    assert!(e.world_item_removal_list.is_empty());
+    assert!(s.removal_list_contains("Base.Worm"));
+    assert!(!s.removal_list_contains("Base.Wo rm"));
+}
+
+/// A sprite manager whose alias map knows the light properties.
+fn light_sprites() -> IsoSpriteManager {
+    let mut map = PropertyValueMap::default();
+    // Keys `SetCustomPropertyValues` expects.
+    for k in [
+        "WindowN",
+        "WindowW",
+        "DoorWallN",
+        "DoorWallW",
+        "WallSE",
+        "tree",
+        "ItemHeight",
+        "Surface",
+    ] {
+        map.entry(k);
+    }
+    let props: [(&str, &[&str]); 5] = [
+        ("lightR", &["255", "x"]),
+        ("lightG", &["0"]),
+        ("lightB", &["51"]),
+        ("LightRadius", &["3", "0"]),
+        ("streetlight", &[""]),
+    ];
+    for (k, vs) in props {
+        let e = map.entry(k);
+        for v in vs {
+            e.push(v.to_string());
+        }
+    }
+    let mut m = IsoSpriteManager::new(test_tables());
+    m.generate_alias_map(map, &[]).unwrap();
+    let specs: [(&str, &[(&str, &str)]); 5] = [
+        ("floor_0", &[]),
+        ("switch_0", &[]),
+        (
+            "lamp_0",
+            &[("lightR", "255"), ("lightG", "0"), ("lightB", "51")],
+        ),
+        (
+            "lamp_1",
+            &[
+                ("lightR", "255"),
+                ("lightG", "0"),
+                ("lightB", "51"),
+                ("LightRadius", "3"),
+                ("streetlight", ""),
+            ],
+        ),
+        (
+            "bad_0",
+            &[("lightR", "x"), ("lightG", "0"), ("lightB", "51")],
+        ),
+    ];
+    for (i, (n, ps)) in specs.iter().enumerate() {
+        let s = m.add_sprite(n, 100 + i as i32);
+        m.sprites[s].name = Some(n.to_string());
+        let (tables, alias) = (m.tables.clone(), m.alias.clone());
+        for (k, v) in *ps {
+            m.sprites[s].properties.set(&tables, &alias, k, v, false);
+        }
+    }
+    m
+}
+
+#[test]
+fn light_switch_load_creates_light() {
+    let m = light_sprites();
+    let t = SaveTables::for_tests();
+    let s = SaveSettings::default();
+    let c = ctx(&m, &t, &s, &AllItems);
+    let mut ch = IsoChunk::new(10, 20);
+    for x in 0..8 {
+        for y in 0..8 {
+            ch.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(80 + x, 160 + y, 0)).into()),
+            );
+        }
+    }
+    let sq_owner = ch.get_grid_square_mut(2, 3, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
+    let switches = [
+        // A room switch with no room (no meta grid): warm white, radius 8.
+        ("switch_0", true, false, true),
+        // Sprite colours, the default radius.
+        ("lamp_0", false, false, false),
+        // A modifiable switch keeps its saved colour; LightRadius 3.
+        ("lamp_1", false, true, true),
+    ];
+    for (n, light_room, can_be_modified, activated) in switches {
+        let sw = IsoLightSwitch {
+            light_room,
+            can_be_modified,
+            activated,
+            primary_r: 0.25,
+            primary_g: 0.5,
+            primary_b: 0.75,
+            ..Default::default()
+        };
+        let id = sq.new_object_id();
+        sq.objects
+            .push((IsoObject::new(id, ObjectKind::LightSwitch(sw), Some(m.named_map[n]))).into());
+    }
+    drop(sq);
+    let bytes = save_chunk(&ch, &c).unwrap();
+    let back = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
+    let sq_owner = back.get_grid_square(2, 3, 0).unwrap();
+    let sq = sq_owner.borrow();
+    let sw = |i: usize| {
+        let ObjectKind::LightSwitch(s) = &sq.objects[i].borrow().kind else {
+            panic!()
+        };
+        s.clone()
+    };
+    let l = &sw(0).lights;
+    assert_eq!(l.len(), 1);
+    assert_eq!((l[0].x, l[0].y, l[0].z), (82, 163, 0));
+    assert_eq!((l[0].r, l[0].g, l[0].b, l[0].radius), (0.9, 0.8, 0.7, 8));
+    assert!(l[0].active && l[0].hydro_powered);
+    // `primaryR/G/B` take the sprite colour of a switch that cannot be
+    // modified.
+    let s1 = sw(1);
+    assert_eq!((s1.primary_r, s1.primary_g, s1.primary_b), (1.0, 0.0, 0.2));
+    let l = &s1.lights[0];
+    assert_eq!(
+        (l.r, l.g, l.b, l.radius, l.active),
+        (1.0, 0.0, 0.2, 8, false)
+    );
+    let s2 = sw(2);
+    assert!(s2.street_light);
+    let l = &s2.lights[0];
+    assert_eq!((l.r, l.g, l.b, l.radius), (0.25, 0.5, 0.75, 3));
+    // Lights are not saved.
+    assert_eq!(save_chunk(&back, &c).unwrap(), bytes);
+    // A colour that does not parse fails the load, as upstream.
+    let mut ch2 = IsoChunk::new(10, 20);
+    for x in 0..8 {
+        for y in 0..8 {
+            ch2.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(80 + x, 160 + y, 0)).into()),
+            );
+        }
+    }
+    let sq_owner = ch2.get_grid_square_mut(0, 0, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
+    let id = sq.new_object_id();
+    sq.objects.push(
+        (IsoObject::new(
+            id,
+            ObjectKind::LightSwitch(IsoLightSwitch::default()),
+            Some(m.named_map["bad_0"]),
+        ))
+        .into(),
+    );
+    drop(sq);
+    let bytes = save_chunk(&ch2, &c).unwrap();
+    let Err(e) = load_chunk(&bytes, 10, 20, &c) else {
+        panic!("loaded")
+    };
+    assert!(e.0.starts_with("NumberFormatException"), "{}", e.0);
+}
+
+/// Answers the `SpriteConfigs` register: id 7 is `Base.Window`.
+struct SpriteConfigDictionary;
+impl ItemRegistry for SpriteConfigDictionary {
+    fn script_dictionary_name(&self, register: &str, id: i16) -> Option<Option<String>> {
+        assert_eq!(register, "SpriteConfigs");
+        Some((id == 7).then(|| "Base.Window".to_string()))
+    }
+}
+
+/// A `SpriteConfig` block: the script reference (`id`), version -1 and
+/// the saved master flag.
+fn sprite_config(id: Option<i16>, master: bool) -> ComponentBlob {
+    let mut data = vec![1];
+    match id {
+        Some(id) => {
+            data.push(1);
+            data.extend_from_slice(&id.to_be_bytes());
+        }
+        None => data.push(0),
+    }
+    data.extend_from_slice(&(-1i64).to_be_bytes());
+    data.push(master as u8);
+    ComponentBlob { type_id: 3, data }
+}
+
+#[test]
+fn sprite_config_master_follows_the_object_sprite() {
+    use crate::sprite::EntitySpriteConfig;
+    let mut m = sprites();
+    let window = EntitySpriteConfig {
+        entity_name: "Base.Window".into(),
+        config_name: "Window".into(),
+        valid: true,
+        tile_names: vec!["window_0".into(), "door_0".into()],
+        // Face N: window_0 (the master), then door_0.
+        faces: vec![vec!["window_0".into(), "door_0".into()]],
+        faces_out_of_bounds: false,
+    };
+    assert!(!m.post_tile_definitions(&[window]));
+    assert!(m.is_multi_square_master("Window", Some("window_0")));
+    assert!(!m.is_multi_square_master("Window", Some("door_0")));
+    assert!(!m.is_multi_square_master("Window", Some("door_1")));
+    let t = SaveTables::for_tests();
+    let s = SaveSettings::default();
+    let c = ctx(&m, &t, &s, &SpriteConfigDictionary);
+    let idx = |n: &str| m.named_map[n];
+    let resave = |sprite: &str, blob: ComponentBlob| {
+        let mut o = IsoObject::new(1, ObjectKind::Object, Some(idx(sprite)));
+        o.components.push_encoded_blob(blob, 249).unwrap();
+        o.has_components = true;
+        let mut w = Writer::new();
+        save_object(&mut w, &c, &o).unwrap();
+        let back = load_object(&mut Reader::new(&w.buf), &c, WORLD_VERSION, 1)
+            .unwrap()
+            .unwrap();
+        back.components.try_encoded_blobs().unwrap()[0].data.clone()
+    };
+    // The master tile writes 1, another tile of the face and a sprite
+    // outside the faces (an open window) write 0.
+    assert_eq!(
+        resave("window_0", sprite_config(Some(7), false)),
+        sprite_config(Some(7), true).data
+    );
+    assert_eq!(
+        resave("door_0", sprite_config(Some(7), true)),
+        sprite_config(Some(7), false).data
+    );
+    assert_eq!(
+        resave("door_1", sprite_config(Some(7), true)),
+        sprite_config(Some(7), false).data
+    );
+    // An unknown script or no id: no script, saved as a single 0.
+    assert_eq!(resave("window_0", sprite_config(Some(8), true)), vec![0]);
+    assert_eq!(resave("window_0", sprite_config(None, true)), vec![0]);
+    // Without a dictionary the bytes stay.
+    let plain = ctx(&m, &t, &s, &AllItems);
+    let mut o = IsoObject::new(1, ObjectKind::Object, Some(idx("door_1")));
+    o.components.push_encoded_blob(sprite_config(Some(7), true), 249).unwrap();
+    o.has_components = true;
+    let mut w = Writer::new();
+    save_object(&mut w, &plain, &o).unwrap();
+    let back = load_object(&mut Reader::new(&w.buf), &plain, WORLD_VERSION, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(back.components.try_encoded_blobs().unwrap()[0], sprite_config(Some(7), true));
+}
+
+#[test]
+fn whole_object_owner_live_base_changes_save_and_archive_snapshot_is_independent() {
+    let _generator_ranges = GeneratorRangeFixture::new();
+    use std::rc::Rc;
+    let m = sprites();
+    let t = SaveTables::for_tests();
+    let settings = SaveSettings::default();
+    let c = ctx(&m, &t, &settings, &AllItems);
+    let chunk = sample_chunk(&m, &t);
+    let square_owner = chunk.get_grid_square(0, 0, 0).unwrap();
+    let square = square_owner.borrow();
+    let actual = square.objects[0].ref_handle();
+    let archive = square.try_archive_copy().unwrap();
+    assert!(!archive.objects[0].ptr_eq_ref(&actual));
+    {
+        let mut object = actual.borrow_mut();
+        object.key_id = 991;
+        object.name = Some(ObjectName::Str("Authored late base".into()));
+        let id = object.components.try_encoded_blobs().unwrap()[0].type_id;
+        object.components.runtime_mut().replace_encoded(id, pz_entity::EncodedComponent::new(id, vec![4, 5, 6], 249)).unwrap();
+        object
+            .mod_data
+            .as_mut()
+            .unwrap()
+            .rawset(LuaKey::Str("late".into()), Some(LuaValue::Num(77.0)));
+    }
+    let mut chunks = vec![chunk];
+    chunks.reserve(64);
+    assert!(Rc::ptr_eq(
+        &actual,
+        &chunks[0].get_grid_square(0, 0, 0).unwrap().borrow().objects[0].ref_handle()
+    ));
+    let bytes = save_chunk(&chunks[0], &c).unwrap();
+    let loaded = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
+    let back_owner = loaded.get_grid_square(0, 0, 0).unwrap().borrow().objects[0].ref_handle();
+    let back = back_owner.borrow();
+    assert_eq!(back.key_id, 991);
+    assert_eq!(
+        back.name,
+        Some(ObjectName::Str("Authored late base".into()))
+    );
+    assert_eq!(back.components.try_encoded_blobs().unwrap()[0].data, [4, 5, 6]);
+    assert_eq!(back.mod_data, actual.borrow().mod_data);
+    assert_ne!(archive.objects[0].borrow().key_id, 991);
+    assert_ne!(archive.objects[0].borrow().components.try_encoded_blobs().unwrap()[0].data, [4, 5, 6]);
+}
+
+#[test]
+fn world_membership_save_uses_actual_owners_and_fresh_load_normalizes_raw_list() {
+    use crate::world_objects::WorldObjectEntry;
+    use std::rc::Rc;
+
+    let m = sprites();
+    let tables = SaveTables::for_tests();
+    let settings = SaveSettings::default();
+    let context = ctx(&m, &tables, &settings, &AllItems);
+    let floor = |xoff, item_id| {
+        // Equal numeric object IDs are deliberately distinct allocations.
+        let mut object = IsoObject::new(
+            7,
+            ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
+                IsoWorldInventoryObject {
+                    xoff,
+                    yoff: 0.5,
+                    zoff: 0.0,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    item: blob(4, item_id, &[]).into(),
+                    drop_time: 0.0,
+                    ignore_remove_sandbox: false,
+                    extended_placement: false,
+                },
+            )),
+            None,
+        );
+        object.sprite = crate::objects::ObjectSprite::ArchiveUnmanaged(object_io::UNREGISTERED_SPRITE_ID);
+        ObjectSlot::new(object)
+    };
+    let a = floor(0.25, 11);
+    let b = floor(0.75, 22);
+    let detached = floor(0.5, 33);
+    let actual_a = a.ref_handle();
+    let actual_b = b.ref_handle();
+    let detached_owner = detached.ref_handle();
+    assert!(!Rc::ptr_eq(&actual_a, &actual_b));
+    let mut square = IsoGridSquare::new(80, 160, 0);
+    square.objects.push(a);
+    square.objects.push(b);
+    square.objects.push(ObjectSlot::retain(&actual_a));
+    {
+        let mut world = square.world_objects.borrow_mut();
+        world.push_object(&detached_owner);
+        world.push_entry(WorldObjectEntry::Foreign(pz_kahlua::Value::Nil));
+        world.push_object(&actual_a);
+        world.push_entry(WorldObjectEntry::Foreign(pz_kahlua::Value::Num(123.0)));
+        world.push_object(&actual_a);
+        world.push_object(&actual_a);
+        assert_eq!(world.len(), 6);
+        assert!(!world.contains_object(&actual_b));
+    }
+
+    let mut raw_bytes = Writer::new();
+    chunk_file::save_square(&mut raw_bytes, &context, &square).unwrap();
+    assert_eq!(square.world_objects.borrow().len(), 6);
+    let raw_entries = square.world_objects.borrow_mut().take_entries();
+    square.world_objects.borrow_mut().push_object(&actual_a);
+    let mut clean_bytes = Writer::new();
+    chunk_file::save_square(&mut clean_bytes, &context, &square).unwrap();
+    assert_eq!(raw_bytes.buf, clean_bytes.buf);
+    let clean_entries = square.world_objects.borrow_mut().take_entries();
+    drop(clean_entries);
+    for entry in raw_entries {
+        square.world_objects.borrow_mut().push_entry(entry);
+    }
+
+    // Only the main list produces records, in main order. The distinct same-ID
+    // B gets no world flag; A's duplicate main occurrence gets its own record.
+    let mut records = Reader::new(&raw_bytes.buf);
+    ErosionSquareData::load(&mut records).unwrap();
+    assert_eq!(records.i8().unwrap(), 1 | 4);
+    for (id, flag) in [(1, 4), (2, 0), (3, 4)] {
+        assert_eq!(records.i8().unwrap(), flag);
+        assert!(load_object(&mut records, &context, WORLD_VERSION, id)
+            .unwrap()
+            .is_some());
+    }
+
+    let mut loaded = IsoGridSquare::new(80, 160, 0);
+    let mut reader = Reader::new(&raw_bytes.buf);
+    chunk_file::load_square(&mut reader, &context, WORLD_VERSION, &mut loaded).unwrap();
+    assert_eq!(reader.pos, raw_bytes.buf.len());
+    assert_eq!(loaded.objects.len(), 3);
+    let world = loaded.world_objects.borrow();
+    assert_eq!(world.len(), 2);
+    for (world_index, main_index) in [(0, 0), (1, 2)] {
+        let Some(WorldObjectEntry::Object(actual)) = world.entry(world_index) else {
+            panic!("fresh load kept a foreign/null world entry")
+        };
+        assert!(Rc::ptr_eq(
+            &actual,
+            &loaded.objects[main_index].ref_handle()
+        ));
+        assert!(!Rc::ptr_eq(&actual, &actual_a));
+        assert!(!Rc::ptr_eq(&actual, &detached_owner));
+    }
+    assert!(!world.contains_object(&loaded.objects[1].ref_handle()));
+    assert!(!loaded.objects[0].ptr_eq_ref(&loaded.objects[2].ref_handle()));
+    drop(world);
+    let mut round_trip = Writer::new();
+    chunk_file::save_square(&mut round_trip, &context, &loaded).unwrap();
+    assert_eq!(round_trip.buf, raw_bytes.buf);
+}
+
+#[test]
+fn mannequin_native_constructor_saves_false_init_without_dressing() {
+    let m = sprites();
+    let tables = SaveTables::for_tests();
+    let settings = SaveSettings::default();
+    let context = ctx(&m, &tables, &settings, &AllItems);
+    let mannequin = IsoMannequin::new(tables.blood_body_parts);
+    let expected_visual = mannequin.human_visual.clone();
+    let object = IsoObject::new(1, ObjectKind::Mannequin(Box::new(mannequin)), None);
+    let mut bytes = Writer::new();
+    save_object(&mut bytes, &context, &object).unwrap();
+
+    // Native save writes the same base without containers, then its actual
+    // constructor fields, including false init and null/empty string counts.
+    let mut expected = Writer::new();
+    save_object(
+        &mut expected,
+        &context,
+        &IsoObject::new(1, ObjectKind::Object, None),
+    )
+    .unwrap();
+    expected.buf[1] = context.class_id("Mannequin").unwrap() as u8;
+    expected.i8(0); // Native IsoDirections.N ordinal.
+    for _ in 0..4 {
+        expected.bool(false);
+    }
+    expected.string("");
+    expected.string("");
+    expected_visual.save(&mut expected);
+    expected.i8(0); // Constructor has no container until createInventory.
+    assert_eq!(bytes.buf, expected.buf);
+    let ObjectKind::Mannequin(original) = &object.kind else {
+        panic!()
+    };
+    assert!(!original.init);
+    assert!(original.container.is_none() && original.runtime_container.is_none());
+    assert!(original.outfit.is_none() && original.item_visuals.is_empty());
+
+    let mut reader = Reader::new(&bytes.buf);
+    let loaded_object = load_object(&mut reader, &context, WORLD_VERSION, 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reader.pos, bytes.buf.len());
+    let ObjectKind::Mannequin(loaded) = &loaded_object.kind else {
+        panic!()
+    };
+    assert!(!loaded.init && !loaded.female && !loaded.zombie && !loaded.skeleton);
+    assert_eq!(loaded.dir, 0);
+    assert_eq!(loaded.mannequin_script_name.as_deref(), Some(""));
+    assert_eq!(loaded.pose.as_deref(), Some(""));
+    assert_eq!(loaded.human_visual, expected_visual);
+    // Native load creates an explored mannequin container even when its
+    // serialized presence byte was zero. It does not dress here.
+    let container = loaded.container.as_ref().unwrap();
+    assert_eq!(container.kind.as_deref(), Some("mannequin"));
+    assert!(container.explored && container.items.is_empty());
+    assert!(loaded.worn_items.is_empty());
+    assert!(loaded.pending_loaded_skin_resolution);
+    assert!(loaded.texture_name.is_none());
+
+    // Native load attaches the empty container before reading the zero
+    // presence flag. Consequently the next save writes presence1 and that
+    // actual container; constructor bytes are deliberately not idempotent.
+    let mut normalized = Writer::new();
+    save_object(&mut normalized, &context, &loaded_object).unwrap();
+    let mut expected_normalized = Writer::new();
+    expected_normalized
+        .buf
+        .extend_from_slice(&bytes.buf[..bytes.buf.len() - 1]);
+    expected_normalized.i8(1);
+    expected_normalized.i32(container.id);
+    container
+        .save_saved(&mut expected_normalized, &AllItems, None)
+        .unwrap();
+    expected_normalized.i8(0); // Empty actual worn membership.
+    assert_eq!(normalized.buf, expected_normalized.buf);
+    assert_ne!(normalized.buf, bytes.buf);
+    assert!(!loaded.init && loaded.outfit.is_none());
+}
+
+#[test]
+fn mannequin_live_inventory_save_maps_actual_worn_owners_through_saved_order() {
+    use pz_inventory::worn_items::{BodyLocationGroup, WornItems};
+    use pz_inventory::{shared, InventoryItem, ItemClass, ItemTemplate};
+    use pz_scripts::registry::{RegistryKey, ResourceLocation};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    struct Reg([Rc<ItemTemplate>; 2]);
+    impl ItemRegistry for Reg {
+        fn template(&self, id: i16) -> Option<Rc<ItemTemplate>> {
+            id.checked_sub(1)
+                .and_then(|i| self.0.get(i as usize))
+                .cloned()
+        }
+    }
+    let env = Reg([
+        Rc::new(ItemTemplate::new(ItemClass::Key, "Base", "MannequinA")),
+        Rc::new(ItemTemplate::new(ItemClass::Key, "Base", "MannequinB")),
+    ]);
+    let a1 = shared::new_item(InventoryItem::create(env.0[0].clone(), 1));
+    let b = shared::new_item(InventoryItem::create(env.0[1].clone(), 2));
+    let a2 = shared::new_item(InventoryItem::create(env.0[0].clone(), 1));
+    a1.borrow_mut().id = 11;
+    b.borrow_mut().id = 22;
+    a2.borrow_mut().id = 11; // Same numeric identity must not select A1.
+    a1.borrow_mut().set_key_id(100, &env);
+    b.borrow_mut().set_key_id(200, &env);
+    let actual = shared::SharedContainer::new(990, "mannequin").into_ref();
+    for item in [&a1, &b, &a2] {
+        shared::add_item(&actual, item);
+    }
+    actual.borrow_mut().explored = true;
+    let key = |s: &str| {
+        Rc::new(RegistryKey {
+            location: ResourceLocation::of(s).unwrap(),
+            name: s.into(),
+            item_key: None,
+        })
+    };
+    let mut mannequin = IsoMannequin::new(7);
+    mannequin.container = Some(ItemContainer::new(Some("obsolete-codec-value")));
+    let shirt = key("base:shirt");
+    let hat = key("base:hat");
+    let group = Rc::new(RefCell::new(BodyLocationGroup::new("Human").unwrap()));
+    for location in [&shirt, &hat] {
+        group
+            .borrow_mut()
+            .get_or_create_location(Some(location.clone()))
+            .unwrap();
+    }
+    let worn = Rc::new(RefCell::new(WornItems::new(group)));
+    worn.borrow_mut()
+        .set_item(Some(shirt), Some(b.clone()))
+        .unwrap();
+    let retired = mannequin.install_runtime_inventory(actual.clone(), worn.clone());
+    drop(retired);
+    assert!(mannequin.container.is_none() && mannequin.worn_items.is_empty());
+    mannequin.init = true;
+    mannequin.female = true;
+    mannequin.mannequin_script_name = Some("FemaleWhite03".into());
+    mannequin.pose = Some("pose03".into());
+    mannequin.human_visual.skin_texture_name = Some("F_Mannequin_White".into());
+    // A real factory/condition callback can mutate the same worn collection
+    // after installation. Saving must observe that owner's current slots.
+    worn.borrow_mut()
+        .set_item(Some(hat), Some(a2.clone()))
+        .unwrap();
+    a2.borrow_mut().set_key_id(444, &env);
+    a2.borrow_mut().favorite = true;
+    let sprites = sprites();
+    let tables = SaveTables::for_tests();
+    let settings = SaveSettings::default();
+    let context = ctx(&sprites, &tables, &settings, &env);
+    let object = IsoObject::new(1, ObjectKind::Mannequin(Box::new(mannequin)), None);
+    let mut bytes = Writer::new();
+    save_object(&mut bytes, &context, &object).unwrap();
+    let mut reader = Reader::new(&bytes.buf);
+    let loaded = load_object(&mut reader, &context, WORLD_VERSION, 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reader.pos, bytes.buf.len());
+    let ObjectKind::Mannequin(loaded) = loaded.kind else {
+        panic!()
+    };
+    assert!(loaded.init && loaded.female);
+    assert_eq!(loaded.pose.as_deref(), Some("pose03"));
+    assert_eq!(loaded.texture_name.as_deref(), Some("F_Mannequin_White"));
+    assert!(!loaded.pending_loaded_skin_resolution);
+    let saved = loaded.container.unwrap();
+    assert_eq!(saved.id, 990);
+    // CompressIdenticalItems groups types: A1,A2,B instead of A1,B,A2.
+    assert_eq!(
+        saved.items.iter().map(|i| i.id()).collect::<Vec<_>>(),
+        [11, 11, 22]
+    );
+    assert_eq!(
+        loaded.worn_items,
+        [("base:shirt".into(), 2), ("base:hat".into(), 1)]
+    );
+    let pz_inventory::SavedItem::Item(second) = &saved.items[1] else {
+        panic!()
+    };
+    assert_eq!(second.get_key_id(), 444);
+    assert!(second.favorite);
+    let ObjectKind::Mannequin(original) = &object.kind else {
+        panic!()
+    };
+    assert!(Rc::ptr_eq(
+        original.runtime_container.as_ref().unwrap(),
+        &actual
+    ));
+    assert!(Rc::ptr_eq(
+        original.runtime_worn_items.as_ref().unwrap(),
+        &worn
+    ));
+    assert!(Rc::ptr_eq(&worn.borrow().items()[1].item, &a2));
+    let worn_guard = worn.borrow_mut();
+    assert!(save_object(&mut Writer::new(), &context, &object)
+        .unwrap_err()
+        .0
+        .contains("BorrowedWornItems"));
+    drop(worn_guard);
+    let guard = actual.borrow_mut();
+    assert!(save_object(&mut Writer::new(), &context, &object)
+        .unwrap_err()
+        .0
+        .contains("BorrowedContainer"));
+    drop(guard);
+}
+
+#[test]
+fn mannequin_save_rejects_native_worn_byte_overflow() {
+    let m = sprites();
+    let tables = SaveTables::for_tests();
+    let settings = SaveSettings::default();
+    let context = ctx(&m, &tables, &settings, &AllItems);
+    let mut mannequin = IsoMannequin::new(tables.blood_body_parts);
+    mannequin.container = Some(ItemContainer::new(Some("mannequin")));
+    mannequin.worn_items = vec![("base:authored".into(), -1); 128];
+    let object = IsoObject::new(1, ObjectKind::Mannequin(Box::new(mannequin)), None);
+    let error = save_object(&mut Writer::new(), &context, &object).unwrap_err();
+    assert_eq!(error.0, "too many worn items");
+}

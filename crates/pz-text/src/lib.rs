@@ -1,48 +1,146 @@
 //! Text: `zombie.core.Translator` (translation tables) and
 //! `zombie.ui.TextManager` / `AngelCodeFont` (bitmap fonts).
 
-use std::collections::HashMap;
+pub mod font;
+pub mod jfmt;
+pub mod json;
+pub mod text_manager;
+pub mod translator;
 
-/// `UIFont` enum, in original ordinal order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub use font::{AngelCodeFont, CharDef, FontError};
+pub use jfmt::JavaArg;
+pub use text_manager::{TextManager, TextOptions};
+pub use translator::{Language, Languages, ModDirs, Translator, TranslatorEnv, TranslatorError};
+
+/// `zombie.ui.UIFont`, in original ordinal order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum UIFont {
-    Small, Medium, Large, Massive, MainMenu1, MainMenu2, Cred1, Cred2, NewSmall, NewMedium,
-    NewLarge, Code, MediumNew, AutoNormSmall, AutoNormMedium, AutoNormLarge, Dialogue, Intro,
-    Handwritten, DebugConsole, Title, SdfRegular, SdfBold, SdfItalic, SdfBoldItalic,
+    Small,
+    Medium,
+    Large,
+    Massive,
+    MainMenu1,
+    MainMenu2,
+    Cred1,
+    Cred2,
+    NewSmall,
+    NewMedium,
+    NewLarge,
+    Code,
+    CodeSmall,
+    CodeMedium,
+    CodeLarge,
+    MediumNew,
+    AutoNormSmall,
+    AutoNormMedium,
+    AutoNormLarge,
+    Dialogue,
+    Intro,
+    Handwritten,
+    DebugConsole,
+    Title,
+    SdfRegular,
+    SdfBold,
+    SdfItalic,
+    SdfBoldItalic,
+    SdfOldRegular,
+    SdfOldBold,
+    SdfOldItalic,
+    SdfOldBoldItalic,
+    SdfRobertoSans,
+    SdfCaveat,
 }
 
-/// `Translator`: key -> translated string for the active language.
-#[derive(Default)]
-pub struct Translator {
-    pub language: String,
-    pub table: HashMap<String, String>,
-}
+impl UIFont {
+    /// `UIFont.values()`.
+    pub const ALL: [UIFont; 34] = {
+        use UIFont::*;
+        [
+            Small,
+            Medium,
+            Large,
+            Massive,
+            MainMenu1,
+            MainMenu2,
+            Cred1,
+            Cred2,
+            NewSmall,
+            NewMedium,
+            NewLarge,
+            Code,
+            CodeSmall,
+            CodeMedium,
+            CodeLarge,
+            MediumNew,
+            AutoNormSmall,
+            AutoNormMedium,
+            AutoNormLarge,
+            Dialogue,
+            Intro,
+            Handwritten,
+            DebugConsole,
+            Title,
+            SdfRegular,
+            SdfBold,
+            SdfItalic,
+            SdfBoldItalic,
+            SdfOldRegular,
+            SdfOldBold,
+            SdfOldItalic,
+            SdfOldBoldItalic,
+            SdfRobertoSans,
+            SdfCaveat,
+        ]
+    };
 
-impl Translator {
-    /// `Translator.getText(key)`: missing keys return the key itself.
-    pub fn get_text<'a>(&'a self, key: &'a str) -> &'a str {
-        self.table.get(key).map(String::as_str).unwrap_or(key)
+    /// `name()`.
+    pub fn name(self) -> &'static str {
+        const NAMES: [&str; 34] = [
+            "Small",
+            "Medium",
+            "Large",
+            "Massive",
+            "MainMenu1",
+            "MainMenu2",
+            "Cred1",
+            "Cred2",
+            "NewSmall",
+            "NewMedium",
+            "NewLarge",
+            "Code",
+            "CodeSmall",
+            "CodeMedium",
+            "CodeLarge",
+            "MediumNew",
+            "AutoNormSmall",
+            "AutoNormMedium",
+            "AutoNormLarge",
+            "Dialogue",
+            "Intro",
+            "Handwritten",
+            "DebugConsole",
+            "Title",
+            "SdfRegular",
+            "SdfBold",
+            "SdfItalic",
+            "SdfBoldItalic",
+            "SdfOldRegular",
+            "SdfOldBold",
+            "SdfOldItalic",
+            "SdfOldBoldItalic",
+            "SdfRobertoSans",
+            "SdfCaveat",
+        ];
+        NAMES[self as usize]
     }
-}
 
-/// Glyph metrics of an AngelCode `.fnt` font.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Glyph {
-    pub x: u16, pub y: u16, pub w: u16, pub h: u16,
-    pub xoff: i16, pub yoff: i16, pub xadvance: i16, pub page: u8,
-}
+    /// `ordinal()`.
+    pub fn ordinal(self) -> usize {
+        self as usize
+    }
 
-#[derive(Default)]
-pub struct AngelCodeFont {
-    pub line_height: i32,
-    pub glyphs: HashMap<u32, Glyph>,
-    pub kerning: HashMap<(u32, u32), i16>,
-    pub pages: Vec<String>,
-}
-
-impl AngelCodeFont {
-    /// `AngelCodeFont.getWidth`. TODO: port exact kerning/rounding rules.
-    pub fn width(&self, s: &str) -> i32 {
-        s.chars().map(|c| self.glyphs.get(&(c as u32)).map_or(0, |g| g.xadvance as i32)).sum()
+    /// `UIFont.FromString`: exact, case-sensitive name match.
+    pub fn from_string(s: &str) -> Option<UIFont> {
+        UIFont::ALL.into_iter().find(|f| f.name() == s)
     }
 }

@@ -2,12 +2,15 @@
 //! ported subsystem yet. Subsystem-specific globals live in their bind_*
 //! modules.
 
-use crate::expose::{global, int_arg, str_arg};
+use crate::expose::{global, str_arg};
 use pz_kahlua::{TableRef, Thread, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// `LuaManager.copyTable(null, from)`: deep copy of nested tables, keeping
@@ -40,9 +43,20 @@ pub fn instance_of(v: &Value, name: &str) -> bool {
     }
 }
 
+thread_local! {
+    /// `TextureID.useFiltering`.
+    pub static USE_TEXTURE_FILTERING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub fn register(thread: &mut Thread) {
     let ret_false: &[&str] = &[
-        "isServer", "isClient", "isDemo", "isCoopHost", "isMultiplayer", "isServerSoftReset", "getDebug",
+        "isServer",
+        "isClient",
+        "isDemo",
+        "isCoopHost",
+        "isMultiplayer",
+        "isServerSoftReset",
+        "getDebug",
     ];
     for name in ret_false {
         global(thread, name, |c| Ok(c.push(false)));
@@ -76,22 +90,55 @@ pub fn register(thread: &mut Thread) {
         let r = instance_of(&c.arg(0), &name);
         Ok(c.push(r))
     });
-    global(thread, "getTimestamp", |c| Ok(c.push((now_ms() / 1000) as f64)));
+    // Tables report their `Type` field; engine objects their Java simple
+    // class name; everything else its Lua type.
+    global(thread, "typeof", |c| {
+        let o = c.arg(0);
+        let r = match &o {
+            Value::Object(obj) => crate::expose::simple_name(obj.class_name()).to_string(),
+            Value::Table(t) => match t.get_str("Type") {
+                Value::Str(s) => s.to_string(),
+                _ => "table".to_string(),
+            },
+            other => other.type_name().to_string(),
+        };
+        Ok(c.push(r))
+    });
+    global(thread, "getClassSimpleName", |c| {
+        let r = match c.arg(0) {
+            Value::Object(obj) => crate::expose::simple_name(obj.class_name()).to_string(),
+            other => crate::expose::simple_name(&pz_kahlua::stdlib::java_class_name(&other)).to_string(),
+        };
+        Ok(c.push(r))
+    });
+    global(thread, "getTimestamp", |c| {
+        Ok(c.push((now_ms() / 1000) as f64))
+    });
     global(thread, "getTimestampMs", |c| Ok(c.push(now_ms() as f64)));
     global(thread, "getTimeInMillis", |c| Ok(c.push(now_ms() as f64)));
-    global(thread, "getFileSeparator", |c| Ok(c.push(std::path::MAIN_SEPARATOR.to_string())));
-    global(thread, "isSystemMacOS", |c| Ok(c.push(cfg!(target_os = "macos"))));
-    global(thread, "isSystemWindows", |c| Ok(c.push(cfg!(target_os = "windows"))));
-    global(thread, "isSystemLinux", |c| Ok(c.push(!cfg!(target_os = "macos") && !cfg!(target_os = "windows"))));
+    global(thread, "getFileSeparator", |c| {
+        Ok(c.push(std::path::MAIN_SEPARATOR.to_string()))
+    });
+    global(thread, "isSystemMacOS", |c| {
+        Ok(c.push(cfg!(target_os = "macos")))
+    });
+    global(thread, "isSystemWindows", |c| {
+        Ok(c.push(cfg!(target_os = "windows")))
+    });
+    global(thread, "isSystemLinux", |c| {
+        Ok(c.push(!cfg!(target_os = "macos") && !cfg!(target_os = "windows")))
+    });
     // Steam integration is not part of this port's runtime yet.
     global(thread, "getSteamModeActive", |c| Ok(c.push(false)));
     global(thread, "isSteamOverlayEnabled", |c| Ok(c.push(false)));
-    global(thread, "getNumActivePlayers", |c| Ok(c.push(0.0)));
-    global(thread, "getPlayer", |c| Ok(c.push(Value::Nil)));
-    global(thread, "getSpecificPlayer", |c| {
-        let _ = int_arg(c, 0);
-        Ok(c.push(Value::Nil))
+    // TextureID.useFiltering: read by texture loading in pz-render.
+    global(thread, "useTextureFiltering", |c| {
+        USE_TEXTURE_FILTERING.with(|f| f.set(crate::expose::bool_arg(c, 0)));
+        Ok(0)
     });
+    // Only returns a trace in debug mode with DebugType.ISUIStackTrace on.
+    global(thread, "getISUIStackTrace", |c| Ok(c.push(Value::Nil)));
+    // getPlayer, getSpecificPlayer, getNumActivePlayers: bind_players.
 }
 
 #[cfg(test)]
@@ -106,7 +153,13 @@ mod tests {
         t.set_str("b", inner.clone());
         t.set_str("a", 2);
         let c = copy_table(&t);
-        assert_eq!(c.keys().iter().map(|k| k.as_str().unwrap().to_string()).collect::<Vec<_>>(), ["b", "a"]);
+        assert_eq!(
+            c.keys()
+                .iter()
+                .map(|k| k.as_str().unwrap().to_string())
+                .collect::<Vec<_>>(),
+            ["b", "a"]
+        );
         assert!(!c.get_str("b").as_table().unwrap().ptr_eq(&inner));
     }
 }

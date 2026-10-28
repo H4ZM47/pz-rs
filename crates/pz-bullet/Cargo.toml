@@ -1,0 +1,8 @@
+[package]
+name = "pz-bullet"
+version.workspace = true
+edition.workspace = true
+description = "Port of Project Zomboid's native physics library (libPZBullet: Bullet Physics 2.82 plus the game's glue)"
+license-file = "LICENSE-ZLIB"
+
+[dependencies]

@@ -1,0 +1,15 @@
+[package]
+name = "pz-worldgen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-world.workspace = true
+pz-kahlua.workspace = true
+pz-classfile.workspace = true
+pz-fs.workspace = true
+png.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+pz-world = { workspace = true, features = ["test-util"] }

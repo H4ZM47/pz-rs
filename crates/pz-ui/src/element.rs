@@ -7,6 +7,7 @@
 //! index and re-read each step, like the Java `ArrayList` loops, so callbacks
 //! may add or remove children while a dispatch is running.
 
+use crate::ext::UIElementExt;
 use crate::lua::{pcall_bool, pcall_void, tableget};
 use crate::manager::{now_ms, with_ui, UIManager};
 use pz_kahlua::{LuaObject, TableRef, Thread, Value};
@@ -115,11 +116,25 @@ impl Default for UIElementState {
 pub struct UIElement {
     me: Weak<UIElement>,
     state: RefCell<UIElementState>,
+    /// The Java subclass's part (see [`crate::ext`]); fixed at construction
+    /// and outside `state`, so hooks run with no borrow held.
+    ext: Option<Box<dyn UIElementExt>>,
 }
+
+const UIELEMENT_SUPERS: &[&str] = &[];
 
 impl LuaObject for UIElement {
     fn class_name(&self) -> &str {
-        "zombie.ui.UIElement"
+        match &self.ext {
+            Some(x) => x.class_name(),
+            None => "zombie.ui.UIElement",
+        }
+    }
+    fn super_classes(&self) -> &[&'static str] {
+        match &self.ext {
+            Some(x) => x.super_classes(),
+            None => UIELEMENT_SUPERS,
+        }
     }
     /// Without a thread the table's `__tostring` cannot run; the Lua
     /// binding's `toString` uses `KahluaUtil.tostring` properly.
@@ -129,7 +144,7 @@ impl LuaObject for UIElement {
                 Value::Str(s) => format!("{} 0x{}", s, pz_kahlua::exec::identity_hash(&Value::Table(t.clone()))),
                 _ => format!("table 0x{}", pz_kahlua::exec::identity_hash(&Value::Table(t.clone()))),
             },
-            None => format!("zombie.ui.UIElement@{:x}", self.hash_code()),
+            None => format!("{}@{:x}", self.class_name(), self.hash_code()),
         }
     }
     fn as_any(&self) -> &dyn Any {
@@ -148,10 +163,31 @@ fn same(a: &Rc<UIElement>, b: &UIElement) -> bool {
 impl UIElement {
     /// `new UIElement()` / `new UIElement(KahluaTable)`.
     pub fn new(table: Option<TableRef>) -> Rc<UIElement> {
+        Self::new_ext_opt(table, None)
+    }
+
+    /// The constructor of a Java subclass: `ext` holds the subclass's
+    /// state and overrides.
+    pub fn new_ext(table: Option<TableRef>, ext: Box<dyn UIElementExt>) -> Rc<UIElement> {
+        Self::new_ext_opt(table, Some(ext))
+    }
+
+    fn new_ext_opt(table: Option<TableRef>, ext: Option<Box<dyn UIElementExt>>) -> Rc<UIElement> {
         Rc::new_cyclic(|me| UIElement {
             me: me.clone(),
             state: RefCell::new(UIElementState { table, ..Default::default() }),
+            ext,
         })
+    }
+
+    /// The subclass part, if any.
+    pub fn ext_dyn(&self) -> Option<&dyn UIElementExt> {
+        self.ext.as_deref()
+    }
+
+    /// The subclass part as `T`, if this element is that subclass.
+    pub fn ext<T: UIElementExt>(&self) -> Option<&T> {
+        self.ext.as_ref()?.as_any().downcast_ref::<T>()
     }
 
     /// The owning `Rc` of `self`.
@@ -335,8 +371,8 @@ impl UIElement {
     pub fn set_consume_mouse_events(&self, b: bool) {
         self.st_mut().consume_mouse_events = b;
     }
-    /// `ButtonClicked(name)`.
-    pub fn button_clicked(&self, name: Option<Rc<str>>) {
+    /// `ButtonClicked(name)` of `UIElement` (`super.ButtonClicked`).
+    pub fn button_clicked_base(&self, name: Option<Rc<str>>) {
         self.set_clicked_value(name);
     }
     pub fn get_clicked_value(&self) -> Option<Rc<str>> {
@@ -782,7 +818,7 @@ impl UIElement {
     pub fn on_right_mouse_down_outside(&self, t: &mut Thread, x: f64, y: f64) {
         self.outside_recursive(t, "onRightMouseDownOutside", x, y, true, UIElement::on_right_mouse_down_outside);
     }
-    pub fn on_mouse_up_outside(&self, t: &mut Thread, x: f64, y: f64) {
+    pub fn on_mouse_up_outside_base(&self, t: &mut Thread, x: f64, y: f64) {
         self.outside_recursive(t, "onMouseUpOutside", x, y, true, UIElement::on_mouse_up_outside);
     }
     /// Children get `x - (int)ui.getX()` here (not the scrolled position),
@@ -843,7 +879,7 @@ impl UIElement {
     }
 
     /// `onMouseDown(x, y)` in local coordinates; returns whether consumed.
-    pub fn on_mouse_down(&self, t: &mut Thread, x: f64, y: f64) -> bool {
+    pub fn on_mouse_down_base(&self, t: &mut Thread, x: f64, y: f64) -> bool {
         let (clicked, cx, cy, ldt, table) = {
             let s = self.st();
             (s.clicked, s.click_x, s.click_y, s.left_down_time, s.table.clone())
@@ -889,7 +925,7 @@ impl UIElement {
     }
 
     /// `onMouseUp(x, y)`.
-    pub fn on_mouse_up(&self, t: &mut Thread, x: f64, y: f64) -> bool {
+    pub fn on_mouse_up_base(&self, t: &mut Thread, x: f64, y: f64) -> bool {
         if self.parent_clips(y) || self.self_clips(y) || !self.is_visible() {
             return false;
         }
@@ -901,7 +937,7 @@ impl UIElement {
     }
 
     /// `onRightMouseDown(x, y)`: a nil Lua result consumes.
-    pub fn on_right_mouse_down(&self, t: &mut Thread, x: f64, y: f64) -> bool {
+    pub fn on_right_mouse_down_base(&self, t: &mut Thread, x: f64, y: f64) -> bool {
         if !self.is_visible() || self.parent_clips(y) || self.self_clips(y) {
             return false;
         }
@@ -913,7 +949,7 @@ impl UIElement {
     }
 
     /// `onRightMouseUp(x, y)`: a nil Lua result consumes.
-    pub fn on_right_mouse_up(&self, t: &mut Thread, x: f64, y: f64) -> bool {
+    pub fn on_right_mouse_up_base(&self, t: &mut Thread, x: f64, y: f64) -> bool {
         if !self.is_visible() || self.parent_clips(y) || self.self_clips(y) {
             return false;
         }
@@ -988,7 +1024,7 @@ impl UIElement {
     }
 
     /// `onMouseWheel(del)`: children under the mouse first.
-    pub fn on_mouse_wheel(&self, t: &mut Thread, del: f64) -> bool {
+    pub fn on_mouse_wheel_base(&self, t: &mut Thread, del: f64) -> bool {
         let (mx, my) = with_ui(|m| (m.mouse.x as f64, m.mouse.y as f64));
         let mut i = self.controls_len() as isize - 1;
         while i >= 0 {
@@ -1008,7 +1044,7 @@ impl UIElement {
 
     /// `onMouseMove(dx, dy)`: the element's own callback runs before its
     /// children's.
-    pub fn on_mouse_move(&self, t: &mut Thread, dx: f64, dy: f64) -> bool {
+    pub fn on_mouse_move_base(&self, t: &mut Thread, dx: f64, dy: f64) -> bool {
         let (mx, my) = with_ui(|m| (m.mouse.x as f64, m.mouse.y as f64));
         let sy = self.get_y();
         if self.parent_clips(sy) {
@@ -1045,7 +1081,7 @@ impl UIElement {
         self.on_mouse_move_outside(t, dx, dy);
     }
 
-    pub fn on_mouse_move_outside(&self, t: &mut Thread, dx: f64, dy: f64) {
+    pub fn on_mouse_move_outside_base(&self, t: &mut Thread, dx: f64, dy: f64) {
         self.call_void(t, "onMouseMoveOutside", &[n(dx), n(dy)]);
         let mut i = self.controls_len() as isize - 1;
         while i >= 0 {
@@ -1065,7 +1101,7 @@ impl UIElement {
 
     /// `onResize()`: apply anchors against the parent's size change, call
     /// Lua `onResize(self, w, h)`, recurse.
-    pub fn on_resize(&self, t: &mut Thread) {
+    pub fn on_resize_base(&self, t: &mut Thread) {
         if let Some(p) = self.get_parent() {
             let (dirty, difx, dify) = {
                 let ps = p.st();
@@ -1106,7 +1142,7 @@ impl UIElement {
     }
 
     /// `render()`: Lua `prerender`, children in order, Lua `render`.
-    pub fn render(&self, t: &mut Thread) {
+    pub fn render_base(&self, t: &mut Thread) {
         let (enabled, visible, y) = {
             let s = self.st();
             (s.enabled, s.visible, s.y)
@@ -1135,7 +1171,7 @@ impl UIElement {
 
     /// `update()`: apply queued `bringToTop`s, Lua `update` (only on UI
     /// ticks, every 100 ms), pending resize, then children.
-    pub fn update(&self, t: &mut Thread) {
+    pub fn update_base(&self, t: &mut Thread) {
         if !self.is_enabled() {
             return;
         }
@@ -1209,4 +1245,107 @@ impl UIElement {
             // TODO(render): IndieGL.EndShader().
         }
     }
+
+    // ---- virtual dispatch (Java overrides; see `crate::ext`) ----
+
+    /// `on_mouse_down` as the Java virtual call: the subclass hook, else the base.
+    pub fn on_mouse_down(&self, t: &mut Thread, x: f64, y: f64) -> bool {
+        match &self.ext {
+            Some(hook) => hook.on_mouse_down(self, t, x, y),
+            None => self.on_mouse_down_base(t, x, y),
+        }
+    }
+
+    /// `on_mouse_up` as the Java virtual call: the subclass hook, else the base.
+    pub fn on_mouse_up(&self, t: &mut Thread, x: f64, y: f64) -> bool {
+        match &self.ext {
+            Some(hook) => hook.on_mouse_up(self, t, x, y),
+            None => self.on_mouse_up_base(t, x, y),
+        }
+    }
+
+    /// `on_right_mouse_down` as the Java virtual call: the subclass hook, else the base.
+    pub fn on_right_mouse_down(&self, t: &mut Thread, x: f64, y: f64) -> bool {
+        match &self.ext {
+            Some(hook) => hook.on_right_mouse_down(self, t, x, y),
+            None => self.on_right_mouse_down_base(t, x, y),
+        }
+    }
+
+    /// `on_right_mouse_up` as the Java virtual call: the subclass hook, else the base.
+    pub fn on_right_mouse_up(&self, t: &mut Thread, x: f64, y: f64) -> bool {
+        match &self.ext {
+            Some(hook) => hook.on_right_mouse_up(self, t, x, y),
+            None => self.on_right_mouse_up_base(t, x, y),
+        }
+    }
+
+    /// `on_mouse_wheel` as the Java virtual call: the subclass hook, else the base.
+    pub fn on_mouse_wheel(&self, t: &mut Thread, del: f64) -> bool {
+        match &self.ext {
+            Some(hook) => hook.on_mouse_wheel(self, t, del),
+            None => self.on_mouse_wheel_base(t, del),
+        }
+    }
+
+    /// `on_mouse_move` as the Java virtual call: the subclass hook, else the base.
+    pub fn on_mouse_move(&self, t: &mut Thread, dx: f64, dy: f64) -> bool {
+        match &self.ext {
+            Some(hook) => hook.on_mouse_move(self, t, dx, dy),
+            None => self.on_mouse_move_base(t, dx, dy),
+        }
+    }
+
+    /// `on_mouse_move_outside` as the Java virtual call: the subclass hook, else the base.
+    pub fn on_mouse_move_outside(&self, t: &mut Thread, dx: f64, dy: f64) {
+        match &self.ext {
+            Some(hook) => hook.on_mouse_move_outside(self, t, dx, dy),
+            None => self.on_mouse_move_outside_base(t, dx, dy),
+        }
+    }
+
+    /// `on_resize` as the Java virtual call: the subclass hook, else the base.
+    pub fn on_resize(&self, t: &mut Thread) {
+        match &self.ext {
+            Some(hook) => hook.on_resize(self, t),
+            None => self.on_resize_base(t),
+        }
+    }
+
+    /// `render` as the Java virtual call: the subclass hook, else the base.
+    pub fn render(&self, t: &mut Thread) {
+        match &self.ext {
+            Some(hook) => hook.render(self, t),
+            None => self.render_base(t),
+        }
+    }
+
+    /// `update` as the Java virtual call: the subclass hook, else the base.
+    pub fn update(&self, t: &mut Thread) {
+        match &self.ext {
+            Some(hook) => hook.update(self, t),
+            None => self.update_base(t),
+        }
+    }
+
+
+    /// `on_mouse_up_outside` as the Java virtual call: the subclass hook,
+    /// else the base.
+    pub fn on_mouse_up_outside(&self, t: &mut Thread, x: f64, y: f64) {
+        match &self.ext {
+            Some(hook) => hook.on_mouse_up_outside(self, t, x, y),
+            None => self.on_mouse_up_outside_base(t, x, y),
+        }
+    }
+
+
+    /// `ButtonClicked(name)` as the Java virtual call: the subclass hook,
+    /// else the base.
+    pub fn button_clicked(&self, name: Option<Rc<str>>) {
+        match &self.ext {
+            Some(hook) => hook.button_clicked(self, name),
+            None => self.button_clicked_base(name),
+        }
+    }
+
 }

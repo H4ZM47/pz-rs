@@ -1,0 +1,16 @@
+[package]
+name = "pz-iso-render"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+pz-core = { path = "../pz-core" }
+pz-render = { path = "../pz-render" }
+pz-kahlua = { path = "../pz-kahlua" }
+pz-world.workspace = true
+pz-joml.workspace = true
+
+[dev-dependencies]
+pz-gpu = { path = "../pz-gpu" }
+pz-fs = { path = "../pz-fs" }

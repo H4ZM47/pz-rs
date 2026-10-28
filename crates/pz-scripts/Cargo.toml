@@ -1,0 +1,10 @@
+[package]
+name = "pz-scripts"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-script-parser.workspace = true
+pz-fs.workspace = true
+pz-classfile.workspace = true
+pz-render.workspace = true

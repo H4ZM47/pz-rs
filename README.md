@@ -6,8 +6,8 @@ engine, aiming for 1:1 behaviour with the original on macOS, Windows and Linux.
 This repository contains **only original code**. It ships no game files:
 you need your own installed copy of Project Zomboid, whose `media/` folder
 (Lua scripts, textures, maps, sounds, translations) the engine reads at
-runtime. Mods keep working because the game's Lua engine (Kahlua) is ported
-to Rust with the original semantics and the same Lua-facing API.
+runtime. The Lua engine (Kahlua) and Lua-facing API are being ported to Rust
+to retain game and mod behavior. Full compatibility is still in progress.
 
 ## Layout
 
@@ -19,11 +19,24 @@ to Rust with the original semantics and the same Lua-facing API.
 | `pz-render` | `zombie.core.textures`, `SpriteRenderer` |
 | `pz-text` | `zombie.core.Translator`, `zombie.ui.TextManager`, `AngelCodeFont` |
 | `pz-ui` | `zombie.ui.UIElement`, `UIManager` |
+| `pz-scripts` | `zombie.scripting` (`ScriptParser`, `ScriptManager`, script objects) |
+| `pz-script-parser` | `zombie.scripting.ScriptParser` (shared by `pz-scripts`, `pz-fs`, `pz-text`, `pz-render`) |
+| `pz-world` | `zombie.iso` map files, `IsoMetaGrid`, `IsoCell`/`IsoChunk`/`IsoGridSquare` |
+| `pz-classfile` | reads built-in constants from the installed `projectzomboid.jar` (no JVM) |
+| `pz-inventory` | `zombie.inventory` items, `ItemContainer`, `zombie.world.WorldDictionary` |
+| `pz-erosion` | `zombie.erosion` (seasons, erosion categories, `ErosionMain`) |
+| `pz-worldgen` | `zombie.iso.worldgen` (B42 procedural world generation) |
+| `pz-popman` | `zombie.popman`, `zombie.MapCollisionData` and the native `PZPopMan` library |
+| `pz-vehicle-render` | `BaseVehicle.render`/`renderShadow`, `VehicleModelInstance`, `Model.DrawVehicle` |
 | `pz-engine` | `zombie.GameWindow`, `zombie.core.Core`, `zombie.gameStates` |
+| `pz-clipper` | `zombie.vehicles.Clipper`/`ClipperOffset` native library (Clipper2 1.5.4, earcut.hpp; see its README for licenses) |
+| `pz-clipper6` | `PZClipper` + Clipper 6.4.2 + earcut inside the native pathfinder (`libPZPathFind`) |
 | `pz-client` | desktop binary |
 
 See [docs/WORKSTREAMS.md](docs/WORKSTREAMS.md) for how the work is split and
-[PROGRESS.md](PROGRESS.md) for current status.
+[docs/ENGINE-WIRING.md](docs/ENGINE-WIRING.md) for current integration
+progress and known gaps. [PROGRESS.md](PROGRESS.md) preserves the earlier
+workstream status.
 
 ## Rules for contributions
 

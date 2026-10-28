@@ -1,0 +1,98 @@
+name: Platform source checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.ref_type }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  # Keep fresh workspace builds within hosted-runner memory/disk limits.
+  CARGO_BUILD_JOBS: "2"
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  RUST_TEST_THREADS: "2"
+
+jobs:
+  source:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux x64
+            runner: ubuntu-24.04
+          - platform: Windows x64
+            runner: windows-2025
+          - platform: macOS Apple Silicon
+            runner: macos-15
+          - platform: macOS Intel
+            runner: macos-15-intel
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Linux audio, input, windowing and graphics dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            pkg-config libasound2-dev libudev-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev \
+            libegl1-mesa-dev libgl1-mesa-dev libgl1-mesa-dri \
+            libvulkan1 mesa-vulkan-drivers
+          # Mesa can provide a software Vulkan adapter for headless GPU tests.
+          mkdir -p "$RUNNER_TEMP/pz-rs-xdg"
+          chmod 700 "$RUNNER_TEMP/pz-rs-xdg"
+          printf 'XDG_RUNTIME_DIR=%s\n' "$RUNNER_TEMP/pz-rs-xdg" >> "$GITHUB_ENV"
+
+      - name: Select stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup override set stable
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: Cache Rust dependencies
+        # Cache only Rust build inputs/artifacts; game assets are absent.
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.runner }}
+          cache-on-failure: true
+
+      - name: Build the native client
+        run: cargo build --locked -p pz-client
+
+      - name: Test the workspace
+        run: cargo test --locked --workspace --no-fail-fast
+
+      - name: Record verification scope
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          This job builds the native Rust client and runs the default workspace tests on this runner.
+
+          Installed game assets, saves, and private reference fixtures are not provided or uploaded.
+          Asset-dependent tests remain ignored or skip without their required environment variables.
+          GPU tests may skip when the runner cannot provide a suitable headless graphics adapter.
+
+          A successful job verifies source compatibility and the tests that actually ran. It does not establish game parity or replace installed-asset session and platform playtests.
+          SUMMARY
