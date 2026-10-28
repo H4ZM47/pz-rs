@@ -403,7 +403,15 @@ impl Gpu {
             height: height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
+            // The original's GL back buffer is opaque. The first listed
+            // mode is not always Opaque (e.g. on some Wayland compositors),
+            // and a premultiplied surface shows the desktop through pixels
+            // with alpha below 1.
+            alpha_mode: if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+                wgpu::CompositeAlphaMode::Opaque
+            } else {
+                caps.alpha_modes[0]
+            },
             view_formats: vec![],
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
