@@ -13,7 +13,6 @@ use pz_audio::channels::Channels;
 use pz_audio::reader::Guid;
 use pz_audio::studio::{self, Studio};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -22,10 +21,11 @@ pub struct StudioBackend {
     descriptions: HashMap<String, Option<Rc<EventDescription>>>,
     parameters: HashMap<String, ParameterDescription>,
     guids: HashMap<u64, Guid>,
-    /// Loaded sound files by (path, looped); 0 for files that failed.
-    sounds: HashMap<(String, bool), u64>,
-    /// Maps a game path (`media/sound/x.ogg`) to a file on disk.
-    resolve: Box<dyn Fn(&str) -> Option<PathBuf>>,
+    /// FMODManager's resolved-path cache. The first load determines looping.
+    /// A resolved file that failed to load is retained as 0.
+    sounds: HashMap<String, u64>,
+    /// Current `ZomboidFileSystem.getAbsolutePath` authority, called before cache lookup.
+    resolve: Box<dyn Fn(&str) -> Option<String>>,
 }
 
 fn state(s: studio::PlaybackState) -> PlaybackState {
@@ -51,7 +51,7 @@ impl StudioBackend {
             parameters: HashMap::new(),
             guids: HashMap::new(),
             sounds: HashMap::new(),
-            resolve: Box::new(|p| Some(PathBuf::from(p))),
+            resolve: Box::new(|_| None),
         };
         b.index_parameters();
         b
@@ -79,9 +79,10 @@ impl StudioBackend {
         }
     }
 
-    /// Resolve sound file paths with `f` (`ZomboidFileSystem.getAbsolutePath`);
-    /// by default they are taken as given.
-    pub fn with_file_resolver(mut self, f: impl Fn(&str) -> Option<PathBuf> + 'static) -> Self {
+    /// Install the current `ZomboidFileSystem.getAbsolutePath` authority.
+    /// Without one, loose paths are unresolved; there is no working-directory fallback.
+    /// Keep its String result unchanged as the native cache key.
+    pub fn with_file_resolver(mut self, f: impl Fn(&str) -> Option<String> + 'static) -> Self {
         self.resolve = Box::new(f);
         self
     }
@@ -181,20 +182,20 @@ impl AudioBackend for StudioBackend {
         }
     }
 
-    /// `System::createSound`: decoded once per path and kept.
+    /// `FMODManager.loadSound`: resolve first, then consult the resolved String cache.
     fn load_sound(&mut self, path: &str, looped: bool) -> u64 {
-        if let Some(&h) = self.sounds.get(&(path.to_string(), looped)) {
+        let Some(resolved) = (self.resolve)(path) else { return 0 };
+        if let Some(&h) = self.sounds.get(&resolved) {
             return h;
         }
-        let file = (self.resolve)(path)
-            .and_then(|p| std::fs::read(p).ok())
+        let file = std::fs::read(&resolved).ok()
             .and_then(|b| pz_audio::sound_file::decode(&b).ok());
         let h = match file {
-            Some(f) => self.studio.lock().unwrap().channels.add_sound(f, looped) as u64 + 1,
+            // The native createSound modes are 16 or 18: both include FMOD_3D.
+            Some(f) => self.studio.lock().unwrap().channels.add_sound(f, looped, true) as u64 + 1,
             None => 0,
         };
-        // Missing files are not retried either.
-        self.sounds.insert((path.to_string(), looped), h);
+        self.sounds.insert(resolved, h);
         h
     }
     fn play_sound(&mut self, sound: u64, paused: bool) -> ChannelHandle {

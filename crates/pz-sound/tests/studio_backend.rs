@@ -63,7 +63,9 @@ fn plays_game_sound_files_through_the_backend() {
     let dir = std::path::PathBuf::from(dir);
     let studio = Arc::new(Mutex::new(Studio::new(SetupHeaders::default())));
     let root = dir.clone();
-    let mut b = StudioBackend::new(studio.clone()).with_file_resolver(move |p| Some(root.join(p)));
+    let mut b = StudioBackend::new(studio.clone()).with_file_resolver(move |p| {
+        Some(root.join(p).to_str().expect("UTF-8 installed fixture path").to_owned())
+    });
 
     // Every loose file decodes.
     let mut n = 0;

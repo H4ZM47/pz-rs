@@ -14,6 +14,7 @@ struct Sound {
     pcm: Arc<Pcm>,
     rate: u32,
     looped: bool,
+    is_3d: bool,
 }
 
 struct Channel {
@@ -25,8 +26,9 @@ struct Channel {
     pitch: f32,
     paused: bool,
     looped: bool,
-    /// `None`: 2D.
-    position: Option<[f32; 3]>,
+    /// Mode and the last submitted position are independent.
+    is_3d: bool,
+    position: [f32; 3],
     level: f32,
     min_distance: f32,
     max_distance: f32,
@@ -50,11 +52,13 @@ pub type SoundId = usize;
 pub type ChannelId = u64;
 
 impl Channels {
-    pub fn add_sound(&mut self, file: SoundFile, looped: bool) -> SoundId {
+    /// New channels inherit the sound's initial spatial mode.
+    pub fn add_sound(&mut self, file: SoundFile, looped: bool, is_3d: bool) -> SoundId {
         self.sounds.push(Some(Sound {
             pcm: Arc::new(file.pcm),
             rate: file.rate,
             looped,
+            is_3d,
         }));
         self.sounds.len() - 1
     }
@@ -65,7 +69,7 @@ impl Channels {
         }
     }
 
-    /// `System::playSound`: a new channel at full volume, 2D unless set.
+    /// `System::playSound`: a new channel at full volume, inheriting its sound's mode.
     pub fn play(&mut self, id: SoundId, paused: bool) -> Option<ChannelId> {
         let s = self.sounds.get(id)?.as_ref()?;
         let ch = Channel {
@@ -76,7 +80,8 @@ impl Channels {
             pitch: 1.0,
             paused,
             looped: s.looped,
-            position: None,
+            is_3d: s.is_3d,
+            position: [0.0; 3],
             level: 1.0,
             min_distance: 1.0,
             max_distance: 10000.0,
@@ -129,19 +134,15 @@ impl Channels {
             c.looped = l;
         }
     }
-    /// `FMOD_2D` (`None`) or `FMOD_3D` at the last set position.
+    /// `FMOD_2D` or `FMOD_3D`, retaining the last submitted position.
     pub fn set_3d(&mut self, id: ChannelId, on: bool) {
         if let Some(c) = self.get(id) {
-            c.position = if on {
-                Some(c.position.unwrap_or_default())
-            } else {
-                None
-            };
+            c.is_3d = on;
         }
     }
     pub fn set_position(&mut self, id: ChannelId, p: [f32; 3]) {
         if let Some(c) = self.get(id) {
-            c.position = Some(p);
+            c.position = p;
         }
     }
     pub fn set_3d_level(&mut self, id: ChannelId, level: f32) {
@@ -189,13 +190,13 @@ impl Channels {
                 continue;
             }
             let (mut gl, mut gr) = (1.0, 1.0);
-            if let Some(p) = c.position {
+            if c.is_3d {
                 let pan = Pan {
                     rolloff: Rolloff::Inverse,
                     min_distance: c.min_distance,
                     max_distance: c.max_distance,
                     extent_mode: 2,
-                    position: relative(p),
+                    position: relative(c.position),
                     ..Pan::new()
                 };
                 let (l, r) = pan.stereo_gains();

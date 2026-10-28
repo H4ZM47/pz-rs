@@ -318,7 +318,7 @@ fn core_channels_play_loop_pitch_and_stop() {
     use channels::Channels;
     let one = |n: usize| sound_file::decode(&wav16(1, 48000, &vec![16384; n])).unwrap();
     let mut c = Channels::default();
-    let s = c.add_sound(one(100), false);
+    let s = c.add_sound(one(100), false, false);
     let ch = c.play(s, true).unwrap();
     let mut out = vec![0.0; 2 * 64];
     c.mix(&mut out, |p| p);
@@ -352,7 +352,7 @@ fn core_channels_play_loop_pitch_and_stop() {
 fn core_channels_attenuate_in_3d() {
     use channels::Channels;
     let mut c = Channels::default();
-    let s = c.add_sound(sound_file::decode(&wav16(1, 48000, &[16384; 64])).unwrap(), false);
+    let s = c.add_sound(sound_file::decode(&wav16(1, 48000, &[16384; 64])).unwrap(), false, false);
     let level = |c: &mut Channels, pos: [f32; 3]| {
         let ch = c.play(s, false).unwrap();
         c.set_3d(ch, true);
