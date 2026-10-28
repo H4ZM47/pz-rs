@@ -188,3 +188,126 @@ fn failed_deref_preserves_refs_prev_until_the_native_end_phase() {
     assert!(!old_square.borrow().has_flies);
     assert_eq!(flies.player_data[0].refs_prev, vec![B]);
 }
+
+
+/// These services expose each selected building query as a distinct phase;
+/// they do not claim genuine native building identity or a live engine adapter.
+struct PrefixWorld {
+    base: World,
+    building_calls: std::cell::Cell<usize>,
+    fail_building_at: Option<usize>,
+    building_value: Option<BuildingIdx>,
+}
+
+impl PrefixWorld {
+    fn new() -> Self {
+        Self {
+            base: World::new(),
+            building_calls: std::cell::Cell::new(0),
+            fail_building_at: None,
+            building_value: Some(7),
+        }
+    }
+}
+
+impl FliesWorld for PrefixWorld {
+    fn building(&self, _: &SquareRef) -> HostResult<Option<BuildingIdx>> {
+        let call = self.building_calls.get() + 1;
+        self.building_calls.set(call);
+        if self.fail_building_at == Some(call) {
+            return Err(RuntimeHostError::Borrowed("authored player building phase"));
+        }
+        Ok(self.building_value)
+    }
+    fn has_chunk(&self, wx: i32, wy: i32) -> HostResult<bool> {
+        self.base.has_chunk(wx, wy)
+    }
+    fn corpse_count(&self, wx: i32, wy: i32, z: i32, building: Option<BuildingIdx>, zombie: bool) -> HostResult<i32> {
+        self.base.corpse_count(wx, wy, z, building, zombie)
+    }
+    fn corpse_squares(&self, wx: i32, wy: i32, z: i32, building: Option<BuildingIdx>) -> HostResult<Vec<SquareRef>> {
+        self.base.corpse_squares(wx, wy, z, building)
+    }
+    fn set_has_flies(&mut self, square: &SquareRef, flies: bool) -> HostResult<()> {
+        self.base.set_has_flies(square, flies)
+    }
+    fn hooks(&mut self) -> &mut dyn FliesSoundHooks {
+        self.base.hooks()
+    }
+}
+
+fn prime_prefix(flies: &mut FliesSound) {
+    let d = &mut flies.player_data[0];
+    d.wx = 0;
+    d.wy = 0;
+    d.z = 0;
+    d.building = Some(7);
+    d.deaf = false;
+    d.force_update = false;
+    d.refs = vec![A];
+    d.refs_prev = vec![A];
+}
+
+#[test]
+fn changed_deaf_publishes_prefix_and_resets_force_before_coordinate_failure() {
+    let _retirement = RetirementBoundary;
+    let mut flies = FliesSound::new();
+    prime_prefix(&mut flies);
+    let mut player = player(8);
+    player.deaf = true;
+    let square = player.square.as_ref().unwrap().clone();
+    let held = square.borrow_mut();
+    let mut world = PrefixWorld::new();
+    let error = flies.update(&mut world, &[Some(player)], &env()).unwrap_err();
+    assert!(matches!(error, RuntimeHostError::Borrowed("FliesSound player square")));
+    let d = &flies.player_data[0];
+    assert!(d.deaf, "changed trait is published before any square query");
+    assert!(!d.force_update, "native force reset precedes coordinate access");
+    assert_eq!((d.wx, d.wy, d.z), (0, 0, 0));
+    assert_eq!(d.building, Some(7));
+    assert_eq!(d.refs, vec![A]);
+    assert_eq!(d.refs_prev, vec![A]);
+    assert_eq!(world.building_calls.get(), 0, "changed deaf skips isSameLocation, then held coordinates stop the later building read");
+    drop(held);
+}
+
+#[test]
+fn same_location_returns_without_reading_the_coordinate_body() {
+    let _retirement = RetirementBoundary;
+    let mut flies = FliesSound::new();
+    prime_prefix(&mut flies);
+    let player = player(0);
+    let square = player.square.as_ref().unwrap().clone();
+    let held = square.borrow_mut();
+    let mut world = PrefixWorld::new();
+    flies.update(&mut world, &[Some(player)], &env()).unwrap();
+    let d = &flies.player_data[0];
+    assert!(!d.force_update);
+    assert_eq!((d.wx, d.wy, d.z), (0, 0, 0));
+    assert_eq!(d.refs, vec![A]);
+    assert_eq!(d.refs_prev, vec![A]);
+    assert_eq!(world.building_calls.get(), 1, "isSameLocation queries building before player coordinates");
+    drop(held);
+}
+
+#[test]
+fn building_failure_keeps_coordinate_prefix_and_distinct_repeat_query() {
+    let _retirement = RetirementBoundary;
+    for forced in [false, true] {
+        let mut flies = FliesSound::new();
+        prime_prefix(&mut flies);
+        flies.player_data[0].force_update = forced;
+        let mut world = PrefixWorld::new();
+        let expected_queries = if forced { 1 } else { 2 };
+        world.fail_building_at = Some(expected_queries);
+        let error = flies.update(&mut world, &[Some(player(8))], &env()).unwrap_err();
+        assert!(matches!(error, RuntimeHostError::Borrowed("authored player building phase")));
+        let d = &flies.player_data[0];
+        assert!(!d.force_update);
+        assert_eq!((d.wx, d.wy, d.z), (1, 0, 0), "coordinates publish before the actual building read");
+        assert_eq!(d.building, Some(7), "a failed later read does not publish a replacement building");
+        assert_eq!(d.refs, vec![A], "refs.clear follows successful building publication");
+        assert_eq!(d.refs_prev, vec![A]);
+        assert_eq!(world.building_calls.get(), expected_queries);
+    }
+}

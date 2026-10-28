@@ -450,34 +450,49 @@ impl FliesSound {
         p: &FliesPlayer,
         env: &FliesEnv,
     ) -> HostResult<()> {
+        {
+            let d = &mut self.player_data[pn];
+            if d.deaf != p.deaf {
+                d.force_update = true;
+                d.deaf = p.deaf;
+            }
+        }
         let square = p.square.as_ref().unwrap();
+        // Native skips isSameLocation entirely after a force/deaf change.
+        // Its building query precedes the player-coordinate comparisons.
+        if !self.player_data[pn].force_update {
+            let building = w.building(square)?;
+            let d = &self.player_data[pn];
+            let same = building == d.building
+                && coorddivision(p.xi, 8) == d.wx
+                && coorddivision(p.yi, 8) == d.wy
+                && p.zi == d.z;
+            if same {
+                return Ok(());
+            }
+        }
+        self.player_data[pn].force_update = false;
         let sq = {
             let sq = square
                 .try_borrow()
                 .map_err(|_| RuntimeHostError::Borrowed("FliesSound player square"))?;
             (sq.x, sq.y, sq.z)
         };
+        {
+            let d = &mut self.player_data[pn];
+            d.wx = coorddivision(sq.0, 8);
+            d.wy = coorddivision(sq.1, 8);
+            d.z = sq.2;
+        }
+        // This is a distinct native read after wx/wy/z are published,
+        // including when isSameLocation already read the building above.
         let building = w.building(square)?;
-        let d = &mut self.player_data[pn];
-        if d.deaf != p.deaf {
-            d.force_update = true;
-            d.deaf = p.deaf;
-        }
-        // `isSameLocation(player)`.
-        let same = building == d.building
-            && coorddivision(p.xi, 8) == d.wx
-            && coorddivision(p.yi, 8) == d.wy
-            && p.zi == d.z;
-        if !d.force_update && same {
-            return Ok(());
-        }
-        d.force_update = false;
-        d.wx = coorddivision(sq.0, 8);
-        d.wy = coorddivision(sq.1, 8);
-        d.z = sq.2;
-        d.building = building;
-        d.refs.clear();
-        let (wx, wy, z) = (d.wx, d.wy, d.z);
+        let (wx, wy, z) = {
+            let d = &mut self.player_data[pn];
+            d.building = building;
+            d.refs.clear();
+            (d.wx, d.wy, d.z)
+        };
         for dy in -1..=1 {
             for dx in -1..=1 {
                 // `getChunkData((wx + dx) * 8, (wy + dy) * 8)`.
