@@ -299,6 +299,13 @@ pub fn install_event_sink(sink: EventSink) {
     SINK.with(|s| *s.borrow_mut() = Some(sink));
 }
 
+/// Pending Lua values and their callback sink belong to the environment
+/// that produced them; a fresh environment must not receive that queue.
+pub(crate) fn reset_session_callbacks() {
+    PENDING.with(|pending| pending.borrow_mut().clear());
+    SINK.with(|sink| *sink.borrow_mut() = None);
+}
+
 /// `LuaEventManager.triggerEvent(name, args)`, deferred to
 /// [`fire_pending_events`].
 pub(crate) fn trigger_event(name: &'static str, args: Vec<Value>) {

@@ -1837,6 +1837,7 @@ name = "pz-animals"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "pz-core",
  "pz-fs",
  "pz-kahlua",
  "pz-world",
@@ -1868,6 +1869,7 @@ dependencies = [
  "pz-gpu",
  "pz-inventory",
  "pz-iso-render",
+ "pz-kahlua",
  "pz-lighting",
  "pz-model",
  "pz-ragdoll",
@@ -1883,8 +1885,10 @@ dependencies = [
  "pz-audio",
  "pz-bullet",
  "pz-core",
+ "pz-entity",
  "pz-fs",
  "pz-inventory",
+ "pz-kahlua",
  "pz-model",
  "pz-pathfind",
  "pz-popman",
@@ -1943,21 +1947,36 @@ dependencies = [
  "pz-audio",
  "pz-character-model",
  "pz-characters",
+ "pz-classfile",
+ "pz-clipper",
  "pz-core",
+ "pz-entity",
+ "pz-erosion",
  "pz-fs",
  "pz-gpu",
  "pz-input",
  "pz-inventory",
  "pz-iso-render",
+ "pz-joml",
  "pz-kahlua",
+ "pz-lighting",
  "pz-lua-api",
  "pz-model",
+ "pz-pathfind",
+ "pz-player-input",
+ "pz-popman",
  "pz-render",
+ "pz-sandbox",
  "pz-scripts",
  "pz-sound",
+ "pz-text",
  "pz-ui",
  "pz-world",
+ "pz-world-popman",
  "pz-world-render",
+ "pz-world-sound",
+ "pz-world-states",
+ "pz-worldgen",
  "winit",
 ]
 
@@ -1976,6 +1995,7 @@ dependencies = [
  "libm",
  "pz-classfile",
  "pz-core",
+ "pz-entity",
  "pz-inventory",
  "pz-world",
 ]
@@ -1983,6 +2003,9 @@ dependencies = [
 [[package]]
 name = "pz-fs"
 version = "0.1.0"
+dependencies = [
+ "pz-script-parser",
+]
 
 [[package]]
 name = "pz-gpu"
@@ -2014,6 +2037,8 @@ version = "0.1.0"
 dependencies = [
  "pz-classfile",
  "pz-entity",
+ "pz-kahlua",
+ "pz-render",
  "pz-scripts",
 ]
 
@@ -2057,12 +2082,14 @@ dependencies = [
  "pz-bullet",
  "pz-characters",
  "pz-classfile",
+ "pz-clipper",
  "pz-core",
  "pz-entity",
  "pz-erosion",
  "pz-fs",
  "pz-input",
  "pz-inventory",
+ "pz-iso-render",
  "pz-joml",
  "pz-kahlua",
  "pz-network",
@@ -2078,7 +2105,9 @@ dependencies = [
  "pz-vehicles",
  "pz-video",
  "pz-world",
+ "pz-world-states",
  "pz-worldgen",
+ "pz-worldmap",
  "regex",
 ]
 
@@ -2157,6 +2186,7 @@ dependencies = [
  "png",
  "pz-fs",
  "pz-kahlua",
+ "pz-script-parser",
 ]
 
 [[package]]
@@ -2170,11 +2200,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-script-parser"
+version = "0.1.0"
+
+[[package]]
 name = "pz-scripts"
 version = "0.1.0"
 dependencies = [
  "pz-classfile",
  "pz-fs",
+ "pz-render",
+ "pz-script-parser",
 ]
 
 [[package]]
@@ -2206,6 +2242,7 @@ name = "pz-text"
 version = "0.1.0"
 dependencies = [
  "pz-render",
+ "pz-script-parser",
 ]
 
 [[package]]
@@ -2265,8 +2302,10 @@ dependencies = [
  "pz-fs",
  "pz-inventory",
  "pz-kahlua",
+ "pz-render",
  "pz-scripts",
  "pz-sqlite",
+ "quick-xml",
 ]
 
 [[package]]
@@ -2285,12 +2324,14 @@ version = "0.1.0"
 dependencies = [
  "png",
  "pz-core",
+ "pz-entity",
  "pz-fs",
  "pz-gpu",
  "pz-inventory",
  "pz-iso-render",
  "pz-lighting",
  "pz-render",
+ "pz-scripts",
  "pz-world",
 ]
 
@@ -2306,14 +2347,18 @@ dependencies = [
 name = "pz-world-states"
 version = "0.1.0"
 dependencies = [
+ "pz-anim",
  "pz-characters",
  "pz-classfile",
  "pz-entity",
  "pz-fs",
  "pz-inventory",
  "pz-pathfind",
+ "pz-popman",
  "pz-scripts",
+ "pz-vehicles",
  "pz-world",
+ "pz-world-popman",
 ]
 
 [[package]]
@@ -2326,6 +2371,20 @@ dependencies = [
  "pz-kahlua",
  "pz-world",
  "regex",
+]
+
+[[package]]
+name = "pz-worldmap"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "pz-classfile",
+ "pz-clipper",
+ "pz-core",
+ "pz-joml",
+ "pz-render",
+ "pz-text",
+ "quick-xml",
 ]
 
 [[package]]

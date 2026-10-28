@@ -9,7 +9,7 @@ use pz_characters::character::states::ids;
 use pz_characters::{CharacterKind, GameCharacter};
 use pz_pathfind::behavior::PathFindBehavior2;
 use pz_pathfind::mover::{MoverId, ObjectRef};
-use pz_world::fire::manager::{FireFlags, FireHooks, FireSettings, IsoFireManager};
+use pz_world::fire::manager::{FireFlags, FireHooks, FireMutation, FireSettings, IsoFireManager};
 use pz_world::objects::{IsoObject, ObjectKind};
 use pz_world::square::{
     CollideAdjacent, CollideEnv, CollideMover, CollidedFlags, EdgeFacing, HoppableAction,
@@ -33,6 +33,8 @@ pub struct WorldView<'w> {
 pub struct StatesFire<'e> {
     pub manager: &'e mut IsoFireManager,
     pub hooks: &'e mut dyn FireHooks,
+    /// The square mutations a fire started by a character can lead to.
+    pub mutation: FireMutation<'e>,
     pub flags: FireFlags,
     pub settings: FireSettings,
 }
@@ -185,7 +187,7 @@ impl HoppableHooks for AdapterHoppableHooks<'_, '_> {
         self.adapter
             .env()
             .sprite_name(obj)
-            .is_some_and(|n| self.adapter.engine.is_unbent_fence(n, facing))
+            .is_some_and(|n| self.adapter.engine.is_unbent_fence(&n, facing))
     }
 }
 
@@ -230,8 +232,8 @@ impl StatesWorldAdapter<'_> {
         d: (i32, i32, i32),
     ) -> Option<CollideAdjacent> {
         let env = self.collide_env();
-        let sq = self.cell.get_grid_square(from.0, from.1, from.2)?;
-        Some(env.test_collide_adjacent(sq, Some(mover), d.0, d.1, d.2))
+        let sq_owner = self.cell.get_grid_square(from.0, from.1, from.2)?;
+        Some(env.test_collide_adjacent(&sq_owner, Some(mover), d.0, d.1, d.2))
     }
 
     /// `checkBreakHoppable()`, `checkHitHoppable()` and
@@ -242,9 +244,10 @@ impl StatesWorldAdapter<'_> {
         mover: &CollideMoverInfo,
         last: (i32, i32, i32),
     ) -> Vec<HoppableAction> {
-        let Some(sq) = self.cell.get_grid_square(last.0, last.1, last.2) else {
+        let Some(sq_owner) = self.cell.get_grid_square(last.0, last.1, last.2) else {
             return Vec::new();
         };
+        let sq = sq_owner.borrow();
         let mut thumper = self.engine.character(mover.id);
         if thumper.is_none() && mover.kind == MoverKind::Zombie {
             thumper = Some(Thumper {
@@ -259,29 +262,32 @@ impl StatesWorldAdapter<'_> {
             adapter: self,
             thumper,
         };
-        self.collide_env().hoppable_actions(mover, sq, &hooks)
+        drop(sq);
+        self.collide_env()
+            .hoppable_actions(mover, &sq_owner, &hooks)
     }
 
     /// The trees and bushes past the first object of a square with a tree
     /// or a bush (`getGlobalMovementMod`'s rustle targets), with
     /// `isBig` for trees (`size > 4`); empty when it has neither.
     pub fn rustle_targets(&self, sq: (i32, i32, i32)) -> Vec<(ObjectRef, bool, bool)> {
-        let Some(s) = self.cell.get_grid_square(sq.0, sq.1, sq.2) else {
+        let Some(s_owner) = self.cell.get_grid_square(sq.0, sq.1, sq.2) else {
             return Vec::new();
         };
+        let s = s_owner.borrow();
         let is_bush = |o: &IsoObject| {
-            o.sprite.is_some_and(|i| {
-                let spr = &self.sprites.sprites[i];
+            self.env().metadata(o).is_some_and(|spr| {
                 spr.tileset_name.as_deref() == Some("f_bushes_1")
                     || spr.properties.get(&self.sprites.alias, "Bush").is_some()
             })
         };
         let tree = self.sprites.tables.ty.tree;
-        if !(s.has_type(tree) || s.objects.iter().any(is_bush)) {
+        if !(s.has_type(tree) || s.objects.iter().any(|o| is_bush(&o.borrow()))) {
             return Vec::new();
         }
         s.objects
             .iter()
+            .map(|o| o.borrow())
             .skip(1)
             .filter_map(|o| {
                 let r = ObjectRef {
@@ -292,7 +298,7 @@ impl StatesWorldAdapter<'_> {
                 };
                 match &o.kind {
                     ObjectKind::Tree(t) => Some((r, true, t.size > 4)),
-                    _ if is_bush(o) => Some((r, false, false)),
+                    _ if is_bush(&o) => Some((r, false, false)),
                     _ => None,
                 }
             })
@@ -307,8 +313,10 @@ impl StatesWorldAdapter<'_> {
         let m = &*self.sprites;
         let t = &m.tables;
         for o in &sq.objects {
-            let Some(si) = o.sprite else { continue };
-            let sp = &m.sprites[si];
+            let o = o.borrow();
+            let Some(sp) = self.env().metadata(&o) else {
+                continue;
+            };
             let p = &sp.properties;
             if p.has(t.flag.WallSE) {
                 continue;
@@ -320,9 +328,13 @@ impl StatesWorldAdapter<'_> {
             }
             let has = |n: &str| t.flag_from_string(n).is_some_and(|f| p.has(f));
             let hit = if north {
-                (sp.cut_n || has("WallN") || has("WallNTrans")) && !has("HoppableN") && !has("TallHoppableN")
+                (sp.cut_n || has("WallN") || has("WallNTrans"))
+                    && !has("HoppableN")
+                    && !has("TallHoppableN")
             } else {
-                (sp.cut_w || has("WallW") || has("WallWTrans")) && !has("HoppableW") && !has("TallHoppableW")
+                (sp.cut_w || has("WallW") || has("WallWTrans"))
+                    && !has("HoppableW")
+                    && !has("TallHoppableW")
             };
             if hit {
                 return true;
@@ -332,11 +344,19 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `square.isPlayerAbleToHopWallTo(dir, oppositeSq)`.
-    pub fn is_player_able_to_hop_wall_to(&self, sq: &IsoGridSquare, dir: IsoDirections, opp: &IsoGridSquare) -> bool {
+    pub fn is_player_able_to_hop_wall_to(
+        &self,
+        sq: &IsoGridSquare,
+        dir: IsoDirections,
+        opp: &IsoGridSquare,
+    ) -> bool {
         let adjacent = (sq.x, sq.y, sq.z) == (opp.x, opp.y, opp.z)
-            || IsoDirections::ALL
-                .iter()
-                .any(|&d| sq.get_adjacent_square(d, self.cell).is_some_and(|a| (a.x, a.y, a.z) == (opp.x, opp.y, opp.z)));
+            || IsoDirections::ALL.iter().any(|&d| {
+                sq.get_adjacent_square(d, self.cell).is_some_and(|a| {
+                    let a = a.borrow();
+                    (a.x, a.y, a.z) == (opp.x, opp.y, opp.z)
+                })
+            });
         if !adjacent {
             return false;
         }
@@ -346,10 +366,10 @@ impl StatesWorldAdapter<'_> {
         if sq.has_stairs(m) && sq.has_type(ty.stairsTN) || sq.has_type(ty.stairsTW) {
             if let (Some(a), Some(oa)) = (above(sq), above(opp)) {
                 return !match dir {
-                    IsoDirections::N => self.has_non_hoppable_wall(a, true),
-                    IsoDirections::S => self.has_non_hoppable_wall(oa, true),
-                    IsoDirections::W => self.has_non_hoppable_wall(a, false),
-                    IsoDirections::E => self.has_non_hoppable_wall(oa, false),
+                    IsoDirections::N => self.has_non_hoppable_wall(&a.borrow(), true),
+                    IsoDirections::S => self.has_non_hoppable_wall(&oa.borrow(), true),
+                    IsoDirections::W => self.has_non_hoppable_wall(&a.borrow(), false),
+                    IsoDirections::E => self.has_non_hoppable_wall(&oa.borrow(), false),
                     _ => false,
                 };
             }
@@ -369,15 +389,23 @@ impl StatesWorldAdapter<'_> {
     /// `ClimbOverFenceState.setParams` reads of the square beyond.
     /// TODO(bent fences): `BentFences.checkDamageHoppableFence` (only with
     /// bent fences enabled).
-    pub fn fence_climb_for(&self, t: &Thumper, from: (i32, i32, i32), dir: IsoDirections) -> Option<pz_characters::character::state::FenceClimb> {
-        let sq = self.cell.get_grid_square(from.0, from.1, from.2)?;
-        let opp = sq.get_adjacent_square(dir, self.cell);
+    pub fn fence_climb_for(
+        &self,
+        t: &Thumper,
+        from: (i32, i32, i32),
+        dir: IsoDirections,
+    ) -> Option<pz_characters::character::state::FenceClimb> {
+        let sq_owner = self.cell.get_grid_square(from.0, from.1, from.2)?;
+        let sq = sq_owner.borrow();
+        let opp_owner = sq.get_adjacent_square(dir, self.cell);
+        let opp = opp_owner.as_ref().map(|s| s.borrow());
+        let opp = opp.as_deref();
         let north = matches!(dir, IsoDirections::N | IsoDirections::S);
-        if !self.can_climb_through_helper(t, sq, opp, north) {
+        if !self.can_climb_through_helper(t, &sq, opp, north) {
             return None;
         }
         let opp = opp?;
-        if !self.is_player_able_to_hop_wall_to(sq, dir, opp) {
+        if !self.is_player_able_to_hop_wall_to(&sq, dir, opp) {
             return None;
         }
         let m = &*self.sprites;
@@ -390,8 +418,13 @@ impl StatesWorldAdapter<'_> {
 
     /// The hoppable checks of `mover` (character `chr`) after a collision
     /// from `last`.
-    pub fn hoppable_actions_dyn(&self, mover: &dyn CollideMover, chr: i32, last: (i32, i32, i32)) -> Vec<HoppableAction> {
-        let Some(sq) = self.cell.get_grid_square(last.0, last.1, last.2) else {
+    pub fn hoppable_actions_dyn(
+        &self,
+        mover: &dyn CollideMover,
+        chr: i32,
+        last: (i32, i32, i32),
+    ) -> Vec<HoppableAction> {
+        let Some(sq_owner) = self.cell.get_grid_square(last.0, last.1, last.2) else {
             return Vec::new();
         };
         let mut thumper = self.engine.character(chr);
@@ -399,7 +432,9 @@ impl StatesWorldAdapter<'_> {
             // A real game always has the colliding character registered; a
             // missing one means the engine hook is not wired.
             warn_once(&MISSING_CHARACTER, || {
-                format!("hoppable_actions_dyn: engine has no character {chr}; using a default thumper")
+                format!(
+                    "hoppable_actions_dyn: engine has no character {chr}; using a default thumper"
+                )
             });
         }
         if thumper.is_none() && mover.mover_kind() == MoverKind::Zombie {
@@ -411,8 +446,12 @@ impl StatesWorldAdapter<'_> {
                 ..Default::default()
             });
         }
-        let hooks = AdapterHoppableHooks { adapter: self, thumper };
-        self.collide_env().hoppable_actions(mover, sq, &hooks)
+        let hooks = AdapterHoppableHooks {
+            adapter: self,
+            thumper,
+        };
+        self.collide_env()
+            .hoppable_actions(mover, &sq_owner, &hooks)
     }
 }
 

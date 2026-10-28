@@ -40,10 +40,10 @@ pub fn create_tooltip() -> Rc<UIElement> {
 
 /// `UIManager.updateTooltip(mx, my)`: the shared tooltip follows the
 /// picked object with a special tooltip while the mouse is over no UI.
-pub fn update_tooltip(_t: &mut Thread, mx: i32, my: i32) {
+pub fn update_tooltip(_t: &mut Thread, mx: i32, my: i32) -> LuaResult<()> {
     let Some(tip) = with_ui(|m| m.tool_tip.clone()) else {
         LAST_PICKED.with(|l| l.set(None));
-        return;
+        return Ok(());
     };
     let tt = ObjectTooltip::of(&tip).unwrap();
     let (fx, fy) = (mx as f64, my as f64);
@@ -56,7 +56,7 @@ pub fn update_tooltip(_t: &mut Thread, mx: i32, my: i32) {
     });
     let mut over_object = None;
     if !over_ui {
-        if let Some(tile) = with_host(|h| h.picking.picked_tile()) {
+        if let Some(tile) = with_host(|h| h.picking.picked_tile())? {
             let last = LAST_PICKED.with(|l| l.get());
             over_object = Some(tile.id);
             if Some(tile.id) != last {
@@ -93,6 +93,7 @@ pub fn update_tooltip(_t: &mut Thread, mx: i32, my: i32) {
         tip.set_x((x + 24) as f64);
         tip.set_y((y + 24) as f64);
     }
+    Ok(())
 }
 
 // ---- Lua ----------------------------------------------------------------------

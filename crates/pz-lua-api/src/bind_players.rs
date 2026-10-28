@@ -1,6 +1,7 @@
 //! `IsoPlayer`'s local-player statics (`players`, `numPlayers`,
 //! `getInstance`) over the bound characters, and the Lua globals that read
-//! them (`getPlayer`, `getSpecificPlayer`, `getNumActivePlayers`).
+//! them (`getPlayer`, `getSpecificPlayer`, `getNumActivePlayers`) and the
+//! player-screen geometry used by Lua inventory and HUD layouts.
 //!
 //! The engine fills the slots as the original's `IsoPlayer` constructor
 //! and `GameLoadingState` do ([`set_player`], [`set_player_instance`],
@@ -132,6 +133,22 @@ fn player_value(p: Option<LuaGameCharacterRef>) -> Value {
     p.map(|p| character_value(&p)).unwrap_or_default()
 }
 
+/// `IsoCamera.getScreenLeft/Top/Width/Height(player)`. The offsets depend
+/// on the requested slot, while dimensions depend on the live player
+/// count. The original does not validate the slot or require an occupant.
+fn player_screen_rect(player: i32) -> [i32; 4] {
+    let core = crate::bind_core::shared_core();
+    let core = core.borrow();
+    let (width, height) = (core.get_screen_width(), core.get_screen_height());
+    let count = num_players();
+    [
+        if player == 1 || player == 3 { width / 2 } else { 0 },
+        if player == 2 || player == 3 { height / 2 } else { 0 },
+        if count > 1 { width / 2 } else { width },
+        if count > 2 { height / 2 } else { height },
+    ]
+}
+
 /// The `LuaManager.GlobalObject` player getters.
 pub fn register(thread: &mut Thread) {
     global(thread, "getPlayer", |c| Ok(c.push(player_value(player_instance()))));
@@ -146,4 +163,60 @@ pub fn register(thread: &mut Thread) {
         Ok(c.push(player_value(player(i as usize))))
     });
     global(thread, "getNumActivePlayers", |c| Ok(c.push(num_players())));
+    for (component, name) in [
+        "getPlayerScreenLeft",
+        "getPlayerScreenTop",
+        "getPlayerScreenWidth",
+        "getPlayerScreenHeight",
+    ].into_iter().enumerate() {
+        global(thread, name, move |c| {
+            let rect = player_screen_rect(int_arg(c, 0));
+            Ok(c.push(rect[component]))
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pz_core::core::Core;
+    use pz_kahlua::TableRef;
+
+    fn read_screen(thread: &mut Thread, player: i32) -> Vec<i32> {
+        let source = format!(
+            "return getPlayerScreenLeft({player}), getPlayerScreenTop({player}), \
+             getPlayerScreenWidth({player}), getPlayerScreenHeight({player})"
+        );
+        let code = pz_kahlua::compiler::compile(&source, Some("screen"), Some("screen"), None).unwrap();
+        let closure = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(code), thread.globals().clone()));
+        thread.pcall(&closure, &[])
+            .unwrap_or_else(|(error, trace)| panic!("{error:?}\n{trace}"))
+            .into_iter().map(|value| value.as_num().expect("screen coordinate must be numeric") as i32).collect()
+    }
+
+    #[test]
+    fn player_screen_globals_follow_live_layout_without_requiring_player_slots() {
+        reset();
+        let core = Rc::new(RefCell::new(Core::new()));
+        core.borrow_mut().set_screen_size(1281, 721);
+        crate::bind_core::install_core(core.clone());
+        let mut thread = Thread::new(TableRef::new());
+        register(&mut thread);
+        for (count, width, height) in [(1, 1281, 721), (2, 640, 721), (3, 640, 360), (4, 640, 360)] {
+            set_num_players(count);
+            for (slot, left, top) in [(0, 0, 0), (1, 640, 0), (2, 0, 360), (3, 640, 360), (-1, 0, 0), (9, 0, 0)] {
+                assert_eq!(read_screen(&mut thread, slot), [left, top, width, height]);
+            }
+        }
+        core.borrow_mut().set_screen_size(1920, 1080);
+        assert_eq!(read_screen(&mut thread, 3), [960, 540, 960, 540]);
+        reset();
+        assert_eq!(read_screen(&mut thread, 0), [0, 0, 1920, 1080]);
+        // Registered globals read the current Core rather than capturing
+        // the previous session's instance.
+        let next = Rc::new(RefCell::new(Core::new()));
+        next.borrow_mut().set_screen_size(800, 600);
+        crate::bind_core::install_core(next);
+        assert_eq!(read_screen(&mut thread, 0), [0, 0, 800, 600]);
+    }
 }

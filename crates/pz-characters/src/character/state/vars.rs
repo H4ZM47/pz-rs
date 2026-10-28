@@ -39,6 +39,8 @@ pub struct CharacterVars {
     pub last_x: f32,
     pub last_y: f32,
     pub last_z: f32,
+    /// `llz` (`setLlz`).
+    pub llz: f32,
     /// `onFloor`.
     pub on_floor: bool,
     /// `closeKilled`.
@@ -178,6 +180,11 @@ pub struct CharacterVars {
     pub ignore_stagger_back: bool,
     pub damaged_by_vehicle: bool,
     pub climbing: bool,
+    /// `climbRopeTime`.
+    pub climb_rope_time: f32,
+    /// `getClimbData()` (`ClimbSheetRopeState.ClimbData`, made on the
+    /// first rope climb).
+    pub climb_data: Option<ClimbData>,
     pub on_kill_done: bool,
     /// `getAttackedBy()` (by character id).
     pub attacked_by: Option<i32>,
@@ -185,7 +192,6 @@ pub struct CharacterVars {
     pub last_hit_character: Option<i32>,
     // ---- IsoLivingCharacter ----
     pub do_shove: bool,
-    pub do_grapple: bool,
     pub target_on_ground: Option<i32>,
     // ---- IsoPlayer ----
     pub combat_speed: f32,
@@ -312,6 +318,7 @@ impl Default for CharacterVars {
             last_x: 0.0,
             last_y: 0.0,
             last_z: 0.0,
+            llz: 0.0,
             on_floor: false,
             close_killed: false,
             hit_from_angle: 0.0,
@@ -417,6 +424,8 @@ impl Default for CharacterVars {
             ignore_stagger_back: false,
             damaged_by_vehicle: false,
             climbing: false,
+            climb_rope_time: 0.0,
+            climb_data: None,
             on_kill_done: false,
             attacked_by: None,
             on_fire: false,
@@ -425,7 +434,6 @@ impl Default for CharacterVars {
             fire_anim: None,
             last_hit_character: None,
             do_shove: false,
-            do_grapple: false,
             target_on_ground: None,
             combat_speed: 1.0,
             player_turn_delta: 0.0,
@@ -868,7 +876,7 @@ impl CharVar {
             CharVar::BeenMovingFor => F(v.been_moving_for),
             CharVar::PreviousState => S(c.previous_action_context_state_name()),
             CharVar::MomentumScalar => F(v.momentum_scalar),
-            CharVar::HasTimedActions => B(v.has_timed_actions),
+            CharVar::HasTimedActions => B(!c.character_actions.borrow().is_empty() || v.performing_an_action),
             CharVar::IsOverEncumbered => B(c.environment_over_encumbered()),
             CharVar::CriticalHit => B(v.critical_hit),
             CharVar::KnockedDown => B(v.knocked_down),
@@ -889,18 +897,20 @@ impl CharVar {
             CharVar::ShoutType => S(v.shout_type.clone()),
             CharVar::ShoutItemModel => S(v.shout_item_model.clone()),
             CharVar::IsAnimatingBackwards => B(v.animating_backwards),
-            CharVar::DoGrapple => B(v.do_grapple),
-            CharVar::DoContinueGrapple | CharVar::IsGrappling | CharVar::BeingGrappled | CharVar::GrappleAnim => B(false),
-            CharVar::GrappleResult
-            | CharVar::SharedGrappleType
-            | CharVar::SharedGrappleAnimNode
-            | CharVar::GrappledBy
-            | CharVar::GrappledByType => S(String::new()),
-            CharVar::GrappleOffsetBehaviour => S("NONE".into()),
-            CharVar::SharedGrappleTime
-            | CharVar::SharedGrappleFraction
-            | CharVar::GrappleOffsetForward
-            | CharVar::BearingToGrappledTarget => F(0.0),
+            CharVar::DoGrapple => B(c.is_do_grapple()),
+            CharVar::DoContinueGrapple => B(c.is_do_continue_grapple()),
+            CharVar::IsGrappling => B(c.is_grappling()),
+            CharVar::BeingGrappled => B(c.is_being_grappled()),
+            CharVar::GrappleAnim => B(false),
+            CharVar::GrappleResult => S(c.grapple_result().unwrap_or_default()),
+            CharVar::SharedGrappleType => S(c.shared_grapple_type().unwrap_or_default()),
+            CharVar::SharedGrappleAnimNode => S(c.shared_grapple_anim_node()),
+            CharVar::GrappledBy | CharVar::GrappledByType => S(String::new()),
+            CharVar::GrappleOffsetBehaviour => S(c.grapple_offset_behaviour()),
+            CharVar::SharedGrappleTime => F(c.shared_grapple_time()),
+            CharVar::SharedGrappleFraction => F(c.shared_grapple_fraction()),
+            CharVar::GrappleOffsetForward => F(c.grapple_offset_forward()),
+            CharVar::BearingToGrappledTarget => F(0.0),
             CharVar::GrappleGrabAnim => B(v.performing_grapple_grab_animation),
             CharVar::AnyGrappleAnim => B(v.performing_grapple_grab_animation),
             CharVar::GrappleThrowOutWindow => B(v.grapple_throw_out_window),
@@ -971,7 +981,7 @@ impl CharVar {
             CharVar::Remote => B(v.remote),
             CharVar::IsPerformingAnAction => B(v.performing_an_action),
             CharVar::ShoveAiming => B(c.is_aiming() && v.do_shove),
-            CharVar::GrappleAiming => B(c.is_aiming() && v.do_grapple),
+            CharVar::GrappleAiming => B(c.is_aiming() && c.is_do_grapple()),
             CharVar::AttackVariationX => F(v.attack_variation_x),
             CharVar::AttackVariationY => F(v.attack_variation_y),
             CharVar::SneakLimpSpeedScale => F(v.sneak_limp_speed_scale),
@@ -1554,4 +1564,36 @@ impl<I: 'static> GameCharacter<I> {
 /// `String.valueOf(float)` for callers formatting variable values.
 pub fn float_string(f: f32) -> String {
     java_float_to_string(f)
+}
+
+/// `ClimbSheetRopeState.ClimbData` (kept on the character from its first
+/// rope climb on).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClimbData {
+    pub target_climb_height: i32,
+    pub fall_chance: f32,
+    pub idealx: f32,
+    pub idealy: f32,
+    pub target_fall_height: f32,
+    /// `climbTargetIsoObject`.
+    pub climb_target: Option<pz_pathfind::mover::ObjectRef>,
+    /// `targetGridSquare`.
+    pub target_square: Option<(i32, i32, i32)>,
+    /// `exitBlocked` (`None`: `null`).
+    pub exit_blocked: Option<super::SheetRopeExit>,
+}
+
+impl Default for ClimbData {
+    fn default() -> Self {
+        ClimbData {
+            target_climb_height: 0,
+            fall_chance: 0.0,
+            idealx: 0.0,
+            idealy: 0.0,
+            target_fall_height: f32::MAX,
+            climb_target: None,
+            target_square: None,
+            exit_blocked: None,
+        }
+    }
 }

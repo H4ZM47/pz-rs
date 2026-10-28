@@ -222,6 +222,7 @@ impl ScriptBucketCollection {
         for m in modules {
             let bucket = m.bucket(self.script_type);
             bucket.load_scripts(sm, mode);
+            if sm.texture_capture_aborted() { return Ok(()); }
             {
                 let mut lf = self.load_files.borrow_mut();
                 for f in bucket.load_files() {
@@ -331,6 +332,9 @@ pub struct ModScriptDirs {
 pub struct ScriptManager {
     /// `Core.debug`.
     pub debug: bool,
+    pub(crate) texture_capture_enabled: Cell<bool>,
+    pub(crate) texture_host_fault: RefCell<Option<pz_render::TextureHostError>>,
+    pub(crate) texture_load_operation_depth: Cell<usize>,
     current_file_name: RefCell<Option<String>>,
     load_file_names: RefCell<Vec<String>>,
     module_map: RefCell<JHashMap<Rc<ScriptModule>>>,
@@ -355,6 +359,7 @@ pub struct ScriptManager {
     pub statics: crate::objects::Statics,
     /// `Registries` (the original's static registries).
     pub registries: crate::registry::Registries,
+    native_item_keys: Option<crate::native_item_keys::NativeItemKeyStaticsRef>,
     /// Built-in name tables (perks, ragdoll bones, vehicle enums).
     pub builtin_tables: RefCell<crate::registry::builtin::BuiltinTables>,
 }
@@ -369,6 +374,9 @@ impl ScriptManager {
     pub fn new() -> Self {
         ScriptManager {
             debug: false,
+            texture_capture_enabled: Cell::new(false),
+            texture_host_fault: RefCell::new(None),
+            texture_load_operation_depth: Cell::new(0),
             current_file_name: RefCell::default(),
             load_file_names: RefCell::default(),
             module_map: RefCell::default(),
@@ -390,15 +398,37 @@ impl ScriptManager {
             log: RefCell::default(),
             statics: Default::default(),
             registries: Default::default(),
+            native_item_keys: None,
             builtin_tables: Default::default(),
         }
+    }
+
+    /// Production class-global item keys; `new` is the independent data profile.
+    pub fn with_native_item_key_statics(keys: &crate::native_item_keys::NativeItemKeyStaticsRef) -> Self {
+        let mut sm = Self::new();
+        sm.registries.replace_ref("item_tag", keys.registry("item_tag").expect("tag registry"));
+        sm.registries.replace_ref("item_type", keys.registry("item_type").expect("type registry"));
+        sm.native_item_keys = Some(Rc::clone(keys));
+        sm
+    }
+
+    pub fn native_item_key_statics(&self) -> Option<&crate::native_item_keys::NativeItemKeyStaticsRef> {
+        self.native_item_keys.as_ref()
+    }
+
+    /// Only the genuine RegistryReset.resetAll callers invoke this, before
+    /// ScriptManager.Reset. Ordinary script loads do not reset class globals.
+    pub fn try_reset_native_item_key_registries(&self) -> Result<(), crate::native_item_keys::ScriptAccessError> {
+        let keys = self.native_item_keys.as_ref().ok_or(crate::native_item_keys::ScriptAccessError::Unsupported("offline item key statics"))?;
+        keys.try_reset()
     }
 
     /// Registers the game's built-in registry keys, read from the installed
     /// `projectzomboid.jar` (the `Registries` bootstrap).
     pub fn load_builtin_registries(&self, jar_path: &Path) -> ScriptResult {
         let jar = pz_classfile::Jar::open(jar_path).map_err(|e| ScriptError::new(format!("{}: {e}", jar_path.display())))?;
-        crate::registry::builtin::register_builtin(&self.registries, &jar)?;
+        crate::registry::builtin::register_builtin_except(&self.registries, &jar,
+            if self.native_item_keys.is_some() { &["item_tag", "item_type"] } else { &[] })?;
         *self.builtin_tables.borrow_mut() = crate::registry::builtin::BuiltinTables::load(&jar)?;
         crate::objects::items::load_builtin_constants(self, jar_path)
     }
@@ -603,6 +633,53 @@ impl ScriptManager {
         }
     }
 
+    /// Fallible counterpart of the native module lookup used by actual
+    /// runtime predicates. No borrowed map is converted to missing data.
+    pub fn try_get_module(&self, name: &str) -> Result<Option<Rc<ScriptModule>>, crate::native_item_keys::ScriptAccessError> {
+        self.try_get_module_depth(name, 0)
+    }
+    fn try_get_module_depth(&self, name: &str, depth: usize) -> Result<Option<Rc<ScriptModule>>, crate::native_item_keys::ScriptAccessError> {
+        use crate::native_item_keys::ScriptAccessError as E;
+        if depth >= 64 { return Err(E::Unsupported("script module recursion boundary")); }
+        if java::trim(name) == BASE || name.starts_with(BASE_MODULE) {
+            return Ok(self.module_map.try_borrow().map_err(|_| E::Borrowed("script module map"))?.get(BASE).cloned());
+        }
+        if let Some(module) = self.cached_modules.try_borrow().map_err(|_| E::Borrowed("script module cache"))?.get(name).cloned() {
+            return Ok(Some(module));
+        }
+        let name = self.module_aliases.try_borrow().map_err(|_| E::Borrowed("script module aliases"))?.get(name).cloned().unwrap_or_else(|| name.to_owned());
+        if let Some(module) = self.cached_modules.try_borrow().map_err(|_| E::Borrowed("script module cache"))?.get(&name).cloned() {
+            return Ok(Some(module));
+        }
+        let module = self.module_map.try_borrow().map_err(|_| E::Borrowed("script module map"))?.get(&name).cloned().filter(|module| !module.is_disabled());
+        let module = match module {
+            Some(module) => Some(module),
+            None if name.contains('.') => self.try_get_module_depth(name.split_once('.').unwrap().0, depth + 1)?,
+            None => None,
+        };
+        if let Some(module) = module {
+            self.cached_modules.try_borrow_mut().map_err(|_| E::Borrowed("script module cache"))?.insert(name, Rc::clone(&module));
+            return Ok(Some(module));
+        }
+        Ok(self.module_map.try_borrow().map_err(|_| E::Borrowed("script module map"))?.get(BASE).cloned())
+    }
+
+    pub fn try_get_script(&self, kind: ScriptType, name: &str) -> Result<Option<ScriptRef>, crate::native_item_keys::ScriptAccessError> {
+        self.try_get_script_depth(kind, name, 0)
+    }
+    pub(crate) fn try_get_script_depth(&self, kind: ScriptType, name: &str, depth: usize) -> Result<Option<ScriptRef>, crate::native_item_keys::ScriptAccessError> {
+        use crate::native_item_keys::ScriptAccessError as E;
+        if depth >= 64 { return Err(E::Unsupported("script import recursion boundary")); }
+        let collection = self.collection(kind);
+        if kind.has_flag(Flag::CacheFullType) && name.contains('.') {
+            if let Some(script) = collection.full_type_to_script_map.try_borrow().map_err(|_| E::Borrowed("script full type map"))?.get(name).cloned() {
+                return Ok(Some(script));
+            }
+        }
+        let Some(module) = self.try_get_module(if name.contains('.') { name } else { BASE })? else { return Ok(None) };
+        module.bucket(kind).try_get_depth(self, &module, Self::get_item_name(name), depth)
+    }
+
     /// `getModuleNoDisableCheck`.
     pub fn get_module_no_disable_check(&self, name: &str) -> Option<Rc<ScriptModule>> {
         let mut name = name.to_string();
@@ -742,8 +819,10 @@ impl ScriptManager {
         self.resolve_active_file(rel).is_some()
     }
 
-    /// `ScriptManager.Load()`: reads every script file of the game and the
-    /// given mods (in load order), then loads all script types.
+    /// Legacy script parser/data entry. With a fresh manager, texture fields
+    /// remain explicitly uncaptured. Real asset hosts use load_with_textures;
+    /// they must consume its typed first-fault result before continuing boot.
+    /// Reads files/mods in load order, then loads all script types.
     pub fn load(&self, fs: &GameFs, mods: &[ModScriptDirs]) -> ScriptResult {
         self.load_file_names.borrow_mut().clear();
         self.temp_file_to_mod_map.borrow_mut().clear();
@@ -757,6 +836,7 @@ impl ScriptManager {
             self.log_exception(&e);
         }
         self.load_scripts(ScriptLoadMode::Init, ScriptType::ALL);
+        if self.texture_capture_aborted() { return Ok(()); }
         if self.debug && self.has_load_errors(false) {
             return Err(ScriptError::new("java.io.IOException: Script load errors."));
         }
@@ -818,6 +898,7 @@ impl ScriptManager {
 
     fn load_scripts(&self, mode: ScriptLoadMode, types: &[ScriptType]) {
         if let Err(e) = self.load_scripts_inner(mode, types) {
+            if self.texture_capture_aborted() { return; }
             self.log_exception(&e);
             self.has_load_errors.set(true);
         }
@@ -845,6 +926,7 @@ impl ScriptManager {
         }
         for c in self.collections.iter().filter(selected) {
             c.load_scripts(self, mode)?;
+            if self.texture_capture_aborted() { return Ok(()); }
         }
         for c in self.collections.iter().filter(selected) {
             c.post_load_scripts(self, mode)?;
@@ -898,6 +980,11 @@ impl ScriptManager {
 
     /// `Reset`.
     pub fn reset(&self) {
+        // A native reset inside a currently failing/nested load cannot erase
+        // the host fault which the outer operation still must surface.
+        if self.texture_load_operation_depth.get() == 0 {
+            *self.texture_host_fault.borrow_mut() = None;
+        }
         for m in self.module_list.borrow().iter() {
             m.reset();
         }

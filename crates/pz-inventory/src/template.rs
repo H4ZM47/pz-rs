@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use std::cell::RefCell;
 
-use pz_scripts::objects::items::{Item, ItemReplacement, ModelWeaponPart};
+use pz_scripts::objects::items::{Item, ItemReplacement, ItemType, ModelWeaponPart};
 use pz_scripts::ScriptManager;
 
 /// A shared script item (`ScriptManager.FindItem`), compared by identity.
@@ -116,6 +116,9 @@ impl ItemClass {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemTemplate {
     pub class: ItemClass,
+    /// The subclass constructor's canonical `ItemType`, copied into each
+    /// new item. Some constructors leave it null; WeaponPart uses WEAPON.
+    pub item_type: Option<Rc<pz_scripts::registry::RegistryKey>>,
     /// `getModule().name`.
     pub module: String,
     /// `name` (the item's `type`).
@@ -123,6 +126,10 @@ pub struct ItemTemplate {
     /// `displayName`: the item's `originalName`.
     pub display_name: String,
     pub icon: Option<String>,
+    /// `IconsForTexture`.
+    pub icons_for_texture: Option<Vec<String>>,
+    /// Actual script texture capture; None is an explicit uncaptured profile.
+    pub texture_capture: Option<crate::item_texture::CapturedScriptTextures>,
     pub condition_max: i32,
     /// `Item.spriteName` (`Clothing.spriteName` at creation).
     pub sprite_name: Option<String>,
@@ -175,10 +182,17 @@ pub struct ItemTemplate {
     pub thirst_change: f32,
     pub endurance_change: f32,
     pub poison_power: i32,
+    pub poison: bool,
+    pub poison_detection_level: i32,
+    pub herbalist_type: Option<String>,
     pub on_eat: Option<String>,
     pub days_fresh: i32,
     pub days_totally_rotten: i32,
+    /// Item.InstanceItem setReplaceOnRotten input; copied to the instance.
+    pub replace_on_rotten: Option<String>,
     pub is_cookable: bool,
+    /// Script input to Item.InstanceItem PC632, before float conversion.
+    pub minutes_to_cook: i32,
     pub dangerous_uncooked: bool,
     pub good_hot: bool,
     pub bad_cold: bool,
@@ -269,6 +283,11 @@ pub struct ItemTemplate {
     pub carbohydrates: f32,
     /// `Literature.setNumberOfPages(numberOfPages)` at creation.
     pub number_of_pages: i32,
+    pub lvl_skill_trained: i32,
+    pub num_levels_trained: i32,
+    pub skill_trained: Option<String>,
+    pub can_be_write: bool,
+    pub page_to_write: i32,
     /// `maxCapacity` (`setMaxCapacity` at creation).
     pub max_capacity: i32,
     /// `conditionAffectsCapacity` (read through `getScriptItem()`).
@@ -380,10 +399,13 @@ impl ItemTemplate {
     pub fn new(class: ItemClass, module: &str, type_: &str) -> Self {
         ItemTemplate {
             class,
+            item_type: None,
             module: module.into(),
             type_: type_.into(),
             display_name: type_.into(),
             icon: None,
+            icons_for_texture: None,
+            texture_capture: None,
             condition_max: 10,
             sprite_name: None,
             weapon_sprite: None,
@@ -419,10 +441,15 @@ impl ItemTemplate {
             thirst_change: 0.0,
             endurance_change: 0.0,
             poison_power: 0,
+            poison: false,
+            poison_detection_level: 0,
+            herbalist_type: None,
             on_eat: None,
             days_fresh: 1_000_000_000,
             days_totally_rotten: 1_000_000_000,
+            replace_on_rotten: None,
             is_cookable: false,
+            minutes_to_cook: 60,
             dangerous_uncooked: false,
             good_hot: false,
             bad_cold: false,
@@ -487,6 +514,11 @@ impl ItemTemplate {
             lipids: 0.0,
             carbohydrates: 0.0,
             number_of_pages: -1,
+            lvl_skill_trained: -1,
+            num_levels_trained: 1,
+            skill_trained: Some(String::new()),
+            can_be_write: false,
+            page_to_write: 0,
             max_capacity: -1,
             condition_affects_capacity: false,
             vehicle_part: VehiclePartStats::default(),
@@ -538,6 +570,20 @@ impl ItemTemplate {
             .and_then(|f| ItemClass::from_item_type_field(f))?;
         let full = item.module_dot_type.clone();
         let (module, type_) = full.split_once('.').unwrap_or(("Base", full.as_str()));
+        let type_field = match class {
+            ItemClass::Normal | ItemClass::Drainable | ItemClass::Map => None,
+            ItemClass::WeaponPart | ItemClass::Weapon => Some("WEAPON"),
+            ItemClass::Key => Some("KEY"),
+            ItemClass::Container => Some("CONTAINER"),
+            ItemClass::Food => Some("FOOD"),
+            ItemClass::Literature => Some("LITERATURE"),
+            ItemClass::AlarmClock => Some("ALARM_CLOCK"),
+            ItemClass::AlarmClockClothing => Some("ALARM_CLOCK_CLOTHING"),
+            ItemClass::Clothing => Some("CLOTHING"),
+            ItemClass::Radio => Some("RADIO"),
+            ItemClass::Moveable => Some("MOVEABLE"),
+            ItemClass::Animal => Some("ANIMAL"),
+        };
         let keys = |k: &pz_scripts::objects::items::KeySet| {
             k.iter()
                 .flatten()
@@ -546,10 +592,23 @@ impl ItemTemplate {
         };
         Some(Rc::new(ItemTemplate {
             class,
+            item_type: type_field.and_then(|field| ItemType::constant(sm, field)),
             module: module.to_string(),
             type_: type_.to_string(),
             display_name: item.display_name.clone().unwrap_or_default(),
             icon: item.icon.clone(),
+            icons_for_texture: item.icons_for_texture.clone(),
+            texture_capture: item.texture_capture_complete().then(|| {
+                let mut captured = crate::item_texture::CapturedScriptTextures::new(
+                    item.normal_texture_slot().cloned(),
+                    item.special_texture_slots().to_vec(),
+                );
+                captured.world_name = item.world_texture_name.clone();
+                captured.special_world_names = item.special_world_texture_names.clone();
+                captured.color_mask_name = item.icon_color_mask.clone();
+                captured.fluid_mask_name = item.icon_fluid_mask.clone();
+                captured
+            }),
             condition_max: item.condition_max,
             sprite_name: item.sprite_name.clone(),
             weapon_sprite: item.weapon_sprite.clone(),
@@ -588,10 +647,15 @@ impl ItemTemplate {
             thirst_change: item.thirst_change,
             endurance_change: item.endurance_change,
             poison_power: item.poison_power,
+            poison: item.poison,
+            poison_detection_level: item.poison_detection_level,
+            herbalist_type: item.herbalist_type.clone(),
             on_eat: item.on_eat.clone(),
             days_fresh: item.days_fresh,
             days_totally_rotten: item.days_totally_rotten,
+            replace_on_rotten: item.replace_on_rotten.clone(),
             is_cookable: item.is_cookable,
+            minutes_to_cook: item.minutes_to_cook,
             dangerous_uncooked: item.dangerous_uncooked,
             good_hot: item.good_hot,
             bad_cold: item.bad_cold,
@@ -660,6 +724,11 @@ impl ItemTemplate {
             lipids: item.lipids,
             carbohydrates: item.carbohydrates,
             number_of_pages: item.number_of_pages,
+            lvl_skill_trained: item.lvl_skill_trained,
+            num_levels_trained: item.num_levels_trained,
+            skill_trained: item.skill_trained.clone(),
+            can_be_write: item.can_be_write,
+            page_to_write: item.page_to_write,
             max_capacity: item.max_capacity,
             condition_affects_capacity: item.condition_affects_capacity,
             vehicle_part: VehiclePartStats::from_script(item),

@@ -185,11 +185,18 @@ fn main() {
                             continue;
                         };
                         *counts.entry("squares").or_default() += 1;
-                        let id = sq.associated_building.map_or(-1, |b| {
+                        let id = sq.borrow().associated_building.map_or(-1, |b| {
                             *counts.entry("assoc").or_default() += 1;
                             grid.building_defs[b.0 as usize].id
                         });
-                        writeln!(assoc, " {},{},{} {id}", sq.x, sq.y, sq.z).unwrap();
+                        writeln!(
+                            assoc,
+                            " {},{},{} {id}",
+                            sq.borrow().x,
+                            sq.borrow().y,
+                            sq.borrow().z
+                        )
+                        .unwrap();
                     }
                 }
             }

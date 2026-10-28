@@ -17,6 +17,7 @@
 //! session loading the files written (`d3`). Writes `rust_d*.txt` to
 //! `<out dir>` and prints, per dump, whether it equals the oracle's.
 
+use pz_world::ObjectSlot;
 use std::path::Path;
 
 use pz_inventory::dictionary::WorldDictionary;
@@ -108,7 +109,7 @@ fn main() {
             for y in 0..8 {
                 for x in 0..8 {
                     if let Some(sq) = ch.get_grid_square_mut(x, y, z) {
-                        sq.recalc_properties(&sprites);
+                        sq.borrow_mut().recalc_properties(&sprites);
                     }
                 }
             }
@@ -118,12 +119,12 @@ fn main() {
     if let Ok(q) = std::env::var("SHOW_SQUARE") {
         let v: Vec<i32> = q.split(',').map(|x| x.parse().unwrap()).collect();
         if let Some(sq) = cell.get_grid_square(v[0], v[1], v[2]) {
-            for o in &sq.objects {
-                let sp = o.sprite.map(|s| &sprites.sprites[s]);
+            for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
+                let sp = o.sprite.tile_projection().map(|s| &sprites.sprites[s]);
                 let f = &sprites.tables.flag;
                 eprintln!(
                     "obj {:?} sprite={:?} kind={:?} cutW={:?} WindowW={:?} cut_n={:?}",
-                    o.sprite,
+                    o.sprite.tile_projection(),
                     sp.and_then(|s| s.name.clone()),
                     std::mem::discriminant(&o.kind),
                     sp.map(|s| s.properties.has(f.cutW)),
@@ -133,9 +134,9 @@ fn main() {
             }
             eprintln!(
                 "sq cutW={} WindowW={} flags={}",
-                sq.has(sprites.tables.flag.cutW),
-                sq.has(sprites.tables.flag.WindowW),
-                pz_world::isoregion::calculate_square_flags(Some(sq), &sprites)
+                sq.borrow().has(sprites.tables.flag.cutW),
+                sq.borrow().has(sprites.tables.flag.WindowW),
+                pz_world::isoregion::calculate_square_flags(Some(&sq.borrow()), &sprites)
             );
         }
         return;

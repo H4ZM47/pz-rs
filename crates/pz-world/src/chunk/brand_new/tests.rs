@@ -5,6 +5,7 @@ use crate::fix2x::Fix2xTable;
 use crate::java::GameRand;
 use crate::objects::{NoHooks, ObjectLoadSettings, ObjectTables};
 use crate::sprite::{test_tables, IsoSpriteManager};
+use crate::IsoGridSquare;
 
 #[test]
 fn corner_of_generation() {
@@ -20,7 +21,12 @@ fn chunks_cache_bounds_and_local_squares() {
     assert_eq!((c.min_chunk_x(), c.max_chunk_x()), (i32::MAX, i32::MIN));
     for (x, y) in [(-2, 4), (-2, 5), (-1, 4), (-1, 5)] {
         let mut ch = IsoChunk::new(x, y);
-        ch.set_square(1, 2, 0, Some(IsoGridSquare::new(x * 8 + 1, y * 8 + 2, 0)));
+        ch.set_square(
+            1,
+            2,
+            0,
+            Some((IsoGridSquare::new(x * 8 + 1, y * 8 + 2, 0)).into()),
+        );
         c.put(x, y, ch);
     }
     assert_eq!(c.coords(), [(-2, 4), (-2, 5), (-1, 4), (-1, 5)]);
@@ -28,7 +34,8 @@ fn chunks_cache_bounds_and_local_squares() {
     assert_eq!((c.min_chunk_y(), c.max_chunk_y()), (4, 5));
     assert_eq!((c.min_tile_x(), c.max_tile_x()), (-16, 0));
     assert_eq!((c.min_tile_y(), c.max_tile_y()), (32, 48));
-    let sq = c.get_grid_square(9, 10, 0).unwrap();
+    let sq_owner = c.get_grid_square(9, 10, 0).unwrap();
+    let sq = sq_owner.borrow();
     assert_eq!((sq.x, sq.y), (-7, 42));
     assert!(c.get_grid_square(9, 11, 0).is_none());
     assert!(c.get_grid_square(16, 2, 0).is_none());
@@ -90,6 +97,7 @@ fn run(wx: i32, wy: i32, gen: Option<&mut dyn BrandNewHook>) -> (IsoChunk, Vec<I
     let fix2x = Fix2xTable::default();
     let tables = ObjectTables::new(vec![1; 8], vec![(0, 0)]).unwrap();
     let mut env = ChunkLoadEnv {
+        blood_body_parts: 7,
         sprites: &mut sprites,
         fix2x: &fix2x,
         rand: &mut NoRand,

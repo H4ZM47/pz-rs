@@ -9,10 +9,13 @@ pub mod java;
 pub mod manager;
 pub mod math;
 pub mod module;
+pub mod native_item_keys;
 pub mod objects;
-pub mod parser;
+pub use pz_script_parser as parser;
 pub mod registry;
 pub mod script_type;
+pub mod texture_capture;
+pub use texture_capture::CapturedScriptLoadError;
 
 pub use base::{BaseScriptObject, ScriptError, ScriptObject, ScriptRef, ScriptResult};
 pub use manager::{ModScriptDirs, ScriptHooks, ScriptManager};

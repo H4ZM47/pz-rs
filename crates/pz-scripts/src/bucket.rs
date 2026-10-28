@@ -155,6 +155,13 @@ impl ScriptBucket {
         self.inner.borrow().script_map.values()
     }
 
+    /// Definitions encountered during script loading, including obsolete
+    /// or disabled scripts omitted from the runtime map. WorldDictionary
+    /// receives its callbacks before those filters run.
+    pub fn loaded_definitions(&self) -> Vec<ScriptRef> {
+        self.inner.borrow().load_data.values().map(|data| data.script.clone()).collect()
+    }
+
     pub fn script_map_get(&self, name: &str) -> Option<ScriptRef> {
         self.inner.borrow().script_map.get(name).cloned()
     }
@@ -361,6 +368,7 @@ impl ScriptBucket {
         for name in names {
             let r = self.load_one(sm, mode, &name);
             sm.set_current_script_object(None);
+            if sm.texture_capture_aborted() { return; }
             if let Err(e) = r {
                 sm.log_exception(&e);
                 self.set_load_error();
@@ -397,6 +405,9 @@ impl ScriptBucket {
                 script.borrow_mut().reset();
             }
             let r = script.borrow_mut().load(sm, &data_name, body);
+            // A typed host capability fault is neither a native parse error
+            // nor a successful definition: stop before diagnostics/publication.
+            if sm.texture_capture_aborted() { return Ok(()); }
             match r {
                 Ok(()) => {
                     sm.println(self.script_type, &format!(" - Load: '{data_name}' {}", script.borrow().base().debug_string()));
@@ -451,6 +462,25 @@ impl ScriptBucket {
     /// manager; otherwise the local map, then each imported module.
     pub fn get(&self, sm: &ScriptManager, module: &ScriptModule, name: &str) -> Option<ScriptRef> {
         self.get_depth(sm, module, name, 0)
+    }
+
+    pub(crate) fn try_get_depth(&self, sm: &ScriptManager, module: &ScriptModule, name: &str, depth: usize) -> Result<Option<ScriptRef>, crate::native_item_keys::ScriptAccessError> {
+        use crate::native_item_keys::ScriptAccessError as E;
+        if depth >= MAX_IMPORT_DEPTH { return Err(E::Unsupported("script import recursion boundary")); }
+        if name.contains('.') && !self.inner.try_borrow().map_err(|_| E::Borrowed("script bucket"))?.dot_in_name.contains(name) {
+            return sm.try_get_script_depth(self.script_type, name, depth + 1);
+        }
+        if let Some(script) = self.inner.try_borrow().map_err(|_| E::Borrowed("script bucket"))?.script_map.get(name).cloned() {
+            return Ok(Some(script));
+        }
+        if self.script_type.has_flag(Flag::SeekImports) {
+            let imports = module.imports.try_borrow().map_err(|_| E::Borrowed("script module imports"))?.clone();
+            for module_name in imports {
+                let Some(import) = sm.try_get_module(&module_name)? else { continue };
+                if let Some(script) = import.bucket(self.script_type).try_get_depth(sm, &import, name, depth + 1)? { return Ok(Some(script)); }
+            }
+        }
+        Ok(None)
     }
 
     fn get_depth(&self, sm: &ScriptManager, module: &ScriptModule, name: &str, depth: usize) -> Option<ScriptRef> {

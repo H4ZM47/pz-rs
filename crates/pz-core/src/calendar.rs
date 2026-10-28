@@ -47,6 +47,23 @@ impl JavaZone {
         }
     }
 
+    /// The tz database's abbreviation for the zone at an instant (`CST`,
+    /// `CDT`, or a numeric one such as `+03`).
+    pub fn abbreviation_at(&self, utc_ms: i64) -> String {
+        match Timestamp::from_millisecond(utc_ms) {
+            Ok(ts) => self.0.to_offset_info(ts).abbreviation().to_string(),
+            Err(_) => String::new(),
+        }
+    }
+
+    /// Whether daylight saving time is in effect at an instant.
+    pub fn is_dst_at(&self, utc_ms: i64) -> bool {
+        match Timestamp::from_millisecond(utc_ms) {
+            Ok(ts) => self.0.to_offset_info(ts).dst().is_dst(),
+            Err(_) => false,
+        }
+    }
+
     /// The offset `GregorianCalendar.computeTime` subtracts from a wall
     /// time (milliseconds since the local epoch). In a spring-forward gap
     /// the offset before the transition applies, so the time moves forward;

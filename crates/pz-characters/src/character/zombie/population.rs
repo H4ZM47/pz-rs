@@ -190,7 +190,7 @@ pub fn real_zombie_info<I: 'static>(z: &GameCharacter<I>, ctx: &dyn SimContext, 
             can_walk: z.zombie.can_walk,
             fake_dead: z.zombie.fake_dead && ctx.lore_disable_fake_dead() != 3,
             can_crawl_under_vehicle: z.zombie.can_crawl_under_vehicle,
-            reanimated_for_grapple_only: z.zombie.reanimated_for_grapple_only,
+            reanimated_for_grapple_only: z.zombie.is_reanimated_for_grapple_only(),
         },
         path_target_x: px,
         path_target_y: py,
@@ -203,12 +203,20 @@ pub fn real_zombie_info<I: 'static>(z: &GameCharacter<I>, ctx: &dyn SimContext, 
 /// `pz_world_popman::ZombieOps` over real zombies: the world's zombie list
 /// and what creating, pathing and killing them needs. The zombie handle is
 /// the character id.
-pub struct RealZombies<'a, I: 'static> {
+///
+/// `W` is the world's [`StateWorld`](crate::character::state::StateWorld)
+/// type. A concrete adapter lets the population host read the same cell
+/// through [`world`](Self::world) while it holds these ops, instead of a
+/// second borrow of the cell next to the mutable one.
+pub struct RealZombies<'a, I: 'static, W: crate::character::state::StateWorld<I>> {
     pub sm: &'a ScriptManager,
-    pub chars: &'a crate::Characters,
+    /// Borrowed only while a zombie is pathed, killed or removed, so
+    /// [`Self::create_survivor`] may borrow it mutably
+    /// (`SurvivorFactory.CreateSurvivor` counts descriptor ids).
+    pub chars: &'a std::cell::RefCell<crate::Characters>,
     pub ctx: &'a dyn SimContext,
     /// The rest of the world (path finding, corpses).
-    pub world: &'a mut dyn crate::character::state::StateWorld<I>,
+    pub world: &'a mut W,
     /// The real zombies (`IsoCell.getZombieList()`).
     pub zombies: &'a mut Vec<GameCharacter<I>>,
     /// The next `IsoMovingObject` id.
@@ -226,7 +234,7 @@ pub struct RealZombies<'a, I: 'static> {
     pub removed: Vec<GameCharacter<I>>,
 }
 
-impl<I: 'static> RealZombies<'_, I> {
+impl<I: 'static, W: crate::character::state::StateWorld<I>> RealZombies<'_, I, W> {
     fn find(&mut self, id: i32) -> Option<usize> {
         self.zombies.iter().position(|z| z.id == id)
     }
@@ -235,7 +243,8 @@ impl<I: 'static> RealZombies<'_, I> {
         let i = self.find(id)?;
         let mut z = self.zombies.remove(i);
         let r = {
-            let mut cx = StateCx::new(self.sm, self.chars, self.ctx, &mut *self.world);
+            let chars = self.chars.borrow();
+            let mut cx = StateCx::new(self.sm, &chars, self.ctx, &mut *self.world);
             f(&mut z, &mut cx)
         };
         self.zombies.insert(i, z);
@@ -243,7 +252,7 @@ impl<I: 'static> RealZombies<'_, I> {
     }
 }
 
-impl<I: 'static> RealZombies<'_, I> {
+impl<I: 'static, W: crate::character::state::StateWorld<I>> RealZombies<'_, I, W> {
     /// The zombie list as `updateRealZombies` packs it.
     pub fn infos(&self) -> Vec<RealZombieInfo<i32>> {
         self.zombies.iter().map(|z| real_zombie_info(z, self.ctx, &*self.world)).collect()
@@ -276,7 +285,7 @@ impl<I: 'static> RealZombies<'_, I> {
     }
 }
 
-impl<I: 'static> pz_world_popman::ZombieOps for RealZombies<'_, I> {
+impl<I: 'static, W: crate::character::state::StateWorld<I>> pz_world_popman::ZombieOps for RealZombies<'_, I, W> {
     type Zombie = i32;
 
     /// `createRealZombieAlways(outfit, dir, false, persistentId)` with
@@ -339,7 +348,7 @@ impl<I: 'static> pz_world_popman::ZombieOps for RealZombies<'_, I> {
     }
     fn set_reanimated_for_grapple_only(&mut self, z: i32, v: bool) {
         if let Some(i) = self.find(z) {
-            self.zombies[i].zombie.reanimated_for_grapple_only = v;
+            self.zombies[i].zombie.set_reanimated_for_grapple_only(v);
         }
     }
     fn path_to(&mut self, z: i32, x: i32, y: i32) {

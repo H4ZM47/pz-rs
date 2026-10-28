@@ -6,13 +6,35 @@
 //! an [`ObjectKind`] with the class-specific state. Rendering, sound,
 //! networking and update-loop state are not represented.
 
-use crate::chunk::IsoGridSquare;
 use crate::defs::RoomDef;
 use crate::save::items::ItemBlob;
 use crate::save::lua_table::LuaTable;
 use crate::save::movers::{AnimalTracks, IsoPushableObject};
-use crate::save::visual::HumanVisual;
+use crate::save::visual::{HumanVisual, ItemVisual};
+pub use crate::sprite::runtime::ObjectSprite;
 use crate::sprite::SpriteIdx;
+
+/// Runtime-only owning square slot. Rust archive copies detach this owner;
+/// native field assignment/retention is always explicit.
+#[derive(Default)]
+pub struct ObjectSquare(Option<crate::SquareRef>);
+impl std::fmt::Debug for ObjectSquare {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ObjectSquare")
+            .field(&self.0.as_ref().map(std::rc::Rc::as_ptr))
+            .finish()
+    }
+}
+impl Clone for ObjectSquare {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+impl PartialEq for ObjectSquare {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
 
 /// Identity of an object within its square (stands in for Java object
 /// identity, e.g. for `specialObjects`).
@@ -258,7 +280,7 @@ pub struct IsoWorldInventoryObject {
     pub zoff: f32,
     pub offset_x: f32,
     pub offset_y: f32,
-    pub item: ItemBlob,
+    pub item: crate::floor_item::FloorItem,
     pub drop_time: f64,
     pub ignore_remove_sandbox: bool,
     pub extended_placement: bool,
@@ -479,21 +501,39 @@ pub struct IsoCarBatteryCharger {
 pub use crate::fire::IsoFire;
 
 /// `IsoMannequin`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct IsoMannequin {
     pub dir: i8,
     pub init: bool,
     pub female: bool,
     pub zombie: bool,
     pub skeleton: bool,
-    pub mannequin_script_name: String,
-    pub pose: String,
+    pub mannequin_script_name: Option<String>,
+    pub pose: Option<String>,
     pub human_visual: HumanVisual,
+    /// Runtime script/model properties resolved by `initOutfit` and
+    /// `syncModel`; the chunk codec does not write these fields separately.
+    pub model_script_name: Option<String>,
+    pub texture_name: Option<String>,
+    pub anim_set: Option<String>,
+    pub anim_state: Option<String>,
+    pub outfit: Option<String>,
+    pub item_visuals: Vec<ItemVisual>,
+    /// A loaded visual without an explicit texture needs the real host skin
+    /// list/RNG getter before activation. No placeholder style is selected.
+    pub pending_loaded_skin_resolution: bool,
     /// The mannequin's container (saved after the visual, not with the
     /// `IsoObject` containers) and its worn items as
     /// `(body location, index into the saved items)`.
     pub container: Option<ItemContainer>,
     pub worn_items: Vec<(String, i16)>,
+    /// Once installed this is authoritative; legacy codec fields above are
+    /// cleared. Normal factory-created clothing keeps its actual owner.
+    pub runtime_container: Option<pz_inventory::shared::ContainerRef>,
+    /// The real host attaches its canonical Human-group worn collection.
+    /// It remains absent until that dependency is available, rather than
+    /// creating a separate body-location registry in the world codec.
+    pub runtime_worn_items: Option<pz_inventory::worn_items::InventoryWornItemsRef>,
 }
 
 /// The class of a map object and its class-specific state.
@@ -521,11 +561,11 @@ pub enum ObjectKind {
     Radio(DeviceData),
     /// `IsoTelevision` (an `IsoWaveSignal`).
     Television(DeviceData),
-    /// `IsoMannequin`; `None` until loaded or initialised (map loading
-    /// does not fill it).
-    Mannequin(Option<Box<IsoMannequin>>),
+    /// `IsoMannequin` always owns its constructor visual/worn state.
+    /// `init` distinguishes whether `initOutfit` has run.
+    Mannequin(Box<IsoMannequin>),
     Tree(IsoTree),
-    WorldInventory(Box<IsoWorldInventoryObject>),
+    WorldInventory(crate::floor_object::FloorObject),
     Thumpable(Box<IsoThumpable>),
     BrokenGlass,
     ButcherHook,
@@ -546,6 +586,47 @@ pub enum ObjectKind {
 }
 
 impl ObjectKind {
+    /// Exact class paths authenticated against installed JAR entries. This
+    /// immutable allocation stamp can be published before any owner cycles.
+    pub fn native_class_name(&self) -> &'static str {
+        match self.class_name() {
+            "IsoObject" => "zombie.iso.IsoObject",
+            "IsoPushableObject" => "zombie.iso.IsoPushableObject",
+            "IsoButcherHook" => "zombie.iso.IsoButcherHook",
+            "IsoAnimalTrack" => "zombie.iso.objects.IsoAnimalTrack",
+            "IsoBarbecue" => "zombie.iso.objects.IsoBarbecue",
+            "IsoBarricade" => "zombie.iso.objects.IsoBarricade",
+            "IsoBrokenGlass" => "zombie.iso.objects.IsoBrokenGlass",
+            "IsoCarBatteryCharger" => "zombie.iso.objects.IsoCarBatteryCharger",
+            "IsoClothingDryer" => "zombie.iso.objects.IsoClothingDryer",
+            "IsoClothingWasher" => "zombie.iso.objects.IsoClothingWasher",
+            "IsoCombinationWasherDryer" => "zombie.iso.objects.IsoCombinationWasherDryer",
+            "IsoCompost" => "zombie.iso.objects.IsoCompost",
+            "IsoCurtain" => "zombie.iso.objects.IsoCurtain",
+            "IsoDoor" => "zombie.iso.objects.IsoDoor",
+            "IsoFeedingTrough" => "zombie.iso.objects.IsoFeedingTrough",
+            "IsoFire" => "zombie.iso.objects.IsoFire",
+            "IsoFireplace" => "zombie.iso.objects.IsoFireplace",
+            "IsoGenerator" => "zombie.iso.objects.IsoGenerator",
+            "IsoHutch" => "zombie.iso.objects.IsoHutch",
+            "IsoJukebox" => "zombie.iso.objects.IsoJukebox",
+            "IsoLightSwitch" => "zombie.iso.objects.IsoLightSwitch",
+            "IsoMannequin" => "zombie.iso.objects.IsoMannequin",
+            "IsoRadio" => "zombie.iso.objects.IsoRadio",
+            "IsoStackedWasherDryer" => "zombie.iso.objects.IsoStackedWasherDryer",
+            "IsoStove" => "zombie.iso.objects.IsoStove",
+            "IsoTelevision" => "zombie.iso.objects.IsoTelevision",
+            "IsoThumpable" => "zombie.iso.objects.IsoThumpable",
+            "IsoTrap" => "zombie.iso.objects.IsoTrap",
+            "IsoTree" => "zombie.iso.objects.IsoTree",
+            "IsoWheelieBin" => "zombie.iso.objects.IsoWheelieBin",
+            "IsoWindow" => "zombie.iso.objects.IsoWindow",
+            "IsoWindowFrame" => "zombie.iso.objects.IsoWindowFrame",
+            "IsoWorldInventoryObject" => "zombie.iso.objects.IsoWorldInventoryObject",
+            _ => unreachable!("ObjectKind class stamp must cover every native class"),
+        }
+    }
+
     /// The Java class name.
     pub fn class_name(&self) -> &'static str {
         match self {
@@ -702,17 +783,26 @@ pub struct OverlaySprite {
 }
 
 pub use pz_inventory::component::ComponentBlob;
+pub use pz_inventory::ItemComponents;
+
+/// Explicit continuation left by the existing data/renderer projection. These
+/// are not successful native Sprite operations or serialized game fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloorVisualTail {
+    ConstructorCreateSprite,
+    ConstructorUpdateSprite,
+    LoadedTextureAndSprite,
+}
 
 /// `IsoObject` plus its class.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct IsoObject {
     pub id: ObjectId,
     pub kind: ObjectKind,
-    pub sprite: Option<SpriteIdx>,
-    /// The id of a sprite the object holds that `IsoSpriteManager` does not
-    /// know (`IsoSprite.CreateSprite` gives such sprites id 20000000).
-    /// Only used when `sprite` is `None`.
-    pub sprite_id_override: Option<i32>,
+    pub sprite: ObjectSprite,
+    square: ObjectSquare,
+    /// Native Sprite/texture work not represented by this data-profile object.
+    pub pending_floor_visual_tail: Option<FloorVisualTail>,
     /// `tile`: the map tile name the object was created from.
     pub tile: Option<String>,
     pub sx: f32,
@@ -727,8 +817,13 @@ pub struct IsoObject {
     /// Whether the entity hook gave the object components
     /// (`GameEntity.hasComponents`).
     pub has_components: bool,
-    /// The components as loaded from a chunk file.
-    pub components: Vec<ComponentBlob>,
+    /// Actual GameEntity lifecycle field; distinct from manager registration.
+    pub added_to_world_or_equipped: bool,
+    /// Distinct native manager membership; never inferred from components.
+    pub added_to_entity_manager: bool,
+    /// Sole component authority. Explicit archive imports may remain encoded;
+    /// a live component has one actual allocation and mutable body.
+    pub components: ItemComponents,
     pub name: Option<ObjectName>,
     pub sprite_name: Option<SpriteName>,
     pub custom_color: Option<[f32; 3]>,
@@ -749,13 +844,73 @@ pub struct IsoObject {
     pub reroute_collide: Option<ObjectId>,
 }
 
+// Rust archive copy: runtime square and entity registration flags are not
+// copied native ownership/lifecycle. Shared assets follow ObjectSprite policy.
+impl Clone for IsoObject {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            kind: self.kind.clone(),
+            sprite: self.sprite.clone(),
+            square: ObjectSquare::default(),
+            pending_floor_visual_tail: self.pending_floor_visual_tail.clone(),
+            tile: self.tile.clone(),
+            sx: self.sx.clone(),
+            attached_anim_sprite: self.attached_anim_sprite.clone(),
+            container: self.container.clone(),
+            secondary_containers: self.secondary_containers.clone(),
+            outline_on_mouseover: self.outline_on_mouseover.clone(),
+            tint_r: self.tint_r.clone(),
+            tint_g: self.tint_g.clone(),
+            tint_b: self.tint_b.clone(),
+            render_y_offset: self.render_y_offset.clone(),
+            has_components: self.has_components.clone(),
+            added_to_world_or_equipped: false,
+            added_to_entity_manager: false,
+            components: self.components.clone(),
+            name: self.name.clone(),
+            sprite_name: self.sprite_name.clone(),
+            custom_color: self.custom_color.clone(),
+            do_not_sync: self.do_not_sync.clone(),
+            wall_blood_splats: self.wall_blood_splats.clone(),
+            mod_data: self.mod_data.clone(),
+            special_tooltip: self.special_tooltip.clone(),
+            key_id: self.key_id.clone(),
+            uses_external_water_source: self.uses_external_water_source.clone(),
+            sheet_rope: self.sheet_rope.clone(),
+            sheet_rope_health: self.sheet_rope_health.clone(),
+            overlay_sprite: self.overlay_sprite.clone(),
+            moved_thumpable: self.moved_thumpable.clone(),
+            sprite_model_name: self.sprite_model_name.clone(),
+            reroute_collide: self.reroute_collide.clone(),
+        }
+    }
+}
+
 impl IsoObject {
+    pub fn square_slot(&self) -> Option<&crate::SquareRef> {
+        self.square.0.as_ref()
+    }
+    pub fn replace_square(
+        &mut self,
+        square: Option<&crate::SquareRef>,
+        retired: &mut pz_entity::RetiredComponents,
+    ) {
+        if let Some(old) = std::mem::replace(&mut self.square.0, square.cloned()) {
+            retired.push_owner(pz_entity::EntityOwner::from_ref(&old));
+        }
+    }
+    pub fn take_square_for_gc(&mut self) -> Option<crate::SquareRef> {
+        self.square.0.take()
+    }
+
     pub fn new(id: ObjectId, kind: ObjectKind, sprite: Option<SpriteIdx>) -> Self {
         IsoObject {
             id,
             kind,
-            sprite,
-            sprite_id_override: None,
+            sprite: ObjectSprite::from_tile(sprite),
+            square: ObjectSquare::default(),
+            pending_floor_visual_tail: None,
             tile: None,
             sx: 0.0,
             attached_anim_sprite: None,
@@ -767,7 +922,9 @@ impl IsoObject {
             tint_b: 1.0,
             render_y_offset: 0.0,
             has_components: false,
-            components: Vec::new(),
+            added_to_world_or_equipped: false,
+            added_to_entity_manager: false,
+            components: ItemComponents::new(),
             name: None,
             sprite_name: None,
             custom_color: None,
@@ -968,14 +1125,18 @@ pub trait ObjectLoadHooks {
     /// `IsoGridSquare.haveElectricity() || hasGridPower()` for a square in
     /// `room` (generators, sandbox power-grid timing, derelict and
     /// user-defined rooms, `NoPower` zones).
-    fn square_powered(&mut self, _sq: &IsoGridSquare, _room: &RoomDef) -> bool {
+    fn square_powered(&mut self, _sq: crate::SquareRef, _room: &RoomDef) -> bool {
         false
     }
 
     /// `GameEntityFactory.CreateIsoEntityFromCellLoading(obj)` for an object
     /// whose sprite has the `EntityScript` flag or both `IsMoveAble` and
     /// `CustomItem`. Returns whether components were added.
-    fn create_iso_entity(&mut self, _obj: &IsoObject, _rand: &mut dyn crate::GameRand) -> bool {
+    fn create_iso_entity(
+        &mut self,
+        _obj: crate::IsoObjectRef,
+        _rand: &mut dyn crate::GameRand,
+    ) -> bool {
         false
     }
 

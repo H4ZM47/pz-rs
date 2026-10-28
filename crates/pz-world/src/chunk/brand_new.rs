@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use super::{load_cell_binary_chunk, ChunkLoadEnv, IsoChunk, IsoGridSquare, LotCache};
+use super::{load_cell_binary_chunk, ChunkLoadEnv, IsoChunk, LotCache};
 use crate::meta_grid::IsoMetaGrid;
 
 /// `WorldGenUtils.getCornerOfGeneration(b)`: `Math.floorDiv(b, 2) * 2`, the
@@ -119,7 +119,7 @@ impl ChunksCache {
 
     /// `getGridSquare(localX, localY, localZ)`: tile coordinates relative to
     /// the cache's minimum tile.
-    pub fn get_grid_square(&self, local_x: i32, local_y: i32, z: i32) -> Option<&IsoGridSquare> {
+    pub fn get_grid_square(&self, local_x: i32, local_y: i32, z: i32) -> Option<crate::SquareRef> {
         let (k, x, y) = self.locate(local_x, local_y);
         self.chunks.get(&k)?.get_grid_square(x, y, z)
     }
@@ -129,7 +129,7 @@ impl ChunksCache {
         local_x: i32,
         local_y: i32,
         z: i32,
-    ) -> Option<&mut IsoGridSquare> {
+    ) -> Option<crate::SquareRef> {
         let (k, x, y) = self.locate(local_x, local_y);
         self.chunks.get_mut(&k)?.get_grid_square_mut(x, y, z)
     }

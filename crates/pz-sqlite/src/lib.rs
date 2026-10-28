@@ -24,6 +24,10 @@
 //! the game runs (see [`conn`]), with page allocation and the free list,
 //! b-tree splits and merges for table and index b-trees, overflow chains,
 //! header bookkeeping, and SQLite's rollback journal for atomic commits.
+//! New files use `auto_vacuum=NONE`. Writing an existing FULL/INCREMENTAL
+//! auto-vacuum database is unsupported and rejected on open, since its
+//! pointer-map pages require a different allocator and root-page handling.
+//! Such files remain supported by the read-only [`Database`] interface.
 
 mod btree;
 pub mod conn;

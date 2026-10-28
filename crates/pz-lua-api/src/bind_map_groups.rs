@@ -67,6 +67,25 @@ fn host() -> Rc<dyn MapGroupsHost> {
         .expect("MapGroups host installed by register")
 }
 
+/// `IsoMetaGrid.getLotDirectories()` with `Core.gameMap` "DEFAULT": `new
+/// MapGroups()`, `createGroups()`, and with exactly one group
+/// `setWorld(0)` (`Core.gameMap` becomes its directories joined by `;`).
+pub fn set_default_world() -> Result<(), LuaError> {
+    let h = host();
+    let mut g = MapGroups::new();
+    let dirs = |id: &str| h.mod_dirs(id);
+    g.create_groups(&h.current_game_mods(), &dirs, &h.maps_dir(), true, false);
+    if g.get_number_of_groups() != 1 {
+        return Err(LuaError::Runtime {
+            message: "GameMap is DEFAULT but there are multiple worlds to choose from".into(),
+            class: "java.lang.RuntimeException",
+        });
+    }
+    let name = g.world_map_name(0).map_err(LuaError::runtime)?;
+    crate::bind_core::shared_core().borrow_mut().game_map = name;
+    Ok(())
+}
+
 struct LuaMapGroups(RefCell<MapGroups>);
 
 impl LuaObject for LuaMapGroups {

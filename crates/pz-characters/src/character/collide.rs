@@ -89,6 +89,7 @@ impl<I: 'static> GameCharacter<I> {
     /// effects: a special object hit is `collideWith(obj)`,
     /// `setCollidedWithDoor(true)` for a door and `setCollidedObject(obj)`.
     pub fn test_collide_adjacent_with_mover(&mut self, from: (i32, i32, i32), d: (i32, i32, i32), cx: &mut StateCx<'_, I>) -> bool {
+        if cx.has_host_error() { return false; }
         let r = {
             let view = self.collide_view(cx);
             cx.world.test_collide_adjacent_mover(&view, PathMover::mover_id(self), from, d.0, d.1, d.2)
@@ -97,6 +98,7 @@ impl<I: 'static> GameCharacter<I> {
             let o = sp.object;
             let obj = ObjectRef { x: o.x, y: o.y, z: o.z, id: o.id };
             self.collide_with(obj, cx);
+            if cx.has_host_error() { return false; }
             if sp.door {
                 self.vars.collided_with_door = true;
             }
@@ -108,6 +110,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `collideWith(obj)`: `IsoZombie`'s, then `IsoMovingObject`'s (the
     /// `OnObjectCollide` Lua event, not raised here).
     pub fn collide_with(&mut self, obj: ObjectRef, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         if self.is_zombie() {
             self.zombie_collide_with(obj, cx);
         }

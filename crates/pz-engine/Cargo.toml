@@ -10,12 +10,14 @@ pz-lua-api.workspace = true
 pz-ui.workspace = true
 pz-fs.workspace = true
 pz-render.workspace = true
+pz-joml.workspace = true
 pz-gpu = { path = "../pz-gpu" }
 pz-character-model = { path = "../pz-character-model" }
 pz-model = { path = "../pz-model" }
 pz-anim.workspace = true
 pz-characters.workspace = true
 pz-inventory.workspace = true
+pz-entity.workspace = true
 pz-scripts.workspace = true
 pz-world.workspace = true
 pz-iso-render = { path = "../pz-iso-render" }
@@ -23,4 +25,20 @@ pz-world-render = { path = "../pz-world-render" }
 pz-input = { workspace = true, features = ["winit", "gilrs"] }
 pz-audio.workspace = true
 pz-sound = { path = "../pz-sound", features = ["studio"] }
+pz-classfile.workspace = true
+pz-erosion.workspace = true
+pz-pathfind.workspace = true
+pz-popman.workspace = true
+pz-sandbox.workspace = true
+pz-world-popman.workspace = true
+pz-worldgen.workspace = true
+pz-world-states = { path = "../pz-world-states" }
+pz-world-sound.workspace = true
+pz-player-input.workspace = true
+pz-lighting.workspace = true
+pz-text.workspace = true
+pz-clipper.workspace = true
 winit = "0.30"
+
+[dev-dependencies]
+pz-world = { workspace = true, features = ["test-util"] }

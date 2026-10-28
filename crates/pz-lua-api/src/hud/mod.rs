@@ -240,6 +240,17 @@ pub fn register(thread: &mut Thread) {
     m.static_fn("getSpeedControls", |c| {
         Ok(c.push(el_value(with_ui(|m| m.speed_controls.clone()))))
     });
+    // `setGameSpeed(newSpeed)`: `UIManager.getSpeedControls()
+    // .SetCurrentGameSpeed(newSpeed)`, nothing without speed controls.
+    crate::expose::global(thread, "setGameSpeed", |c| {
+        let speed = int_arg(c, 0);
+        if let Some(e) = with_ui(|m| m.speed_controls.clone()) {
+            if let Some(sc) = e.ext::<SpeedControls>() {
+                sc.set_current_game_speed(&e, speed);
+            }
+        }
+        Ok(0)
+    });
     m.static_fn("setSpeedControls", |c| {
         let e = element_of(&c.arg(0));
         with_ui(|m| m.speed_controls = e);
@@ -1866,8 +1877,8 @@ mod tests {
     }
     struct FakePicking;
     impl host::HudPicking for FakePicking {
-        fn picked_tile(&self) -> Option<pz_ui::tooltip::TooltipObject> {
-            PICKED.with(|p| p.borrow().clone())
+        fn picked_tile(&self) -> pz_kahlua::LuaResult<Option<pz_ui::tooltip::TooltipObject>> {
+            Ok(PICKED.with(|p| p.borrow().clone()))
         }
     }
 
@@ -1927,13 +1938,13 @@ mod tests {
                 square: Value::str("farm"),
             })
         });
-        tooltip::update_tooltip(&mut t, 400, 300);
+        tooltip::update_tooltip(&mut t, 400, 300).unwrap();
         assert_eq!(tt.life.borrow().object.as_ref().map(|o| o.id), Some(7));
         assert_eq!((tip.get_x(), tip.get_y()), (424.0, 324.0));
         // 15 updates of delay, then it shows and fades in.
         for _ in 0..16 {
             tip.update(&mut t);
-            tooltip::update_tooltip(&mut t, 400, 300);
+            tooltip::update_tooltip(&mut t, 400, 300).unwrap();
         }
         assert!(tip.is_visible() && tt.life.borrow().alpha > 0.0);
         UIManager::render(&mut t);
@@ -1948,7 +1959,7 @@ mod tests {
                 square: Value::str("other"),
             })
         });
-        tooltip::update_tooltip(&mut t, 400, 300);
+        tooltip::update_tooltip(&mut t, 400, 300).unwrap();
         for _ in 0..16 {
             tip.update(&mut t);
         }
@@ -1958,7 +1969,57 @@ mod tests {
         // Nothing picked: hidden.
         PICKED.with(|p| *p.borrow_mut() = None);
         tip.set_visible(true);
-        tooltip::update_tooltip(&mut t, 400, 300);
+        tooltip::update_tooltip(&mut t, 400, 300).unwrap();
+        assert!(!tip.is_visible());
+    }
+
+    #[test]
+    fn failed_world_pick_preserves_existing_tooltip_before_hide_or_reposition() {
+        struct FaultPicking;
+        impl host::HudPicking for FaultPicking {
+            fn picked_tile(&self) -> pz_kahlua::LuaResult<Option<pz_ui::tooltip::TooltipObject>> {
+                Err(pz_kahlua::LuaError::Runtime {
+                    class: "pz.host.Borrowed",
+                    message: "actual tooltip pick sprite".into(),
+                })
+            }
+        }
+        install_textures(&[]);
+        install(HudHost {
+            picking: Box::new(FaultPicking),
+            ..HudHost::default()
+        });
+        let mut t = thread();
+        let tip = tooltip::create_tooltip();
+        let tt = pz_ui::tooltip::ObjectTooltip::of(&tip).unwrap();
+        let object = pz_ui::tooltip::TooltipObject {
+            id: 77,
+            have_special_tooltip: true,
+            square: Value::str("prior"),
+        };
+        tt.show_object(&tip, object, 111.0, 222.0);
+        tip.set_visible(true);
+        tt.life.borrow_mut().target_alpha = 0.75;
+        with_ui(|m| {
+            m.ui.clear();
+            m.tool_tip = Some(tip.clone());
+            m.mouse.x = 400;
+            m.mouse.y = 300;
+        });
+        assert!(matches!(
+            tooltip::update_tooltip(&mut t, 400, 300),
+            Err(pz_kahlua::LuaError::Runtime {
+                class: "pz.host.Borrowed",
+                ..
+            })
+        ));
+        assert!(tip.is_visible());
+        assert_eq!((tip.get_x(), tip.get_y()), (111.0, 222.0));
+        assert_eq!(tt.life.borrow().target_alpha, 0.75);
+        assert_eq!(tt.life.borrow().object.as_ref().unwrap().id, 77);
+        // A genuine no-object result still executes the ordinary hide path.
+        install(HudHost::default());
+        tooltip::update_tooltip(&mut t, 400, 300).unwrap();
         assert!(!tip.is_visible());
     }
 }

@@ -776,7 +776,7 @@ impl<I: 'static> GameCharacter<I> {
     }
 
     /// `addStiffness(type, stiffness)` on the part named `field`.
-    fn add_stiffness_to(&mut self, chars: &Characters, field: &str, v: f32) -> ScriptResult {
+    pub(crate) fn add_stiffness_to(&mut self, chars: &Characters, field: &str, v: f32) -> ScriptResult {
         let i = chars.sim.body_part_types.index(field)?;
         if let Some(p) = self.body_damage.parts.get_mut(i) {
             p.add_stiffness(v);
@@ -1026,7 +1026,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `BodyDamage.UpdateDraggingCorpse`.
     pub fn update_dragging_corpse(&mut self) {
-        let dragging = self.environment.dragging_corpse;
+        let dragging = self.is_dragging_corpse();
         let bd = &mut self.body_damage;
         if dragging != bd.was_dragging_corpse {
             bd.started_dragging_corpse = dragging;
@@ -1662,7 +1662,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `BodyDamage.UpdateDiscomfort`.
     pub fn update_discomfort(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext) -> ScriptResult {
-        let dragging = if self.environment.dragging_corpse { 0.3f32 } else { 0.0 };
+        let dragging = if self.is_dragging_corpse() { 0.3f32 } else { 0.0 };
         let clothing = self.clothing_discomfort_modifier;
         let mut bed = 0.0f32;
         if self.asleep {

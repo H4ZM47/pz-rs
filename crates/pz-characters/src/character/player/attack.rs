@@ -208,7 +208,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `IsoPlayer.clearHandToHandAttack()`.
     pub fn clear_hand_to_hand_attack(&mut self) {
         self.vars.do_shove = false;
-        self.vars.do_grapple = false;
+        self.set_do_grapple(false);
         self.vars.initiate_attack = false;
         self.vars.attack_started = false;
         self.vars.attack_type = String::new();
@@ -216,7 +216,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `isDoHandToHandAttack()`.
     pub fn is_do_hand_to_hand_attack(&self) -> bool {
-        self.vars.do_shove || self.vars.do_grapple
+        self.vars.do_shove || self.is_do_grapple()
     }
 
     /// `IsoLivingCharacter.AttemptAttack(chargeDelta)` then
@@ -227,7 +227,7 @@ impl<I: 'static> GameCharacter<I> {
             self.calculate_attack_vars(cx);
             self.vars.do_shove = self.attack_vars.do_shove;
             // TODO(grappling): attackVars.doGrapple.
-            self.vars.do_grapple = false;
+            self.set_do_grapple(false);
             if cx.ctx.trigger_hook("Attack") {
                 return Ok(false);
             }
@@ -324,7 +324,7 @@ impl<I: 'static> GameCharacter<I> {
                 self.vars.do_shove = false;
             }
             if self.is_player_aiming() && !self.vars.grapple_pressed && !bare {
-                self.vars.do_grapple = false;
+                self.set_do_grapple(false);
             }
             self.player.last_attack_was_hand_to_hand = self.is_do_hand_to_hand_attack();
             if can_miss(wt) && !self.vars.aim_at_floor {
@@ -407,6 +407,9 @@ impl<I: 'static> GameCharacter<I> {
     ///
     /// [`StateWorld::primary_hand_model_ready`]: crate::character::state::StateWorld::primary_hand_model_ready
     pub fn is_weapon_ready(&self, cx: &StateCx<'_, I>) -> bool {
+        if self.character_actions.borrow().first().is_some_and(|a| a.borrow().override_hand_models) {
+            return false;
+        }
         // IsoLivingCharacter.isPrimaryHandModelReady: the bare hands (no
         // useHandWeapon) are always ready.
         let bare = self.vars.use_hand_weapon.and_then(|i| self.items.item(i)).is_none_or(|i| i.borrow().type_.as_str() == "BareHands");

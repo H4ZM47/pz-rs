@@ -151,9 +151,35 @@ pub fn climate_settings() -> ClimateSettings {
     SETTINGS.with(|c| c.borrow().clone())
 }
 
+/// `GameTime.isGamePaused`: single-player reads the actual speed-control
+/// owner. Network pause state still comes from the installed network settings.
+pub fn is_game_paused() -> bool {
+    let network = {
+        let core = crate::bind_core::shared_core();
+        let core = core.borrow();
+        core.is_server || core.is_client
+    };
+    if network {
+        return climate_settings().game_paused;
+    }
+    pz_ui::with_ui(|ui| ui.speed_controls.clone())
+        .and_then(|element| element.ext::<crate::hud::speed_controls::SpeedControls>()
+            .map(|speed| speed.get_current_game_speed() == 0))
+        .unwrap_or(false)
+}
+
 /// Where climate and clock events go (`LuaEventManager.triggerEvent`).
 pub fn install_event_sink(sink: EventSink) {
     SINK.with(|s| *s.borrow_mut() = Some(sink));
+}
+
+/// Retire Lua wrappers and callbacks without changing GameTime or the
+/// climate's simulation/mod-data state. The original exit resets climate
+/// date stamps but keeps the GameTime singleton until the next load.
+pub(crate) fn reset_session_handles() {
+    HANDLES.with(|handles| handles.borrow_mut().clear());
+    COLORS.with(|colors| colors.borrow_mut().clear());
+    SINK.with(|sink| *sink.borrow_mut() = None);
 }
 
 /// The context the bound climate runs in: [`ClimateSettings`], the shared
@@ -224,7 +250,7 @@ impl GameTimeContext for LuaClimateContext {
         self.settings.helicopter
     }
     fn is_game_paused(&self) -> bool {
-        self.settings.game_paused
+        is_game_paused()
     }
     fn all_players_asleep(&self) -> bool {
         self.settings.all_players_asleep
@@ -311,6 +337,11 @@ pub fn update_game_time(thread: &mut Thread) {
         g.apply_climate_view_dist();
     }
     fire_events(thread, ctx);
+    // `ClimateManager.updateFx` follows OnClimateTickDebug. Read the live
+    // climate only after callbacks, which can alter its values or FX flag.
+    if go_on {
+        crate::bind_puddles::update_climate_fx(thread);
+    }
 }
 
 // ---- world load -------------------------------------------------------------
@@ -666,6 +697,7 @@ pub fn register_with(thread: &mut Thread, constants: &[(&'static str, Vec<(Strin
     register_thunder(thread);
     register_forecaster(thread);
     register_misc(thread);
+    register_rain_manager(thread);
     for (fqn, fields) in constants {
         let b = expose_class(thread, fqn, None);
         for (name, v) in fields {
@@ -1881,6 +1913,94 @@ fn register_forecaster(thread: &mut Thread) {
             Ok(c.push(fv(v)))
         });
     }
+}
+
+pub const RAIN_MANAGER_CLASS: &str = "zombie.iso.objects.RainManager";
+
+/// `RainManager`'s Lua-visible statics: `randRain`, `randRainMin`,
+/// `randRainMax`, `rainDesiredIntensity` and `stopRain`. The raindrop and
+/// splash particles live with the renderer (`pz-iso-render`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RainStatics {
+    pub rand_rain: i32,
+    pub rand_rain_min: i32,
+    pub rand_rain_max: i32,
+    pub rain_desired_intensity: f32,
+    pub stop_rain: bool,
+}
+
+impl Default for RainStatics {
+    fn default() -> Self {
+        Self {
+            rand_rain: 0,
+            rand_rain_min: 0,
+            rand_rain_max: 0,
+            // RainManager.<clinit> writes 1.0f before Lua can use the class.
+            rain_desired_intensity: 1.0,
+            stop_rain: false,
+        }
+    }
+}
+
+thread_local! {
+    static RAIN: RefCell<RainStatics> = RefCell::new(RainStatics::default());
+}
+
+pub fn rain_statics() -> RainStatics {
+    RAIN.with(|r| *r.borrow())
+}
+
+/// `RainManager.reset()`'s state part (`isRaining = stopRain = false`).
+pub fn reset_rain_manager() {
+    RAIN.with(|r| r.borrow_mut().stop_rain = false);
+}
+
+/// `RainManager`, the static class Lua reaches as a global
+/// (`SRainBarrelSystem.checkRain`, the debug weather panels).
+fn register_rain_manager(thread: &mut Thread) {
+    let b = expose_class(thread, RAIN_MANAGER_CLASS, None);
+    // `ClimateManager.getInstance().isRaining()`.
+    b.static_fn("isRaining", |c| {
+        let v = with_gt(c, |g, _| g.climate.is_raining())?;
+        Ok(c.push(v))
+    });
+    // `ClimateManager.getInstance().getPrecipitationIntensity()`.
+    b.static_fn("getRainIntensity", |c| {
+        let v = with_gt(c, |g, _| g.climate.get_precipitation_intensity())?;
+        Ok(c.push(fv(v)))
+    });
+    b.static_fn("startRaining", |_| Ok(0));
+    // TODO(port): `GameServer.stopRain()` on a server.
+    b.static_fn("stopRaining", |c| {
+        RAIN.with(|r| {
+            let mut r = r.borrow_mut();
+            r.stop_rain = true;
+            r.rand_rain = r.rand_rain_max;
+            r.rain_desired_intensity = 0.0;
+        });
+        if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
+            sink(c.thread, "OnRainStop", &[]);
+        }
+        Ok(0)
+    });
+    b.static_fn("setRandRainMax", |c| {
+        let v = int_arg(c, 0);
+        RAIN.with(|r| {
+            let mut r = r.borrow_mut();
+            r.rand_rain = v;
+            r.rand_rain_max = v;
+        });
+        Ok(0)
+    });
+    b.static_fn("setRandRainMin", |c| {
+        let v = int_arg(c, 0);
+        RAIN.with(|r| r.borrow_mut().rand_rain_min = v);
+        Ok(0)
+    });
+    b.static_fn("reset", |_| {
+        reset_rain_manager();
+        Ok(0)
+    });
 }
 
 fn register_misc(thread: &mut Thread) {

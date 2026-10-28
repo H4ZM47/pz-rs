@@ -46,12 +46,12 @@ use pz_iso_render::chunk::dirty;
 use pz_world::isoregion::IsoRegions;
 use pz_world::sprite::IsoFlagType;
 use pz_world::square_mutation::{RenderSquareHooks, SquarePos};
-use pz_world::IsoGridSquare;
 
 use crate::hooks::WorldHooks;
 use crate::lighting::WorldLighting;
 use crate::render_world::{RenderWorld, WorldView};
 use crate::sprites::{SpriteCache, SpriteTextures};
+use crate::{HostResult, RuntimeHostError};
 
 /// `WorldRegionToMetaGrid`'s `invalidateRenderChunkLevels(2112)`
 /// (`OBJECT_ADD | CUTAWAYS`).
@@ -126,11 +126,11 @@ impl PendingRender {
         cache: &mut SpriteCache,
         tex: &mut dyn SpriteTextures,
         puddles: PuddleInputs<'_>,
-    ) {
+    ) -> HostResult<()> {
         if std::mem::take(&mut self.buildings) {
             render.set_buildings(w.meta);
         }
-        let chunks = std::mem::take(&mut self.chunks);
+        let chunks = self.chunks.clone();
         for &(wx, wy) in &chunks {
             let mut positions: BTreeSet<SquarePos> = render
                 .squares
@@ -139,32 +139,42 @@ impl PendingRender {
                 .filter(|&(x, y, _)| (x.div_euclid(8), y.div_euclid(8)) == (wx, wy))
                 .collect();
             if let Some(ch) = w.cell.chunks.get(&(wx, wy)) {
-                positions.extend(ch.squares().map(|s| (s.x, s.y, s.z)));
+                for square in ch.squares() {
+                    let square = square
+                        .try_borrow()
+                        .map_err(|_| RuntimeHostError::Borrowed("invalidated square"))?;
+                    positions.insert((square.x, square.y, square.z));
+                }
             }
             for p in positions {
-                render.rebuild_square(w, p, cache, tex);
+                render.rebuild_square(w, p, cache, tex)?;
             }
-            lighting.sync_chunk_squares(w, wx, wy, hooks);
+            lighting.sync_chunk_squares(w, wx, wy, hooks)?;
         }
         let mut touched = chunks.clone();
-        for p in std::mem::take(&mut self.squares) {
+        for p in self.squares.clone() {
             let c = (p.0.div_euclid(8), p.1.div_euclid(8));
             if chunks.contains(&c) {
                 continue;
             }
-            render.rebuild_square(w, p, cache, tex);
-            lighting.sync_square(w, p, hooks);
+            render.rebuild_square(w, p, cache, tex)?;
+            lighting.sync_square(w, p, hooks)?;
             touched.insert(c);
         }
         for (wx, wy) in touched {
-            lighting.sync_chunk_lights(w, wx, wy);
+            lighting.sync_chunk_lights(w, wx, wy)?;
         }
-        let mut recalc = std::mem::take(&mut self.puddles);
-        recalc.append(&mut render.puddles_recalc);
+        let mut recalc = self.puddles.clone();
+        recalc.extend(render.puddles_recalc.iter().copied());
         for p in recalc {
-            render.init_puddles(w, puddles.regions, p, puddles.perf_puddles);
+            render.init_puddles(w, puddles.regions, p, puddles.perf_puddles)?;
         }
+        self.chunks.clear();
+        self.squares.clear();
+        self.puddles.clear();
+        render.puddles_recalc.clear();
         self.cutaways_changed = false;
+        Ok(())
     }
 
     /// `IsoGridOcclusionData.SquareChanged()`.
@@ -220,6 +230,14 @@ fn chunk_of(x: i32, y: i32) -> (i32, i32) {
 }
 
 impl RenderSquareHooks for RenderInvalidation<'_> {
+    fn flies_changed(&mut self, square: pz_world::SquareRef, _flies: bool) {
+        let pos = { let sq = square.borrow(); (sq.x, sq.y, sq.z) };
+        // A retained old square can share coordinates with a replacement.
+        // The normal frame boundary rebuilds from the current actual square;
+        // never assign the old receiver's flag to a replacement snapshot.
+        self.pending.squares.insert(pos);
+    }
+
     fn fbo_render_chunk(&self) -> bool {
         self.fbo_render_chunk
     }
@@ -272,7 +290,8 @@ impl RenderSquareHooks for RenderInvalidation<'_> {
     /// water geometry dropped from a square that lost `water`.
     /// (`chunk.checkPhysicsLater` and `chunk.collision.clear()` are
     /// pz-world's own.)
-    fn properties_recalculated(&mut self, sq: &IsoGridSquare) {
+    fn properties_recalculated(&mut self, square: pz_world::SquareRef) {
+        let sq = square.borrow();
         let p = (sq.x, sq.y, sq.z);
         let (wx, wy) = chunk_of(sq.x, sq.y);
         self.pending.puddles.insert(p);
@@ -285,14 +304,8 @@ impl RenderSquareHooks for RenderInvalidation<'_> {
         self.pending.squares.insert(p);
     }
 
-    /// `setHasFlies`: the render square's `hasFlies()`.
-    fn flies_changed(&mut self, pos: SquarePos, flies: bool) {
-        if let Some(rs) = self.render.squares.get_mut(&pos) {
-            rs.flies = flies;
-        }
-    }
-
-    fn clear_water(&mut self, sq: &IsoGridSquare) {
+    fn clear_water(&mut self, square: pz_world::SquareRef) {
+        let sq = square.borrow();
         if let Some(rs) = self.render.squares.get_mut(&(sq.x, sq.y, sq.z)) {
             rs.water = None;
         }

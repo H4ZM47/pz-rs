@@ -1,7 +1,596 @@
 # Engine wiring checklist
 
 Hooks that subsystem crates expose and the game loop (`pz-engine`,
-`pz-client`) must call. Tick each item when it is wired on main.
+`pz-client`) must call. Checkboxes record implemented connections; runtime
+parity requires separate verification. Current continuation is on
+`codex/gameplay-continuation`, based on Claude's `ws/integration` and
+`ws/ingame-loop`; the older `main` checkout is not the current engine.
+
+The current world lifecycle change dispatches on a fieldless class tag instead
+of cloning the live object kind and its nested inventory. Mannequin add/remove
+therefore keep the supplied inventory and worn-item owners even when their
+bodies are borrowed. Fire reads `perm` at the branch. Hutch registration reads
+the current `linkedX > 0 && linkedY > 0` predicate after base add, matching the
+installed `isSlave` call; archive master-payload presence is not that predicate.
+Independent review covers all 32 object-kind mappings and the exact seven new
+regressions. Against unchanged production, six expose the old failures and the
+fire control passes; with the fix, all seven pass. Full local world tests pass
+385 tests with no failures or ignores; the workspace all-target check and client
+build also pass against 1,431 unchanged Rust/Cargo inputs. Committed platform
+and installed-assets checks for this world batch are still pending. These registry trace fixtures do not
+establish complete native mannequin/hutch activation or live registry parity.
+The archive DTO/wire migration remains separate and held.
+
+The preceding reviewed engine/Core checkpoint (`41269d8`) adds a typed engine failure channel and immediate
+state lifecycle abort checks. `StateCx` and the window retain the original owned
+`LuaError`; later teardown reports cannot overwrite the first failure. Error
+reporting uses structural labels without invoking payload formatting, and raw
+error owners retire only at the shared safe boundary. Existing LuaManager init
+and UI update errors retain their original variant/payload. A failed headless
+script now returns an error before frames instead of logging an overall success.
+
+State callbacks are checked immediately after enter, update, exit, yield,
+redirect, reenter and render, and before a later render. Native GameStateMachine
+update/render bytecode has no catch handlers; the transport preserves immediate
+failure stopping. Existing Rust stop cleanup and other state-machine ordering
+are not certified as the native heap state after an uncaught throw. Unmigrated
+string-oriented boot/save/world reports remain explicit earlier profiles.
+
+The current-Core formatter helpers read only an already installed authority,
+reacquire it at each call, and return typed missing/borrowed failures. They never
+initialize a default singleton. The larger formatter integration remains held.
+
+At the engine/Core source freeze, the workspace all-target check, full affected Engine/Lua
+suites and native client build pass against 1,430 unchanged Rust/Cargo inputs:
+602 passed, zero failed and four existing ignores across five summaries in two
+packages. All sixteen new tests execute (four Core, twelve error-boundary tests).
+The client is pinned. Subsequent four-platform checks for committed `41269d8`
+pass, including six GPU readbacks on each platform. Its installed-assets checks
+pass the five actual item-owner probes and inventory refresh; row drawing still
+stops at `isFavouriteRecipeInput` (`renderdetails:2338`). Those checks precede the
+new world lifecycle source above. The local Engine/Lua test selection itself
+makes no GPU readback claim.
+
+Committed `a9e3e55d`, the preceding ten source changes, adds a selected READY noarg `List.of`
+empty-list role and same-target ArrayList construction, plus authentic
+`InventoryItem.isNoRecipes`. The final combined run passes the workspace all-target check, 2,123 affected
+tests (zero failed, nine ignored across 36 summaries in 18 packages), and client
+build against 1,425 unchanged Rust/Cargo inputs. All eighteen new tests execute.
+Independent review of the first run found nine test-only outer GC deferrals
+missing from held-state fixtures. The corrected fixtures retain every assertion
+and production input; the full second run passes. The preceding focused list
+run also passes 31 tests, including all eleven new constructor tests. Committed
+platform checks pass on all four native targets, with 24 graphics readbacks.
+Its unchanged 120-frame installed-assets run passes ownership and inventory
+refresh, but row drawing stops at `isFavouriteRecipeInput` (`renderdetails:2338`)
+and the saved rows remain blank. That committed proof excludes the current
+engine-error/Core source above.
+
+The READY role has its own immutable ListN owner and distinct empty backing
+array. Installation is explicit; a runtime getter never creates a missing
+singleton. Raw ArrayList allocation precedes source evaluation. Its real
+superclass modification-count initializer runs afterward, before `toArray`,
+size and backing-array publication. The empty Collection constructor uses the
+actual ArrayList EMPTY array and grows to capacity one on its first append.
+Intrinsic collection tracing and safe retirement cover the physical owners.
+Structural Rust diagnostics read scalar/pointer metadata without formatting
+stored values. Controlled bundled-JDK runs with automatic archive sharing and with sharing
+disabled confirm the selected READY role graph; this is not an observation
+of the original game's live heap or a full JVM initializer/archive port.
+
+The actual `isNoRecipes` frontend admits nullable Player/Animal arguments before
+its method body. Null player returns before item/ModData access; a null stored
+entry returns before reading the player. Otherwise it captures the real ModData
+value, evaluates the genuine full name, then invokes the supported stored-value
+equals branch. Scalar guaranteed-negative comparisons still evaluate the name.
+Unknown object equality and the required Animal full-name override remain
+explicit capabilities at their actual phases. The tooltip uses this same body.
+Seven new tests cover these branches and captured-owner retirement. The next
+installed UI expression, `isFavouriteRecipeInput`, requires genuine scratch and
+Script used-in-recipe lists and their post-world-dictionary producer; this
+continuation introduces no empty-Vec or false fallback for it.
+
+Committed `8fb5abe7`, the preceding list-foundation/read-state continuation, passes workspace all-target
+compilation, 2,105 affected tests (zero failed, nine ignored across 36 summaries
+in 18 packages), and the native client build. All 1,423 recorded Rust/Cargo
+inputs stay unchanged; all 33 new tests execute. Its 16 source paths have
+independent review. Raw ArrayList storage has a separate fixed backing array,
+two permanent empty-array roots, exact mutation counts and ordinary iterator
+state. Searches retain the captured array across comparison callbacks and keep
+the original callback error. EMPTY is published before DEFAULT allocation,
+preserving that first static owner on failure. Physical collection and deferred
+retirement use the VM's shared safe boundary.
+
+This raw foundation is not yet wired to Script/Literature/Character recipe-list
+fields or a public actual-list Lua backend. Existing legacy lists remain a
+separate representation. Native seen/heard methods now support their actual
+negative-index and category exits; selected positive media work stops at its
+missing actual radio service. Map checks use immutable class metadata for null
+and nonMap exits, support the current nonnull stash field (including empty),
+and query the actual character read set afterward. Missing nullable MapID and
+positive loaded-media producers remain explicit gaps. All four native builds
+and full suites pass for this commit: both Macs 2,707 tests, Linux 2,706 and
+Windows 2,704, with zero failures and 19 ignored each. All 24 graphics readbacks
+complete; independent saved-log/tree review confirms the exact source. Its
+unchanged 120-frame installed-assets check passes Bandage ownership and two-row
+refresh, but drawing stops at the then-unbound `isNoRecipes` call in
+`renderdetails:2336`. The reviewed saved image has blank rows. These bounded
+results do not establish completed drawing, original-game comparison or foreign
+installed gameplay, and exclude the next ten source changes above.
+
+The preceding pool/statistics continuation has independent review of its 14 source
+paths and passes workspace all-target compilation, 2,072 affected tests (zero
+failed, nine ignored across 36 summaries) and the native client build. The 18
+tested packages include core; all 16 new tests execute. All 1,412 recorded
+Rust/Cargo inputs stay unchanged through those checks. Committed `90370298`
+passes all four native builds/full suites and 24 actual GPU readbacks. It has no
+separate installed run; the later `8fb5abe7` installed check includes this source.
+It gives ObjectPoolCounter and PoolStatistic their permanent class-static owners,
+including the signed counter, actual counter map and two distinct Lua tables.
+The counter captures the same pool retained by ObjectPool's set. Construction
+registers the counter before allocating the deque/set and publishing allocator,
+maximum and pool; Animal then publishes class-list membership before check.
+The null-current-cell check can complete. Streamed traversal and nonempty pool
+release still stop at their required unported dependencies. Nonempty statistics
+update clears the actual numeric map and local table before stopping at native
+HashMap iteration; it never substitutes Rust iteration. Physical collection
+follows the real counter/capture/pool/set slots. General JVM concurrency,
+generated noncapturing-lambda reuse and the public null PrometheusGauge field
+surface remain outside this slice.
+
+The preceding reading continuation passes the workspace all-target check, 1,987
+affected tests (zero failed, nine ignored across 35 summaries), and the native
+client build. All 1,406 recorded Rust/Cargo inputs stay unchanged through those
+checks. It implements the actual Literature allocation, constructor and factory
+scalar fields, six authentic Lua getters and the existing IsLiterature class
+test without borrowing the item body for class dispatch. Learned-recipe reads
+allocate/read actual ModData first; genuine null is supported, while a needed
+nonnull native List allocation or return remains an explicit capability.
+Character reading checks use actual stored fields, copy the saved day before
+reading the live clock and lazy Sandbox option, and preserve signed wrapping
+and the native strict comparison. Null collection keys and complete shared
+native collection ownership remain incomplete. The earlier fixture compile
+and setup failures are preserved; the corrected fixtures and final combined
+run pass. Its committed `12822eef` installed-assets check passes inventory
+refresh and the actual Bandage owner probe. Drawing now stops at the next
+unbound call, `item:hasBeenSeen(player)`, in `renderdetails:2327`, after the
+reading helper completes; the old inner line-2608 error is absent. The saved
+frame still has blank rows. The unchanged probe does not separately count
+execution of every getter. These runtime results exclude the next pool source.
+
+The preceding designation/KnownPoison source batch passes the workspace all-target
+check, 1,961 affected tests (zero failed, nine ignored across 35 summaries), and
+the native client build. All 1,398 recorded Rust/Cargo inputs stay unchanged
+through those checks; all 53 changed source inputs have independent review.
+Its compiled client is pinned and its installed-assets check is recorded below.
+Its permanent designation class lists are initialized before menu Lua, shared
+with the world's live metadata and floor service, and cleared without replacing
+their allocations on exit. Metadata load resumes the original reader outside
+WORLD guards; live save propagates host access faults separately from native
+file errors. Streaming reads the actual current cell before each corner's zone
+fields. Synchronization reads actual list membership before client/server roles;
+network sends remain explicit capabilities.
+
+The genuine empty animal list now supports the null-zone placement branch.
+At that preceding checkpoint, new animal-zone construction preserves base registration and seven list
+allocations, then stops at the unimplemented ObjectPoolCounter/PoolStatistic
+owners before publishing its pool or animal-list entry. Later query,
+reset and collection tests use an explicitly named test-only data projection.
+Found-zone classification, mutable JavaList exposure and full actor processing
+remain incomplete. The next pool source above advances the owner boundary;
+it does not complete these later operations.
+
+Both poison-detection overloads now use real class-global ItemTag/ItemType
+references. Final static fields retain their original references when mutable
+registry entries change. Runtime Food fields follow their actual
+constructor/factory phases; selected recipe knowledge, Cooking level, full name
+and live ModData reads follow native short-circuit order. Animal full-name and
+Core.ResetLua render-thread dependencies stop at their first needed unported
+phase. Cheat knowledge uses the existing non-null inline representation and a
+field lease across pure static-role reads; retained/publicly replaced CheatRef
+identity remains unsupported. Generic invoker diagnostics are incomplete;
+unsupported Food argument conversions or arity fail before mutation.
+Its committed `2b3a1781` installed-assets probe passes actual Bandage placement,
+clearing/restoration and retention into the next real UI frame. Inventory
+creation and refresh succeed, but drawing stops at the missing
+`item:getSkillTrained()` in `isLiteratureRead:2608`, called from
+`renderdetails:2327`; the saved rows remain blank. All four native client
+builds/full suites pass for that commit, with 24 actual GPU readbacks. These
+results do not cover the subsequent reading source or establish full gameplay,
+item-model or visual parity.
+
+The preceding October 27 actual-reference continuation routes production player load/save
+through the same retained container and saved-inventory list. Resolved compressed
+records construct fresh actual items, capturing script textures before body load;
+repeated records reread the original buffer, retain nullable obsolete positions,
+and install container backlinks only after compression completes. Bags reuse
+the actual child allocation and keep distinct strong `containingItem` and
+`inventoryContainer` fields. Raw capacity and current script weight/capacity
+writes follow the native constructor/common phases. Main-list allocation
+replacement and nullable main entries remain separate unsupported capabilities.
+
+Player saved indices retain actual references; the existing hand/worn ID fields
+use an explicit unique-main-member bridge. Ambiguous or off-main aliases stop
+at the needed phase. Actual character ModData keeps its live table and original
+cursor, and save metadata is captured before item callbacks. Factories and
+nested bag save/load phases run after player/manager guards end. Rust host borrow/capability
+failures retain the completed item/character prefix and terminate the actual
+engine path. Older database ID allocation and per-player queue timing remain
+separate orchestration work; a later player's failure is not certified to
+preserve every earlier database-queue effect.
+Non-null loaded hand equip hooks, burning-character setup and the older
+character model, stats/XP and lifecycle tails remain separate parity work.
+
+The same VM table serializer now writes directly to an item's native comparison
+buffer. It preserves primitive/string failure prefixes and immediate overflow;
+comparison retries still restore real item IDs and share the actual per-thread
+buffer. Strong item/container/bag and saved-list slots have physical collection
+descriptors, typed canonical container userdata and nullable direct bag setters.
+Actual cleanup tests use the application's outer retirement/collector boundary.
+Character userdata, parent/state wrappers and legacy JavaList closures retain
+conservative ownership; this is not full collection of every character graph.
+
+Floor update predicates now read the actual object's current square, first
+pointer membership in its world-object list, and stored exterior flag. They use
+the service's captured immutable tables without borrowing the sprite manager.
+Needed process registries, designation, model/render and other lifecycle branches
+still report their own missing capabilities. That preceding actual-reference batch passed the workspace
+all-target check, 1,901 affected tests (zero failed, nine ignored across 35
+summaries), and the native client build. All 1,384 recorded Rust/Cargo inputs
+remain unchanged; all 49 changed compiled inputs have independent source review.
+These local results do not turn the previous installed-assets failure into a
+success; the next exact compiled-client probe must establish runtime progress
+separately.
+
+The October 25 continuation connects live player/zombie models and the same
+animation rigs to state-world root motion, thump timing and turn targets.
+It also restores the pending world-Lua registries, fixes population chunk
+lookup overflow, and saves active sessions on native window close. Quit-save
+Lua events run between borrow-scoped phases, so their clock/world mutations
+reach the saved files. These changes still need complete gameplay and
+platform parity checks.
+
+New worlds now build and save `WorldDictionary.bin` before loading players
+and chunks. Item/entity IDs share the original counter, saved and removed
+entries retain their IDs, erosion object names are registered, and the
+script manager runs `PostWorldDictionaryInit`. New string/script register
+population and version hashing remain incomplete. The installed session
+regression now reboots the saved world and checks the reconstructed player;
+its result must be recorded separately from ordinary unit tests.
+
+The platform workflow builds the native client and runs workspace tests on
+Windows, Linux, Apple Silicon and Intel Mac runners. Installed game assets
+are excluded, so a green source check alone cannot establish gameplay parity.
+
+The October 26 continuation connects actual item component storage, class
+pools and owner slots to factory and native load phases. Fluid userdata
+retains the same component and mutable cached Color. Attributes use actual
+type and instance references, decoded static bounds and an eager/lazy template
+on the original script definition. The template and item context share the
+same type registry across menu reloads. Protected native factory exceptions
+keep completed components; unavailable Rust capabilities still stop the host.
+ContextMenuConfig has a genuine fieldless body; Durability has a canonical
+nullable material and preserves native partial load/save and tooltip failures.
+Context entries still need actual script-list/entry ownership before exposure.
+Remaining archive-to-live producers, nested weapon/map references, equipped
+manager state, world callbacks and full inventory icons remain open. Production
+player/container loading and retained nested bag ownership are connected above.
+
+Item ModData now uses one exclusive archive or live-table slot. The actual
+`getModData` allocation is shared by Lua reads/writes, item persistence,
+tooltips and model selection. `hasModData` checks own entries without allocating.
+Native item load retires the old slot and publishes its replacement before
+decoding, retaining completed pairs on failure. Live table persistence filters
+unsupported save values without rewriting the runtime table; boxed Java Float
+stays userdata and has its own Java map-key equality, distinct from Double.
+`copyModData` retains the destination allocation/metatable and copies nested
+value tables per occurrence. Rust archive snapshots instead copy the complete
+bounded table/key/value/metatable graph and explicitly reject borrowed or cyclic
+inputs. These policies are separate from the unported debug native item clone.
+
+Fallible interpreter and standard-library table operations expose held-body
+conflicts as host capability errors. Replaced table slots and consumed mutator
+inputs retain their owners until an outer retirement boundary. Hosts must keep
+`pz_kahlua::gc::defer_collection()` alive across every world/sprite guard spanning
+Lua callbacks, then drain after those guards end; an empty interpreter stack
+alone does not establish that boundary. Generic VM stack/upvalue teardown,
+legacy direct TableRef methods, reloadReplace, native reference-literal branches
+and the complete Java ItemCodeOnCreate class remain separate work.
+
+The genuine ItemCodeOnCreate class now exposes onCreateRecipeMagazine for
+actual Literature receivers: get the actual ModData table, read full type,
+then rawset literatureTitle, retaining unrelated entries and returning no
+values. This implements one of 58 public callbacks. The other 57 callbacks,
+constructor/private helpers, successful resolver cache and native factory
+callback ordering still need work. Supported argument conversion order and
+messages follow the installed invoker; unavailable reflected-null diagnostics
+and concrete Java implementation-class diagnostics fail explicitly as host
+capabilities. Native validation print/breakpoint/history effects remain open.
+
+The item `worldItem` field retains one nullable reference to the complete
+world-object allocation. Native construction leaves it null. Supplied-item
+placement assigns it after both list insertions; the created-item continuation
+assigns it before those insertions. Live floor loading publishes the same actual
+item and backlink before tint and later fields, retaining the receiver and
+completed cursor/mutation prefix on failure. Ordinary removal keeps the backlink.
+Native explicit item-container removal still needs its separate clearing
+coordinator. Rust archive copies instead bind copied floor items to their copied
+complete owners.
+
+Lua world receivers share canonical userdata and immutable allocation-time
+native class metadata. Physical collector edges follow object, floor payload,
+item and backlink without invoking native removal or substituting archive bodies.
+Class conflicts remain explicit permanent faults. Weak metadata pruning is
+amortized across allocations and cache hits.
+
+Placement failures retain their typed host error through worn-item actions and
+the character state context. Nested states and ragdoll/animation callbacks stop
+immediately; outer Lua/engine boundaries dispatch already-produced supported
+events after releasing guards, then return the first fault before later work.
+This does not complete the existing unported item-fall and sound event handling.
+Floor visual loading and swap tails still require their genuine texture, sprite,
+processing and manager phases. Named owned continuations and unsupported host
+results preserve these boundaries; they do not certify a completed native tail.
+The actual square-list Lua bridge and complete DrawItemIcon/inventory-row
+rendering remain separate integration work; captured icon/mask producers are
+connected in the current batch.
+
+The installed-session check at `d873dfa9` reaches the actual pane's next failure,
+`isKnownPoison` at `ISInventoryPane.renderdetails:2324`. Its real Bandage drop
+fails because no production caller installs the Lua floor provider and the
+state-world adapter lacks its floor capability. That negative result exposed
+the connection implemented next; it remains distinct from source tests.
+
+The engine now installs a floor service over its actual cell and shared sprite,
+region, render and door owners. Lua captures one provider per action; states
+use the already borrowed cell without reentering WORLD. Cell/provider generation
+and a weak engine-session anchor reject stale services, including RNG calls.
+Floor, height, RNG and placement failures retain their original typed result;
+native no-hands, Tutorial and other early returns avoid borrowing the provider.
+Render invalidation runs at the supplied-item method's PC20 after corpse dispatch;
+later region/door bodies cannot preempt that prefix.
+
+The installed check at `c45263aa` verifies the floor service connection and
+then stops at the missing native sprite constructor. It does not place the
+Bandage successfully. Its inventory pane separately stops at `isKnownPoison`
+(`ISInventoryPane.renderdetails:2324`). All four native platform suites passed
+for that committed source; those results do not cover the subsequent batch.
+
+The next source batch captures the actual nullable script and inventory texture
+references while scripts load, through the same shared texture manager and file
+system. Normal/world/special slots retain their real texture allocations. Lua
+getters expose those same canonical references; Food's `getTex` selects burnt,
+rotten or cooked state independently of the ordinary texture getter. The actual
+broken flag remains separate from condition. Food's cooked setter uses its
+actual per-instance cooking threshold, copied from the current script during
+factory initialization; it advances cooking time only on the native ordered
+comparison. Loading restores cooking state directly and preserves that threshold
+without adding a save field. Texture lookup failures keep their
+typed host domain through direct script parameters, item visual synchronization,
+worn-item actions and native Lua boundaries. Direct visual synchronization reaches
+its first texture phase before allocating gas-mask ModData.
+
+Actual floor objects now retain an exclusive sprite slot: a managed tile,
+explicit archive sprite, actual runtime sprite, or native null. Runtime sprites
+own their real metadata, texture, tint, manager and pooled default instance.
+Native creation, single-texture loading, scale and tint use those same bodies;
+collection traces and detaches their physical references without running native
+pool resets. Immutable sprite class tables remain independent of the mutable
+manager body. Native floor loading has a separate visual-host entry; the engine
+chunk codec still uses its explicitly named data projection until a genuine load
+host is connected.
+
+Placement carries the same retained square across random draws, height and
+constructor phases. It preserves tint/texture changes, actual square, drop time,
+item name/key publication, list insertion and backlink in native order, including
+completed changes when a later phase fails. The bounded empty-component native
+lifecycle sets the actual added flag, allocates and releases the real entity
+event, and flags the actual retained chunk's hot-save state. Selected processing,
+container and entity registries still fail explicitly. The designation-zone
+registry and adjacent-square render capability remain missing. Ordinary native
+AddTileObject tails also require genuine fallible recalculation capabilities;
+legacy data projection helpers cannot certify a completed native addition.
+
+Actual reference persistence is being connected separately from the older
+value-container codec. The new path saves actual item/container references,
+releases parent guards before nested bag assets, and models lazy duplicate
+comparison with temporary actual IDs, finally restoration and the same per-thread
+comparison buffer. Bounded buffer growth, cursor and retry behavior are distinct
+from the older append-only output. Selected component scratch
+serialization, owned weapon attachments, actual MapItem symbols, nonnull ByteData
+comparison and native pooled returned-list identity
+remain explicit limitations until their own adapters exist. Remaining world/chunk and reanimated character
+save producers that still build value snapshots also need separate routing; a
+reference-container round trip alone cannot certify those complete save paths.
+
+Render snapshots and HUD picking read actual sprite metadata and propagate host
+failures through the engine/UI boundary. A failed chunk notification preserves
+its current and later queued notifications. These changes do not implement the
+per-frame world-item model/draw stream: actual visible squares, current world
+object lists, live script gates and model jobs still need their native producer
+and ordering. A cached blank sprite, forced two-dimensional icon or successful
+source test cannot establish visible item parity. Historical checkpoint
+`b0a2593b` passes the workspace all-target check, 1,709 affected tests (zero
+failed, nine ignored) and the client build. Its 1,376 recorded inputs remain
+unchanged and its 158 changed compiled inputs have independent coverage. Native
+builds/full suites also pass on Windows, Linux and both Mac architectures with
+24 actual GPU readbacks. Its installed-assets run nevertheless fails: inventory
+UI uses archive items without live textures, and the actual Bandage drop stops
+at the world-object-index query. The current actual-reference work above must
+have its own exact compilation and installed outcome recorded separately;
+these historical checks do not establish placement or visual parity.
+
+Returning to the menu rebuilds script/Lua/UI owners before menu entry;
+native shutdown skips that rebuild. A failed rebuild stops the client
+instead of entering a menu with mixed owners. Character `getModData`
+exposes a live table and saves retained nested mutations. The conservative
+collector handles registered tables, Lua closures and shared upvalues,
+including environment and recursive closure cycles. Reviewed Event callbacks
+and Loader caches participate through explicit strong native-capture owners.
+Reviewed descriptors can also weakly register an existing backing allocation
+without wrapping or copying its live owner. Duplicate registration shares the
+same physical allocation record; conflicting descriptions are rejected. This
+provides a tracing prerequisite for runtime owners from other crates. A separate
+trace-only descriptor can register the actual typed userdata allocation before
+type erasure. Object recognition reads only its pointer; it never invokes
+userdata methods during collection. Incomplete registration stays conservative,
+and an unavailable interior borrow defers the whole pass. VM allocation shapes
+are reserved, and one allocation cannot also register as a host owner. A checked
+visitor can trace a physical `Rc<dyn Any>` slot that directly owns a registered
+`RefCell<T>`, preserving that allocation through a crate boundary without cloning
+or borrowing its contents. Wrong types and node kinds stay conservative. Production
+item/component/fluid/Color userdata and corresponding actual component, script,
+attribute and world-object owner slots now participate in this protocol.
+Floor-item reciprocal backlinks participate through their physical owner slots;
+broader engine userdata and lifecycle coverage remain unfinished.
+Other native captures, coroutines, prototypes and engine-owned references
+remain opaque roots; character/action cycles and some old LuaManager
+environments can remain retained. Heap
+statistics and a complete VM/host collector remain unported.
+The SQLite writer rejects auto-vacuum files before changing them; writing
+that format needs pointer-map/root relocation support and remains pending.
+
+`WorldGenParams.INSTANCE` now shares the engine's seed and cell bounds.
+Menu changes, saved-file loading and world initialization use that same
+owner. The binding covers the shipped menu's seed/bounds operations; the
+remaining API and post-initialization generator seed updates need parity
+work. Installed compiler string-literal quirks are preserved and tested.
+
+Starting-item scripts can create a named key ring through the normal item
+factory and inventory, including the original chance of a house key from
+the actual meta-room's building. String-based item creation retains its
+script dictionary ID, so nested items can reload with their correct types.
+The player-screen Lua globals read the current Core size and player count;
+this supplies inventory layout geometry but does not implement split-screen
+world rendering. Inventory category/type queries use the real per-item
+reference and original subclass constructor behavior, including null types
+and the WeaponPart constructor's WEAPON value. `getTex` delegates to the
+actual texture slot with native subclass selection. `isHidden` reads the retained
+script item at use time, so the shipped inventory pane can refresh rows.
+
+The window reads the real single-player speed-control pause state after UI
+input. Paused frames skip game-state simulation while UI/audio/rendering
+continue; only in-game frames emit `OnTickEvenPaused(0)`. The survival guide
+resumes through its shipped close handler. Paused camera updates and full
+network pause ownership remain pending.
+
+The running timed-action stack now belongs to the character, separately
+from Lua's pending-action queue. Protected callbacks run between released
+character borrows, before body damage/stat processing, and completed actions
+are removed by identity. Movement modifiers, animation events, progress and
+hand models use the live action. Aiming and walking/running cancellation
+callbacks now run inline between released host borrows, preserving already
+computed locals and reading live player clocks after resume. Other player
+events retain wider phase gaps. A stable character grapple owner now supplies
+`isDraggingCorpse` from the actual target's live zombie state; full grapple
+acceptance, corpse conversion and target userdata remain pending. Running,
+sprinting and direction queries read the existing character rules and fields.
+Remaining action APIs, network and voice audio also need work. Sneaking uses the existing input/save field;
+farming exposes its actual transient player flag.
+
+Global-object lookup uses the actual meta grid and save directory. After
+`OnGameTimeLoaded`, server systems initialize before client systems; inherited
+Lua callbacks work, and single-player command delivery runs after current frame
+timing even while paused. Shutdown retires transport separately from public
+registry reset. Multiplayer transport and world-object mutation hooks remain
+incomplete.
+
+Cells now own live shared-item processing and removal queues. Inventory
+registration and removal use actual item references, and paused frames preserve
+the queues. Item sounds have a separate emitter owner with delayed stop and
+reuse; per-item simulation, saved-world identity bridging, positioned sounds,
+limiters and disabled-sound emitter parity remain pending. Cell drag cursors
+use four real Lua table slots, original event/deactivation ordering and traced
+ownership across callbacks. Broader inventory and world-object APIs still
+prevent complete inventory screen setup and interaction.
+
+The global `getCell()` entry now returns that same live cell. Square
+`canReachTo` uses the actual door, window and barricade owners together with
+the live nullable sprite-exclusion list. Decoded floor items now become shared
+runtime items once, and placement retains the supplied item. The existing floor
+value-save path reads from that owner but still needs routing to the actual
+reference serializer for captured assets and nested bags. Explicit archive copies
+keep their independent value semantics. Squares now store stable allocations for the
+entire object, including its base fields and components. Runtime handles retain
+that allocation across removal and chunk moves; explicit archive copies remain
+independent. Lifecycle and removal hooks receive the actual object between
+released object borrows. Membership checks after callbacks use pointer identity,
+so a replacement with the same numeric ID cannot take over the original receiver.
+Raw undecodable records keep their bytes.
+Chunks also store each entire square in a canonical allocation. World getters,
+paired edge queries and mutation/render hooks retain that allocation; archive
+copies make independent square and object allocations. Replacing a coordinate
+does not retarget a retained receiver. Detached squares keep their contents
+until the native clear/reuse lifecycle is implemented. Borrowed retirement
+owners wait for a later safe drain instead of losing their pending cleanup.
+Square copies now use the explicit fallible `try_archive_copy` operation;
+`Clone` and value equality are no longer offered for live square slots/bodies.
+The copy checks item, bag, attachment and codec-table trees before allocation,
+reports borrowed owners or cycles, and bounds recursive depth and occurrences.
+Repeated main-list and independent world-list references map to one copied
+object, including detached entries; equal IDs and equal bodies do not merge
+distinct owners. Item/container leaves keep their existing
+per-object value-copy policy, including omitted opaque parent/source-grid links;
+cross-object child sharing is not remapped. Pending host roots are excluded.
+Foreign list values are rejected by default; explicit
+`RetainForeignHandles` preserves their exact source VM referents without
+rewriting references hidden inside them. This internal synchronous operation
+does not implement native save/reload or arbitrary Lua graph cloning.
+Each square now owns an independent heterogeneous `worldObjects` allocation.
+Native entries retain entire actual objects; raw entries can preserve null,
+foreign values, duplicates, detached objects and non-floor objects. Raw list
+changes do not repair main/special membership or backlinks. Placement inserts
+the same owner into main and world lists. Floor removal through the mutation
+lifecycle removes only the first matching actual world entry before the first
+main entry. Other high-level adapters still have virtual-dispatch gaps. Weight reads
+the live list in order, counts duplicates/detached items and reports cast/null
+failures instead of skipping malformed members. Save still walks only main
+records and writes actual-pointer world-membership flags; special membership
+still uses legacy numeric IDs. Fresh reload normalizes raw world-list anomalies
+through those records. Direct-load partial mutations remain intact.
+Mutators return removed and rejected owners for destruction outside enclosing
+host guards. A capture-free descriptor traces each actual stored slot once,
+moves entries out while collector guards are held, and defers their destruction
+until every graph borrow ends. Unregistered owners remain
+conservative. Production Lua list userdata/caches and registration retries
+still need their bridge, together with actual retained Lua square/body owners.
+The streamer retains removed chunk payloads until both world and sprite-manager
+borrows have ended, including queued-save errors and shutdown. Failed unload
+callbacks retain the removed payload without publishing a partial pending save.
+Direct object removals and replaced squares also retain their discarded owners
+until the outer frame or streaming boundary releases world and sprite borrows.
+This is host cleanup bookkeeping and does not implement the original square
+reset/reuse lifecycle. Lua world-object lists, stable Lua square/body handles,
+reciprocal world-item links and non-floor containers still need their runtime
+owner bridge. Getter-time copies
+or empty arrays would not implement the original inventory behavior.
+Fire operations now pin their actual object receivers, but the manager's
+locator registry and stepped simulation copies still need a complete owner
+migration and callback timing comparison.
+`isOutside` reads the same stored exterior property as existing square logic,
+without recalculating it from room or roof state. Existing coordinate-based
+square handles still lack the original retained-square lifetime across reload.
+Square-owner callback arguments release their local square/object borrows;
+the surrounding world and sprite guards still need a separate callback yield
+and resume path before arbitrary Lua reentry is safe.
+Sheet-rope exit eligibility retains the found window across its toggle callback,
+so a replacement with the same coordinates and ID cannot change that check's
+receiver. Character state targets still use locator data beyond that phase.
+
+Puddles now have a shared live singleton and indexed float controls. A real
+cell-owned WeatherFX object initializes at world init; the climate updates
+its targets and puddles after Lua climate callbacks, respecting the live
+enable flags. Movement and ground-dirt calculations read the live wet-ground
+control, including Lua admin changes made after frame capture. Per-cell
+particle stepping, sky/water updates, masks and rendering remain unwired.
+
+Known integration gaps include action-context/turning phase timing, timed
+actions, character visibility fading, split-screen viewports, weather and
+sky/water effects, animals/ragdoll rendering, basement save persistence,
+overlay and broken-fence mutations, key spawning/naming, and missing Lua/UI
+bindings. The installed-asset session regression is opt-in and writes only a
+fresh isolated cache. A successful ordinary workspace suite does not exercise
+all installed assets, render paths or foreign platforms.
 
 ## Boot (`GameWindow.init`)
 - [ ] Mods (only when Core's mods option is on): `bind_mods::read_default`,
@@ -14,9 +603,6 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       (`ClothingItem` XMLs + `BloodClothingType`; without it items made from
       Lua have no `ItemVisual`). Wired in `pz_engine::boot::load_scripts`,
       used by every client mode. Decals
-- [ ] Item assets for `instanceItem`: after the ScriptManager,
-      Lua have no `ItemVisual`). Wired in `pz_engine::boot::load_scripts`
-      (both client modes). Decals
       (`ItemVisual.getDecal`, `getAllDecalNamesForItem`) also need the meta
       population line below (`ClothingDecals`). A character simulation
       that installs its own `ItemLuaEnv` must return these assets from
@@ -32,7 +618,8 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `SetupHeaders::from_game_dir`, load the strings, Sound, SoundMP and
       Music banks, start `pz_audio::output::Output` on it, then
       `bind_audio::install_sound_system(SoundSystem::new(Box::new(backend), env, backend.parameter_count()))`
-      with `backend = StudioBackend::new(studio)` (pz-sound feature
+      with `backend = StudioBackend::new(studio).with_file_resolver(..)`
+      (resolving `media/sound/*` through GameFs) (pz-sound feature
       `studio`); set its `rand_next` and `media_file_exists` (#80/#82/#83).
 - [ ] Event and hook names read from the jar via pz-classfile instead of
       `events.rs` constants (#7).
@@ -96,7 +683,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       (`bind_players::player_index`, the HUD's `player_index`) reads it, or
       `assumedPlayer` (`set_assumed_player`) without an instance (#177).
 
-- [ ] `IsoWorld.init` → `ScriptManager.PostTileDefinitions`: after the
+- [x] `IsoWorld.init` → `ScriptManager.PostTileDefinitions`: after the
       tile definitions and the scripts, call
       `sprites.post_tile_definitions(&pz_world::sprite::EntitySpriteConfig::from_scripts(&sm))`
       (sets `EntityScriptName` and builds the `SpriteConfigManager` entries
@@ -112,15 +699,15 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `sound_system().with(..)`; listener from the active camera (#78/#83).
 - [x] `UITransition.UpdateAll` → `bind_misc::ui_transition_update_all()` (#20).
 - [ ] Vsync from Core options; `FrameParams` size from Core screen size.
-- [ ] `GameTime::update` / `update_game_time(thread)` once per frame
+- [x] `GameTime::update` / `update_game_time(thread)` once per frame
       before the world (#49).
 - [ ] Pathfinding: PathHost `update_thread` then `update_main` before the
       characters update; `host.remove(id)` when a character leaves (#74).
-- [ ] Characters, in game order: `preupdate_zombie` (players: their
+- [x] Characters, in game order: `preupdate_zombie` (players: their
       preupdate), `update_zombie` (the state machine, then `update_fire`),
       `postupdate_zombie` / `moving_postupdate` (with
       `slide_head_away_from_walls`) (#41/#74/#75).
-- [ ] Player input: after the camera update call
+- [x] Player input: after the camera update call
       `pz_player_input::set_camera_info(i, CameraInfo { off_x, off_y,
       right_click_x, right_click_y })` per local player (the reticle
       position is `chr.player.aiming_position`, set by
@@ -128,7 +715,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `bind_input::update`/`after_ui_update` the game loop builds one
       `EnginePlayerInput::capture()` per frame, passes `&input` to each local
       player's `IsoPlayer.update`, then calls `input.write_back()` (#137).
-- [ ] `ZombiePopulationManager::update_main` with PopulationHost and
+- [x] `ZombiePopulationManager::update_main` with PopulationHost and
       `ZombieOps` (`RealZombies`) (#73/#77; `RealZombies::create_survivor`
       returns `CreateSurvivor`'s `ScriptResult`, and `WorldPopulation::update`
       / `start_game` return `Err(java exception text)` when creating a real
@@ -138,12 +725,13 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       popman worker pass has already run, as its own thread would): `GameWindow.logic` calls
       `WorldPopulation::update_game_state(no_save, paused)`; `IngameState.update`
       (after `VirtualZombieManager.update`) calls `WorldPopulation::update(&mut
-      WorldPopulationHost::from_state(.., &mut RealZombies { .. }),
+      pz_world_states::population_host(rand, &mut RealZombies { world: &mut
+      states_adapter, .. }),
       &PopulationFrame { multiplier, world_age_hours,
       chunk_maps: &player_chunk_maps(&streamer), real_zombies:
       &real_zombies.infos() })`; it also runs the in-line worker
       (`MCDThread`) pass when due.
-- [ ] `WorldSoundManager::update` once per frame (#75).
+- [x] `WorldSoundManager::update` once per frame (#75).
 - [x] UI avatars: `UiModels::set_time_delta` (from `GameTime` once it is
       wired; the frame multiplier / 30 now) and `UiModels::prepare(gpu)`
       (texture compositing) before the UI renders (#115).
@@ -163,12 +751,67 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       window's key/char events are queued (#119).
 
 ## World (`GameLoadingState` / `IngameState`)
+- [x] `IsoWorld.init`, after `IsoMetaGrid::create`: `meta.zone_tables =
+      ZoneTables::load_from_game_jar(jar)?` and `meta.clipper =
+      Some(Box::new(zone_clipper::ZoneClipperOps::default()))` (polyline
+      outlines, polygon clipping) (#224).
+- [x] `IsoWorld.init`, before `OnLoadMapZones`:
+      `bind_basements::before_on_load_map_zones()`; the bent-fence sandbox
+      values on `bind_bent_fences::shared_bent_fences()`
+      (`ZombieLore.FenceThumpersRequired` / `FenceDamageMultiplier`);
+      `ZombiePopulationManager.init` through
+      `WorldPopulation::init_with_spawn_origins(.., &lua_world::take_spawn_origins())`
+      (#224).
+- [x] The sprite manager is `Rc<RefCell<IsoSpriteManager>>`, installed with
+      `bind_sprites::install_sprite_manager` (`IsoSpriteManager.instance`);
+      `ErosionMain` is shared through `bind_erosion::set_instance` (#224).
+- [x] `Basements.beforeLoadMetaGrid`: build `pz_worldgen::basements::Basements`
+      from `bind_basements::take_per_map()` (what `basements.lua` and the
+      `Basement` zones registered), then load headers, placements and the
+      meta-grid buildings (#224); `IsoWorld::before_load_meta_grid`, handed
+      to `WorldGenHook.basements` for `onNewChunkLoaded` (Claude handoff).
+- [x] Lua new-world registries: tile/container overlays, `BrokenFences`,
+      `KeyNamer`, `WorldGenUtils.INSTANCE` and the randomized-world clutter
+      lists are registered before server Lua loads (Claude handoff).
+- [x] Character Lua world handles: `getCurrentSquare` / `getSquare` read
+      the character's live current square and return the world's canonical
+      handle; `getCell` returns the installed cell. `getJoypadBind` reads
+      the player's input component. Unloaded squares/cells return `nil`.
+- [ ] `Basements.loadSavefile` / `writeSavefile` (`map_basements.bin`): a
+      loaded world recomputes its placements.
+- [ ] `TileOverlays.updateTileOverlaySprite(obj)` when a square's objects
+      are created or loaded: `bind_tile_overlays::shared_tile_overlays()`
+      `.pick_overlay(..)` puts the sprite first in `attachedAnimSprite`;
+      `ContainerOverlays.updateContainerOverlaySprite` from
+      `shared_container_overlays()` sets the overlay sprite;
+      `fixTableTopOverlays(square)` after moving objects; both `Reset()` on
+      world unload.
+- [ ] `BrokenFences.destroyFence(obj, dir)` (thumping, vehicles): the engine's
+      `StatesEngine::destroy_fence` / `is_breakable_fence` /
+      `broken_fence_items` read `bind_broken_fences::shared_broken_fences()`
+      (`update_sprite_name`, `debris_sprite`, `adjacent_damage`,
+      `destroy_adjacent_dirs`, `add_items` drawing `Rand`), then do the
+      square changes, sound and recalculation; `Reset()` on unload.
+- [ ] `ItemPickerJava.KeyNamer.nameKey(item, square)` when keys spawn:
+      `bind_key_namer::key_namer().key_name_translation(&square)` with a
+      `pz_inventory::key_namer::KeySquare` over the square.
+- [ ] Story clutter: `RandomizedWorldBase.get*ClutterItem()` reads
+      `bind_randomized_world::clutter(field)`.
+- [ ] `MapObjects.newGridSquare` / `loadGridSquare` on brand-new / loaded
+      squares: call `bind_map_objects::on_new_callbacks(sprite)` /
+      `on_load_callbacks(sprite)` with each object (needs an `IsoObject`
+      Lua binding); `MapObjects.Reset` on world unload (#224).
+- [ ] Fence bending (`pz-world-states`) reads its `BentFences` from
+      `bind_bent_fences::shared_bent_fences()` (#224).
+- [ ] Water rendering reads `IsoWaterFlow` from
+      `lua_world::shared_water_flow()`; `IsoWaterFlow.Reset` on world
+      unload (#224).
 - [ ] Animal definitions: `pz_animals::AnimalDefinitionTables::load(&env)`
       over `LuaManager.env` once shared Lua is loaded, as `IsoWorld.init`
       calls `AnimalDefinitions.getAnimalDefs()` (which loads the genome
       definitions); tracks reload where `IsoWorld` calls
       `loadTracksDefinitions` (#191).
-- [ ] `GameLoadingState.enter`: `bind_video::release_all_video_textures()`
+- [x] `GameLoadingState.enter`: `bind_video::release_all_video_textures()`
       (`LuaManager.releaseAllVideoTextures`, after `WorldMapImages.Reset` /
       `WorldMapVisited.Reset`) closes and destroys every texture `getVideo`
       returned (#159).
@@ -197,9 +840,9 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `pz_inventory::shared::new_item` (or `SharedContainer::fill_from`, which
       `shared::load_into` now calls) so a bag's inventory gets its
       `containingItem` (#185).
-- [ ] End of `GameLoadingState`: `hud::init_ui(&mut thread)` (the in-game
+- [x] End of `GameLoadingState`: `hud::init_ui(&mut thread)` (the in-game
       HUD, then `OnCreateUI`) before `OnCreatePlayer` (#144).
-- [ ] `IngameState` per player: `hud::update_progress_bar(n)` in the update
+- [x] `IngameState` per player: `hud::update_progress_bar(n)` in the update
       and `hud::render_progress_bar(&mut thread, n)` after the player's
       game-world UI; `HudPlayers::player_screen` (characters thread) and
       `HudCamera` (`IsoCamera.getOffX/Y`, `Core.getZoom`; world-render
@@ -304,7 +947,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       host; network thread); `HudConsoleMethods` (GlobalObject's declared
       methods and each return type's public methods, for suggestions;
       ours, from the exposure tables) (#160).
-- [ ] TextDrawObject: `IngameState.renderframeui` calls
+- [x] TextDrawObject: `IngameState.renderframeui` calls
       `hud::text_draw::render_batch(player)` after `WorldMarkers`/`IsoMarkers`
       (`DebugChunkState` calls `no_render`); `ChatElement`'s constructor calls
       `ensure_chat_backdrop()`; `HudPlayers::player_index`
@@ -317,6 +960,15 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       (`IsoCamera.frameState` camCharacter/zoom and `cameras[0]`'s offsets;
       world-render thread). `UIManager`'s left button already goes through
       `gizmo_hit_test_hook` (#199).
+- [ ] Gizmo drawing: in the world frame's `late` callback
+      (`pz_iso_render::frame::world_frame_into_with`, where `IsoWorld.render`
+      draws after the cell), first call
+      `pz_engine::world_hud::render_gizmos(frame player, out)`, which turns
+      the `GizmoFrame` into `DrawCmd::VboRun`s for pz-gpu. The gizmo camera is
+      installed with the HUD camera (`install_hud_camera`); each frame also
+      set `SharedCameraFrame::offsets[0]` (`cameras[0].rightClickX/Y`,
+      `getTOffX/Y` while it differs from `getOffX/Y`, `deferedX/Y`;
+      world-render thread) (#203).
 - [ ] Chat (SP): characters thread implements `chat::ChatPlayer` and
       `chat::ChatElementOwner` for IsoPlayer (and installs `chat::ChatPlayers`
       for `IsoPlayer.players`/`getInstance`), gives each `IsoGameCharacter` a
@@ -356,31 +1008,41 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       progress bar and halo note). `GameLoadingState`'s
       `ChatManager.init(true, player)` takes `bind_players::player_instance()`
       as the `Rc<dyn ChatPlayer>` (#195).
-- [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
+- [x] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
+- [x] Popman over the real world (#210): build the population host with
+      `pz_world_states::population_host(rand, &mut RealZombies { world:
+      &mut StatesWorldAdapter::new(..), .. })` (the host reads the cell,
+      meta grid, sprites and sitting checks through the adapter between
+      zombie calls; the adapter is the `SittingChecks`: `has_moving_objects`
+      is `StatesEngine::has_moving_objects` plus the lent zombie list,
+      `line_clear_collide` is `LineClearCollideMain` with pz-vehicles'
+      `PathfindVehicles` and `ignore_vehicle = None`). The engine's
+      `has_moving_objects` must answer for players and animals on the
+      square (the real zombie list is counted by the host).
 World load, in the original's order (`GameLoadingState.enter` loads the
 server Lua first, so `ClimateMain.lua`'s `OnClimateManagerInit` handler is
 registered):
-- [ ] `GameTime.setInstance(new GameTime())`: `bind_climate::install_game_time`.
-- [ ] `ClimateManager.setInstance(new ClimateManager())`:
+- [x] `GameTime.setInstance(new GameTime())`: `bind_climate::install_game_time`.
+- [x] `ClimateManager.setInstance(new ClimateManager())`:
       `bind_climate::new_climate_manager(thread)` (fires
       `OnClimateManagerInit`; `ClimateMain.lua` sets the season colours, without
       which the global light stays black).
-- [ ] `IsoWorld.init`: `GameTime.init` then `GameTime.load`
+- [x] `IsoWorld.init`: `GameTime.init` then `GameTime.load`
       (`game_time_save::load_map_t_file`; the climate part keeps the colours);
       `ErosionGlobals.Boot` → `bind_climate::start_erosion_season(thread,
       &SeasonConfig, sandbox Temperature)` (`OnInitSeasons`); after
       `metaGrid.CreateStep2`, `bind_climate::init_climate_manager(thread,
       Some((meta.min_x, meta.min_y, meta.max_x, meta.max_y)))`.
-- [ ] `IsoWorld.init`, after `GameEntityManager.Init` and before
+- [x] `IsoWorld.init`, after `GameEntityManager.Init` and before
       `metaGrid.CreateStep2` (between the erosion boot and
       `init_climate_manager` above): `PersistentOutfits.instance.init()` =
       `bind_zombie_outfits::init_persistent_outfits(thread,
       Some((&save_dir.join("z_outfits.bin"), core.no_save)))` (Lua's
       `ZombiesZoneDefinition` must have run); keep the returned outfit names
       for `WorldPopulation::init` (#147).
-- [ ] `IsoWorld.init`, after `OnLoadedMapZones` and before the cell load:
+- [x] `IsoWorld.init`, after `OnLoadedMapZones` and before the cell load:
       `pz_world_popman::WorldPopulation::init(native, &meta,
       &save_game_state(save_dir) + sandbox/mode fields, &ZombieConfig,
       outfit names)` (`MapCollisionData.init` then
@@ -408,9 +1070,9 @@ registered):
       chance_of_attached_weapon (sandbox) }, settings (sandbox
       `ClothingDegradation`, `RemoveZombieLoot`, game mode, world age) })`;
       it fills `human_visual`, `zombie.item_visuals` and attached weapons (#147).
-- [ ] `IngameState.enter`, world loaded: `WorldPopulation::start_game(&mut
+- [x] `IngameState.enter`, world loaded: `WorldPopulation::start_game(&mut
       host, &frame)` (`MapCollisionData.startGame`).
-- [ ] Quit: `WorldPopulation::save(&reals)` with the world save, then
+- [x] Quit: `WorldPopulation::save(&reals)` with the world save, then
       `WorldPopulation::stop()`.
 
 - [ ] Sandbox: on loading a save, `SandboxOptions::load_bin(map_sand.bin)` on
@@ -539,7 +1201,16 @@ registered):
       writes `thumb.png`, then the renderer reloads that texture.
       `map_animals.bin` and the queued `metagrid/metacell_*.bin` are
       written with `map_zone.bin` (#167).
-- [ ] Game load (`IsoWorld.init`): `world_gen.load_file(save_dir)`
+      `capture_thumbnail(player)`: set the player's zoom and target zoom
+      to 1 (camera zoom, offscreen size), centre the camera, render that
+      player's world frame into the offscreen buffer (no screen pass, no
+      UI) and submit it, then return
+      `pz_engine::save_thumbnail::capture_thumbnail(gpu, PlayerScreen
+      {screen left/top/width/height of player}, PlayerScreen{.. of player
+      0}, ScreenParams{player's desaturation, timer})`; restore the old
+      zoom and centre again; the next frame redraws screen and UI, and
+      reload the `thumb.png` texture after `save_game` writes it (#173).
+- [x] Game load (`IsoWorld.init`): `world_gen.load_file(save_dir)`
       where `WorldGenParams.INSTANCE.load()` runs; after
       `GlobalModData.init`, `instance_tracker.load_file(save_dir,
       no_save)`; after `map_zone.bin`,
@@ -549,7 +1220,7 @@ registered):
       no_save)` (achievement checks are the caller's). In
       `GameLoadingState`, unless saving is off,
       `world_save::ensure_subdirectories_exist(save_dir)` (#167).
-- [ ] Quit (`Core.exiting`): `world_save::save_on_quit(&mut g,
+- [x] Quit (`Core.exiting`): `world_save::save_on_quit(&mut g,
       &mut local_players, &mut hooks)` (`on_post_save` fires `OnPostSave`),
       then `IngameState.exit`: `streamer.stop(&mut cell, ctx)`, the other
       stops, `world_save::close_stores(Some(&mut player_db), &mut
@@ -584,54 +1255,57 @@ registered):
       `IsoRegions` to the region readers (puddles, weather mask, square
       edits through `set_previous_flags` / `square_changed`). Quit:
       `IngameState` calls `IsoRegions.reset()`; drop it.
-- [ ] Local player at world init: `VehicleStore::create` (`VehiclesDB2.init`),
+- [x] Local player at world init: `VehicleStore::create` (`VehiclesDB2.init`),
       `savefile::is_player_alive`, `PlayerDb::new`; `load_player_for_info`
       gives `SWorldX/SWorldY` for the chunk map; later `load_local_player_1`
       (decode with `load_player`, health 0 when `is_dead`, set `sqlId`) and
-      `chunkMap.worldX/Y = local_player_chunk_map_pos(x, y, offset)` (#100).
-- [ ] CGlobalObjects `initSystems` and update pumps (#31).
-- [ ] Popman: `WorldPopulationHost::from_state`, `update_main` with
-      `player_chunk_maps(&streamer)`; supply SittingChecks,
-      `has_moving_objects`, `line_clear_collide` (#77, #60). Driven through
+      `chunkMap.worldX/Y = local_player_chunk_map_pos(x, y, offset)` (#100;
+      wired in `IsoWorld::load_player`, #209/#212). Left: `player.sqlId`
+      (no field on `GameCharacter` yet) and `map_p.bin` saves (#212).
+- [x] Single-player SGlobalObjects/CGlobalObjects `initSystems`, actual
+      lookup/save owner and command pumps (#31). Multiplayer transport and
+      world-object mutation hooks remain pending.
+- [x] Popman: `pz_world_states::population_host` (#210; was
+      `WorldPopulationHost::from_state`), `update_main` with
+      `player_chunk_maps(&streamer)`; SittingChecks is the
+      `StatesWorldAdapter` (#77, #60, #210). Driven through
       `WorldPopulation` (see the world-load list above).
 - [ ] World sound: `WorldSoundAdapter::from_state`; engine `SoundEffects`
       (OnWorldSound, fish noise, popman) (#71).
-- [ ] Lighting: `WorldLighting::set_chunk_map` for every local player (#76).
+- [x] Lighting: `WorldLighting::set_chunk_map` for every local player (#76).
 - [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
       frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
-- [ ] Corpses (#216): in `IsoCell.update`, after the other static
-      updaters, `dead_body::process_static_updaters(env, hooks, worldAge)`,
-      then `dead_body::update_bodies(env, hooks, &CorpseSettings{..},
-      worldAge)` (sandbox `HoursForCorpseRemoval`, `MaggotSpawn`,
-      `DisableFakeDead`, `Reanimate`, ServerOptions
-      `RemovePlayerCorpsesOnCorpseRemoval`, `Core.tutorial`,
-      `ClimateManager.getSeasonName()`); stop the rest of the cell update on
-      `UpdateBodiesOutcome::NullContainer`. `CorpseHooks`: `create_item`
-      via `create_item_by_type`, process items, players and `isCanSee` for
-      fake dead, `corpse_visual_changed` drops the `DeadBodyAtlas` entry,
-      `reanimate`/`reanimated` build the zombie or animal. Set
-      `cell.dead_bodies.last_id` from `id_manager_data.bin`.
-      `SquareMutationHooks::world_age_hours` returns
-      `GameTime.getWorldAgeHours()`; `corpse_added_to_world` /
-      `corpse_removed_from_world` call `FliesSound::corpse_added/removed`
-      (body `getXi/Yi/Zi`) and `DesignationZoneAnimal`.
-- [ ] Corpse chunk load/unload (#216): in `doLoadGridsquare`,
-      `dead_body::chunk_loaded`, `FliesSound::chunk_loaded(wx, wy)`, then
-      (after `AddCorpses`) `dead_body::add_loaded_corpses_to_world`; in
-      `IsoChunk.removeFromWorld`, `dead_body::chunk_removed_from_world`
-      and `FliesSound::chunk_removed_from_world` before `unload_chunk`.
-- [ ] Flies (#216): one `FliesSound` per world; each frame
-      `FliesSound::update(FliesWorld{cell, meta, render:
-      RenderInvalidation, hooks}, players, &FliesEnv{..})`. Here
-      `FliesSoundHooks::sickness_from_corpses_rate` is
-      `GameCharacter::sickness_from_corpses_rate`, the emitters come from
-      `IsoWorld.getFreeEmitter`, and `FliesEnv` takes
-      `ZomboidGlobals.FoodSicknessDecrease` and the 30 FPS multiplier. The
-      squares' `has_flies` reaches `RenderSquare.flies` through
-      `RenderSquareHooks::flies_changed` and `render_square`.
-      `BodyDamage` environment `corpse_count`:
-      `corpse_count::get_corpse_count_at`.
-- [ ] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
+      (#FIRE-REST) `update` returns `Err(java exception text)` when a
+      burn threw (`IsoWindow.removeSheet` on a window outside rooms whose
+      inside square does not exist): like the population `Err` above,
+      nothing up to `IngameState.update` catches it, so the rest of that
+      frame's `IngameState.update` is skipped and the text is logged via
+      `ExceptionLogger`. (Engine, #225: the decompiled `UpdateStuff` wraps
+      `IsoFireManager.Update` in its own `catch (Exception)`, and
+      `MapCollisionData.updateMain` through `PolygonalMap2.updateMain` in
+      one `catch (Throwable)`; so a fire `Err` is logged and the frame goes
+      on, a population `Err` is logged and skips the pathfinder's pass.)
+- [ ] Fire world parts (#FIRE-REST): `FireWorld.mutation` (`FireMutation`:
+      the regions, door tables and the `SquareMutationHooks` /
+      `PathfindSquareHooks` / `RenderSquareHooks` the square mutations
+      use), also in `StatesFire.mutation`. `WorldCall::FireManager` /
+      `FireStopSound` from a fire removed by other code (Lua, mutations)
+      go to `IsoFireManager::remove` / `sounds.remove_fire`.
+- [ ] Fire sound slots (#FIRE-REST): `FireSoundHooks::fire_slot_play` /
+      `fire_slot_stop` drive 20 emitters (`FMODSoundEmitter` +
+      `ParameterFireSize`); `FireHooks::listener_distance_sq` is
+      `FMODParameterUtils.getClosestListenerDistanceSquared`.
+- [ ] Heat sources (#FIRE-REST): add/resize/remove the cell's
+      `IsoHeatSource`s from `IsoFire::heat_source` (permanent fires, in
+      `fire_updated` / `fire_removed`), `IsoFireplace::heat_source()` and
+      `IsoBarbecue::heat_source()` after each hearth update; their
+      `running_sound()` loops on the object's emitter.
+- [ ] Hutch burning (#FIRE-REST): `FireHooks::hutch_release_contents`
+      runs `releaseAllAnimals` + `dropAllEggs` of the hutch object.
+- [ ] Fire fighting (#FIRE-REST): the put-out action uses
+      `fire::fighting::{get_square_to_extinguish, get_extinguisher}` with
+      an `ExtinguisherItem` view of the inventory items.
+- [x] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
 - [ ] Zombie vehicle checks (`isVehicleBetween`, `DistToSquared(vehicle)`)
       read `IsoChunk.vehicles.loaded()` (#88/#91); once the vehicle runtime
       replaces those entries with its own objects, route these through
@@ -733,7 +1407,7 @@ registered):
       `update_frame()` per frame; `spawn` (`IsoChunk.AddVehicles`) from the
       chunk loader through a `SpawnWorld` impl fed by the meta cell vehicle
       zones; `bind_vehicles::register` (#86).
-- [ ] Player load (`PlayerDB.loadLocalPlayer`/`loadPlayer`): the bytes of
+- [x] Player load (`PlayerDB.loadLocalPlayer`/`loadPlayer`): the bytes of
       `PlayerDb::load_local_player(sql_id)` (#100) go to
       `GameCharacter::load_player(sm, chars, ctx, SaveEnv { items:
       ScriptItems over the save's WorldDictionary, tables }, reader,
@@ -741,7 +1415,22 @@ registered):
       with a descriptor; `set_on_fire` runs `pz_world::fire::character::set_on_fire`
       with the world's fire manager. Then, for an `isDead` row,
       `setOverallBodyHealth(0)`/`setHealth(0)`; `saved_vehicle` seats the
-      player; save with `save_player` (#101).
+      player; save with `save_player` (#101). Wired in
+      `IsoWorld::load_player` over the save's `ScriptItems` (#212). Left:
+      `set_on_fire` is only logged (no `IsoFireManager` on `IsoWorld`),
+      `saved_vehicle` seating, and saving through `save_player` (#212).
+- [ ] `WorldDictionary.init()` (#212): `world_dictionary::init` ports
+      `DictionaryData.load()` only. Still to port: `collectObjectNames`,
+      `collectStrings`, `parseInfoLoadList`/`parseCurrentInfoSet` (ids for
+      scripts new since the save, removed or mod-changed items, new games),
+      `parseObjectNameLoadList`, the `StringDictionary`/`ScriptsDictionary`
+      registers, `getDictionaryMods`, `backupCurrentDataSet`, `save()`,
+      `saveAsText("WorldDictionaryReadable.lua")`, `WorldDictionaryLogger`
+      and `createErrorBackups`; then `ScriptManager.PostWorldDictionaryInit`
+      and `WorldDictionary.onWorldLoaded`. A new game has no registry until
+      then (chunk items load raw). `world_dictionary::script_items` still
+      needs `recorded_media` (`ZomboidRadio.getRecordedMedia()`),
+      `channels` and `map_definitions` (#212).
 - [ ] Square mutations: every object change after load goes through
       `pz_world::square_mutation::MutationEnv` (`add_tile_object`,
       `add_special_object`, `remove_tile_object`,
@@ -761,23 +1450,48 @@ registered):
       `pz_characters::character::CharacterDrop` and take the world as a
       `FloorCx { ctx, floor }`. Wired: `set_worn_item` / `remove_worn_item`
       (`forceDropTooHeavy` right after `wornItems.setItem`),
-      `climbThroughWindow` / `climbThroughWindowFrame` (`dropHeavyItems`)
-      and `ClimbOverFenceState`'s `VaultSprintFallLanded`
-      (`dropHandItems`). The engine must:
+      `climbThroughWindow` / `climbThroughWindowFrame`, `climbSheetRope`,
+      `climbDownSheetRope` and `IsoPlayer.climbOverWall` (`dropHeavyItems`),
+      `ClimbOverFenceState`'s `VaultSprintFallLanded`, `fallenOnKnees`,
+      `handleLandingImpact` and `IsoPlayer.OnDeath` (`dropHandItems`)
+      (#214). The engine must:
       - return its `square_mutation::FloorDropEnv::new(&mut env,
         world_age_hours)` from `StateWorld::floor()` for the states;
       - `bind_character_sim::install_floor_world(Some(..))` with a
         `FloorWorld` that builds a `FloorDropEnv` per call, for Lua's
         `setWornItem` / `removeWornItem` / `setClothingItem_*` and the new
         `dropHandItems` / `dropHeavyItems` (without one nothing drops);
-      - call `GameCharacter::drop_heavy_items(sm, FloorCx)` from
-        `climbSheetRope`, `climbDownSheetRope` and `IsoPlayer.climbOverWall`
-        (the `PathMoverRequest::ClimbOverWall` handler), and
-        `drop_hand_items` from `handleLandingImpact`, `fallenOnKnees` and
-        `IsoPlayer.OnDeath`, as those are ported (not yet in
-        `pz-characters`);
       - `Use`'s `Unwear` (`apply_use_outcome`) passes no world yet, so a
         used-up worn item never drops (#189).
+- [ ] Wall and sheet-rope climbs, landings and player death (#214, on
+      #208): the climb states read the world through #208's hooks
+      (`sheet_rope_square`, `chunk_levels`, `sheet_rope_exit`,
+      `can_climb_over_wall`, `climb_wall_fence_type`); `pz-world-states`
+      also implements the new `floor_sprite_name` (the landing's natural
+      floor). The engine must:
+      - implement `StateWorld::path_reset` (`PathFindBehavior2.reset()`, a
+        failed wall climb; `pz-world-states` leaves the no-op default, as
+        for `path_cancel`);
+      - start the climbs: `GameCharacter::climb_over_wall(dir, cx)` from
+        the player's wall-climb input (the `PathMoverRequest::ClimbOverWall`
+        handler in `run_path_requests` already calls it),
+        `climb_sheet_rope` / `climb_down_sheet_rope` from the rope input,
+        and `fall_from_rope` where the original lets go;
+      - call `GameCharacter::do_land(impact_iso_speed, cx)` when a falling
+        character lands (`IsoGameCharacter.updateFalling`, not yet ported)
+        and `player_on_death(cx)` from `IsoPlayer.OnDeath`;
+      - answer `SimContext::debug_always_trip_over_fence` (`DebugOptions`;
+        `easy_climbing` is #208's line);
+      - handle `SimEvent::MusicIntensityEvent`, `FallingItem`
+        (`createFallingItem`), `FallenHat`
+        (`PersistentOutfits.setFallenHat`), `StopPlayerVoiceSound`,
+        `CharacterDeath` (`OnCharacterDeath`), `FadeIn` and `PlayerDeath`
+        (the rest of `IsoPlayer.OnDeath`: death music, `OnPlayerDeath`,
+        leaving the vehicle, `removeSaveFile`, `setDrag`);
+      - bind the new calls to Lua (`climbSheetRope`, `canClimbSheetRope`,
+        `canClimbOverWall`, `climbOverWall`, `isClimbingRope`,
+        `fallFromRope`, `getClimbingFailChanceInt`, `fallenOnKnees`, ...)
+        where the Lua API needs them; none is bound yet.
 - [ ] Collision code fills `IsoChunk::collision` through
       `ChunkCollision::init(z, build)` (`CollideWithObstaclesPoly` /
       `LineClearCollide`) and drops levels with `take` on vehicle moves; the
@@ -940,8 +1654,24 @@ registered):
       `unregister_device`; DeviceData preset generation takes the radio
       as its `ChannelLists` (#200).
 
+- [ ] Windows (#208): `StatesEngine::player_input` returns the local
+      player's frame `PlayerInput` (Open/Close/Smash window states read
+      `pressedMovement` / `pressedCancelAction` from it); `toggle_window`
+      must run `IsoWindow.ToggleWindow` (also used by `OpenWindowState`
+      and `CloseWindowState`); `weapon_hit_thumpable` fires Lua
+      `OnWeaponHitThumpable`; `vehicle_window_destroyed` /
+      `vehicle_window_hit` from pz-vehicles (`smashCarWindow`).
+      `window_closing_success` should answer from
+      `pz_characters::character::states::window::closing_window(chr)` of
+      the characters on the window's squares. `SimContext::easy_climbing`
+      = `SandboxOptions.easyClimbing`. Lua `ISOpenCloseWindow` and
+      `ISSmashWindow` call `GameCharacter::open_window`, `close_window`,
+      `smash_window`, `smash_car_window`. Not ported: the debug
+      window-unlock cheat, the `Hit_Door` render effect on a bare-handed
+      barricade hit.
+
 ## World render pass
-- [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
+- [x] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
       allocating every loaded chunk exhausts the GPU device.
 - [ ] Water/sky: `SkyBox::render`, `Surfaces.sky` from `reflection()`;
       `SurfaceChecks::run` + `apply_surface_checks` before `plan_chunks`;
@@ -1015,6 +1745,28 @@ registered):
       objects (sprite, then overlay and attached sprites when
       `isOutlineHlAttached`). Objects with a sprite model are skipped, as
       are objects whose render layer is none or alpha 0 (#125).
+- [x] Mannequin data activation: map/file factories allocate a real visual
+      with the installed blood-body-part count. `init` is an outfit flag,
+      not the presence of an entire mannequin body. Ordinary saves can write
+      constructor state without dressing it. Main-thread streaming now yields
+      actual object/square owners in live z/x/y/index order, completes one
+      chunk before preparing the next, and preserves each frame's handoff
+      budget. A failed activation retains its cursor and blocks publication.
+      The host initializes sprite/zone/script properties, dresses through real
+      population/assets and sandbox owners, creates normal dictionary-backed
+      clothing, runs field-first protected LuaCreate callbacks, validates the
+      installed animation pose, and sets persistent model/skin/visual fields.
+      `WornItems` lives in inventory with character reexports so the mannequin
+      owns the actual shared list during callbacks and saves. Save indices use
+      actual item identity and compression order; loaded clothing is retained.
+- [ ] Remaining mannequin lifecycle: attach the canonical Human worn owner at
+      constructor time; resolve loaded implicit skin at the exact file-load
+      phase; restore actual parent/source-grid userdata; execute ordinary
+      save's wearItem/syncModel reconciliation for externally edited containers;
+      retain native script/model objects and implement SoftReset's job gate.
+      Production erosion, MapObjects/LoadGridsquare and other addToWorld
+      subsystem registries still need their actual adapters. Cursor square
+      replacement errors are explicit; chunks are not yet canonical owners.
 - [ ] Mannequins: from each `IsoMannequin` (script anim set, state,
       validated pose, direction, surfaces below/on its square, outside /
       room, interpolated light, highlight tint) build a `Mannequin`, pose an
@@ -1070,7 +1822,7 @@ registered):
       32. Save thumbnail (#173, not in integration yet): pass
       `params.thumbnail(256, 256, 1.0)` (`startThumbnail`) to
       `capture_thumbnail`.
-- [ ] Screen shader player inputs and `SearchMode` (#188): in
+- [x] Screen shader player inputs and `SearchMode` (#188): in
       `IngameState.UpdateStuff` (after `WorldMapVisited.update`) call
       `pz_lua_api::bind_search_mode::update(GameTime.getTimeDelta())`; in
       `IngameState.exit` call `bind_search_mode::reset()`. Keep one
@@ -1156,3 +1908,49 @@ registered):
 - [ ] Fold bind_vehicles' item subset into the full item bindings (#86).
 - [ ] Convert remaining bare prints to DebugLog (#66 meta_grid.rs, #67
       meta_zones.rs/zone_save.rs) (#69).
+
+## World map
+- [x] Recover Claude's renderer/drawer, triangulation, rasterizer, VBO recorder,
+      image-pyramid cache and UI presentation from the preserved code commits.
+      Native numeric/counter and presentation edge repairs have separate tests;
+      source integration does not establish original-game rendering parity.
+- [ ] Map inputs: `pz_lua_api::worldmap::host::install(WorldMapHost {
+      players, meta_grid, map_files })` with the live local players (position, or
+      the vehicle's; username) for the map's player dots, and
+      `IsoMetaGrid`'s cell bounds for `setBoundsFromWorld` (#213). The
+      default `meta_grid` (`host::WorldMetaGrid`) already reads the grid
+      installed with `bind_world::set_meta_grid`; pass it when installing
+      players (#223).
+- [ ] Supply the live `MapFilesInfo` cell priority and directory from the
+      world's actual MapFiles. The standalone no-files profile is not a
+      substitute for the game's map-priority input.
+- [ ] Move `WorldMapImages.startFrame/endFrame` from each UI map draw to the
+      global SpriteRenderer frame boundary. Restore native file-thread queue
+      scheduling and shared per-frame loading budget across multiple maps.
+- [ ] Native request-counter reset ties depend on Java HashMap values order;
+      the current Rust map order does not establish that tie behavior. The
+      actual Core debug threshold is latched on first production image use;
+      precise native class-initialization timing remains separate.
+- [ ] Reconcile and wire the preserved untracked `visited.rs` implementation,
+      symbols, streets, player models and other overlays. Keep its source and
+      the preserved module-only stash until that work is integrated.
+
+
+### Corpse-count and flies library subset (#216)
+
+- The library now has `dead_body::corpse_count` scalar chunk/level counts and
+  `dead_body::flies_sound` selection/fade algorithms. Flies retain actual
+  `SquareRef` fields; setters release square guards before render hooks.
+- The engine must implement `FliesWorld` current count/chunk/building/retained
+  square queries without keeping WORLD/RefCell guards across sound or render
+  calls. Player inputs carry the actual current `SquareRef`. Chunk activation,
+  count updates, emitters, sickness inputs and physical-reference tracing remain
+  to be connected; this PR does not enable those loops in the running game.
+- Corpse rot, the live corpse registry and reanimation callbacks are pending.
+  Current `static_moving` owns serializable body values. A native corpse owner
+  and checked callback/field services must precede those algorithms; neither a
+  cloned body nor a square/index or object ID is substitute native authority.
+- Original #216 rot/registry algorithms, tests and parity example are preserved
+  for follow-up, with exact Git input hashes in the private review packet.
+  Existing native DSP, error/diagnostic and renderer snapshot identity limits
+  remain separate from this bounded library port.

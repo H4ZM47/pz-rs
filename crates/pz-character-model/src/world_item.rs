@@ -12,7 +12,7 @@
 //! clothing-item path for head clothing without a world model.
 
 use pz_entity::{EntityContext, FluidContainer};
-use pz_inventory::{InventoryItem, ItemKind};
+use pz_inventory::{InventoryItem, ItemKind, ModDataResult};
 use pz_iso_render::item_atlas::{FoodState, ItemModel, ItemParams};
 use pz_iso_render::joml::Matrix4f;
 use pz_scripts::objects::models::ModelAttachment;
@@ -40,6 +40,15 @@ const ROTTEN: [f32; 3] = [0.5, 0.5, 0.5];
 /// `ItemParams.init(item, bHighRes)` for an item without a fluid
 /// container: `None` when the item has no model the atlas draws (or it is
 /// not loaded).
+pub fn try_item_params(
+    item: &InventoryItem,
+    scripts: &dyn ModelScripts,
+    res: &dyn ModelResources,
+    max_zoom_is_one: bool,
+) -> ModDataResult<Option<ItemParams>> {
+    try_item_params_with_fluid(item, None, scripts, res, max_zoom_is_one)
+}
+
 pub fn item_params(
     item: &InventoryItem,
     scripts: &dyn ModelScripts,
@@ -60,6 +69,110 @@ struct FluidState {
 /// `ItemParams.init(item, bHighRes)` with the item's `FluidContainer`
 /// (`getFluidContainer()`, else its world item's) and what its fluid
 /// colours resolve against.
+pub fn try_item_params_with_fluid(
+    item: &InventoryItem,
+    fluid: Option<(&FluidContainer, &dyn EntityContext)>,
+    scripts: &dyn ModelScripts,
+    res: &dyn ModelResources,
+    max_zoom_is_one: bool,
+) -> ModDataResult<Option<ItemParams>> {
+    let blank = |s: &Option<String>| s.as_deref().is_none_or(|s| s.trim().is_empty());
+    let world_static = item.try_get_world_static_model()?;
+    Ok((|| {
+        let fluid = fluid.map(|(f, ctx)| {
+            let level = f.get_filled_ratio();
+            FluidState {
+                filled: level > 0.5,
+                level,
+                color: f.get_color(ctx),
+            }
+        });
+        let fluid_model = |fluid: &Option<FluidState>| {
+            let base = world_static.clone().unwrap_or_else(|| "null".into());
+            fluid
+                .as_ref()
+                .filter(|f| f.filled)
+                .and_then(|_| scripts.model_script(&format!("{base}_Fluid")))
+        };
+        let exists = |name: &str| {
+            res.texture(&TextureSource::File(name.to_string()))
+                .is_some()
+        };
+        let mut p = if !blank(&world_static) {
+            let base = world_static.clone().unwrap();
+            let mut ms = scripts.model_script(&base)?;
+            if let Some(m) = fluid_model(&fluid) {
+                ms = m;
+            }
+            let mut food_state = FoodState::Normal;
+            let mut tint = [item.color_red, item.color_green, item.color_blue];
+            if let ItemKind::Food(f) = &item.kind {
+                food_state = if item.is_rotten() {
+                    FoodState::Rotten
+                } else if f.burnt {
+                    FoodState::Burnt
+                } else if f.cooked {
+                    FoodState::Cooked
+                } else {
+                    FoodState::Normal
+                };
+                if f.cooked {
+                    if let Some(m) = scripts.model_script(&format!("{base}Cooked")) {
+                        ms = m;
+                    }
+                }
+                if f.burnt {
+                    if let Some(m) = scripts.model_script(&format!("{base}Burnt")) {
+                        ms = m;
+                    }
+                }
+                if item.is_rotten() {
+                    match scripts.model_script(&format!("{base}Rotten")) {
+                        Some(m) => ms = m,
+                        None => tint = ROTTEN,
+                    }
+                }
+            }
+            let mut p = params_for(&ms, item, res, false)?;
+            p.food_state = food_state;
+            p.tint = tint;
+            if let Some(tex) = ms.borrow().texture_name() {
+                p.model_texture_name = Some(item_texture_name(tex));
+                p.tint_mask = Some(mask_texture_name(tex, "TINT")).filter(|m| exists(m));
+                if fluid.as_ref().is_some_and(|f| f.level > 0.0) && p.model.texture.is_some() {
+                    p.fluid_texture_mask =
+                        Some(mask_texture_name(tex, "FLUIDTINT")).filter(|m| exists(m));
+                }
+            }
+            p
+        } else if let ItemKind::Weapon(w) = &item.kind {
+            let name = w.weapon_sprite.clone().filter(|s| !s.trim().is_empty())?;
+            let mut ms = scripts.model_script(&name)?;
+            let model_texture = ms.borrow().texture_name().map(item_texture_name);
+            if let Some(m) = fluid_model(&fluid) {
+                ms = m;
+            }
+            let mut p = params_for(&ms, item, res, true)?;
+            p.tint = [item.color_red, item.color_green, item.color_blue];
+            p.model_texture_name = model_texture;
+            p.blood_level = w.blood_level;
+            p
+        } else {
+            return None;
+        };
+        if let Some(f) = &fluid {
+            // Color.getRedByte etc.: (int)(c * 255), written red, blue, green.
+            let byte = |c: f32| (c * 255.0) as i32 as u8;
+            p.fluid_filled = f.filled;
+            p.fluid_level = f.level;
+            p.fluid_color = f.color;
+            p.fluid_tint = [byte(f.color[0]), byte(f.color[2]), byte(f.color[1])];
+        }
+        p.max_zoom_is_one = max_zoom_is_one;
+        Some(p)
+    })())
+}
+
 pub fn item_params_with_fluid(
     item: &InventoryItem,
     fluid: Option<(&FluidContainer, &dyn EntityContext)>,
@@ -67,91 +180,8 @@ pub fn item_params_with_fluid(
     res: &dyn ModelResources,
     max_zoom_is_one: bool,
 ) -> Option<ItemParams> {
-    let blank = |s: &Option<String>| s.as_deref().is_none_or(|s| s.trim().is_empty());
-    let world_static = item.get_world_static_model();
-    let fluid = fluid.map(|(f, ctx)| {
-        let level = f.get_filled_ratio();
-        FluidState { filled: level > 0.5, level, color: f.get_color(ctx) }
-    });
-    let fluid_model = |fluid: &Option<FluidState>| {
-        let base = world_static.clone().unwrap_or_else(|| "null".into());
-        fluid
-            .as_ref()
-            .filter(|f| f.filled)
-            .and_then(|_| scripts.model_script(&format!("{base}_Fluid")))
-    };
-    let exists = |name: &str| res.texture(&TextureSource::File(name.to_string())).is_some();
-    let mut p = if !blank(&world_static) {
-        let base = world_static.clone().unwrap();
-        let mut ms = scripts.model_script(&base)?;
-        if let Some(m) = fluid_model(&fluid) {
-            ms = m;
-        }
-        let mut food_state = FoodState::Normal;
-        let mut tint = [item.color_red, item.color_green, item.color_blue];
-        if let ItemKind::Food(f) = &item.kind {
-            food_state = if item.is_rotten() {
-                FoodState::Rotten
-            } else if f.burnt {
-                FoodState::Burnt
-            } else if f.cooked {
-                FoodState::Cooked
-            } else {
-                FoodState::Normal
-            };
-            if f.cooked {
-                if let Some(m) = scripts.model_script(&format!("{base}Cooked")) {
-                    ms = m;
-                }
-            }
-            if f.burnt {
-                if let Some(m) = scripts.model_script(&format!("{base}Burnt")) {
-                    ms = m;
-                }
-            }
-            if item.is_rotten() {
-                match scripts.model_script(&format!("{base}Rotten")) {
-                    Some(m) => ms = m,
-                    None => tint = ROTTEN,
-                }
-            }
-        }
-        let mut p = params_for(&ms, item, res, false)?;
-        p.food_state = food_state;
-        p.tint = tint;
-        if let Some(tex) = ms.borrow().texture_name() {
-            p.model_texture_name = Some(item_texture_name(tex));
-            p.tint_mask = Some(mask_texture_name(tex, "TINT")).filter(|m| exists(m));
-            if fluid.as_ref().is_some_and(|f| f.level > 0.0) && p.model.texture.is_some() {
-                p.fluid_texture_mask = Some(mask_texture_name(tex, "FLUIDTINT")).filter(|m| exists(m));
-            }
-        }
-        p
-    } else if let ItemKind::Weapon(w) = &item.kind {
-        let name = w.weapon_sprite.clone().filter(|s| !s.trim().is_empty())?;
-        let mut ms = scripts.model_script(&name)?;
-        let model_texture = ms.borrow().texture_name().map(item_texture_name);
-        if let Some(m) = fluid_model(&fluid) {
-            ms = m;
-        }
-        let mut p = params_for(&ms, item, res, true)?;
-        p.tint = [item.color_red, item.color_green, item.color_blue];
-        p.model_texture_name = model_texture;
-        p.blood_level = w.blood_level;
-        p
-    } else {
-        return None;
-    };
-    if let Some(f) = &fluid {
-        // Color.getRedByte etc.: (int)(c * 255), written red, blue, green.
-        let byte = |c: f32| (c * 255.0) as i32 as u8;
-        p.fluid_filled = f.filled;
-        p.fluid_level = f.level;
-        p.fluid_color = f.color;
-        p.fluid_tint = [byte(f.color[0]), byte(f.color[2]), byte(f.color[1])];
-    }
-    p.max_zoom_is_one = max_zoom_is_one;
-    Some(p)
+    try_item_params_with_fluid(item, fluid, scripts, res, max_zoom_is_one)
+        .expect("unborrowed world item ModData")
 }
 
 /// What `RenderJob.checkSmartTexture` reads off the params.
@@ -180,7 +210,9 @@ pub fn atlas_smart_texture(
     tm: &mut TextureManager,
 ) -> Option<Texture> {
     let job = atlas_job(&atlas_texture_params(p), loaded)?;
-    run_jobs(std::slice::from_ref(&job), file, combiner, tm).pop().flatten()
+    run_jobs(std::slice::from_ref(&job), file, combiner, tm)
+        .pop()
+        .flatten()
 }
 
 /// The script path of `init`: the model, the `world` attachment's inverse,

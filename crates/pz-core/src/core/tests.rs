@@ -1,6 +1,14 @@
 use super::*;
 use std::path::PathBuf;
 
+/// Check Java's native line separators before comparing option contents.
+fn option_contents(text: &str) -> String {
+    let contents = text.replace("\r\n", "\n");
+    let expected = if cfg!(windows) { contents.replace('\n', "\r\n") } else { contents.clone() };
+    assert_eq!(text, expected, "options must use the platform's native line endings");
+    contents
+}
+
 /// A fresh, empty directory under the system temp dir.
 fn temp_dir(tag: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -138,7 +146,7 @@ fn first_run_creates_options_ini() {
     let dir = temp_dir("first");
     let mut c = core_in(&dir);
     assert!(!c.load_options().unwrap());
-    let text = std::fs::read_to_string(dir.join("options.ini")).unwrap();
+    let text = option_contents(&std::fs::read_to_string(dir.join("options.ini")).unwrap());
     assert!(text.starts_with("version=8\n3DGroundItem=true\n"), "{text}");
     assert!(text.contains("\nzoomLevels1x=50;75;125;150;175;200\n"));
     assert!(text.contains("\nlanguage=EN\n"));
@@ -205,15 +213,16 @@ fn round_trip_sample() {
     // loadOptions saved; the result reloads to the same state and re-saves
     // identically.
     let first = std::fs::read_to_string(dir.join("options.ini")).unwrap();
-    assert!(first.starts_with("version=8\n3DGroundItem=false\n"));
-    assert!(!first.contains("unknownOption"));
-    assert!(first.contains("\nminChatOpaque=0.699999988079071\n"));
-    assert!(first.contains("\nchatFadeTime=2.5\n"));
+    let contents = option_contents(&first);
+    assert!(contents.starts_with("version=8\n3DGroundItem=false\n"));
+    assert!(!contents.contains("unknownOption"));
+    assert!(contents.contains("\nminChatOpaque=0.699999988079071\n"));
+    assert!(contents.contains("\nchatFadeTime=2.5\n"));
     assert!(
-        first.contains("\nmpTextColor=0.6980392336845398,0.6549019813537598,0.6627451181411743\n")
+        contents.contains("\nmpTextColor=0.6980392336845398,0.6549019813537598,0.6627451181411743\n")
     );
-    assert!(first.contains("\ncontroller=030000004c050000e60c000000010000\n"));
-    assert!(first.contains("\ndoneNewSaveFolder=true\n"));
+    assert!(contents.contains("\ncontroller=030000004c050000e60c000000010000\n"));
+    assert!(contents.contains("\ndoneNewSaveFolder=true\n"));
     let mut c2 = core_in(&dir);
     assert!(c2.load_options().unwrap());
     let second = std::fs::read_to_string(dir.join("options.ini")).unwrap();
@@ -256,7 +265,7 @@ fn version_migration() {
     assert!(!c.option("textureCompression").unwrap().get_bool());
     assert!(!c.get_option_do_wind_sprite_effects());
     assert!(!c.get_option_zoom());
-    let text = std::fs::read_to_string(dir.join("options.ini")).unwrap();
+    let text = option_contents(&std::fs::read_to_string(dir.join("options.ini")).unwrap());
     assert!(text.starts_with("version=8\n"));
     std::fs::remove_dir_all(&dir).unwrap();
 }

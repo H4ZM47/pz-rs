@@ -55,16 +55,27 @@ pub fn save_game_state(save_dir: &Path) -> McdGameState {
     let mode_dir = save_dir.parent().unwrap_or(Path::new(""));
     let saves = mode_dir.parent().unwrap_or(Path::new(""));
     McdGameState {
-        game_save_world: save_dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        game_save_world: save_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
         game_mode_cache_dir: format!("{}/", mode_dir.display()),
         save_dir: saves.display().to_string(),
-        cache_dir: saves.parent().unwrap_or(Path::new("")).display().to_string(),
+        cache_dir: saves
+            .parent()
+            .unwrap_or(Path::new(""))
+            .display()
+            .to_string(),
         ..McdGameState::default()
     }
 }
 
 /// `MapCollisionData.isSolid/isBlockedN/isBlockedW/isWater/isRoom(sq)`.
-pub fn square_collision_flags(sq: &IsoGridSquare, meta: &IsoMetaGrid, m: &IsoSpriteManager) -> SquareFlags {
+pub fn square_collision_flags(
+    sq: &IsoGridSquare,
+    meta: &IsoMetaGrid,
+    m: &IsoSpriteManager,
+) -> SquareFlags {
     let f = &m.tables.flag;
     let ty = &m.tables.ty;
     let named = |name: &str| m.tables.flag_from_string(name).is_some_and(|fl| sq.has(fl));
@@ -93,13 +104,22 @@ pub fn square_collision_flags(sq: &IsoGridSquare, meta: &IsoMetaGrid, m: &IsoSpr
 
 /// `MapCollisionData.addChunkToWorld`'s square bits of chunk `(wx, wy)`:
 /// level 0, `x + y * 8`, `BIT_SOLID` where there is no square.
-pub fn chunk_collision_bits(cell: &IsoCell, meta: &IsoMetaGrid, m: &IsoSpriteManager, wx: i32, wy: i32) -> [u8; 64] {
+pub fn chunk_collision_bits(
+    cell: &IsoCell,
+    meta: &IsoMetaGrid,
+    m: &IsoSpriteManager,
+    wx: i32,
+    wy: i32,
+) -> [u8; 64] {
     let mut bits = [1u8; 64];
-    let Some(chunk) = cell.chunks.get(&(wx, wy)) else { return bits };
+    let Some(chunk) = cell.chunks.get(&(wx, wy)) else {
+        return bits;
+    };
     for y in 0..8 {
         for x in 0..8 {
-            if let Some(sq) = chunk.get_grid_square(x, y, 0) {
-                bits[(x + y * 8) as usize] = square_collision_flags(sq, meta, m).bits();
+            if let Some(sq_owner) = chunk.get_grid_square(x, y, 0) {
+                let sq = sq_owner.borrow();
+                bits[(x + y * 8) as usize] = square_collision_flags(&sq, meta, m).bits();
             }
         }
     }
@@ -168,14 +188,44 @@ impl<H: Copy + Eq> WorldPopulation<H> {
     /// `zpop_ids.bin` and `zpop_virtual.bin`, the sandbox `ZombieConfig`
     /// and `PersistentOutfits.getOutfitNames()`). `gs` is
     /// [`save_game_state`] plus the sandbox and mode fields.
-    pub fn init(native: Native, meta: &IsoMetaGrid, gs: &McdGameState, config: &ZombieConfig, outfit_names: &[String]) -> Self {
+    pub fn init(
+        native: Native,
+        meta: &IsoMetaGrid,
+        gs: &McdGameState,
+        config: &ZombieConfig,
+        outfit_names: &[String],
+    ) -> Self {
+        Self::init_with_spawn_origins(native, meta, gs, config, outfit_names, &[])
+    }
+
+    /// [`WorldPopulation::init`] with the spawn origins Lua registered
+    /// before (`IsoWorld.registerSpawnOrigin` on `OnLoadMapZones`), which
+    /// `init` hands to the native side: `(x, y, w, h)`.
+    pub fn init_with_spawn_origins(
+        native: Native,
+        meta: &IsoMetaGrid,
+        gs: &McdGameState,
+        config: &ZombieConfig,
+        outfit_names: &[String],
+        spawn_origins: &[(i32, i32, i32, i32)],
+    ) -> Self {
         let mut pm = ZombiePopulationManager::new(native);
+        for &(x, y, w, h) in spawn_origins {
+            pm.register_spawn_origin(x, y, w, h);
+        }
         pm.last_stand = gs.last_stand;
         let mi = meta_init(meta);
         let client = pm.client;
         pm.mcd.init(&mut pm.native, gs, &mi, client);
-        pm.init((meta.min_x, meta.min_y, meta.width, meta.height), config, outfit_names);
-        WorldPopulation { manager: pm, worker: PopulationWorker::default() }
+        pm.init(
+            (meta.min_x, meta.min_y, meta.width, meta.height),
+            config,
+            outfit_names,
+        );
+        WorldPopulation {
+            manager: pm,
+            worker: PopulationWorker::default(),
+        }
     }
 
     fn now(&self) -> i64 {
@@ -185,8 +235,17 @@ impl<H: Copy + Eq> WorldPopulation<H> {
     /// `doLoadGridsquare`'s `MapCollisionData.addChunkToWorld(chunk)` then
     /// `ZombiePopulationManager.addChunkToWorld(chunk)` for chunk
     /// `(wx, wy)` of `cell` (`isNewChunk()` is the chunk's `add_zombies`).
-    pub fn add_chunk_to_world(&mut self, cell: &IsoCell, meta: &IsoMetaGrid, m: &IsoSpriteManager, wx: i32, wy: i32) {
-        let Some(chunk) = cell.chunks.get(&(wx, wy)) else { return };
+    pub fn add_chunk_to_world(
+        &mut self,
+        cell: &IsoCell,
+        meta: &IsoMetaGrid,
+        m: &IsoSpriteManager,
+        wx: i32,
+        wy: i32,
+    ) {
+        let Some(chunk) = cell.chunks.get(&(wx, wy)) else {
+            return;
+        };
         let new_chunk = chunk.add_zombies;
         let bits = chunk_collision_bits(cell, meta, m, wx, wy);
         let pm = &mut self.manager;
@@ -199,7 +258,13 @@ impl<H: Copy + Eq> WorldPopulation<H> {
     /// zombies in square order) then `requestSaveCell(floor(wx / 32),
     /// floor(wy / 32))`. `MapCollisionData.removeChunkFromWorld` does
     /// nothing.
-    pub fn remove_chunk_from_world<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, wx: i32, wy: i32, zombies: &[ChunkZombie<H>]) {
+    pub fn remove_chunk_from_world<P: PopulationHost<Zombie = H>>(
+        &mut self,
+        host: &mut P,
+        wx: i32,
+        wy: i32,
+        zombies: &[ChunkZombie<H>],
+    ) {
         let pm = &mut self.manager;
         pm.remove_chunk_from_world(host, wx, wy, zombies);
         if !pm.client {
@@ -211,7 +276,11 @@ impl<H: Copy + Eq> WorldPopulation<H> {
     /// `updateMain`, `n_update`, `updateThread`, `updateMain` and the
     /// population's `updateMain` again, then the thread starts.
     /// `Err` is the exception creating a real zombie threw.
-    pub fn start_game<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, frame: &PopulationFrame<'_, H>) -> Result<(), String> {
+    pub fn start_game<P: PopulationHost<Zombie = H>>(
+        &mut self,
+        host: &mut P,
+        frame: &PopulationFrame<'_, H>,
+    ) -> Result<(), String> {
         if self.manager.client {
             return Ok(());
         }
@@ -233,14 +302,25 @@ impl<H: Copy + Eq> WorldPopulation<H> {
         pm.mcd.update_game_state(&mut pm.native, no_save, paused);
     }
 
-    fn main_update<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, frame: &PopulationFrame<'_, H>) -> Result<(), String> {
+    fn main_update<P: PopulationHost<Zombie = H>>(
+        &mut self,
+        host: &mut P,
+        frame: &PopulationFrame<'_, H>,
+    ) -> Result<(), String> {
         let now = self.now();
         let pm = &mut self.manager;
         if pm.mcd.update_main(now) {
             self.worker.notify();
         }
         let maps = frame.chunk_maps;
-        if pm.update_main(host, frame.multiplier, frame.world_age_hours, &maps.origins, maps.width, frame.real_zombies)? {
+        if pm.update_main(
+            host,
+            frame.multiplier,
+            frame.world_age_hours,
+            &maps.origins,
+            maps.width,
+            frame.real_zombies,
+        )? {
             self.worker.notify();
         }
         Ok(())
@@ -252,7 +332,11 @@ impl<H: Copy + Eq> WorldPopulation<H> {
     /// pass if it is due. `Err` is the exception creating a real zombie
     /// threw: the rest of `updateMain` is skipped, but the worker pass still
     /// runs, because in the original it is a separate thread.
-    pub fn update<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, frame: &PopulationFrame<'_, H>) -> Result<(), String> {
+    pub fn update<P: PopulationHost<Zombie = H>>(
+        &mut self,
+        host: &mut P,
+        frame: &PopulationFrame<'_, H>,
+    ) -> Result<(), String> {
         if self.manager.client {
             return Ok(());
         }

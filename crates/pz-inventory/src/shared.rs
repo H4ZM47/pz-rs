@@ -8,8 +8,9 @@
 //! [`ItemContainer`] (the form `load`/`save` use).
 //!
 //! `InventoryItem.container` (the item's current container) is kept in a
-//! per-thread registry ([`container_of`]); [`add_item`] and
-//! [`remove_item`] keep it as `AddItem` and `Remove` do.
+//! one actual strong field ([`try_container_of`]); [`try_add_item`] and
+//! [`try_remove_item`] keep it as `AddItem` and `Remove` do. The weak registry
+//! formerly used for this field is no longer authoritative or retained.
 //!
 //! Records the item codec keeps raw ([`SavedItem::Raw`]) are kept in
 //! [`SharedContainer::raw_items`]: they have no item object, so the
@@ -24,9 +25,8 @@
 //! into a new container (an item value is a copy, not the object).
 
 use std::any::Any;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::{Rc, Weak};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use crate::container::ItemContainer;
 use crate::context::ItemContext;
@@ -40,6 +40,42 @@ pub type ItemRef = Rc<RefCell<InventoryItem>>;
 
 /// A shared container.
 pub type ContainerRef = Rc<RefCell<SharedContainer>>;
+
+/// The sole nullable physical InventoryContainer.container field. Native
+/// constructor paths allocate a child; collector detach leaves genuine null.
+/// Legacy Deref is restricted to the existing nonnull synchronous profile.
+#[derive(Debug, Default)]
+pub struct ContainerField(Option<ContainerRef>);
+impl ContainerField {
+    pub fn slot(&self) -> Option<&ContainerRef> {
+        self.0.as_ref()
+    }
+    pub fn take_for_gc(&mut self) -> Option<ContainerRef> {
+        self.0.take()
+    }
+    pub fn replace(
+        &mut self,
+        new: Option<&ContainerRef>,
+        retired: &mut pz_entity::RetiredComponents,
+    ) {
+        if let Some(old) = std::mem::replace(&mut self.0, new.cloned()) {
+            retired.push_erased(old);
+        }
+    }
+}
+impl From<ContainerRef> for ContainerField {
+    fn from(value: ContainerRef) -> Self {
+        Self(Some(value))
+    }
+}
+impl std::ops::Deref for ContainerField {
+    type Target = ContainerRef;
+    fn deref(&self) -> &ContainerRef {
+        self.0
+            .as_ref()
+            .expect("legacy nonnull bag container profile")
+    }
+}
 
 /// `zombie.inventory.ItemContainer`'s fields.
 pub struct SharedContainer {
@@ -69,10 +105,14 @@ pub struct SharedContainer {
     pub freezer_position: Option<String>,
     /// `items`, in list order.
     pub items: Vec<ItemRef>,
+    /// Native separate physical nullable list, populated during compressed load.
+    pub including_obsolete_items: Vec<Option<ItemRef>>,
     /// Saved records without an item object (see the module docs).
     pub raw_items: Vec<SavedItem>,
     /// `containingItem`: the bag whose inventory this is.
-    pub containing_item: Option<Weak<RefCell<InventoryItem>>>,
+    pub containing_item: Option<ItemRef>,
+    /// Distinct Native constructor-owned bag alias, separate from containingItem.
+    pub inventory_container: Option<ItemRef>,
     /// `parent`, opaque here: the holder of the container as its owner
     /// stores it (pz-lua-api keeps the parent's Lua object).
     pub parent: Option<Rc<dyn Any>>,
@@ -148,8 +188,10 @@ impl Default for SharedContainer {
             container_position: None,
             freezer_position: None,
             items: Vec::new(),
+            including_obsolete_items: Vec::new(),
             raw_items: Vec::new(),
             containing_item: None,
+            inventory_container: None,
             parent: None,
             source_grid: None,
         }
@@ -175,7 +217,9 @@ impl SharedContainer {
 
     /// Wraps it as a [`ContainerRef`].
     pub fn into_ref(self) -> ContainerRef {
-        Rc::new(RefCell::new(self))
+        let container = Rc::new(RefCell::new(self));
+        observe_container(&container);
+        container
     }
 
     /// The shared form of a saved container: its decoded items become
@@ -222,7 +266,12 @@ impl SharedContainer {
 
     /// A copy as a new container: the items are copied (bags with their
     /// contents) and are the new container's; the owner links
-    /// (`parent`, `sourceGrid`, `containingItem`) are not copied.
+    /// (`parent`, `sourceGrid`, `containingItem`, `inventoryContainer`) and the
+    /// runtime includingObsolete bookkeeping list are not copied.
+    pub fn try_deep_clone(&self) -> Result<ContainerRef, crate::archive::ArchiveCopyError> {
+        crate::archive::ArchiveCopyCheck::default().shared_container_body(self)?;
+        Ok(self.deep_clone())
+    }
     pub fn deep_clone(&self) -> ContainerRef {
         let r = SharedContainer {
             kind: self.kind.clone(),
@@ -247,8 +296,10 @@ impl SharedContainer {
             container_position: self.container_position.clone(),
             freezer_position: self.freezer_position.clone(),
             items: Vec::new(),
+            including_obsolete_items: Vec::new(),
             raw_items: self.raw_items.clone(),
             containing_item: None,
+            inventory_container: None,
             parent: None,
             source_grid: None,
         }
@@ -300,6 +351,10 @@ impl SharedContainer {
     }
 
     /// The saved form (a copy of the items, then the raw records).
+    pub fn try_to_container(&self) -> Result<ItemContainer, crate::archive::ArchiveCopyError> {
+        crate::archive::ArchiveCopyCheck::default().shared_container_body(self)?;
+        Ok(self.to_container())
+    }
     pub fn to_container(&self) -> ItemContainer {
         ItemContainer {
             kind: Some(self.kind.clone()),
@@ -342,29 +397,155 @@ impl SharedContainer {
 /// The item object of `item`: a bag's inventory gets the new object as
 /// its `containingItem`. Every shared item is made with this.
 pub fn new_item(item: InventoryItem) -> ItemRef {
-    let r = Rc::new(RefCell::new(item));
-    link_bag(&r);
-    r
+    try_new_item(item)
+        .unwrap_or_else(|failure| panic!("item allocation: {:?}", failure.into_error_and_retire()))
+}
+
+/// Metadata-only host registration, installed before live item creation.
+/// The function must not invoke Lua or native lifecycle callbacks. Registry
+/// unavailability stays conservative and is retried by the host observer.
+pub type ItemObserver = fn(&ItemRef);
+
+thread_local! {
+    static ITEM_OBSERVER: Cell<Option<ItemObserver>> = const { Cell::new(None) };
+}
+
+pub fn install_item_observer(observer: Option<ItemObserver>) -> Option<ItemObserver> {
+    ITEM_OBSERVER.with(|slot| slot.replace(observer))
+}
+
+/// End the observer-slot borrow before invoking the metadata callback.
+pub fn observe_item(item: &ItemRef) {
+    let observer = ITEM_OBSERVER.with(Cell::get);
+    if let Some(observer) = observer {
+        observer(item);
+    }
+}
+
+#[derive(Debug)]
+#[must_use]
+pub struct NewItemFailure {
+    pub error: pz_entity::runtime_load::RuntimeHostError,
+    pub item: ItemRef,
+    pub retired: pz_entity::RetiredComponents,
+}
+
+impl NewItemFailure {
+    pub fn into_error_and_retire(mut self) -> pz_entity::runtime_load::RuntimeHostError {
+        self.retired
+            .push_owner(pz_entity::EntityOwner::from_ref(&self.item));
+        crate::component_host::retire_components(self.retired);
+        self.error
+    }
+}
+
+/// Construct the actual allocation before installing strong backedges. The
+/// observer sees every actual item/component allocation before a cycle can
+/// become unreachable. Failure owns the completed prefix for outer retirement.
+pub fn try_new_item(item: InventoryItem) -> Result<ItemRef, NewItemFailure> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let item = Rc::new(RefCell::new(item));
+    item.borrow_mut().components.mark_bound();
+    observe_item(&item);
+    let refs: Vec<_> = item
+        .borrow()
+        .components
+        .entry_slots()
+        .filter_map(|entry| match entry {
+            pz_entity::RuntimeEntryView::Live { component, .. } => Some(component.clone()),
+            pz_entity::RuntimeEntryView::Encoded(_) => None,
+        })
+        .collect();
+    let mut retired = pz_entity::RetiredComponents::new();
+    for component in refs {
+        let result = match component.try_borrow_mut() {
+            Ok(mut body) => {
+                if body.owner_slot().is_some() {
+                    Err(RuntimeHostError::Unsupported {
+                        operation: "adopt component with existing owner",
+                        kind: Some(body.kind()),
+                    })
+                } else {
+                    if let Some(owner) =
+                        body.replace_owner(Some(&pz_entity::EntityOwner::from_ref(&item)))
+                    {
+                        retired.push_owner(owner);
+                    }
+                    Ok(())
+                }
+            }
+            Err(_) => Err(RuntimeHostError::Borrowed(
+                "attach new item component owner",
+            )),
+        };
+        retired.push_component(component);
+        if let Err(error) = result {
+            return Err(NewItemFailure {
+                error,
+                item,
+                retired,
+            });
+        }
+    }
+    if let Err(error) = link_bag_ref(&item) {
+        return Err(NewItemFailure { error, item, retired });
+    }
+    // These are additional pins only: the actual store retains every live
+    // component, and no former owner exists on successful unowned adoption.
+    drop(retired);
+    Ok(item)
 }
 
 /// Sets `containingItem` of `item`'s inventory (a bag) to `item`.
 pub fn link_bag(item: &ItemRef) {
-    if let Some(c) = inventory_of(&item.borrow()) {
-        c.borrow_mut().containing_item = Some(Rc::downgrade(item));
+    link_bag_ref(item).expect("legacy unborrowed bag linking");
+}
+
+pub fn link_bag_ref(item: &ItemRef) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    pin_owner(item);
+    let container = {
+        let body = item
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("bag inventory link"))?;
+        inventory_of(&body)
+    };
+    if let Some(container) = container {
+        pin_owner(&container);
+        let result = container
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("bag containingItem link"))
+            .map(|mut body| {
+                if let Some(old) = body.containing_item.replace(item.clone()) {
+                    pin_owner(&old);
+                }
+                if let Some(old) = body.inventory_container.replace(item.clone()) {
+                    pin_owner(&old);
+                }
+            });
+        observe_container(&container);
+        result?;
     }
+    Ok(())
 }
 
 /// `InventoryContainer.getInventory()` (`None` for other items).
 pub fn inventory_of(item: &InventoryItem) -> Option<ContainerRef> {
     match &item.kind {
-        ItemKind::Container(c) => Some(c.container.clone()),
+        ItemKind::Container(c) => c.container.slot().cloned(),
         _ => None,
     }
 }
 
 /// `ItemContainer.containingItem`.
+pub fn try_containing_item(c: &ContainerRef) -> pz_entity::runtime_load::HostResult<Option<ItemRef>> {
+    let result = c.try_borrow().map(|body| body.containing_item.clone())
+        .map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("container containingItem getter"));
+    observe_container(c);
+    result
+}
 pub fn containing_item(c: &ContainerRef) -> Option<ItemRef> {
-    c.borrow().containing_item.as_ref().and_then(Weak::upgrade)
+    try_containing_item(c).expect("legacy unborrowed containingItem getter")
 }
 
 /// `getOutermostContainer()` of a container: up through the bags that
@@ -393,75 +574,156 @@ pub fn outermost_container_of(item: &ItemRef) -> Option<ContainerRef> {
     Some(outer)
 }
 
-type ContainerMap = HashMap<usize, (Weak<RefCell<InventoryItem>>, Weak<RefCell<SharedContainer>>)>;
+/// The one physical runtime backlink. Archive copies clear it and data
+/// equality ignores it, without retaining the source container graph.
+#[derive(Debug, Default)]
+pub(crate) struct ItemContainerSlot(Option<ContainerRef>);
+impl Clone for ItemContainerSlot {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+impl PartialEq for ItemContainerSlot {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+impl InventoryItem {
+    pub fn container_slot(&self) -> Option<&ContainerRef> {
+        self.container.0.as_ref()
+    }
+    pub fn take_container_for_gc(&mut self) -> Option<ContainerRef> {
+        self.container.0.take()
+    }
+    pub fn replace_container(
+        &mut self,
+        container: Option<&ContainerRef>,
+        retired: &mut pz_entity::RetiredComponents,
+    ) {
+        if let Some(old) = std::mem::replace(&mut self.container.0, container.cloned()) {
+            retired.push_erased(old);
+        }
+    }
+}
 
+pub(crate) fn pin_owner<T: Any>(owner: &Rc<T>) {
+    let mut retired = pz_entity::RetiredComponents::new();
+    retired.push_erased(owner.clone());
+    crate::component_host::retire_components(retired);
+}
+
+pub type ContainerObserver = fn(&ContainerRef);
 thread_local! {
-    static ITEM_CONTAINERS: RefCell<ContainerMap> = RefCell::new(HashMap::new());
+    static CONTAINER_OBSERVER: Cell<Option<ContainerObserver>> = const { Cell::new(None) };
+}
+pub fn install_container_observer(
+    observer: Option<ContainerObserver>,
+) -> Option<ContainerObserver> {
+    CONTAINER_OBSERVER.with(|slot| slot.replace(observer))
+}
+pub fn observe_container(container: &ContainerRef) {
+    if let Some(observer) = CONTAINER_OBSERVER.with(Cell::get) {
+        observer(container);
+    }
 }
 
-fn key(item: &ItemRef) -> usize {
-    Rc::as_ptr(item) as *const () as usize
+/// Pointer-only actual strong field access; no child container body access.
+pub fn try_container_of(
+    item: &ItemRef,
+) -> pz_entity::runtime_load::HostResult<Option<ContainerRef>> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let result = item
+        .try_borrow()
+        .map(|body| body.container_slot().cloned())
+        .map_err(|_| RuntimeHostError::Borrowed("item container getter"));
+    observe_item(item);
+    result
 }
-
-/// `item.getContainer()`.
+/// Legacy synchronous wrapper with an explicit unborrowed item precondition.
 pub fn container_of(item: &ItemRef) -> Option<ContainerRef> {
-    ITEM_CONTAINERS.with(|m| {
-        let m = m.borrow();
-        let (i, c) = m.get(&key(item))?;
-        if !std::ptr::eq(i.as_ptr(), Rc::as_ptr(item)) || i.strong_count() == 0 {
-            return None;
-        }
-        c.upgrade()
-    })
+    try_container_of(item).expect("legacy unborrowed item container getter")
 }
 
-/// `item.container = container`.
+/// Direct field assignment. It does not remove an item from another list.
+pub fn try_set_container(
+    item: &ItemRef,
+    container: Option<&ContainerRef>,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    pin_owner(item);
+    if let Some(container) = container {
+        pin_owner(container);
+    }
+    let mut retired = pz_entity::RetiredComponents::new();
+    let result = item
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("item container setter"))
+        .map(|mut body| body.replace_container(container, &mut retired));
+    crate::component_host::retire_components(retired);
+    observe_item(item);
+    result
+}
+/// Legacy synchronous wrapper; actual typed callers use try_set_container.
 pub fn set_container(item: &ItemRef, container: Option<&ContainerRef>) {
-    ITEM_CONTAINERS.with(|m| {
-        let mut m = m.borrow_mut();
-        match container {
-            Some(c) => {
-                if m.len() > 1024 && m.len().is_power_of_two() {
-                    m.retain(|_, (i, c)| i.strong_count() > 0 && c.strong_count() > 0);
-                }
-                m.insert(key(item), (Rc::downgrade(item), Rc::downgrade(c)));
-            }
-            None => {
-                m.remove(&key(item));
-            }
-        }
-    });
+    try_set_container(item, container).expect("legacy unborrowed item container setter");
 }
 
 /// The list part of `ItemContainer.AddItem(item)` once the checks passed:
 /// the item leaves its old container (its `Remove`, without the owner's
 /// side effects; [`remove_item`]) and is appended here.
-pub fn add_item(c: &ContainerRef, item: &ItemRef) {
-    if let Some(old) = container_of(item) {
-        remove_item(&old, item);
+pub fn try_add_item(c: &ContainerRef, item: &ItemRef) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    pin_owner(c);
+    pin_owner(item);
+    if let Some(old) = try_container_of(item)? {
+        try_remove_item(&old, item)?;
     }
-    set_container(item, Some(c));
-    c.borrow_mut().items.push(item.clone());
+    try_set_container(item, Some(c))?;
+    let result = c
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("container add item"))
+        .map(|mut body| body.items.push(item.clone()));
+    observe_container(c);
+    result
+}
+pub fn add_item(c: &ContainerRef, item: &ItemRef) {
+    try_add_item(c, item).expect("legacy unborrowed container AddItem");
 }
 
-/// The list part of `ItemContainer.Remove(item)`: the first entry that is
-/// `item` is removed and the item has no container. Returns whether it
-/// was there.
-pub fn remove_item(c: &ContainerRef, item: &ItemRef) -> bool {
-    let i = c.borrow().index_of(item);
-    match i {
-        Some(i) => {
-            {
-                let mut s = c.borrow_mut();
-                s.items.remove(i);
-                s.draw_dirty = true;
-                s.dirty = true;
-            }
-            set_container(item, None);
-            true
+/// Native Remove does not change includingObsoleteItems. A later backlink
+/// assignment failure preserves the already completed physical removal.
+pub fn try_remove_item(
+    c: &ContainerRef,
+    item: &ItemRef,
+) -> pz_entity::runtime_load::HostResult<bool> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    pin_owner(c);
+    pin_owner(item);
+    let result = (|| {
+        let mut body = c
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("container Remove"))?;
+        if let Some(index) = body.index_of(item) {
+            let old = body.items.remove(index);
+            pin_owner(&old);
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        None => false,
+    })();
+    observe_container(c);
+    let removed = result?;
+    if removed {
+        try_set_container(item, None)?;
+        let result=c.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("container Remove flags"))
+            .map(|mut body| {body.draw_dirty=true;body.dirty=true;});
+        observe_container(c);
+        result?;
     }
+    Ok(removed)
+}
+pub fn remove_item(c: &ContainerRef, item: &ItemRef) -> bool {
+    try_remove_item(c, item).expect("legacy unborrowed container Remove")
 }
 
 /// `ItemContainer.load` into the existing container `c` (the object
@@ -488,7 +750,12 @@ pub fn apply_use(c: &ContainerRef, id: i32, out: &mut UseOutcome, temperature: f
         }
     }
     if out.remove {
-        let found = c.borrow().items.iter().find(|i| i.borrow().id == id).cloned();
+        let found = c
+            .borrow()
+            .items
+            .iter()
+            .find(|i| i.borrow().id == id)
+            .cloned();
         if let Some(i) = found {
             remove_item(c, &i);
         }

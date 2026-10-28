@@ -29,7 +29,7 @@ fn main() {
     mgr.trigger_event("OnMainMenuEnter", &[]);
     for _ in 0..frames {
         mgr.trigger_event("OnFETick", &[0.0.into()]);
-        UIManager::update(&mut mgr.thread);
+        UIManager::update(&mut mgr.thread).expect("main-menu example UI update failed");
         UIManager::render(&mut mgr.thread);
     }
     let mut dl = pz_render::DrawList::default();

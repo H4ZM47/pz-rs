@@ -17,8 +17,10 @@ pub fn run_headless(game_dir: &Path, cache_dir: &Path, frames: u32) -> Result<()
     pz_lua_api::bind_core::shared_core().borrow_mut().set_cache_dir(cache_dir);
     let errors: Rc<RefCell<BTreeMap<String, usize>>> = Rc::default();
     // GameWindow.init: the UI texture packs, then the pack lookup.
-    pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
-    pz_engine::boot::load_scripts(game_dir, &mut fs.borrow_mut())?;
+    pz_lua_api::bind_render::textures()
+        .borrow_mut()
+        .load_ui_packs(&fs.borrow());
+    pz_engine::boot::load_scripts(game_dir, &fs)?;
     let mut mgr = LuaManager::init(fs).map_err(|e| format!("LuaManager.init failed: {e}"))?;
     let e2 = errors.clone();
     mgr.thread.log = Box::new(move |s| {
@@ -70,7 +72,8 @@ pub fn run_headless(game_dir: &Path, cache_dir: &Path, frames: u32) -> Result<()
         mgr.trigger_event("OnFETick", &[0.0.into()]);
         // UIManager.update starts with UITransition.UpdateAll().
         pz_lua_api::bind_misc::ui_transition_update_all();
-        UIManager::update(&mut mgr.thread);
+        UIManager::update(&mut mgr.thread)
+            .map_err(|error| format!("UIManager.update: {error:?}"))?;
         // MainScreenState.render
         UIManager::render(&mut mgr.thread);
     }

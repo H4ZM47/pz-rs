@@ -17,12 +17,45 @@
 
 use std::rc::Rc;
 
+// Public carrier for downstream character callers without a direct entity
+// dependency. Host faults remain distinct from native absence/no-drop.
+pub use pz_entity::runtime_load::{HostResult, RuntimeHostError};
+
 use crate::item::{InventoryItem, ItemKind};
 use crate::shared::{self, ContainerRef, ItemRef, SharedContainer};
 use crate::template::ItemClass;
 
 /// A square position `(x, y, z)`.
 pub type SquarePos = (i32, i32, i32);
+
+/// An actual retained square receiver plus its immutable geometric position.
+/// The erased owner holds the square allocation itself across host callbacks.
+/// Coordinate-only profiles must be constructed explicitly for data fixtures.
+#[derive(Clone, Debug)]
+pub struct FloorSquare {
+    position: SquarePos,
+    owner: Option<pz_entity::EntityOwner>,
+}
+impl FloorSquare {
+    pub fn actual(position: SquarePos, owner: pz_entity::EntityOwner) -> Self {
+        Self {
+            position,
+            owner: Some(owner),
+        }
+    }
+    pub fn data_projection(position: SquarePos) -> Self {
+        Self {
+            position,
+            owner: None,
+        }
+    }
+    pub fn position(&self) -> SquarePos {
+        self.position
+    }
+    pub fn owner_slot(&self) -> Option<&pz_entity::EntityOwner> {
+        self.owner.as_ref()
+    }
+}
 
 /// Where [`drop_on_floor`] put an item: the square and the offsets passed
 /// to `AddWorldInventoryItem`.
@@ -36,13 +69,42 @@ pub struct Dropped {
 
 /// The world items fall into.
 pub trait FloorWorld {
+    /// Retain the same actual result before returning from the native query.
+    /// Implementations must never resolve this receiver again by coordinates.
+    fn solid_floor_ref_at(&self, _x: i32, _y: i32, _z: i32) -> HostResult<Option<FloorSquare>> {
+        Err(RuntimeHostError::Unsupported {
+            operation: "actual retained floor query",
+            kind: None,
+        })
+    }
+    fn apparent_z_on(&self, _square: &FloorSquare, _dx: f32, _dy: f32) -> HostResult<f32> {
+        Err(RuntimeHostError::Unsupported {
+            operation: "actual retained floor height",
+            kind: None,
+        })
+    }
+    fn add_world_inventory_item_on(
+        &mut self,
+        _square: &FloorSquare,
+        _item: &ItemRef,
+        _x: f32,
+        _y: f32,
+        _height: f32,
+    ) -> HostResult<()> {
+        Err(RuntimeHostError::Unsupported {
+            operation: "actual retained floor placement",
+            kind: None,
+        })
+    }
+
     /// `IsoGameCharacter.getSolidFloorAt(x, y, z)`: the first square from
     /// `z` down to 0 that exists and `TreatAsSolidFloor()`.
-    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> Option<SquarePos>;
+    /// An unavailable/borrowed actual host is Err, not a missing floor.
+    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<SquarePos>>;
     /// `getApparentZ(dx, dy)` of the square at `sq`.
-    fn apparent_z(&self, sq: SquarePos, dx: f32, dy: f32) -> f32;
+    fn apparent_z(&self, sq: SquarePos, dx: f32, dy: f32) -> HostResult<f32>;
     /// `Rand.Next(min, max)` (floats).
-    fn rand_float(&mut self, min: f32, max: f32) -> f32;
+    fn rand_float(&mut self, min: f32, max: f32) -> HostResult<f32>;
     /// `sq.AddWorldInventoryItem(item, x, y, height)` (the item has left
     /// its container already).
     fn add_world_inventory_item(
@@ -52,7 +114,7 @@ pub trait FloorWorld {
         x: f32,
         y: f32,
         height: f32,
-    );
+    ) -> HostResult<()>;
 }
 
 /// The character whose items drop (`IsoGameCharacter`), as the drops and
@@ -134,8 +196,15 @@ impl InventoryItem {
         }
     }
 
-    /// `getCategory()` (`mainCategory` is never set, so the class's).
-    pub fn get_category(&self) -> &'static str {
+    /// `getCategory()`: the non-null `mainCategory`, otherwise the class's.
+    pub fn get_category(&self) -> &str {
+        // AnimalInventoryItem's override ignores mainCategory entirely.
+        if self.template.class == ItemClass::Animal {
+            return "Animal";
+        }
+        if let Some(category) = &self.main_category {
+            return category;
+        }
         match self.template.class {
             ItemClass::Food => "Food",
             ItemClass::Weapon => "Weapon",
@@ -145,7 +214,6 @@ impl InventoryItem {
             ItemClass::Literature => "Literature",
             ItemClass::Key => "Key",
             ItemClass::WeaponPart => "WeaponPart",
-            ItemClass::Animal => "Animal",
             _ => "Item",
         }
     }
@@ -260,52 +328,99 @@ fn on_before_remove_from_container(_item: &ItemRef) {}
 /// `getInventory().Remove(item)`: the item leaves the character's hands
 /// and the inventory. Returns whether it was there.
 pub fn remove(chr: &mut dyn DropCharacter, item: &ItemRef) -> bool {
+    try_remove(chr, item).expect("legacy unborrowed character Remove")
+}
+pub fn try_remove(chr: &mut dyn DropCharacter, item: &ItemRef) -> HostResult<bool> {
+    shared::pin_owner(item);
     chr.remove_from_hands(item);
     let inv = chr.inventory();
-    if inv.borrow().index_of(item).is_none() {
-        return false;
+    shared::pin_owner(&inv);
+    let present = inv
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("character Remove inventory"))?
+        .index_of(item)
+        .is_some();
+    if !present {
+        return Ok(false);
     }
     on_before_remove_from_container(item);
-    shared::remove_item(&inv, item)
+    shared::try_remove_item(&inv, item)
 }
 
-/// `ItemContainer.DoRemoveItem(item)` of a container with a parent:
-/// `drawDirty` and `dirty` are set and the item, when there, leaves it.
-pub fn do_remove_item(c: &ContainerRef, item: &ItemRef) {
+/// Draw/dirty flags precede removal and the final direct item-container field
+/// assignment. Typed host faults stop the action at the completed prefix.
+pub fn try_do_remove_item(c: &ContainerRef, item: &ItemRef) -> HostResult<()> {
+    shared::pin_owner(c);
+    shared::pin_owner(item);
     {
-        let mut s = c.borrow_mut();
-        s.draw_dirty = true;
-        s.dirty = true;
+        let mut body = c
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("DoRemoveItem flags"))?;
+        body.draw_dirty = true;
+        if body.parent.is_some() { body.dirty = true; }
     }
+    shared::observe_container(c);
     on_before_remove_from_container(item);
-    let i = c.borrow().index_of(item);
-    if let Some(i) = i {
-        c.borrow_mut().items.remove(i);
+    {
+        let mut body = c
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("DoRemoveItem list"))?;
+        if let Some(index) = body.index_of(item) {
+            shared::pin_owner(&body.items.remove(index));
+        }
     }
-    shared::set_container(item, None);
+    shared::observe_container(c);
+    shared::try_set_container(item, None)
+}
+pub fn do_remove_item(c: &ContainerRef, item: &ItemRef) {
+    try_do_remove_item(c, item).expect("legacy unborrowed DoRemoveItem");
 }
 
 /// The drop the four call sites share: `Rand.Next(0.1f, 0.9f)` for x
 /// then y, `sq.getApparentZ(x, y) - sq.z` and
 /// `sq.AddWorldInventoryItem(item, x, y, z)`.
-pub fn drop_on_floor(world: &mut dyn FloorWorld, sq: SquarePos, item: &ItemRef) -> Dropped {
-    let x = world.rand_float(0.1, 0.9);
-    let y = world.rand_float(0.1, 0.9);
-    let z = world.apparent_z(sq, x, y) - sq.2 as f32;
-    world.add_world_inventory_item(sq, item, x, y, z);
-    Dropped {
-        square: sq,
+pub fn drop_on_floor(
+    world: &mut dyn FloorWorld,
+    sq: &FloorSquare,
+    item: &ItemRef,
+) -> HostResult<Dropped> {
+    // Remove/hand clearing precedes placement. If placement fails before a
+    // world allocation retains this item, the local hand pin could otherwise
+    // be its final owner under the caller's character/WORLD guard.
+    let mut retired = pz_entity::RetiredComponents::new();
+    retired.push_owner(pz_entity::EntityOwner::from_ref(item));
+    crate::component_host::retire_components(retired);
+    if let Some(owner) = sq.owner_slot() {
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_owner(owner.clone());
+        crate::component_host::retire_components(retired);
+    }
+    let x = world.rand_float(0.1, 0.9)?;
+    let y = world.rand_float(0.1, 0.9)?;
+    let z = world.apparent_z_on(sq, x, y)? - sq.position().2 as f32;
+    world.add_world_inventory_item_on(sq, item, x, y, z)?;
+    Ok(Dropped {
+        square: sq.position(),
         x,
         y,
         z,
-    }
+    })
 }
 
-/// `getSolidFloorAt(sq.x, sq.y, sq.z)` of the current square (`None`
-/// without one, where the original throws for `setWornItem`).
-fn floor_under(chr: &dyn DropCharacter, world: &dyn FloorWorld) -> Option<SquarePos> {
-    let (x, y, z) = chr.current_square()?;
-    world.solid_floor_at(x, y, z)
+/// `getSolidFloorAt(sq.x, sq.y, sq.z)` after the caller's own
+/// current-square gate. The forced worn-item branch checks its required
+/// receiver separately because native code dereferences a null square.
+fn floor_under(chr: &dyn DropCharacter, world: &dyn FloorWorld) -> HostResult<Option<FloorSquare>> {
+    let Some((x, y, z)) = chr.current_square() else {
+        return Ok(None);
+    };
+    let target = world.solid_floor_ref_at(x, y, z)?;
+    if let Some(owner) = target.as_ref().and_then(FloorSquare::owner_slot) {
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_owner(owner.clone());
+        crate::component_host::retire_components(retired);
+    }
+    Ok(target)
 }
 
 /// The `forceDropTooHeavy` branch of `setWornItem(location, item,
@@ -320,29 +435,41 @@ pub fn force_drop_too_heavy(
     world: &mut dyn FloorWorld,
     force_drop_too_heavy: bool,
     item_cur: Option<&ItemRef>,
-) -> Option<Dropped> {
-    let item_cur = item_cur?;
+) -> HostResult<Option<Dropped>> {
+    let Some(item_cur) = item_cur else {
+        return Ok(None);
+    };
     if !force_drop_too_heavy || !chr.is_player() || has_room_for(chr, item_cur) {
-        return None;
+        return Ok(None);
     }
-    let sq = floor_under(chr, world)?;
-    remove(chr, item_cur);
-    Some(drop_on_floor(world, sq, item_cur))
+    if chr.current_square().is_none() {
+        // setWornItem(bool) PC125 dereferences the required square's x.
+        // Its JVM-generated NullPointerException diagnostic is not ported.
+        return Err(RuntimeHostError::Unsupported {
+            operation: "forceDropTooHeavy null current-square diagnostic",
+            kind: None,
+        });
+    }
+    let Some(sq) = floor_under(chr, world)? else {
+        return Ok(None);
+    };
+    try_remove(chr, item_cur)?;
+    drop_on_floor(world, &sq, item_cur).map(Some)
 }
 
 /// One hand item dropping in `dropHeavyItems` / `dropHandItems`.
 fn drop_hand(
     chr: &mut dyn DropCharacter,
     world: &mut dyn FloorWorld,
-    sq: SquarePos,
+    sq: &FloorSquare,
     item: &ItemRef,
-) -> Dropped {
-    do_remove_item(&chr.inventory(), item);
-    let d = drop_on_floor(world, sq, item);
+) -> HostResult<Dropped> {
+    try_do_remove_item(&chr.inventory(), item)?;
+    let d = drop_on_floor(world, sq, item)?;
     chr.on_container_update();
     chr.on_item_fall(item);
     chr.play_drop_item_sound(item);
-    d
+    Ok(d)
 }
 
 /// The hand items of `dropHeavyItems` (`heavy`) or `dropHandItems`.
@@ -350,18 +477,18 @@ fn drop_hands(
     chr: &mut dyn DropCharacter,
     world: &mut dyn FloorWorld,
     heavy: bool,
-) -> Vec<Dropped> {
+) -> HostResult<Vec<Dropped>> {
     let mut out = Vec::new();
     if chr.current_square().is_none() {
-        return out;
+        return Ok(out);
     }
     let item1 = chr.primary_hand_item();
     let item2 = chr.secondary_hand_item();
     if item1.is_none() && item2.is_none() {
-        return out;
+        return Ok(out);
     }
-    let Some(sq) = floor_under(chr, world) else {
-        return out;
+    let Some(sq) = floor_under(chr, world)? else {
+        return Ok(out);
     };
     let drops = |i: &Option<ItemRef>| {
         if heavy {
@@ -373,24 +500,27 @@ fn drop_hands(
     if drops(&item1) {
         let i = item1.as_ref().unwrap();
         chr.set_primary_hand_item(None);
-        out.push(drop_hand(chr, world, sq, i));
+        out.push(drop_hand(chr, world, &sq, i)?);
     }
     if drops(&item2) {
         let i = item2.as_ref().unwrap();
         chr.set_secondary_hand_item(None);
         let both = item1.as_ref().is_some_and(|a| Rc::ptr_eq(a, i));
         if !both {
-            out.push(drop_hand(chr, world, sq, i));
+            out.push(drop_hand(chr, world, &sq, i)?);
         }
     }
-    out
+    Ok(out)
 }
 
 /// `dropHeavyItems()`: the heavy hand items ([`is_heavy_item`]) leave the
 /// hands and the inventory for the solid floor under the character
 /// (`OnContainerUpdate`, `onItemFall` and the drop sound after each; an
 /// item in both hands drops once). Returns the drops in order.
-pub fn drop_heavy_items(chr: &mut dyn DropCharacter, world: &mut dyn FloorWorld) -> Vec<Dropped> {
+pub fn drop_heavy_items(
+    chr: &mut dyn DropCharacter,
+    world: &mut dyn FloorWorld,
+) -> HostResult<Vec<Dropped>> {
     drop_hands(chr, world, true)
 }
 
@@ -401,13 +531,13 @@ pub fn drop_hand_items(
     chr: &mut dyn DropCharacter,
     world: &mut dyn FloorWorld,
     tutorial: bool,
-) -> Vec<Dropped> {
+) -> HostResult<Vec<Dropped>> {
     if tutorial || chr.is_player() && !chr.is_local_player() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let mut out = drop_heavy_items(chr, world);
-    out.extend(drop_hands(chr, world, false));
-    out
+    let mut out = drop_heavy_items(chr, world)?;
+    out.extend(drop_hands(chr, world, false)?);
+    Ok(out)
 }
 
 #[cfg(test)]

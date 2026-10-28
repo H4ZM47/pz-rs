@@ -9,6 +9,7 @@
 mod loader;
 mod manager;
 mod properties;
+pub mod runtime;
 mod types;
 
 pub use loader::{load_property_strings, set_custom_property_values, EntitySpriteConfig};

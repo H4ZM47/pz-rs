@@ -7,7 +7,7 @@ use crate::expose::{bool_arg, expose_class, expose_enum, num_arg, str_arg, with_
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use std::any::Any;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 fn f32_arg(c: &NativeCall<'_>, i: usize) -> f32 {
@@ -132,12 +132,43 @@ pub fn uncapped_fps() -> bool {
 // ---- zombie.core.Color ---------------------------------------------------------------------
 
 /// `zombie.core.Color`.
-#[derive(Default)]
 pub struct Color {
-    pub r: Cell<f32>,
-    pub g: Cell<f32>,
-    pub b: Cell<f32>,
-    pub a: Cell<f32>,
+    pub r: ColorChannel,
+    pub g: ColorChannel,
+    pub b: ColorChannel,
+    pub a: ColorChannel,
+    actual: Rc<RefCell<[f32; 4]>>,
+}
+
+/// Rust convenience access to an actual Color field. These weak field
+/// selectors add no owning graph edges; Color itself owns its actual body
+/// exactly once. Native Lua access uses fallible guarded helpers below.
+pub struct ColorChannel {
+    actual: std::rc::Weak<RefCell<[f32; 4]>>,
+    index: usize,
+}
+
+impl ColorChannel {
+    pub fn get(&self) -> f32 {
+        let actual = self
+            .actual
+            .upgrade()
+            .expect("Color field outlived its actual Color");
+        let value = actual.borrow()[self.index];
+        value
+    }
+    pub fn set(&self, value: f32) {
+        self.actual
+            .upgrade()
+            .expect("Color field outlived its actual Color")
+            .borrow_mut()[self.index] = value;
+    }
+}
+
+impl Default for Color {
+    fn default() -> Self {
+        Self::rgba(0.0, 0.0, 0.0, 0.0)
+    }
 }
 
 impl LuaObject for Color {
@@ -173,23 +204,33 @@ pub(crate) fn clamp01(v: f32) -> f32 {
 
 impl Color {
     pub fn rgba(r: f32, g: f32, b: f32, a: f32) -> Self {
+        Self::from_actual(&Rc::new(RefCell::new([r, g, b, a])))
+    }
+
+    pub(crate) fn from_actual(actual: &Rc<RefCell<[f32; 4]>>) -> Self {
+        let channel = |index| ColorChannel {
+            actual: Rc::downgrade(actual),
+            index,
+        };
         Color {
-            r: Cell::new(r),
-            g: Cell::new(g),
-            b: Cell::new(b),
-            a: Cell::new(a),
+            r: channel(0),
+            g: channel(1),
+            b: channel(2),
+            a: channel(3),
+            actual: Rc::clone(actual),
         }
     }
 
+    pub(crate) fn actual_slot(&self) -> &Rc<RefCell<[f32; 4]>> {
+        &self.actual
+    }
+
     fn set(&self, r: f32, g: f32, b: f32, a: f32) {
-        self.r.set(r);
-        self.g.set(g);
-        self.b.set(b);
-        self.a.set(a);
+        *self.actual.borrow_mut() = [r, g, b, a];
     }
 
     fn get(&self) -> [f32; 4] {
-        [self.r.get(), self.g.get(), self.b.get(), self.a.get()]
+        *self.actual.borrow()
     }
 
     /// `new Color(int value)` / `fromColor`: ABGR with alpha 0 read as 255.
@@ -234,25 +275,99 @@ pub fn color_value_of(r: f32, g: f32, b: f32, a: f32) -> Value {
 
 /// The components of a `zombie.core.Color` value.
 pub fn color_of(v: &Value) -> Option<[f32; 4]> {
+    try_color_of(v).ok().flatten()
+}
+
+/// Fallible native Color conversion. Lua methods use this form so an actual
+/// cached Color borrow conflict is an explicit host error, never a null color.
+pub fn try_color_of(v: &Value) -> LuaResult<Option<[f32; 4]>> {
     match v {
-        Value::Object(o) => o.as_any().downcast_ref::<Color>().map(Color::get),
-        _ => None,
+        Value::Object(o) => {
+            if let Some(color) = o.as_any().downcast_ref::<Color>() {
+                return color
+                    .actual
+                    .try_borrow()
+                    .map(|color| Some(*color))
+                    .map_err(|_| LuaError::runtime("Color is in use"));
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
     }
 }
 
 fn color_value(c: Color) -> Value {
-    Value::Object(Rc::new(c))
+    crate::bind_fluid_container::existing_color_value(&Rc::new(c))
 }
 
-fn color_arg(c: &NativeCall<'_>, i: usize) -> Option<[f32; 4]> {
-    match c.arg(i) {
-        Value::Object(o) => o.as_any().downcast_ref::<Color>().map(Color::get),
-        _ => None,
+fn color_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<[f32; 4]>> {
+    try_color_of(&c.arg(i))
+}
+
+/// A short-lived direct accessor. Shared operations write the actual final
+/// cached Color allocation immediately; no copied Color object or writeback
+/// cache stands in for it. All closures below are pure native Color math.
+enum ColorAccess<'a> {
+    Shared(RefCell<std::cell::RefMut<'a, [f32; 4]>>),
+}
+
+impl ColorAccess<'_> {
+    fn get(&self) -> [f32; 4] {
+        match self {
+            Self::Shared(color) => **color.borrow(),
+        }
+    }
+    fn channel(&self, index: usize) -> f32 {
+        self.get()[index]
+    }
+    fn set(&self, r: f32, g: f32, b: f32, a: f32) {
+        match self {
+            Self::Shared(color) => **color.borrow_mut() = [r, g, b, a],
+        }
+    }
+    fn set_channel(&self, index: usize, value: f32) {
+        match self {
+            Self::Shared(color) => color.borrow_mut()[index] = value,
+        }
+    }
+    fn set_from_int(&self, value: i32) {
+        // Reuse only the primitive conversion, never a userdata identity.
+        let temporary = Color::default();
+        temporary.set_from_int(value);
+        let [r, g, b, a] = temporary.get();
+        self.set(r, g, b, a);
+    }
+    fn to_lua_string(&self) -> String {
+        let [r, g, b, a] = self.get();
+        let f = pz_core::config::float_to_string;
+        format!("Color ({},{},{},{})", f(r), f(g), f(b), f(a))
     }
 }
 
-fn this_color<R>(c: &NativeCall<'_>, f: impl FnOnce(&Color) -> R) -> LuaResult<R> {
-    with_this::<Color, _>(c, f)
+fn with_color<R>(value: &Value, f: impl FnOnce(&ColorAccess<'_>) -> R) -> LuaResult<R> {
+    if let Value::Object(object) = value {
+        if let Some(color) = object.as_any().downcast_ref::<Color>() {
+            let color = color
+                .actual
+                .try_borrow_mut()
+                .map_err(|_| LuaError::runtime("Color is in use"))?;
+            return Ok(f(&ColorAccess::Shared(RefCell::new(color))));
+        }
+    }
+    Err(LuaError::runtime("Expected a Color"))
+}
+
+fn this_color<R>(c: &NativeCall<'_>, f: impl FnOnce(&ColorAccess<'_>) -> R) -> LuaResult<R> {
+    with_color(&c.arg(0), f)
+}
+
+fn required_color<R>(value: &Value, f: impl FnOnce(&ColorAccess<'_>) -> R) -> LuaResult<R> {
+    if let Value::Object(object) = value {
+        if object.as_any().is::<Color>() {
+            return with_color(value, f);
+        }
+    }
+    Err(npe())
 }
 
 /// The integer argument Kahlua passes for an `int` parameter.
@@ -287,6 +402,16 @@ fn integer_decode(s: &str) -> Option<i32> {
 
 fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
     let b = expose_class(thread, "zombie.core.Color", None);
+    // Native tostring must retain a fallible host boundary for a shared
+    // cached Color, just like the explicit toString method below.
+    if let Value::Table(meta) = thread.class_metatables.get_str("zombie.core.Color") {
+        meta.set_str(
+            "__tostring",
+            Value::Native(pz_kahlua::NativeFunction::new("Color.__tostring", |c| {
+                Ok(c.push(this_color(c, |color| color.to_lua_string())?))
+            })),
+        );
+    }
     // Named colours: read from Color.<clinit> in the installed jar.
     if let Some(jar) = jar {
         if let Ok(ctors) = pz_classfile::self_constructed_constants(jar, "zombie/core/Color") {
@@ -325,7 +450,13 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
                     (3, false) => col.set(nums[0] as f32, nums[1] as f32, nums[2] as f32, 1.0),
                     _ => continue,
                 }
-                b.field(&name, color_value(col));
+                if name == "white" {
+                    // FluidContainer.colorDef aliases this actual mutable
+                    // static allocation; it is not a separate white value.
+                    b.field(&name, crate::bind_fluid_container::default_color_value());
+                } else {
+                    b.field(&name, color_value(col));
+                }
             }
         }
     }
@@ -337,8 +468,8 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
         match n {
             0 => {}
             1 => match c.arg(0) {
-                Value::Object(o) => match o.as_any().downcast_ref::<Color>() {
-                    Some(src) => col.set(src.r.get(), src.g.get(), src.b.get(), src.a.get()),
+                value @ Value::Object(_) => match try_color_of(&value)? {
+                    Some([r, g, b, a]) => col.set(r, g, b, a),
                     None => return Err(no_method("Color.new")),
                 },
                 Value::Nil => {}
@@ -348,8 +479,8 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
             3 if is_num(&c.arg(0)) => col.set(f32_arg(c, 0), f32_arg(c, 1), f32_arg(c, 2), 1.0),
             3 => {
                 let (a, b2) = (
-                    color_arg(c, 0).ok_or_else(npe)?,
-                    color_arg(c, 1).ok_or_else(npe)?,
+                    color_arg(c, 0)?.ok_or_else(npe)?,
+                    color_arg(c, 1)?.ok_or_else(npe)?,
                 );
                 let d = f32_arg(c, 2);
                 col.set(
@@ -370,7 +501,7 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
     });
 
     b.static_fn("colorToABGR", |c| {
-        let v = match color_arg(c, 0) {
+        let v = match color_arg(c, 0)? {
             Some([r, g, b, a]) => color_to_abgr(r, g, b, a),
             None => color_to_abgr(f32_arg(c, 0), f32_arg(c, 1), f32_arg(c, 2), f32_arg(c, 3)),
         };
@@ -378,11 +509,7 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
     });
     b.static_fn("abgrToColor", |c| {
         let [r, g, b, a] = abgr_channels(int_of(c, 0));
-        let Value::Object(o) = c.arg(1) else {
-            return Err(npe());
-        };
-        let col = o.as_any().downcast_ref::<Color>().ok_or_else(npe)?;
-        col.set(r, g, b, a);
+        required_color(&c.arg(1), |color| color.set(r, g, b, a))?;
         Ok(c.push(c.arg(1)))
     });
     let blend = |name: &'static str,
@@ -486,14 +613,16 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
         Ok(c.push(color_value(col)))
     });
     b.static_fn("HSBtoRGB", |c| {
-        let col = match c.arg(3) {
-            Value::Object(o) if o.as_any().is::<Color>() => o,
-            _ => Rc::new(Color::default()) as Rc<dyn LuaObject>,
+        let col = if color_arg(c, 3)?.is_some() {
+            c.arg(3)
+        } else {
+            color_value(Color::default())
         };
         let [r, g, bl] = hsb_to_rgb(f32_arg(c, 0), f32_arg(c, 1), f32_arg(c, 2));
-        let target = col.as_any().downcast_ref::<Color>().unwrap();
-        target.set(r as f32 / 255.0, g as f32 / 255.0, bl as f32 / 255.0, 1.0);
-        Ok(c.push(Value::Object(col)))
+        with_color(&col, |target| {
+            target.set(r as f32 / 255.0, g as f32 / 255.0, bl as f32 / 255.0, 1.0)
+        })?;
+        Ok(c.push(col))
     });
 
     macro_rules! getter {
@@ -504,24 +633,32 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
             });
         };
     }
-    getter!("getR", |x: &Color| x.r.get());
-    getter!("getG", |x: &Color| x.g.get());
-    getter!("getB", |x: &Color| x.b.get());
-    getter!("getRedFloat", |x: &Color| x.r.get());
-    getter!("getGreenFloat", |x: &Color| x.g.get());
-    getter!("getBlueFloat", |x: &Color| x.b.get());
-    getter!("getAlphaFloat", |x: &Color| x.a.get());
-    getter!("getRed", |x: &Color| (x.r.get() * 255.0) as i32);
-    getter!("getGreen", |x: &Color| (x.g.get() * 255.0) as i32);
-    getter!("getBlue", |x: &Color| (x.b.get() * 255.0) as i32);
-    getter!("getAlpha", |x: &Color| (x.a.get() * 255.0) as i32);
-    getter!("getRedByte", |x: &Color| (x.r.get() * 255.0) as i32);
-    getter!("getGreenByte", |x: &Color| (x.g.get() * 255.0) as i32);
-    getter!("getBlueByte", |x: &Color| (x.b.get() * 255.0) as i32);
-    getter!("getAlphaByte", |x: &Color| (x.a.get() * 255.0) as i32);
+    getter!("getR", |x: &ColorAccess<'_>| x.channel(0));
+    getter!("getG", |x: &ColorAccess<'_>| x.channel(1));
+    getter!("getB", |x: &ColorAccess<'_>| x.channel(2));
+    getter!("getRedFloat", |x: &ColorAccess<'_>| x.channel(0));
+    getter!("getGreenFloat", |x: &ColorAccess<'_>| x.channel(1));
+    getter!("getBlueFloat", |x: &ColorAccess<'_>| x.channel(2));
+    getter!("getAlphaFloat", |x: &ColorAccess<'_>| x.channel(3));
+    getter!("getRed", |x: &ColorAccess<'_>| (x.channel(0) * 255.0)
+        as i32);
+    getter!("getGreen", |x: &ColorAccess<'_>| (x.channel(1) * 255.0)
+        as i32);
+    getter!("getBlue", |x: &ColorAccess<'_>| (x.channel(2) * 255.0)
+        as i32);
+    getter!("getAlpha", |x: &ColorAccess<'_>| (x.channel(3) * 255.0)
+        as i32);
+    getter!("getRedByte", |x: &ColorAccess<'_>| (x.channel(0) * 255.0)
+        as i32);
+    getter!("getGreenByte", |x: &ColorAccess<'_>| (x.channel(1) * 255.0)
+        as i32);
+    getter!("getBlueByte", |x: &ColorAccess<'_>| (x.channel(2) * 255.0)
+        as i32);
+    getter!("getAlphaByte", |x: &ColorAccess<'_>| (x.channel(3) * 255.0)
+        as i32);
     b.method("hashCode", |c| {
         let v = this_color(c, |x| {
-            ((x.r.get() + x.g.get() + x.b.get() + x.a.get()) as i32).wrapping_mul(255)
+            ((x.channel(0) + x.channel(1) + x.channel(2) + x.channel(3)) as i32).wrapping_mul(255)
         })?;
         Ok(c.push(v as f64))
     });
@@ -530,12 +667,12 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
         Ok(c.push(v))
     });
     b.method("equals", |c| {
-        let other = color_arg(c, 1);
+        let other = color_arg(c, 1)?;
         let v = this_color(c, |x| other.is_some_and(|o| o == x.get()))?;
         Ok(c.push(v))
     });
     b.method("equalBytes", |c| {
-        let other = color_arg(c, 1);
+        let other = color_arg(c, 1)?;
         let v = this_color(c, |x| {
             other.is_some_and(|o| {
                 (0..4).all(|i| (o[i] * 255.0) as i32 == (x.get()[i] * 255.0) as i32)
@@ -546,7 +683,7 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
     b.method("set", |c| {
         let n = c.nargs() - 1;
         if n == 1 {
-            let o = color_arg(c, 1).ok_or_else(npe)?;
+            let o = color_arg(c, 1)?.ok_or_else(npe)?;
             this_color(c, |x| x.set(o[0], o[1], o[2], o[3]))?;
         } else {
             let a = if n >= 4 { f32_arg(c, 4) } else { 1.0 };
@@ -557,8 +694,8 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
     });
     b.method("setColor", |c| {
         let (a, b2) = (
-            color_arg(c, 1).ok_or_else(npe)?,
-            color_arg(c, 2).ok_or_else(npe)?,
+            color_arg(c, 1)?.ok_or_else(npe)?,
+            color_arg(c, 2)?.ok_or_else(npe)?,
         );
         let d = f32_arg(c, 3);
         this_color(c, |x| {
@@ -582,7 +719,7 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
         Ok(0)
     });
     b.method("add", |c| {
-        let o = color_arg(c, 1).ok_or_else(npe)?;
+        let o = color_arg(c, 1)?.ok_or_else(npe)?;
         this_color(c, |x| {
             let s = x.get();
             x.set(s[0] + o[0], s[1] + o[1], s[2] + o[2], s[3] + o[3]);
@@ -590,8 +727,8 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
         Ok(0)
     });
     b.method("addToCopy", |c| {
-        let o = color_arg(c, 1).ok_or_else(npe)?;
-        let s = this_color(c, Color::get)?;
+        let o = color_arg(c, 1)?.ok_or_else(npe)?;
+        let s = this_color(c, |color| color.get())?;
         let copy = Color::rgba(
             clamp01(s[0]) + o[0],
             clamp01(s[1]) + o[1],
@@ -603,20 +740,30 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
     b.method("brighter", |c| {
         let d = if c.nargs() > 1 { f32_arg(c, 1) } else { 0.2 };
         this_color(c, |x| {
-            x.set(x.r.get() + d, x.g.get() + d, x.b.get() + d, x.a.get())
+            x.set(
+                x.channel(0) + d,
+                x.channel(1) + d,
+                x.channel(2) + d,
+                x.channel(3),
+            )
         })?;
         Ok(c.push(c.arg(0)))
     });
     b.method("darker", |c| {
         let d = if c.nargs() > 1 { f32_arg(c, 1) } else { 0.5 };
         this_color(c, |x| {
-            x.set(x.r.get() - d, x.g.get() - d, x.b.get() - d, x.a.get())
+            x.set(
+                x.channel(0) - d,
+                x.channel(1) - d,
+                x.channel(2) - d,
+                x.channel(3),
+            )
         })?;
         Ok(c.push(c.arg(0)))
     });
     b.method("multiply", |c| {
-        let o = color_arg(c, 1).ok_or_else(npe)?;
-        let s = this_color(c, Color::get)?;
+        let o = color_arg(c, 1)?.ok_or_else(npe)?;
+        let s = this_color(c, |color| color.get())?;
         let m = Color::rgba(
             clamp01(s[0] * o[0]),
             clamp01(s[1] * o[1]),
@@ -628,13 +775,18 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
     b.method("scale", |c| {
         let k = f32_arg(c, 1);
         this_color(c, |x| {
-            x.set(x.r.get() * k, x.g.get() * k, x.b.get() * k, x.a.get() * k)
+            x.set(
+                x.channel(0) * k,
+                x.channel(1) * k,
+                x.channel(2) * k,
+                x.channel(3) * k,
+            )
         })?;
         Ok(c.push(c.arg(0)))
     });
     b.method("scaleCopy", |c| {
         let k = f32_arg(c, 1);
-        let s = this_color(c, Color::get)?;
+        let s = this_color(c, |color| color.get())?;
         let m = Color::rgba(
             clamp01(s[0]) * k,
             clamp01(s[1]) * k,
@@ -644,33 +796,31 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
         Ok(c.push(color_value(m)))
     });
     b.method("interp", |c| {
-        let to = color_arg(c, 1).ok_or_else(npe)?;
+        let to = color_arg(c, 1)?.ok_or_else(npe)?;
         let d = f32_arg(c, 2);
-        let s = this_color(c, Color::get)?;
-        let Value::Object(o) = c.arg(3) else {
-            return Err(npe());
-        };
-        let dest = o.as_any().downcast_ref::<Color>().ok_or_else(npe)?;
-        dest.set(
-            s[0] + (to[0] - s[0]) * d,
-            s[1] + (to[1] - s[1]) * d,
-            s[2] + (to[2] - s[2]) * d,
-            s[3] + (to[3] - s[3]) * d,
-        );
+        let s = this_color(c, |color| color.get())?;
+        required_color(&c.arg(3), |dest| {
+            dest.set(
+                s[0] + (to[0] - s[0]) * d,
+                s[1] + (to[1] - s[1]) * d,
+                s[2] + (to[2] - s[2]) * d,
+                s[3] + (to[3] - s[3]) * d,
+            )
+        })?;
         Ok(0)
     });
     b.method("changeHSBValue", |c| {
         let (hf, sf, bf) = (f32_arg(c, 1), f32_arg(c, 2), f32_arg(c, 3));
         this_color(c, |x| {
             let [h, s, v] = rgb_to_hsb(
-                (x.r.get() * 255.0) as i32,
-                (x.g.get() * 255.0) as i32,
-                (x.b.get() * 255.0) as i32,
+                (x.channel(0) * 255.0) as i32,
+                (x.channel(1) * 255.0) as i32,
+                (x.channel(2) * 255.0) as i32,
             );
             let [r, g, bl] = hsb_to_rgb(h * hf, s * sf, v * bf);
-            x.r.set(r as f32 / 255.0);
-            x.g.set(g as f32 / 255.0);
-            x.b.set(bl as f32 / 255.0);
+            x.set_channel(0, r as f32 / 255.0);
+            x.set_channel(1, g as f32 / 255.0);
+            x.set_channel(2, bl as f32 / 255.0);
         })?;
         Ok(0)
     });
@@ -689,7 +839,12 @@ fn imm_rgb(r: f32, g: f32, b: f32) -> ImmutableColor {
 
 /// `new ImmutableColor(int r, int g, int b, int a)`.
 fn imm_ints(r: i32, g: i32, b: i32, a: i32) -> ImmutableColor {
-    imm(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0)
+    imm(
+        r as f32 / 255.0,
+        g as f32 / 255.0,
+        b as f32 / 255.0,
+        a as f32 / 255.0,
+    )
 }
 
 /// `new ImmutableColor(int value)`: ABGR with alpha 0 read as 255.
@@ -721,7 +876,9 @@ fn register_immutable_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>
     let b = expose_class(thread, IMMUTABLE_COLOR_CLASS, None);
     // Named colours: read from ImmutableColor.<clinit> in the installed jar.
     if let Some(jar) = jar {
-        if let Ok(ctors) = pz_classfile::self_constructed_constants(jar, "zombie/core/ImmutableColor") {
+        if let Ok(ctors) =
+            pz_classfile::self_constructed_constants(jar, "zombie/core/ImmutableColor")
+        {
             for (name, args) in ctors {
                 let ints: Option<Vec<i32>> = args
                     .iter()
@@ -741,7 +898,9 @@ fn register_immutable_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>
                     (Some(&[r, g, bl, a]), _) => imm_ints(r, g, bl, a),
                     (Some(&[r, g, bl]), _) => imm_ints(r, g, bl, 255),
                     (Some(&[v]), _) => imm_from_int(v),
-                    (_, Some(&[r, g, bl, a])) => imm(r.min(1.0), g.min(1.0), bl.min(1.0), a.min(1.0)),
+                    (_, Some(&[r, g, bl, a])) => {
+                        imm(r.min(1.0), g.min(1.0), bl.min(1.0), a.min(1.0))
+                    }
                     (_, Some(&[r, g, bl])) => imm_rgb(r, g, bl),
                     _ => continue,
                 };
@@ -757,19 +916,25 @@ fn register_immutable_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>
                 Value::Num(_) => imm_from_int(int_of(c, 0)),
                 // `new ImmutableColor((ImmutableColor) null)`: opaque black.
                 Value::Nil => imm(0.0, 0.0, 0.0, 1.0),
-                Value::Object(o) => match (o.as_any().downcast_ref::<ImmutableColor>(), o.as_any().downcast_ref::<Color>()) {
-                    (Some(x), _) => *x,
-                    (_, Some(x)) => {
-                        let [r, g, bl, a] = x.get();
-                        imm(r, g, bl, a)
+                value @ Value::Object(_) => {
+                    if let Value::Object(object) = &value {
+                        if let Some(color) = object.as_any().downcast_ref::<ImmutableColor>() {
+                            return Ok(c.push(immutable_color_value(*color)));
+                        }
                     }
-                    _ => return Err(no_method("ImmutableColor.new")),
-                },
+                    match try_color_of(&value)? {
+                        Some([r, g, bl, a]) => imm(r, g, bl, a),
+                        None => return Err(no_method("ImmutableColor.new")),
+                    }
+                }
                 _ => return Err(no_method("ImmutableColor.new")),
             },
             3 if is_num(&c.arg(0)) => imm_rgb(f32_arg(c, 0), f32_arg(c, 1), f32_arg(c, 2)),
             3 => {
-                let (a, b2) = (color_arg(c, 0).ok_or_else(npe)?, color_arg(c, 1).ok_or_else(npe)?);
+                let (a, b2) = (
+                    color_arg(c, 0)?.ok_or_else(npe)?,
+                    color_arg(c, 1)?.ok_or_else(npe)?,
+                );
                 let d = f32_arg(c, 2);
                 let l = |i: usize| a[i] + (b2[i] - a[i]) * d;
                 imm(l(0), l(1), l(2), l(3))
@@ -818,10 +983,16 @@ fn register_immutable_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>
     getter!("getBlueInt", |x| (x.b * 255.0) as i32 as f64);
     getter!("getAlphaInt", |x| (x.a * 255.0) as i32 as f64);
     getter!("getRedByte", |x| ((x.r * 255.0) as i32 & 0xFF) as i8 as f64);
-    getter!("getGreenByte", |x| ((x.g * 255.0) as i32 & 0xFF) as i8 as f64);
-    getter!("getBlueByte", |x| ((x.b * 255.0) as i32 & 0xFF) as i8 as f64);
-    getter!("getAlphaByte", |x| ((x.a * 255.0) as i32 & 0xFF) as i8 as f64);
-    getter!("hashCode", |x| ((x.r + x.g + x.b + x.a) as i32).wrapping_mul(255) as f64);
+    getter!("getGreenByte", |x| ((x.g * 255.0) as i32 & 0xFF) as i8
+        as f64);
+    getter!("getBlueByte", |x| ((x.b * 255.0) as i32 & 0xFF) as i8
+        as f64);
+    getter!("getAlphaByte", |x| ((x.a * 255.0) as i32 & 0xFF) as i8
+        as f64);
+    getter!(
+        "hashCode",
+        |x| ((x.r + x.g + x.b + x.a) as i32).wrapping_mul(255) as f64
+    );
     b.method("toString", |c| {
         let v = with_this::<ImmutableColor, _>(c, |x| x.to_lua_string())?;
         Ok(c.push(v))
@@ -836,28 +1007,51 @@ fn register_immutable_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>
     });
     b.method("add", |c| {
         let (x, o) = (this_imm(c)?, immutable_color_arg(c, 1).ok_or_else(npe)?);
-        let v = imm((x.r + o.r).min(1.0), (x.g + o.g).min(1.0), (x.b + o.b).min(1.0), (x.a + o.a).min(1.0));
+        let v = imm(
+            (x.r + o.r).min(1.0),
+            (x.g + o.g).min(1.0),
+            (x.b + o.b).min(1.0),
+            (x.a + o.a).min(1.0),
+        );
         Ok(c.push(immutable_color_value(v)))
     });
     for (name, default, sign) in [("brighter", 0.2f32, 1.0f32), ("darker", 0.5, -1.0)] {
         b.method(name, move |c| {
             let x = this_imm(c)?;
-            let d = if c.nargs() > 1 { f32_arg(c, 1) } else { default } * sign;
+            let d = if c.nargs() > 1 {
+                f32_arg(c, 1)
+            } else {
+                default
+            } * sign;
             Ok(c.push(immutable_color_value(imm_rgb(x.r + d, x.g + d, x.b + d))))
         });
     }
     b.method("multiply", |c| {
-        let (x, o) = (this_imm(c)?, color_arg(c, 1).ok_or_else(npe)?);
-        let v = imm((x.r * o[0]).min(1.0), (x.g * o[1]).min(1.0), (x.b * o[2]).min(1.0), (x.a * o[3]).min(1.0));
+        let (x, o) = (this_imm(c)?, color_arg(c, 1)?.ok_or_else(npe)?);
+        let v = imm(
+            (x.r * o[0]).min(1.0),
+            (x.g * o[1]).min(1.0),
+            (x.b * o[2]).min(1.0),
+            (x.a * o[3]).min(1.0),
+        );
         Ok(c.push(immutable_color_value(v)))
     });
     b.method("scale", |c| {
         let (x, k) = (this_imm(c)?, f32_arg(c, 1));
-        let v = imm((x.r * k).min(1.0), (x.g * k).min(1.0), (x.b * k).min(1.0), (x.a * k).min(1.0));
+        let v = imm(
+            (x.r * k).min(1.0),
+            (x.g * k).min(1.0),
+            (x.b * k).min(1.0),
+            (x.a * k).min(1.0),
+        );
         Ok(c.push(immutable_color_value(v)))
     });
     b.method("interp", |c| {
-        let (x, to, d) = (this_imm(c)?, immutable_color_arg(c, 1).ok_or_else(npe)?, f32_arg(c, 2));
+        let (x, to, d) = (
+            this_imm(c)?,
+            immutable_color_arg(c, 1).ok_or_else(npe)?,
+            f32_arg(c, 2),
+        );
         let l = |a: f32, b: f32| (a + (b - a) * d).min(1.0);
         let v = imm(l(x.r, to.r), l(x.g, to.g), l(x.b, to.b), l(x.a, to.a));
         Ok(c.push(immutable_color_value(v)))

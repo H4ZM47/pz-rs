@@ -230,7 +230,7 @@ fn varargs(c: &NativeCall<'_>, from: usize) -> Vec<JavaArg> {
 }
 
 /// A `UIFont` argument (`null` when not a UIFont constant).
-fn font_arg(c: &NativeCall<'_>, i: usize) -> Option<UIFont> {
+pub(crate) fn font_arg(c: &NativeCall<'_>, i: usize) -> Option<UIFont> {
     match c.arg(i) {
         Value::Object(o) => o
             .as_any()
@@ -241,7 +241,7 @@ fn font_arg(c: &NativeCall<'_>, i: usize) -> Option<UIFont> {
     }
 }
 
-fn font_value(f: UIFont) -> Value {
+pub(crate) fn font_value(f: UIFont) -> Value {
     enum_value(UIFONT, f.name())
 }
 

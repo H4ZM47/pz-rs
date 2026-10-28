@@ -76,6 +76,37 @@ impl HudPlayers for CharacterPlayers {
     }
 }
 
+/// `IsoPlayer.players` for the world map's player dots.
+pub struct CharacterMapPlayers;
+
+impl crate::worldmap::host::WorldMapPlayers for CharacterMapPlayers {
+    /// `UIWorldMap.renderLocalPlayers`' loop: `players[i]` for `i` below
+    /// `numPlayers`, skipping null and dead players, at the vehicle's
+    /// position while in one.
+    fn live_players(&self) -> Vec<crate::worldmap::host::MapPlayer> {
+        let n = bind_players::num_players().clamp(0, bind_players::MAX_PLAYERS as i32) as usize;
+        (0..n)
+            .filter_map(bind_players::player)
+            .filter_map(|p| {
+                let p = p.borrow();
+                if p.is_dead() {
+                    return None;
+                }
+                let (x, y) = p
+                    .path
+                    .vehicle
+                    .and_then(pz_vehicles::manager::vehicle_by_id)
+                    .map_or((p.vars.x, p.vars.y), |v| (v.x(), v.y()));
+                Some(crate::worldmap::host::MapPlayer {
+                    x,
+                    y,
+                    username: p.username().unwrap_or_default().to_string(),
+                })
+            })
+            .collect()
+    }
+}
+
 /// `ClimateManager.getInstance()` (the shared `GameTime`'s) for a player.
 pub struct CharacterClimate;
 
@@ -215,6 +246,7 @@ pub fn install_character_hud_hosts() {
         h.moodles = Box::new(CharacterMoodles);
         h.body_damage = Box::new(CharacterBodyDamage);
     });
+    crate::worldmap::host::with_host(|h| h.players = Box::new(CharacterMapPlayers));
 }
 
 #[cfg(test)]
@@ -308,6 +340,17 @@ mod tests {
         bind_players::set_player(0, Some(p0.clone()));
         bind_players::set_player_instance(Some(p0.clone()));
         assert!(p0.borrow().in_players && p0.borrow().player_instance);
+        // The world map's live players: players[0] at its position.
+        {
+            use crate::worldmap::host::WorldMapPlayers;
+            p0.borrow_mut().set_username(Some("Kate"));
+            let live = CharacterMapPlayers.live_players();
+            assert_eq!(live.len(), 1);
+            assert_eq!((live[0].x, live[0].y, live[0].username.as_str()), (10.0, 20.0, "Kate"));
+            bind_players::set_num_players(0);
+            assert!(CharacterMapPlayers.live_players().is_empty());
+            bind_players::set_num_players(1);
+        }
         // getSquare() and a Lua IsoPlayer's playerIndex.
         assert_eq!(CharacterPlayers.player_square(0), None);
         p0.borrow_mut().environment.has_current_square = true;

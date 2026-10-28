@@ -8,7 +8,6 @@ use crate::container::{load_items, load_items_saved, save_items, save_items_save
 use crate::env::ItemEnv;
 use crate::io::{Reader, Writer};
 use crate::item::{InventoryItem, ItemKind};
-use crate::lua_table::{LuaKey, LuaValue};
 use crate::saved::SavedItem;
 use crate::template::{ItemClass, ItemTemplate};
 
@@ -185,10 +184,9 @@ fn load_time_changes() {
     let SavedItem::Item(back) = SavedItem::decode(&w.buf, 249, &e) else {
         panic!()
     };
-    let t = back.table.as_ref().unwrap();
     assert_eq!(
-        t.rawget(&LuaKey::Str("customName".into())),
-        Some(&LuaValue::Str("My rock".into()))
+        back.mod_data_string("customName").unwrap().as_deref(),
+        Some("My rock")
     );
 
     // A key saved with id -1 draws a new one; the base keyId is not used.
@@ -257,19 +255,12 @@ fn containers_nest_and_unknown_items_drop() {
     // so the bits block is read and `setCustomName` puts the name in the
     // mod data, as `InventoryItem.load` does (the bag and the item in it);
     // everything else is equal.
-    let custom_name = |i: &InventoryItem| {
-        i.table
-            .as_ref()
-            .and_then(|t| t.rawget(&LuaKey::Str("customName".into())).cloned())
-    };
+    let custom_name = |i: &InventoryItem| i.mod_data_string("customName").unwrap();
     assert_eq!(bag.wet_cooldown, 0.0);
     assert!(bag.table.is_none());
-    assert_eq!(custom_name(&back), Some(LuaValue::Str("Bag name".into())));
+    assert_eq!(custom_name(&back), Some("Bag name".into()));
     let inner = c.container.borrow().items[0].clone();
-    assert_eq!(
-        custom_name(&inner.borrow()),
-        Some(LuaValue::Str("Rock name".into()))
-    );
+    assert_eq!(custom_name(&inner.borrow()), Some("Rock name".into()));
     inner.borrow_mut().table = None;
     let mut rest = back.clone();
     rest.table = None;
@@ -415,4 +406,52 @@ fn equipped_items_start_no_run() {
     assert_eq!(runs(&[6]), (2, vec![0, 1, 2]));
     // Rock 7 equipped: it joins 6's run, and 8 follows.
     assert_eq!(runs(&[7]), (1, vec![0, 1, 2]));
+}
+
+#[test]
+fn broken_load_omits_wire_field_and_only_condition_flag_recomputes_it() {
+    let e = env();
+    let source = new_item(&e, 1);
+    let mut broken_source = source.clone();
+    broken_source.broken = true;
+    let mut a = Writer::new();
+    let mut b = Writer::new();
+    source.save(&mut a, &e).unwrap();
+    broken_source.save(&mut b, &e).unwrap();
+    assert_eq!(a.buf, b.buf, "broken has no independent save field");
+    let mut target = source.clone();
+    target.broken = true;
+    // load starts after the registry/save-type header.
+    target.load(&mut Reader::new(&a.buf[3..]), 249, &e).unwrap();
+    assert_eq!(target.condition, target.condition_max);
+    assert!(
+        target.broken,
+        "raw max-condition reset preserves an existing broken bit"
+    );
+
+    for (wire_condition, expected_condition, expected_broken) in
+        [(-2, 0, true), (4, 4, false), (20, 10, false)]
+    {
+        let mut bytes = Writer::new();
+        bytes.i32(300);
+        bytes.i8(4 | 64); // condition, then a missing bits2 int
+        bytes.i8(wire_condition);
+        let mut reader = Reader::new(&bytes.buf);
+        target.broken = !expected_broken;
+        assert!(target.load(&mut reader, 249, &e).is_err());
+        assert_eq!(reader.pos, bytes.buf.len());
+        assert_eq!(target.condition, expected_condition);
+        assert_eq!(
+            target.broken, expected_broken,
+            "condition publication survives later underflow"
+        );
+    }
+    let mut no_condition = Writer::new();
+    no_condition.i32(301);
+    no_condition.i8(64); // missing bits2, after the raw condition reset
+    target.broken = true;
+    assert!(target
+        .load(&mut Reader::new(&no_condition.buf), 249, &e)
+        .is_err());
+    assert!(target.broken);
 }

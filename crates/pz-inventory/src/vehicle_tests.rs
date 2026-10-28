@@ -288,9 +288,15 @@ fn fluid_contents_count_in_weights() {
         0.75,
     ));
     fc.cache_invalidated = true;
-    i.set_fluid_container(fc);
-    // Decoded from the component bytes, as after a load.
-    i.component_cache = None;
+    drop(i.set_fluid_container(fc).unwrap());
+    // This explicit value archive imports serialized carriers; it does not
+    // expose a live native component or keep a second mutable cache.
+    let mut bytes = crate::io::Writer::new();
+    i.components.write_to(&mut bytes, 249).unwrap();
+    let mut archived = crate::ItemComponents::new();
+    let (_, retired) = archived.load_encoded_archive(&mut crate::io::Reader::new(&bytes.buf), 249).unwrap();
+    drop(retired);
+    i.components = archived;
     let ctx: &dyn ItemContext = &Offline;
     assert_eq!(ctx.fluid_amount(&i), Some(0.75));
     assert_eq!(i.get_contents_weight_with(ctx, &NoOwner), 0.75);

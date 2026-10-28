@@ -44,6 +44,60 @@ static B: Logger = Logger("t.B");
 static S1: Logger = Logger("t.S1");
 static S2: Logger = Logger("t.S2");
 
+struct HostFaultState { enter: bool }
+impl State<()> for HostFaultState {
+    fn id(&self) -> StateId { StateId("t.HostFault") }
+    fn enter(&self, owner: &mut GameCharacter<()>, cx: &mut StateCx<'_, ()>) {
+        if self.enter {
+            log(owner, "fault enter".into());
+            cx.record_host_error(pz_inventory::floor_drop::RuntimeHostError::Borrowed("state enter placement"));
+        }
+    }
+    fn execute(&self, owner: &mut GameCharacter<()>, cx: &mut StateCx<'_, ()>) {
+        log(owner, "fault execute".into());
+        let nested = cx.reborrow();
+        nested.record_host_error(pz_inventory::floor_drop::RuntimeHostError::Borrowed("state execute placement"));
+        nested.record_host_error(pz_inventory::floor_drop::RuntimeHostError::InvalidHostState("later fault"));
+    }
+}
+static FAULT_EXECUTE: HostFaultState = HostFaultState { enter: false };
+static FAULT_ENTER: HostFaultState = HostFaultState { enter: true };
+
+#[test]
+fn immediate_shared_host_fault_stops_state_loop_and_preserves_first_error_domain() {
+    let (sm, mut chars) = fixture();
+    let mut c = player(&sm, &mut chars);
+    let ctx = Recorder::default();
+    let mut world = NullWorld;
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+    c.change_state_with(Some(&FAULT_EXECUTE), &[Some(&S1), Some(&S2)], false, &mut cx);
+    take_log(&mut c);
+    c.state_machine_update(&mut cx);
+    assert_eq!(take_log(&mut c), ["fault execute"]);
+    assert_eq!(cx.host_result(), Err(pz_inventory::floor_drop::RuntimeHostError::Borrowed("state execute placement")));
+    c.state_machine_update(&mut cx);
+    c.state_anim_event(-1, &record("later event", -1, None), &mut cx);
+    c.change_state(Some(&A), &mut cx);
+    assert!(take_log(&mut c).is_empty());
+    assert_eq!(c.current_state_id(), Some(StateId("t.HostFault")));
+    assert!(cx.has_host_error());
+}
+
+#[test]
+fn fault_in_state_enter_stops_substate_publication_and_later_state_change_event() {
+    let (sm, mut chars) = fixture();
+    let mut c = player(&sm, &mut chars);
+    let ctx = Recorder::default();
+    let mut world = NullWorld;
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+    c.change_state_with(Some(&FAULT_ENTER), &[Some(&S1)], false, &mut cx);
+    assert_eq!(take_log(&mut c), ["fault enter"]);
+    assert_eq!(c.current_state_id(), Some(StateId("t.HostFault")), "completed root assignment remains");
+    assert_eq!(c.state_machine().sub_state_count(), 0);
+    assert!(ctx.events.borrow().is_empty());
+    assert!(cx.host_result().is_err());
+}
+
 fn take_log(c: &mut GameCharacter<()>) -> Vec<String> {
     LOG.remove(&mut c.state.params).unwrap_or_default()
 }

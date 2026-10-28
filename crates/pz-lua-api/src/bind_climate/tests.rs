@@ -46,6 +46,34 @@ fn run(t: &mut Thread, src: &str) -> Vec<Value> {
 }
 
 #[test]
+fn session_reset_retires_climate_wrappers_without_replacing_game_time() {
+    let _thread = setup();
+    let game_time = shared_game_time();
+    let table = game_time.borrow_mut().mod_data();
+    table.set_str("clockData", 42.0);
+    let old_handle = handle(Obj::GameTime);
+    let color = Rc::new(RefCell::new(ClimateColorInfo::default()));
+    let color_weak = Rc::downgrade(&color);
+    let wrapped_color = color_value(&color);
+    drop(wrapped_color);
+    drop(color);
+    assert!(color_weak.upgrade().is_some());
+    let sink_owner = Rc::new(());
+    let sink_weak = Rc::downgrade(&sink_owner);
+    install_event_sink(Rc::new(move |_, _, _| {
+        let _keep_alive = sink_owner.clone();
+    }));
+
+    crate::session_reset::reset_session_bindings();
+    assert!(sink_weak.upgrade().is_none());
+    assert!(color_weak.upgrade().is_none(), "old climate color wrapper survived reset");
+    assert!(!old_handle.raw_equals(&handle(Obj::GameTime)));
+    assert!(Rc::ptr_eq(&game_time, &shared_game_time()), "reset replaced simulation time");
+    assert!(table.ptr_eq(&game_time.borrow_mut().mod_data()));
+    assert_eq!(table.get_str("clockData").as_num(), Some(42.0));
+}
+
+#[test]
 fn clock_and_climate_from_lua() {
     let mut t = setup();
     for _ in 0..400 {
@@ -270,4 +298,152 @@ fn post_cell_load_snow_and_night() {
     assert_eq!(r[0].as_num(), r[1].as_num());
     let night = shared_game_time().borrow().get_night();
     assert_eq!(r[0].as_num(), Some(f64::from(night)));
+}
+
+fn puddles_setup() -> (Thread, pz_fs::GameFs) {
+    let mut t = setup();
+    crate::bind_puddles::register(&mut t);
+    crate::bind_puddles::shared_puddles().borrow_mut().state = Default::default();
+    crate::bind_world::set_cell(Some(pz_world::IsoCell::default()));
+    let fs = pz_fs::GameFs::new(std::env::temp_dir().join("pz-climate-puddles-missing-assets"));
+    let gt = shared_game_time();
+    let mut g = gt.borrow_mut();
+    use pz_core::weather::manager::{BOOL_IS_SNOW, FLOAT_PRECIPITATION_INTENSITY};
+    g.climate.vars.floats[FLOAT_PRECIPITATION_INTENSITY].set_enable_admin(true);
+    g.climate.vars.floats[FLOAT_PRECIPITATION_INTENSITY].set_admin_value(1.0);
+    g.climate.vars.bools[BOOL_IS_SNOW].set_enable_admin(true);
+    g.climate.vars.bools[BOOL_IS_SNOW].admin_value = false;
+    // Subzero temperatures add ground moisture in the original equation;
+    // pin positive temperature so the final phase exercises dry ground.
+    g.climate.vars.floats[pz_core::weather::manager::FLOAT_TEMPERATURE].set_enable_admin(true);
+    g.climate.vars.floats[pz_core::weather::manager::FLOAT_TEMPERATURE].set_admin_value(10.0);
+    drop(g);
+    (t, fs)
+}
+
+fn puddle_step() -> f32 {
+    let gt = shared_game_time();
+    let g = gt.borrow();
+    let rain = g.climate.get_rain_intensity();
+    rain * rain * 0.05 * g.get_thirty_fps_multiplier(&LuaClimateContext::new()) * 0.01
+}
+
+#[test]
+fn puddles_require_real_weather_fx_advance_once_and_obey_disabled_paths() {
+    let (mut t, fs) = puddles_setup();
+    let owner = crate::bind_puddles::shared_puddles();
+    update_game_time(&mut t);
+    assert_eq!(owner.borrow().state, Default::default(), "cell alone bypassed WeatherFX gate");
+    assert!(crate::bind_puddles::init_weather_fx(&fs));
+    update_game_time(&mut t);
+    let first = owner.borrow().state.puddles_size.get();
+    assert!((first - puddle_step()).abs() < 1e-6, "{first}");
+    assert!(first > 0.0);
+    update_game_time(&mut t);
+    assert!((owner.borrow().state.puddles_size.get() - first - puddle_step()).abs() < 1e-6);
+
+    let frozen = owner.borrow().state;
+    shared_game_time().borrow_mut().climate.disable_fx_update = true;
+    update_game_time(&mut t);
+    assert_eq!(owner.borrow().state, frozen);
+    shared_game_time().borrow_mut().climate.disable_fx_update = false;
+    shared_game_time().borrow_mut().climate.disable_simulation = true;
+    update_game_time(&mut t);
+    assert_eq!(owner.borrow().state, frozen);
+
+    let gt = shared_game_time();
+    {
+        let mut g = gt.borrow_mut();
+        g.climate.disable_simulation = false;
+        g.climate.vars.floats[pz_core::weather::manager::FLOAT_PRECIPITATION_INTENSITY].set_admin_value(0.0);
+    }
+    owner.borrow_mut().state.wet_ground.set(0.0);
+    owner.borrow_mut().state.puddles_size.set(0.1);
+    update_game_time(&mut t);
+    let drying = 2.0e-5 * gt.borrow().get_thirty_fps_multiplier(&LuaClimateContext::new());
+    assert!((owner.borrow().state.puddles_size.get() - (0.1 - drying)).abs() < 1e-6);
+    crate::bind_world::set_cell(None);
+}
+
+#[test]
+fn puddles_sample_live_climate_after_debug_callbacks() {
+    let (mut t, fs) = puddles_setup();
+    assert!(crate::bind_puddles::init_weather_fx(&fs));
+    crate::bind_core::shared_core().borrow_mut().debug = true;
+    shared_game_time().borrow_mut().climate.last_minute_stamp = -1;
+    t.globals().set_str("RAIN_ID", pz_core::weather::manager::FLOAT_PRECIPITATION_INTENSITY as i32);
+    run(&mut t, r#"
+        debugTicks = 0
+        function onEvent(name)
+            if name == "OnClimateTickDebug" then
+                debugTicks = debugTicks + 1
+                before = getPuddlesManager():getPuddlesSize()
+                getPuddlesManager():getPuddlesFloat(3):setFinalValue(0.2)
+                getClimateManager():getClimateFloat(RAIN_ID):setFinalValue(0.4)
+            end
+        end
+    "#);
+    update_game_time(&mut t);
+    assert_eq!(t.globals().get_str("debugTicks").as_num(), Some(1.0));
+    assert_eq!(t.globals().get_str("before").as_num(), Some(0.0));
+    let owner = crate::bind_puddles::shared_puddles();
+    assert!((owner.borrow().state.rain.get() - 0.4).abs() < 1e-6);
+    assert!((owner.borrow().state.puddles_size.get() - (0.2 + puddle_step())).abs() < 1e-6);
+    let fx = crate::bind_world::with_world(|w| w.weather_fx.clone().unwrap());
+    assert!((fx.borrow().precipitation_intensity.target() - 0.43).abs() < 1e-6);
+    crate::bind_world::set_cell(None);
+}
+
+#[test]
+fn debug_callback_can_disable_puddle_fx_before_current_frame_advances() {
+    let (mut t, fs) = puddles_setup();
+    assert!(crate::bind_puddles::init_weather_fx(&fs));
+    crate::bind_core::shared_core().borrow_mut().debug = true;
+    shared_game_time().borrow_mut().climate.last_minute_stamp = -1;
+    run(&mut t, r#"
+        function onEvent(name)
+            if name == "OnClimateTickDebug" then
+                getClimateManager():setEnabledFxUpdate(false)
+            end
+        end
+    "#);
+    update_game_time(&mut t);
+    assert!(shared_game_time().borrow().climate.disable_fx_update);
+    assert_eq!(crate::bind_puddles::shared_puddles().borrow().state, Default::default());
+    crate::bind_world::set_cell(None);
+}
+
+#[test]
+fn rain_manager_statics_from_lua() {
+    let mut t = setup();
+    let r = run(
+        &mut t,
+        "events = {} \
+         function onEvent(n) table.insert(events, n) end \
+         assert(RainManager.isRaining() == getClimateManager():isRaining()) \
+         assert(RainManager.getRainIntensity() == getClimateManager():getPrecipitationIntensity()) \
+         RainManager.setRandRainMin(3) RainManager.setRandRainMax(9) \
+         RainManager.startRaining() \
+         RainManager.stopRaining() \
+         return events[1], #events",
+    );
+    assert_eq!(r[0].as_str(), Some("OnRainStop"));
+    assert_eq!(r[1].as_num(), Some(1.0));
+    assert_eq!(
+        rain_statics(),
+        RainStatics { rand_rain: 9, rand_rain_min: 3, rand_rain_max: 9, rain_desired_intensity: 0.0, stop_rain: true }
+    );
+    reset_rain_manager();
+    assert!(!rain_statics().stop_rain);
+}
+
+#[test]
+fn rain_manager_fresh_class_state_matches_installed_initializer() {
+    // A fresh thread exercises the real thread-local producer, without
+    // inheriting another test's stopRaining mutations.
+    let initial = std::thread::spawn(rain_statics).join().unwrap();
+    assert_eq!(initial, RainStatics {
+        rand_rain: 0, rand_rain_min: 0, rand_rain_max: 0,
+        rain_desired_intensity: 1.0, stop_rain: false,
+    });
 }

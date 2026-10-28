@@ -86,7 +86,8 @@ fn hx(f: f32) -> String {
 }
 
 fn at(r: ObjectRef, cell: &IsoCell) -> String {
-    let sq = cell.get_grid_square(r.x, r.y, r.z).unwrap();
+    let sq_owner = cell.get_grid_square(r.x, r.y, r.z).unwrap();
+    let sq = sq_owner.borrow();
     format!("{},{},{},{}", r.x, r.y, r.z, sq.object_index(r.id).unwrap())
 }
 
@@ -201,15 +202,18 @@ fn main() {
             for x in 0..8 {
                 for y in 0..8 {
                     for z in ch.min_level..=ch.max_level {
-                        let Some(sq) = ch.get_grid_square(x, y, z) else {
+                        let Some(sq_owner) = ch.get_grid_square(x, y, z) else {
                             continue;
                         };
+                        let sq = sq_owner.borrow();
                         let near = (-1..=1).any(|dx| {
                             (-1..=1).any(|dy| {
                                 cell.get_grid_square(sq.x + dx, sq.y + dy, sq.z)
                                     .is_some_and(|s| {
+                                        let s = s.borrow();
                                         !s.special_objects.is_empty()
                                             || s.objects.iter().any(|o| {
+                                                let o = o.borrow();
                                                 o.moved_thumpable
                                                     || matches!(
                                                         o.kind,
@@ -249,10 +253,12 @@ fn main() {
             for x in 0..8 {
                 for y in 0..8 {
                     for z in ch.min_level..=ch.max_level {
-                        let Some(sq) = ch.get_grid_square(x, y, z) else {
+                        let Some(sq_owner) = ch.get_grid_square(x, y, z) else {
                             continue;
                         };
+                        let sq = sq_owner.borrow();
                         for (oi, o) in sq.objects.iter().enumerate() {
+                            let o = o.borrow();
                             let r = ObjectRef {
                                 x: sq.x,
                                 y: sq.y,
@@ -316,23 +322,21 @@ fn main() {
         let mut rand = JRandom::new(java_hash(&name) as i64);
         write!(out, "bd {name}").unwrap();
         for _ in 0..40 {
-            let destroyed = match a.find(r).map(|(_, o)| &o.kind) {
-                Some(ObjectKind::Barricade(b)) => b.is_destroyed(),
+            let destroyed = a.find(r).map_or(true, |(_, o)| match &o.borrow().kind {
+                ObjectKind::Barricade(b) => b.is_destroyed(),
                 _ => true,
-            };
+            });
             if destroyed {
                 break;
             }
             let amount = rand.next_int(1200) as f32 + rand.next_float();
             a.barricade_damage(r, amount);
-            let Some((_, o)) = a.find(r) else { break };
+            let Some((_, owner)) = a.find(r) else { break };
+            let o = owner.borrow();
             let ObjectKind::Barricade(b) = &o.kind else {
                 break;
             };
-            let spr = o
-                .sprite
-                .and_then(|s| a.sprites.sprites[s].name.clone())
-                .unwrap_or_else(|| "null".into());
+            let spr = a.env().sprite_name(&o).unwrap_or_else(|| "null".into());
             let p = b.plank_health;
             write!(
                 out,

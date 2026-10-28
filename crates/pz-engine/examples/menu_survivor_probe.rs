@@ -102,7 +102,7 @@ fn main() {
     let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&game)));
     fs.borrow_mut().set_cache_dir(Path::new(&cache));
     pz_lua_api::bind_core::shared_core().borrow_mut().set_cache_dir(Path::new(&cache));
-    pz_engine::boot::load_scripts(Path::new(&game), &mut fs.borrow_mut()).expect("boot");
+    pz_engine::boot::load_scripts(Path::new(&game), &fs).expect("boot");
     let mut mgr = LuaManager::init(fs).expect("LuaManager.init");
     {
         let core = pz_lua_api::bind_core::shared_core();

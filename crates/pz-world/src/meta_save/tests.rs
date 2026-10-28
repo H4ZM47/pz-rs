@@ -184,7 +184,7 @@ fn sample_world() -> MetaWorld {
                 players: vec![],
             },
         ],
-        designation_zones: vec![DesignationZone {
+        designation_zones: DesignationState::Archive(vec![DesignationZone {
             id: 123456.0,
             x: 10,
             y: 11,
@@ -194,7 +194,7 @@ fn sample_world() -> MetaWorld {
             zone_type: "AnimalZone".into(),
             name: "pen".into(),
             hour_last_seen: 40,
-        }],
+        }]),
         stash: Some(StashState {
             possible_stashes: vec![StashBuilding {
                 stash_name: "Stash_X".into(),
@@ -243,13 +243,13 @@ fn load_side_effects() {
     w.safehouses[0].datetime_created = 0;
     w.safehouses[0].location = None;
     w.factions[0].tag = Some(("T".into(), [0.0, 0.5, -1.0]));
-    w.designation_zones[0].w = -5;
-    let mut other = w.designation_zones[0].clone();
+    w.designation_zones.archive_mut().unwrap()[0].w = -5;
+    let mut other = w.designation_zones.archive_mut().unwrap()[0].clone();
     other.zone_type = "Other".into();
-    w.designation_zones.push(other);
-    let mut again = w.designation_zones[0].clone();
+    w.designation_zones.archive_mut().unwrap().push(other);
+    let mut again = w.designation_zones.archive_mut().unwrap()[0].clone();
     again.name = "renamed".into();
-    w.designation_zones.push(again);
+    w.designation_zones.archive_mut().unwrap().push(again);
     let file = MapMetaFile {
         cells: grid().meta_cells(),
         world: w,
@@ -271,9 +271,183 @@ fn load_side_effects() {
         Some("Muldraugh, KY")
     );
     assert_eq!(back.factions[0].tag.as_ref().unwrap().1, [0.19, 0.5, 0.19]);
-    assert_eq!(back.designation_zones.len(), 1);
-    let z = &back.designation_zones[0];
+    assert_eq!(back.designation_zones.archive().unwrap().len(), 1);
+    let z = &back.designation_zones.archive().unwrap()[0];
     assert_eq!((z.x, z.w, z.name.as_str()), (5, -5, "renamed"));
+}
+
+#[test]
+fn live_empty_designation_phases_keep_same_registry_and_original_reader() {
+    use crate::designation::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    struct Host {
+        world: Rc<RefCell<MetaWorld>>,
+        calls: usize,
+    }
+    impl DesignationHost for Host {
+        fn rand_next(&mut self, bound: i32) -> HostResult<i32> {
+            assert_eq!(bound, 9_999_999);
+            assert!(self.world.try_borrow_mut().is_ok());
+            self.calls += 1;
+            Ok(22)
+        }
+        fn current_cell_present(&mut self) -> HostResult<bool> {
+            assert!(self.world.try_borrow_mut().is_ok());
+            self.calls += 1;
+            Ok(false)
+        }
+        fn corner_square(
+            &mut self,
+            _: DesignationCorner<'_>,
+        ) -> HostResult<Option<crate::SquareRef>> {
+            panic!("actual null cell returns before corners")
+        }
+    }
+    let registry = new_registry();
+    let world = Rc::new(RefCell::new(MetaWorld::with_designation_registry(
+        registry.clone(),
+    )));
+    let mut bytes = Vec::new();
+    let mut archived = sample_world();
+    archived.designation_zones.archive_mut().unwrap().clear();
+    archived.save(&mut bytes, NetRole::SinglePlayer);
+    let mut reader = JavaReader::new(&bytes);
+    let phase = world
+        .borrow_mut()
+        .load_prefix_to_designation(&mut reader, WORLD_VERSION, &mut Env)
+        .unwrap();
+    assert!(Rc::ptr_eq(&phase.registry, &registry));
+    assert_eq!(phase.count, 0);
+    let mut host = Host {
+        world: world.clone(),
+        calls: 0,
+    };
+    phase
+        .load(&mut reader, &mut host, &mut RetiredComponents::new())
+        .unwrap();
+    world
+        .borrow_mut()
+        .load_suffix_after_designation(&mut reader, NetRole::SinglePlayer)
+        .unwrap();
+    assert_eq!(reader.position(), bytes.len());
+    assert_eq!(host.calls, 0);
+    let mut out = Vec::new();
+    let saved_registry = world.borrow().save_prefix_to_designation(&mut out).unwrap();
+    assert!(Rc::ptr_eq(&saved_registry, &registry));
+    try_save_registry(&saved_registry, &mut out).unwrap();
+    world
+        .borrow()
+        .save_suffix_after_designation(&mut out, NetRole::SinglePlayer);
+    assert_eq!(out, bytes);
+}
+
+#[test]
+fn live_animal_meta_load_checks_after_real_pool_constructor_outside_world_guard() {
+    use crate::designation::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    struct Host {
+        world: Rc<RefCell<MetaWorld>>,
+        calls: usize,
+    }
+    impl DesignationHost for Host {
+        fn rand_next(&mut self, _: i32) -> HostResult<i32> {
+            assert!(self.world.try_borrow_mut().is_ok());
+            self.calls += 1;
+            Ok(22)
+        }
+        fn current_cell_present(&mut self) -> HostResult<bool> {
+            assert!(self.world.try_borrow_mut().is_ok());
+            Ok(false)
+        }
+        fn corner_square(
+            &mut self,
+            _: DesignationCorner<'_>,
+        ) -> HostResult<Option<crate::SquareRef>> {
+            panic!("null current cell skips corners")
+        }
+    }
+    let registry = new_registry();
+    let world = Rc::new(RefCell::new(MetaWorld::with_designation_registry(
+        registry.clone(),
+    )));
+    world
+        .borrow_mut()
+        .unique_rds_spawned
+        .push("oldSuffix".into());
+    let mut bytes = Vec::new();
+    sample_world().save(&mut bytes, NetRole::SinglePlayer);
+    let mut reader = JavaReader::new(&bytes);
+    let phase = world
+        .borrow_mut()
+        .load_prefix_to_designation(&mut reader, WORLD_VERSION, &mut Env)
+        .unwrap();
+    let mut host = Host {
+        world: world.clone(),
+        calls: 0,
+    };
+    let mut retired = RetiredComponents::new();
+    phase.load(&mut reader, &mut host, &mut retired).unwrap();
+    assert_eq!(host.calls, 1);
+    assert_eq!(world.borrow().unique_rds_spawned, vec!["oldSuffix"]);
+    assert!(reader.position() < bytes.len());
+    let all = registry.borrow().all_zones_slot().unwrap().clone();
+    let animals = registry.borrow().animal_zones_slot().unwrap().clone();
+    assert_eq!(animals.borrow().len(), 1);
+    let body = all.borrow();
+    let DesignationList::Zones(zones) = &*body else {
+        panic!("zones")
+    };
+    assert_eq!(zones.len(), 1);
+    let zone = zones[0].borrow();
+    assert_eq!(zone.id, 123456.0);
+    assert_eq!(zone.hour_last_seen, 40);
+    assert!(zone.position3d_pool.is_some());
+    assert_eq!(
+        reader.get_i32().unwrap(),
+        1,
+        "original cursor remains at first stash count after complete zone header"
+    );
+}
+
+#[test]
+fn live_designation_archive_snapshot_is_independent_and_held_zone_is_typed_fault() {
+    use crate::designation::*;
+    let registry = new_registry();
+    let zone = seed_animal_data_projection(
+        &registry,
+        &crate::meta_save::DesignationZone {
+            id: 100009.0,
+            name: "before".into(),
+            zone_type: "AnimalZone".into(),
+            x: 1,
+            y: 2,
+            z: 0,
+            w: 2,
+            h: 2,
+            hour_last_seen: 0,
+        },
+        &mut RetiredComponents::new(),
+    )
+    .unwrap();
+    let live = MetaWorld::with_designation_registry(registry);
+    let snapshot = live.try_archive_snapshot().unwrap();
+    assert!(matches!(
+        snapshot.designation_zones,
+        DesignationState::Archive(_)
+    ));
+    zone.borrow_mut().name = Some("after".into());
+    assert_eq!(
+        snapshot.designation_zones.archive().unwrap()[0].name,
+        "before"
+    );
+    let held = zone.borrow_mut();
+    assert!(matches!(
+        live.try_archive_snapshot(),
+        Err(RuntimeHostError::Borrowed(_))
+    ));
+    drop(held);
 }
 
 #[test]

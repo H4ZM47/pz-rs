@@ -178,6 +178,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `DoCollide(pass)`.
     fn do_collide(&mut self, pass: i32, cx: &mut StateCx<'_, I>) -> bool {
+        if cx.has_host_error() { return false; }
         let (nx, ny, z) = (self.vars.next_x, self.vars.next_y, self.vars.z);
         self.set_current_from_position(nx, ny, z, cx);
         if self.vars.ragdoll_simulation_active {
@@ -201,6 +202,7 @@ impl<I: 'static> GameCharacter<I> {
                 }
                 let (dx, dy, dz) = (cur.0 - last.0, cur.1 - last.1, cur.2 - last.2);
                 let hit = self.test_collide_adjacent_with_mover(last, (dx, dy, dz), cx);
+                if cx.has_host_error() { return false; }
                 if hit {
                     self.set_collided_from(last, cur);
                     self.path.current_square = Some(last);
@@ -297,7 +299,9 @@ impl<I: 'static> GameCharacter<I> {
     /// `IsoMovingObject.postupdate()`'s movement and collision (see the
     /// module doc for what stays with the world).
     pub fn moving_postupdate(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         self.slide_head_away_from_walls(true, cx);
+        if cx.has_host_error() { return; }
         if self.seen.last_targetted_by.is_some_and(|z| cx.world.character_mut(z).is_none_or(|z| z.is_dead())) {
             self.seen.last_targetted_by = None;
         }
@@ -357,8 +361,10 @@ impl<I: 'static> GameCharacter<I> {
         if self.path.collidable {
             let (first, second) = if self.vars.alt_collide { (2, 1) } else { (1, 2) };
             self.do_collide(first, cx);
+            if cx.has_host_error() { return; }
             self.collide_axes();
             self.do_collide(second, cx);
+            if cx.has_host_error() { return; }
             self.vars.alt_collide = !self.vars.alt_collide;
             let did = self.collide_axes();
             let len = (self.vars.next_x - self.vars.last_x).abs() + (self.vars.next_y - self.vars.last_y).abs();
@@ -368,8 +374,10 @@ impl<I: 'static> GameCharacter<I> {
             if did {
                 let (first, second) = if self.vars.alt_collide { (2, 1) } else { (1, 2) };
                 self.do_collide(first, cx);
+                if cx.has_host_error() { return; }
                 self.collide_axes();
                 self.do_collide(second, cx);
+                if cx.has_host_error() { return; }
                 self.collide_axes();
                 if (self.vars.next_x - self.vars.last_x).abs() + (self.vars.next_y - self.vars.last_y).abs() < len {
                     self.vars.next_x = lnx;
@@ -458,6 +466,7 @@ impl<I: 'static> GameCharacter<I> {
     /// includePolyCollisions)` (`onRagdollSimulationStarted` uses 0.5,
     /// true, true; `onHitByVehicle` 0.25, false, true).
     pub fn slide_away_from_walls(&mut self, radius: f32, instant: bool, include_poly_collisions: bool, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         let mut new_pos = (0.0, 0.0);
         let mut collided = false;
         if include_poly_collisions {
@@ -471,6 +480,7 @@ impl<I: 'static> GameCharacter<I> {
             new_pos = at;
             collided |= hit;
         }
+        if cx.has_host_error() { return; }
         if collided {
             self.slide_away_to_collision_pos(new_pos.0, new_pos.1, instant);
         }
@@ -499,10 +509,12 @@ impl<I: 'static> GameCharacter<I> {
             collided = true;
             at.0 = if sign_x == -1 { sx as f32 + radius } else { sx as f32 + 1.0 - radius };
         }
+        if cx.has_host_error() { return None; }
         if sign_y != 0 && self.test_collide_adjacent_with_mover(from, (0, sign_y, 0), cx) {
             collided = true;
             at.1 = if sign_y == -1 { sy as f32 + radius } else { sy as f32 + 1.0 - radius };
         }
+        if cx.has_host_error() { return None; }
         Some((collided, at))
     }
 

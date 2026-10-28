@@ -14,11 +14,12 @@
 //! [`crate::chunk::IsoChunk::vehicles`] and, like the original, not
 //! written back (vehicles are saved to `vehicles.db`).
 
+use crate::object_slot::ObjectSlot;
 use std::path::{Path, PathBuf};
 
 use super::io::{crc32, err, has, BitHeaderWrite, Reader, SaveResult, Writer};
 use super::lua_table::LuaTable;
-use super::object_io::{load_object, save_object};
+use super::object_io::{load_object_slot_data_projection, save_object};
 use super::vehicle::BaseVehicle;
 use super::visual::IsoDeadBody;
 use super::{SaveCtx, WORLD_VERSION};
@@ -27,6 +28,12 @@ use crate::chunk_vehicles::{LoadedVehicle, VehicleOrigin};
 use crate::erosion_data::{ErosionChunkData, ErosionSquareData};
 use crate::java::fastfloor;
 use crate::objects::ObjectKind;
+
+mod activation;
+pub use activation::{
+    finish_chunk_erosion, finish_square_erosion, ChunkActivationCursor, ChunkActivationError,
+    ChunkActivationStep,
+};
 
 /// `ChunkMapFilenames.getFilename(wx, wy)` under the save directory.
 pub fn chunk_path(save_dir: &Path, wx: i32, wy: i32) -> PathBuf {
@@ -212,7 +219,7 @@ pub fn load_chunk(bb: &[u8], wx: i32, wy: i32, ctx: &SaveCtx<'_>) -> SaveResult<
                 }
                 load_square(&mut r, ctx, wv, &mut sq)?;
                 sq.fix_stackable_objects(ctx.sprites);
-                ch.set_square(x, y, z, Some(sq));
+                ch.set_square(x, y, z, Some((sq).into()));
             }
         }
     }
@@ -245,7 +252,7 @@ pub fn load_chunk(bb: &[u8], wx: i32, wy: i32, ctx: &SaveCtx<'_>) -> SaveResult<
         let vehicle = BaseVehicle::load(&mut r, wv, (32.0 * ts, 96.0 * ts), ctx.items)?;
         let square = ch
             .get_grid_square(x as i32, y as i32, z as i32)
-            .map(|s| (s.x, s.y, s.z));
+            .map(|s| (s.borrow().x, s.borrow().y, s.borrow().z));
         ch.vehicles.add(std::rc::Rc::new(LoadedVehicle {
             origin: VehicleOrigin::ChunkFile { x, y, z },
             square,
@@ -277,7 +284,12 @@ pub fn load_chunk(bb: &[u8], wx: i32, wy: i32, ctx: &SaveCtx<'_>) -> SaveResult<
 /// Whether `IsoGridSquare.load` keeps a loaded world item (the removal
 /// check, with obsolete and unknown items dropped).
 fn keep_world_item(ctx: &SaveCtx<'_>, wi: &crate::objects::IsoWorldInventoryObject) -> bool {
-    let reg = wi.item.registry_id();
+    if wi.item.is_null() {
+        return false;
+    }
+    let Some(reg) = wi.item.registry_id() else {
+        return false;
+    };
     if !ctx.items.exists(reg) {
         return false;
     }
@@ -326,31 +338,49 @@ pub fn load_square(
                 let special = flags & 2 != 0;
                 let world = flags & 4 != 0;
                 let id = sq.new_object_id();
-                let Some(obj) = load_object(r, ctx, wv, id)? else {
+                let Some(slot) = load_object_slot_data_projection(r, ctx, wv, id)
+                    .map_err(|failure| failure.into_error_and_retire())?
+                else {
                     continue;
                 };
+                let obj = slot.borrow();
                 if let ObjectKind::WorldInventory(wi) = &obj.kind {
-                    if !keep_world_item(ctx, wi) {
+                    if !keep_world_item(ctx, &wi.borrow()) {
+                        drop(obj);
+                        sq.retire_object(slot);
                         continue;
                     }
                 }
                 if let ObjectKind::Window(_) = obj.kind {
-                    let name = obj
+                    let sprite = obj
                         .sprite
-                        .and_then(|s| ctx.sprites.sprites[s].name.as_deref());
+                        .metadata_projection(ctx.sprites)
+                        .map_err(|error| {
+                            super::io::SaveError(format!(
+                                "archive window sprite metadata: {error:?}"
+                            ))
+                        })?;
+                    let name = sprite.as_ref().and_then(|s| s.name.as_deref());
                     if matches!(name, Some("walls_special_01_8" | "walls_special_01_9")) {
+                        drop(obj);
+                        sq.retire_object(slot);
                         continue;
                     }
                 }
-                if world && !matches!(obj.kind, ObjectKind::WorldInventory(_)) {
-                    return err("ClassCastException: world object flag on a non-item");
-                }
-                sq.objects.push(obj);
+                let is_world_item = matches!(obj.kind, ObjectKind::WorldInventory(_));
+                drop(obj);
+                let actual = slot.ref_handle();
+                sq.objects.push(slot);
                 if special {
                     sq.special_objects.push(id);
                 }
                 if world {
-                    sq.world_objects.push(id);
+                    // Native load appends the main and special entries before
+                    // casting for worldObjects; failure keeps those mutations.
+                    if !is_world_item {
+                        return err("ClassCastException: world object flag on a non-item");
+                    }
+                    sq.world_objects.borrow_mut().push_object(&actual);
                 }
             }
         }
@@ -403,13 +433,16 @@ pub fn load_square(
     // light source.
     let room = ctx.meta.and_then(|meta| sq.room_def(meta));
     let (x, y, z) = (sq.x, sq.y, sq.z);
-    for o in &mut sq.objects {
+    for mut o in sq.objects.iter().map(ObjectSlot::borrow_mut) {
+        let sprite = o.sprite.metadata_projection(ctx.sprites).map_err(|error| {
+            super::io::SaveError(format!("archive light sprite metadata: {error:?}"))
+        })?;
         let ObjectKind::LightSwitch(s) = &mut o.kind else {
             continue;
         };
         match room {
             Some(room) if s.light_room => s.activated = room.lights_active.get(),
-            _ => load_light_source(ctx, o.sprite, s, (x, y, z))?,
+            _ => load_light_source(ctx, sprite.as_ref(), s, (x, y, z))?,
         }
     }
     Ok(())
@@ -422,12 +455,12 @@ pub fn load_square(
 /// the engine's; it reads [`IsoLightSwitch::lights`].
 fn load_light_source(
     ctx: &SaveCtx<'_>,
-    sprite: Option<crate::sprite::SpriteIdx>,
+    sprite: Option<&crate::sprite::IsoSprite>,
     s: &mut crate::objects::IsoLightSwitch,
     (x, y, z): (i32, i32, i32),
 ) -> SaveResult<()> {
     let m = ctx.sprites;
-    let prop = |name: &str| sprite.and_then(|sp| m.prop(&m.sprites[sp], name));
+    let prop = |name: &str| sprite.and_then(|sp| m.prop(sp, name));
     let float = |name: &str| -> SaveResult<f32> {
         let v = prop(name).ok_or_else(|| super::io::SaveError("NullPointerException".into()))?;
         crate::java::parse_float(v)
@@ -449,7 +482,7 @@ fn load_light_source(
         return err("NullPointerException: IsoLightSwitch.createLightSource with no sprite");
     };
     let mut radius = 8;
-    if let Some(v) = m.prop(&m.sprites[sp], "LightRadius") {
+    if let Some(v) = m.prop(sp, "LightRadius") {
         let n = crate::java::parse_int(v)
             .ok_or_else(|| super::io::SaveError(format!("NumberFormatException: {v}")))?;
         if n > 0 {
@@ -492,16 +525,18 @@ pub fn save_square(w: &mut Writer, ctx: &SaveCtx<'_>, sq: &IsoGridSquare) -> Sav
         if n >= 4 {
             w.i16(n as i16);
         }
-        for o in &sq.objects {
+        for slot in &sq.objects {
+            let actual = slot.ref_handle();
+            let o = actual.borrow();
             let mut f = 0i8;
             if sq.special_objects.contains(&o.id) {
                 f |= 2;
             }
-            if sq.world_objects.contains(&o.id) {
+            if sq.world_objects.borrow().contains_object(&actual) {
                 f |= 4;
             }
             w.i8(f);
-            save_object(w, ctx, o)?;
+            save_object(w, ctx, &o)?;
         }
     }
     if sq.overlay_done {
@@ -597,16 +632,17 @@ pub fn save_chunk(ch: &IsoChunk, ctx: &SaveCtx<'_>) -> SaveResult<Vec<u8>> {
             w.i64(0);
             let mut flags = 0i64;
             for z in ch.min_level..=ch.max_level {
-                let Some(gs) = ch.get_grid_square(x, y, z) else {
+                let Some(gs_owner) = ch.get_grid_square(x, y, z) else {
                     continue;
                 };
-                if !should_save(gs) {
+                let gs = gs_owner.borrow();
+                if !should_save(&gs) {
                     continue;
                 }
                 flags |= 1i64 << (z + 32);
                 min1 = min1.min(z);
                 max1 = max1.max(z);
-                save_square(&mut w, ctx, gs)?;
+                save_square(&mut w, ctx, &gs)?;
             }
             w.patch_i64(flag_pos, flags);
         }
@@ -707,11 +743,9 @@ pub fn finish_chunk_load(
     sprites: &mut crate::sprite::IsoSpriteManager,
     hook: Option<&mut dyn ChunkLoadHook>,
 ) {
-    if let Some(ch) = cell.chunks.get(&(wx, wy)) {
-        apply_loaded_window_sprites(ch, sprites);
+    if prepare_chunk_load(cell, wx, wy, meta, sprites).is_none() {
+        return;
     }
-    cell.recalc_chunk_squares(wx, wy, meta, sprites);
-    cell.load_in_main_thread(wx, wy, meta, sprites);
     let Some(mut ch) = cell.chunks.remove(&(wx, wy)) else {
         return;
     };
@@ -721,6 +755,24 @@ pub fn finish_chunk_load(
     };
     do_load_gridsquare(&mut ch, hook, &mut ctx);
     cell.chunks.insert((wx, wy), ch);
+}
+
+/// The preparation shared by the legacy erosion-only loader and the opt-in
+/// resumable activation path. The actual chunk remains published in the cell.
+/// No object activation, erosion, MapObjects or Lua callbacks run here.
+pub fn prepare_chunk_load(
+    cell: &mut crate::chunk::IsoCell,
+    wx: i32,
+    wy: i32,
+    meta: &crate::meta_grid::IsoMetaGrid,
+    sprites: &mut crate::sprite::IsoSpriteManager,
+) -> Option<ChunkActivationCursor> {
+    if let Some(ch) = cell.chunks.get(&(wx, wy)) {
+        apply_loaded_window_sprites(ch, sprites);
+    }
+    cell.recalc_chunk_squares(wx, wy, meta, sprites);
+    cell.load_in_main_thread(wx, wy, meta, sprites);
+    cell.chunks.get(&(wx, wy)).map(ChunkActivationCursor::new)
 }
 
 /// The sprite changes `IsoWindow.load` makes for each window of `ch`, in
@@ -735,10 +787,11 @@ pub fn apply_loaded_window_sprites(ch: &IsoChunk, m: &mut crate::sprite::IsoSpri
     for z in ch.min_level..=ch.max_level {
         for x in 0..8 {
             for y in 0..8 {
-                let Some(sq) = ch.get_grid_square(x, y, z) else {
+                let Some(sq_owner) = ch.get_grid_square(x, y, z) else {
                     continue;
                 };
-                for obj in &sq.objects {
+                let sq = sq_owner.borrow();
+                for obj in sq.objects.iter().map(ObjectSlot::borrow) {
                     let ObjectKind::Window(w) = &obj.kind else {
                         continue;
                     };
@@ -783,7 +836,7 @@ pub fn do_load_gridsquare(
             for y in 0..8 {
                 if ch
                     .get_grid_square(x, y, z)
-                    .is_some_and(|sq| !sq.objects.is_empty())
+                    .is_some_and(|sq| !sq.borrow().objects.is_empty())
                 {
                     hook.load_grid_square(ch, x, y, z, ctx);
                 }

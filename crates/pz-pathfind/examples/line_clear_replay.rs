@@ -50,8 +50,8 @@ use pz_pathfind::square_bits::SquareBits;
 use pz_world::chunk::{ChunkLoadEnv, IsoCell};
 use pz_world::fix2x::Fix2xTable;
 use pz_world::{
-    CreateParams, GameRand, IsoGridSquare, IsoMetaGrid, IsoSpriteManager, NoHooks,
-    ObjectLoadSettings, ObjectTables, SpriteTables, WorldGenBounds,
+    CreateParams, GameRand, IsoMetaGrid, IsoSpriteManager, NoHooks, ObjectLoadSettings,
+    ObjectTables, SpriteTables, WorldGenBounds,
 };
 
 /// `java.util.Random`.
@@ -211,7 +211,7 @@ const OTYPES: [&str; 6] = [
 ];
 
 fn rust_inputs(
-    sq: Option<&IsoGridSquare>,
+    sq: Option<pz_world::SquareRef>,
     sb: &SquareBits<'_, IsoCell>,
     m: &IsoSpriteManager,
 ) -> Inputs {
@@ -225,6 +225,8 @@ fn rust_inputs(
             objects: String::new(),
         };
     };
+    let sq_guard = sq.borrow();
+    let sq = &*sq_guard;
     let t = &m.tables;
     let mut fl: Vec<&str> = FLAGS
         .iter()
@@ -254,10 +256,15 @@ fn rust_inputs(
             .objects
             .iter()
             .map(|o| {
+                let o = o.borrow();
                 format!(
                     "{}:{}",
                     o.kind.class_name(),
-                    o.sprite.map_or("null", |s| m.sprites[s].name())
+                    o.sprite
+                        .try_read(m)
+                        .expect("diagnostic sprite output requires resolved unborrowed metadata")
+                        .as_ref()
+                        .map_or("null", |sprite| sprite.name())
                 )
             })
             .collect::<Vec<_>>()
@@ -388,12 +395,14 @@ fn main() {
         // The game's load order: each chunk is loaded, recalculated and
         // passed through `loadInMainThread` before the next one enters the
         // cell (`IsoChunkMap.processAllLoadGridSquare`).
+        let blood_body_parts = pz_world::save::SaveTables::from_game_jar(&game.join("projectzomboid.jar")).expect("visual body tables").blood_body_parts;
         let mut cell = IsoCell::default();
         for wy in ry - 1..ry + rh + 1 {
             for wx in rx - 1..rx + rw + 1 {
                 let mut rand = JavaRandom::new(((wx as i64) << 32) ^ (wy as i64 & 0xffff_ffff));
                 let mut hooks = NoHooks;
                 let mut env = ChunkLoadEnv {
+                    blood_body_parts: blood_body_parts,
                     sprites: &mut sprites,
                     fix2x: &fix2x,
                     rand: &mut rand,
@@ -462,7 +471,7 @@ fn main() {
                     let got = cell
                         .get_grid_square(x, y, z)
                         .map_or("none".to_string(), |s| {
-                            format!("{:08x}", lcc.get_apparent_z(s).to_bits())
+                            format!("{:08x}", lcc.get_apparent_z(&s.borrow()).to_bits())
                         });
                     (bad.contains(&(x, y, z)), got, c[4].to_string())
                 }

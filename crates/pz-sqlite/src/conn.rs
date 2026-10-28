@@ -75,7 +75,10 @@ fn bound(v: &Value) -> Value {
 impl Connection {
     /// Opens `path` for reading and writing, creating an empty file when it
     /// does not exist (as sqlite-jdbc does), after rolling back a hot
-    /// journal left by an interrupted commit.
+    /// journal left by an interrupted commit. Writing currently requires
+    /// rollback-journal format with `auto_vacuum=NONE`; FULL/INCREMENTAL
+    /// databases return [`Error::Unsupported`] without starting a write
+    /// transaction. [`crate::Database`] can still read those databases.
     pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
         let pager = Pager::open(path.as_ref())?;
         let mut c = Connection {

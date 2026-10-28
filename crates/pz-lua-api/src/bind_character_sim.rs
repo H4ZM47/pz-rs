@@ -43,28 +43,56 @@
 //! TODO(saves).
 
 use crate::bind_characters::{
-    adopt_survivor_desc_value, desc_arg, set_survivor_desc_instance, shared_characters, survivor_desc_value, trait_def_arg, LuaItem,
+    adopt_survivor_desc_value, desc_arg, set_survivor_desc_instance, shared_characters,
+    survivor_desc_value, trait_def_arg, LuaItem,
 };
 use crate::bind_java_util::{class_cast, JavaList, JavaMap};
-use crate::bind_registry::{java_error, key_arg, key_value, shared_script_manager, MOODLE_TYPE_CLASS};
+use crate::bind_registry::{
+    java_error, key_arg, key_value, shared_script_manager, MOODLE_TYPE_CLASS,
+};
 use crate::bind_skills::{perk_arg, perk_value};
 use crate::expose::{bool_arg, expose_class, expose_enum, int_arg, num_arg, str_arg, with_this};
 use pz_characters::character::item_owner::CharacterItemOwner;
 use pz_characters::character::FloorCx;
-use pz_inventory::floor_drop::FloorWorld;
+use pz_characters::character::floor_drop::{CharacterActionError, CharacterActionResult};
+use pz_inventory::floor_drop::{HostResult, RuntimeHostError};
 use pz_characters::character::{CharacterStatRef, CharacterStats};
 use pz_characters::character::{
-    ChevronColor, DefaultSimContext, GameCharacter, MoodleLevel, Moodles, SimContext, SimEvent, Stats,
+    ChevronColor, DefaultSimContext, GameCharacter, MoodleLevel, Moodles, SimContext, SimEvent,
+    Stats,
 };
 use pz_characters::{CharacterKind, Characters, Color, PerkRef};
+use pz_inventory::floor_drop::FloorWorld;
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_scripts::{ScriptError, ScriptManager};
 use pz_ui::ColorObject;
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+
+#[cfg(test)]
+mod direction_tests;
+#[cfg(test)]
+mod grapple_tests;
+mod control;
+mod key_ring;
+pub(crate) mod known_poison;
+mod reading;
+pub(crate) mod read_flags;
+#[cfg(test)]
+mod running_tests;
+#[cfg(test)]
+mod sneaking_tests;
+#[cfg(test)]
+mod timed_action_phases_tests;
+#[cfg(test)]
+mod timed_actions_tests;
+#[cfg(test)]
+mod floor_bridge_tests;
+#[cfg(test)]
+mod class_identity_tests;
 
 pub const ISO_GAME_CHARACTER_CLASS: &str = "zombie.characters.IsoGameCharacter";
 pub const ISO_PLAYER_CLASS: &str = "zombie.characters.IsoPlayer";
@@ -92,6 +120,18 @@ thread_local! {
     static HANDLES: RefCell<HashMap<(Handle, usize, usize), Value>> = RefCell::new(HashMap::new());
     static COLORS: RefCell<HashMap<usize, (Rc<Color>, Value)>> = RefCell::new(HashMap::new());
     static FLOOR: RefCell<Option<FloorWorldRef>> = const { RefCell::new(None) };
+    static FLOOR_GENERATION: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Drop the old environment's character handles and callback sink at an
+/// explicit session reset. A fresh Lua registration installs its own sink.
+pub(crate) fn reset_session_handles() {
+    let retired_floor = reset_floor_world();
+    HANDLES.with(|h| h.borrow_mut().clear());
+    COLORS.with(|c| c.borrow_mut().clear());
+    SINK.with(|s| *s.borrow_mut() = None);
+    CONTEXT.with(|c| *c.borrow_mut() = Rc::new(DefaultSimContext));
+    drop(retired_floor);
 }
 
 /// The world the bound characters' items fall into.
@@ -100,14 +140,134 @@ pub type FloorWorldRef = Rc<RefCell<dyn FloorWorld>>;
 /// Makes `floor` the world the bound characters' items drop into
 /// (`setWornItem`'s `forceDropTooHeavy`, `dropHandItems`,
 /// `dropHeavyItems`): the engine's wrapper that runs
-/// `pz_world::square_mutation::FloorDropEnv::new(&mut env, world_age_hours)`
-/// for each call. `None` (the default): nothing drops.
-pub fn install_floor_world(floor: Option<FloorWorldRef>) {
-    FLOOR.with(|f| *f.borrow_mut() = floor);
+/// `pz_world::square_mutation::FloorDropEnv::new_native(&mut env)`
+/// for each call. Explicit data projections are separate from this native
+/// service. The displaced service is returned after the registry guard
+/// ends; callers release it outside their own outer host guards.
+/// Without a service, native no-op branches remain no-ops; the first actual
+/// floor operation is an explicit unsupported host capability.
+pub fn install_floor_world(floor: Option<FloorWorldRef>) -> Option<FloorWorldRef> {
+    let retired = FLOOR.with(|f| std::mem::replace(&mut *f.borrow_mut(), floor));
+    FLOOR_GENERATION.with(|generation| generation.set(generation.get().wrapping_add(1)));
+    retired
 }
 
+/// Host service registration lifetime, independent of the actual cell token.
+/// Retained services must reject a replaced/reset registration even if the
+/// previous cell and weak resource owners are still alive.
+pub fn floor_world_generation() -> u64 {
+    FLOOR_GENERATION.with(Cell::get)
+}
+
+/// Detach the current session's service without running its destructor under
+/// the registry guard. A retained old service is still responsible for its
+/// own real session/generation validation.
+pub fn reset_floor_world() -> Option<FloorWorldRef> {
+    install_floor_world(None)
+}
+
+#[cfg(test)]
 fn floor_world() -> Option<FloorWorldRef> {
     FLOOR.with(|f| f.borrow().clone())
+}
+
+/// Capture one service identity for the whole action. Borrow its body only at
+/// an actual native floor operation, after native no-op checks have run.
+struct FloorAccess {
+    service: Option<FloorWorldRef>,
+}
+
+impl FloorAccess {
+    fn capture() -> HostResult<Self> {
+        FLOOR
+            .try_with(|slot| {
+                Ok(Self {
+                    service: slot
+                        .try_borrow()
+                        .map_err(|_| RuntimeHostError::Borrowed("Lua floor service registry"))?
+                        .clone(),
+                })
+            })
+            .map_err(|_| Self::unavailable())?
+    }
+
+    fn unavailable() -> RuntimeHostError {
+        RuntimeHostError::Unsupported {
+            operation: "actual Lua floor service is not installed",
+            kind: None,
+        }
+    }
+
+    fn read<R>(&self, f: impl FnOnce(&dyn FloorWorld) -> HostResult<R>) -> HostResult<R> {
+        let service = self.service.as_ref().ok_or_else(Self::unavailable)?;
+        let service = service
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("Lua floor service query"))?;
+        f(&*service)
+    }
+
+    fn write<R>(
+        &mut self,
+        f: impl FnOnce(&mut dyn FloorWorld) -> HostResult<R>,
+    ) -> HostResult<R> {
+        let service = self.service.as_ref().ok_or_else(Self::unavailable)?;
+        let mut service = service
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("Lua floor service mutation"))?;
+        f(&mut *service)
+    }
+}
+
+impl FloorWorld for FloorAccess {
+    fn solid_floor_ref_at(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> HostResult<Option<pz_inventory::floor_drop::FloorSquare>> {
+        self.read(|service| service.solid_floor_ref_at(x, y, z))
+    }
+    fn apparent_z_on(
+        &self,
+        square: &pz_inventory::floor_drop::FloorSquare,
+        x: f32,
+        y: f32,
+    ) -> HostResult<f32> {
+        self.read(|service| service.apparent_z_on(square, x, y))
+    }
+    fn add_world_inventory_item_on(
+        &mut self,
+        square: &pz_inventory::floor_drop::FloorSquare,
+        item: &pz_inventory::shared::ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> HostResult<()> {
+        self.write(|service| service.add_world_inventory_item_on(square, item, x, y, height))
+    }
+
+    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<(i32, i32, i32)>> {
+        self.read(|service| service.solid_floor_at(x, y, z))
+    }
+
+    fn apparent_z(&self, square: (i32, i32, i32), x: f32, y: f32) -> HostResult<f32> {
+        self.read(|service| service.apparent_z(square, x, y))
+    }
+
+    fn rand_float(&mut self, min: f32, max: f32) -> HostResult<f32> {
+        self.write(|service| service.rand_float(min, max))
+    }
+
+    fn add_world_inventory_item(
+        &mut self,
+        square: (i32, i32, i32),
+        item: &pz_inventory::shared::ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> HostResult<()> {
+        self.write(|service| service.add_world_inventory_item(square, item, x, y, height))
+    }
 }
 
 /// Makes `ctx` the singletons the bound characters read.
@@ -201,7 +361,10 @@ impl SimContext for CallContext {
         if let Some(c) = self.base.climate() {
             return Some(c);
         }
-        self.game_time.try_borrow().ok().map(|g| std::cell::Ref::map(g, |g| &g.climate))
+        self.game_time
+            .try_borrow()
+            .ok()
+            .map(|g| std::cell::Ref::map(g, |g| &g.climate))
     }
     fn hydro_power_on(&self) -> bool {
         self.base.hydro_power_on()
@@ -239,37 +402,101 @@ pub(crate) fn with_ctx<R>(
     chr: &Value,
     f: impl FnOnce(&dyn SimContext) -> Result<R, ScriptError>,
 ) -> LuaResult<R> {
+    with_ctx_result(c, chr, |_, ctx| f(ctx), java_error)
+}
+
+pub(crate) fn with_ctx_host<R>(
+    c: &mut NativeCall<'_>,
+    chr: &Value,
+    f: impl FnOnce(&dyn SimContext) -> HostResult<R>,
+) -> LuaResult<R> {
+    with_ctx_result(c, chr, |_, ctx| f(ctx), crate::bind_world_object::host_error)
+}
+
+fn character_action_error(error: CharacterActionError) -> LuaError {
+    match error {
+        CharacterActionError::Script(error) => java_error(error),
+        CharacterActionError::Host(error) => crate::bind_world_object::host_error(error),
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn with_ctx_action<R>(
+    c: &mut NativeCall<'_>,
+    chr: &Value,
+    f: impl FnOnce(&dyn SimContext) -> CharacterActionResult<R>,
+) -> LuaResult<R> {
+    with_ctx_result(c, chr, |_, ctx| f(ctx), character_action_error)
+}
+
+fn with_ctx_action_thread<R>(
+    c: &mut NativeCall<'_>,
+    chr: &Value,
+    f: impl FnOnce(&Thread, &dyn SimContext) -> CharacterActionResult<R>,
+) -> LuaResult<R> {
+    with_ctx_result(c, chr, f, character_action_error)
+}
+
+fn with_ctx_result<R, E>(
+    c: &mut NativeCall<'_>,
+    chr: &Value,
+    f: impl FnOnce(&Thread, &dyn SimContext) -> Result<R, E>,
+    convert: impl FnOnce(E) -> LuaError,
+) -> LuaResult<R> {
     let ctx = CallContext {
         base: CONTEXT.with(|c| c.borrow().clone()),
         events: RefCell::default(),
         game_time: crate::bind_climate::shared_game_time(),
     };
-    let r = f(&ctx);
+    let r = f(c.thread, &ctx);
     let events = ctx.events.into_inner();
     if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
         for e in events {
             let (name, args) = match e {
-                SimEvent::LevelPerk { perk, level, increased } => (
+                SimEvent::LevelPerk {
+                    perk,
+                    level,
+                    increased,
+                } => (
                     "LevelPerk",
-                    vec![chr.clone(), perk_value(Some(&perk)), Value::from(level), Value::Bool(increased)],
+                    vec![
+                        chr.clone(),
+                        perk_value(Some(&perk)),
+                        Value::from(level),
+                        Value::Bool(increased),
+                    ],
                 ),
-                SimEvent::LogLevelPerk { perk, level } => {
-                    ("LogLevelPerk", vec![chr.clone(), perk_value(Some(&perk)), Value::from(level), Value::Bool(false)])
-                }
-                SimEvent::AddXp { perk, amount } => {
-                    ("AddXP", vec![chr.clone(), perk_value(Some(&perk)), Value::Num(f64::from(amount))])
-                }
-                SimEvent::PlayerGetDamage { kind, amount } => {
-                    ("OnPlayerGetDamage", vec![chr.clone(), Value::str(kind), Value::Num(f64::from(amount))])
-                }
+                SimEvent::LogLevelPerk { perk, level } => (
+                    "LogLevelPerk",
+                    vec![
+                        chr.clone(),
+                        perk_value(Some(&perk)),
+                        Value::from(level),
+                        Value::Bool(false),
+                    ],
+                ),
+                SimEvent::AddXp { perk, amount } => (
+                    "AddXP",
+                    vec![
+                        chr.clone(),
+                        perk_value(Some(&perk)),
+                        Value::Num(f64::from(amount)),
+                    ],
+                ),
+                SimEvent::PlayerGetDamage { kind, amount } => (
+                    "OnPlayerGetDamage",
+                    vec![chr.clone(), Value::str(kind), Value::Num(f64::from(amount))],
+                ),
                 SimEvent::ContainerUpdate => ("OnContainerUpdate", vec![]),
-                SimEvent::ItemFall(item) => ("onItemFall", vec![crate::bind_items::item_value(&item)]),
+                SimEvent::ItemFall(item) => {
+                    ("onItemFall", vec![crate::bind_items::item_value(&item)])
+                }
                 _ => continue,
             };
             sink(c.thread, name, &args);
         }
     }
-    r.map_err(java_error)
+    r.map_err(convert)
 }
 
 /// Runs `f` with the installed context and the shared `ClimateManager`,
@@ -285,12 +512,25 @@ pub(crate) fn with_sim_context<R>(f: impl FnOnce(&dyn SimContext) -> R) -> R {
 
 // ---- objects ------------------------------------------------------------
 
-/// A character (`IsoGameCharacter` and its subclasses).
-pub struct CharacterObject(pub LuaGameCharacterRef);
+/// A character (`IsoGameCharacter` and its subclasses). Its allocation-time
+/// class is immutable; class dispatch must not acquire the mutable body.
+pub struct CharacterObject(pub LuaGameCharacterRef, CharacterKind);
+
+impl CharacterObject {
+    /// Capture the actual class before this userdata is published. A cold
+    /// conversion under a conflicting character guard is a host fault.
+    pub fn try_new(chr: &LuaGameCharacterRef) -> HostResult<Self> {
+        let kind = chr
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("character userdata class"))?
+            .kind;
+        Ok(Self(chr.clone(), kind))
+    }
+}
 
 impl LuaObject for CharacterObject {
     fn class_name(&self) -> &str {
-        match self.0.borrow().kind {
+        match self.1 {
             CharacterKind::Player => ISO_PLAYER_CLASS,
             CharacterKind::Survivor => ISO_SURVIVOR_CLASS,
             CharacterKind::Zombie => ISO_ZOMBIE_CLASS,
@@ -301,10 +541,18 @@ impl LuaObject for CharacterObject {
         const LIVING: &str = "zombie.characters.IsoLivingCharacter";
         const MOVING: &str = "zombie.iso.IsoMovingObject";
         const OBJECT: &str = "zombie.iso.IsoObject";
-        match self.0.borrow().kind {
-            CharacterKind::Player | CharacterKind::Survivor => &[LIVING, ISO_GAME_CHARACTER_CLASS, MOVING, OBJECT],
+        match self.1 {
+            CharacterKind::Player | CharacterKind::Survivor => {
+                &[LIVING, ISO_GAME_CHARACTER_CLASS, MOVING, OBJECT]
+            }
             CharacterKind::Zombie => &[ISO_GAME_CHARACTER_CLASS, MOVING, OBJECT],
-            CharacterKind::Animal => &[ISO_PLAYER_CLASS, LIVING, ISO_GAME_CHARACTER_CLASS, MOVING, OBJECT],
+            CharacterKind::Animal => &[
+                ISO_PLAYER_CLASS,
+                LIVING,
+                ISO_GAME_CHARACTER_CLASS,
+                MOVING,
+                OBJECT,
+            ],
         }
     }
     fn as_any(&self) -> &dyn Any {
@@ -330,24 +578,65 @@ fn canonical(id: (Handle, usize, usize), make: impl FnOnce() -> Value) -> Value 
     HANDLES.with(|h| h.borrow_mut().entry(id).or_insert_with(make).clone())
 }
 
-/// The canonical Lua object of `chr`. Making it makes it the parent of
-/// the character's inventory (`inventory.parent = this`), so the
-/// container's Lua methods call back into this object.
-pub fn character_value(chr: &LuaGameCharacterRef) -> Value {
+/// The canonical Lua object of `chr`. Existing identity and immutable class
+/// metadata need no character or inventory body access. Cold publication
+/// reports needed body conflicts before publishing the userdata or parent.
+pub fn try_character_value(chr: &LuaGameCharacterRef) -> HostResult<Value> {
+    let id = (Handle::Character, Rc::as_ptr(chr) as usize, 0);
+    if let Some(value) = HANDLES.with(|handles| handles.borrow().get(&id).cloned()) {
+        return Ok(value);
+    }
+    let (kind, inventory) = {
+        let body = chr
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("character userdata publication"))?;
+        (body.kind, body.items.inventory.clone())
+    };
+    let value = Value::Object(Rc::new(CharacterObject(chr.clone(), kind)));
+    let parent: Rc<dyn Any> = Rc::new(crate::bind_item_container::LuaParent {
+        value: value.clone(),
+        owner: Rc::new(CharacterItemOwner::new(chr)),
+    });
+    let old_parent = {
+        let mut body = inventory
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("character userdata inventory parent"))?;
+        body.parent.replace(parent)
+    };
+    let mut retired = pz_entity::RetiredComponents::default();
+    if let Some(old_parent) = old_parent {
+        retired.push_erased(old_parent);
+    }
+    pz_inventory::component_host::retire_components(retired);
+    HANDLES.with(|handles| handles.borrow_mut().insert(id, value.clone()));
+    // No map, character or inventory guard spans these attachment/metadata
+    // operations. A nested conversion now sees the published same identity.
     crate::chat::characters::attach_chat_element(chr);
-    canonical((Handle::Character, Rc::as_ptr(chr) as usize, 0), || {
-        let v = Value::Object(Rc::new(CharacterObject(chr.clone())));
-        let inv = chr.borrow().items.inventory.clone();
-        set_character_parent(&inv, chr, v.clone());
-        v
-    })
+    pz_inventory::shared::observe_container(&inventory);
+    Ok(value)
+}
+
+/// Legacy infallible adapter; cold publication requires available character
+/// and inventory bodies. Native fallible producers use `try_character_value`.
+pub fn character_value(chr: &LuaGameCharacterRef) -> Value {
+    try_character_value(chr).expect(
+        "character_value requires unborrowed publication bodies or existing canonical userdata",
+    )
 }
 
 /// `container.parent = chr` with the character answering for the items
 /// directly in `container` (`isEquipped`, `isWorn`, the hands and their
 /// place) through [`CharacterItemOwner`].
-fn set_character_parent(container: &pz_inventory::ContainerRef, chr: &LuaGameCharacterRef, v: Value) {
-    crate::bind_item_container::set_parent_with_owner(container, v, Rc::new(CharacterItemOwner::new(chr)));
+fn set_character_parent(
+    container: &pz_inventory::ContainerRef,
+    chr: &LuaGameCharacterRef,
+    v: Value,
+) {
+    crate::bind_item_container::set_parent_with_owner(
+        container,
+        v,
+        Rc::new(CharacterItemOwner::new(chr)),
+    );
 }
 
 /// An `InventoryItem` argument as its id (`null` is `None`).
@@ -387,14 +676,42 @@ fn register_vision(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     });
     let s = sm.clone();
     b.method("updateVisionEffects", move |c| {
-        chr_of(c)?.borrow_mut().update_vision_effects(&s).map_err(java_error)?;
+        chr_of(c)?
+            .borrow_mut()
+            .update_vision_effects(&s)
+            .map_err(java_error)?;
         Ok(0)
     });
     b.method("updateVisionEffectTargets", |c| {
         chr_of(c)?.borrow_mut().update_vision_effect_targets();
         Ok(0)
     });
+    // getVehicle(): the `vehicle` field, by id through the vehicle manager.
+    b.method("getVehicle", |c| {
+        let id = chr_of(c)?.borrow().path.vehicle;
+        let v = id.and_then(pz_vehicles::manager::vehicle_by_id);
+        Ok(c.push(v.map_or(Value::Nil, |v| pz_vehicles::lua::vehicle_value(&v))))
+    });
     let p = expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS));
+    p.method("IsRunning", running_query);
+    // getIndex() and getPlayerNum() (which calls it): `playerIndex`.
+    p.method("getIndex", |c| {
+        let v = chr_of(c)?.borrow().player.player_index;
+        Ok(c.push(v))
+    });
+    p.method("getPlayerNum", |c| {
+        let v = chr_of(c)?.borrow().player.player_index;
+        Ok(c.push(v))
+    });
+    p.method("getJoypadBind", |c| {
+        let v = chr_of(c)?.borrow().player.input.joypad_bind;
+        Ok(c.push(v))
+    });
+    p.method("isLocalPlayer", |c| {
+        let ctx = current_sim_context();
+        let v = chr_of(c)?.borrow().is_local_player(ctx.as_ref());
+        Ok(c.push(v))
+    });
     p.method("isWearingNightVisionGoggles", |c| {
         let v = chr_of(c)?.borrow().is_wearing_night_vision_goggles();
         Ok(c.push(v))
@@ -474,11 +791,43 @@ fn register_inventory(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let v = chr_of(c)?.borrow().is_unlimited_carry(&*ctx);
         Ok(c.push(v))
     });
-    expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS)).method("isGhostMode", |c| {
-        let ctx = CONTEXT.with(|c| c.borrow().clone());
-        let v = chr_of(c)?.borrow().is_ghost_mode(&*ctx);
+    // `IsoGameCharacter.getTorchStrength()` is 0; `IsoPlayer` (local, not an
+    // animal) reads its active light item.
+    b.method("getTorchStrength", |c| {
+        chr_of(c)?;
+        Ok(c.push(float_value(0.0)))
+    });
+    let p = expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS));
+    p.method("getActiveLightItem", |c| {
+        let i = chr_of(c)?.borrow().items.active_light_item();
+        Ok(c.push(i.as_ref().map_or(Value::Nil, crate::bind_items::item_value)))
+    });
+    p.method("getTorchStrength", |c| {
+        let i = chr_of(c)?.borrow().items.active_light_item();
+        let v = i.map_or(0.0, |i| i.borrow().get_light_strength());
+        Ok(c.push(float_value(v)))
+    });
+    // `IsoGameCharacter.isPlayerMoving()` is false; `IsoPlayer` reads its flag.
+    b.method("isPlayerMoving", |c| {
+        chr_of(c)?;
+        Ok(c.push(false))
+    });
+    p.method("isPlayerMoving", |c| {
+        let v = chr_of(c)?.borrow().player_moving;
         Ok(c.push(v))
     });
+    p.method("isTorchCone", |c| {
+        let i = chr_of(c)?.borrow().items.active_light_item();
+        Ok(c.push(i.is_some_and(|i| i.borrow().is_torch_cone())))
+    });
+    expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS)).method(
+        "isGhostMode",
+        |c| {
+            let ctx = CONTEXT.with(|c| c.borrow().clone());
+            let v = chr_of(c)?.borrow().is_ghost_mode(&*ctx);
+            Ok(c.push(v))
+        },
+    );
 }
 
 /// A character's worn items as a `WornItems` object's backing: item ids,
@@ -502,7 +851,8 @@ impl crate::bind_characters::WornBacking for CharacterWorn {
 /// The Lua object of the character's inventory item `id`.
 fn worn_item_value(chr: &LuaGameCharacterRef, id: Option<i32>) -> Value {
     let item = id.and_then(|id| chr.borrow().items.item(id));
-    item.as_ref().map_or(Value::Nil, crate::bind_items::item_value)
+    item.as_ref()
+        .map_or(Value::Nil, crate::bind_items::item_value)
 }
 
 /// `setWornItem(location, item, forceDropTooHeavy)` from Lua: the hair
@@ -518,17 +868,18 @@ fn set_worn_item(
     force_drop_too_heavy: bool,
 ) -> LuaResult<()> {
     let id = opt_item_id(c, item)?;
-    let floor = floor_world();
-    let changed = crate::bind_appearance::with_styles(c.thread, |st| {
-        let ctx = current_sim_context();
-        let mut f = floor.as_ref().map(|f| f.borrow_mut());
-        let cx = f.as_deref_mut().map(|f| FloorCx::new(&*ctx, f));
-        chr.borrow_mut().set_worn_item(sm, Some(st), location, id, force_drop_too_heavy, cx)
-    })
-    .map_err(java_error)?;
+    let mut floor = FloorAccess::capture().map_err(crate::bind_world_object::host_error)?;
+    let value = character_value(chr);
+    let changed = with_ctx_action_thread(c, &value, |thread, ctx| {
+        crate::bind_appearance::with_styles(thread, |st| {
+            let cx = Some(FloorCx::new(ctx, &mut floor));
+            chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("worn item character"))?
+                .set_worn_item(sm, Some(st), location, id, force_drop_too_heavy, cx)
+        })
+    })?;
     if changed && id.is_some() {
         let item = crate::bind_items::item_arg(c, item)?;
-        if let Some(container) = pz_inventory::shared::container_of(&item) {
+        if let Some(container) = pz_inventory::shared::try_container_of(&item).map_err(crate::bind_world_object::host_error)? {
             set_character_parent(&container, chr, character_value(chr));
         }
     }
@@ -572,33 +923,33 @@ fn register_clothing(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let chr = chr_of(c)?;
         let id = opt_item_id(c, 1)?;
         let force = c.nargs() <= 2 || bool_arg(c, 2);
-        let floor = floor_world();
-        crate::bind_appearance::with_styles(c.thread, |st| {
-            let ctx = current_sim_context();
-            let mut f = floor.as_ref().map(|f| f.borrow_mut());
-            let cx = f.as_deref_mut().map(|f| FloorCx::new(&*ctx, f));
-            chr.borrow_mut().remove_worn_item(&s, Some(st), id, force, cx)
-        })
-        .map_err(java_error)?;
+        let mut floor = FloorAccess::capture().map_err(crate::bind_world_object::host_error)?;
+        let value = character_value(&chr);
+        with_ctx_action_thread(c, &value, |thread, ctx| {
+            crate::bind_appearance::with_styles(thread, |st| {
+                let cx = Some(FloorCx::new(ctx, &mut floor));
+                chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("remove worn item character"))?
+                    .remove_worn_item(&s, Some(st), id, force, cx)
+            })
+        })?;
         Ok(0)
     });
     // `dropHandItems()` / `dropHeavyItems()` into the installed floor
-    // world (nothing drops without one), firing `OnContainerUpdate` and
+    // world, firing `OnContainerUpdate` and
     // `onItemFall`.
     for (name, hand) in [("dropHandItems", true), ("dropHeavyItems", false)] {
         let s = sm.clone();
         b.method(name, move |c| {
             let chr = chr_of(c)?;
-            let Some(floor) = floor_world() else { return Ok(0) };
+            let mut floor = FloorAccess::capture().map_err(crate::bind_world_object::host_error)?;
             let v = character_value(&chr);
-            with_ctx(c, &v, |ctx| {
-                let mut f = floor.borrow_mut();
-                let cx = FloorCx::new(ctx, &mut *f);
-                let mut chr = chr.borrow_mut();
+            with_ctx_host(c, &v, |ctx| {
+                let cx = FloorCx::new(ctx, &mut floor);
+                let mut chr = chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("drop character"))?;
                 if hand {
-                    chr.drop_hand_items(&s, cx);
+                    chr.drop_hand_items(&s, cx)?;
                 } else {
-                    chr.drop_heavy_items(&s, cx);
+                    chr.drop_heavy_items(&s, cx)?;
                 }
                 Ok(())
             })?;
@@ -611,19 +962,31 @@ fn register_clothing(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         Ok(0)
     });
     b.method("getBodyLocationGroup", |c| {
-        let g = chr_of(c)?.borrow().items.worn_items.as_ref().map(|w| w.body_location_group().clone());
-        Ok(c.push(g.as_ref().map_or(Value::Nil, crate::bind_characters::group_value)))
+        let g = chr_of(c)?
+            .borrow()
+            .items
+            .worn_items
+            .as_ref()
+            .map(|w| w.body_location_group().clone());
+        Ok(c.push(
+            g.as_ref()
+                .map_or(Value::Nil, crate::bind_characters::group_value),
+        ))
     });
     b.method("isEquippedClothing", |c| {
         let id = opt_item_id(c, 1)?;
-        let v = chr_of(c)?.borrow().is_equipped_clothing(id).map_err(java_error)?;
+        let v = chr_of(c)?
+            .borrow()
+            .is_equipped_clothing(id)
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     b.method("isEquipped", |c| {
         let id = opt_item_id(c, 1)?;
         let chr = chr_of(c)?;
         let chr = chr.borrow();
-        let hand = id.is_some() && (chr.items.primary_hand_item == id || chr.items.secondary_hand_item == id);
+        let hand = id.is_some()
+            && (chr.items.primary_hand_item == id || chr.items.secondary_hand_item == id);
         let v = chr.is_equipped_clothing(id).map_err(java_error)? || hand;
         Ok(c.push(v))
     });
@@ -693,7 +1056,10 @@ fn stat_value(s: Option<&CharacterStatRef>) -> Value {
 }
 
 fn npe() -> LuaError {
-    LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" }
+    LuaError::Runtime {
+        message: String::new(),
+        class: "java.lang.NullPointerException",
+    }
 }
 
 fn stat_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<CharacterStatRef> {
@@ -770,8 +1136,13 @@ fn color_value(col: &ChevronColor) -> Value {
         ChevronColor::White => FIXED.with(|f| f[0].clone()),
         ChevronColor::Negative => FIXED.with(|f| f[1].clone()),
         ChevronColor::Positive => FIXED.with(|f| f[2].clone()),
-        ChevronColor::Other(rc) => COLORS
-            .with(|m| m.borrow().values().find(|(k, _)| Rc::ptr_eq(k, rc)).map(|(_, v)| v.clone()).unwrap_or_default()),
+        ChevronColor::Other(rc) => COLORS.with(|m| {
+            m.borrow()
+                .values()
+                .find(|(k, _)| Rc::ptr_eq(k, rc))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        }),
     }
 }
 
@@ -780,9 +1151,17 @@ fn color_value(col: &ChevronColor) -> Value {
 fn color_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<ChevronColor>> {
     let v = c.arg(i);
     let Value::Object(o) = &v else {
-        return if v.is_nil() { Ok(None) } else { Err(class_cast(&v, "zombie.core.Color")) };
+        return if v.is_nil() {
+            Ok(None)
+        } else {
+            Err(class_cast(&v, "zombie.core.Color"))
+        };
     };
-    for fixed in [ChevronColor::White, ChevronColor::Negative, ChevronColor::Positive] {
+    for fixed in [
+        ChevronColor::White,
+        ChevronColor::Negative,
+        ChevronColor::Positive,
+    ] {
         if color_value(&fixed).raw_equals(&v) {
             return Ok(Some(fixed));
         }
@@ -792,8 +1171,13 @@ fn color_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<ChevronColor>> {
     };
     let pz_render::Rgba(r, g, b, a) = col.rgba.get();
     let id = Rc::as_ptr(o) as *const () as usize;
-    let rc = COLORS
-        .with(|m| m.borrow_mut().entry(id).or_insert_with(|| (Rc::new(Color { r, g, b, a }), v.clone())).0.clone());
+    let rc = COLORS.with(|m| {
+        m.borrow_mut()
+            .entry(id)
+            .or_insert_with(|| (Rc::new(Color { r, g, b, a }), v.clone()))
+            .0
+            .clone()
+    });
     Ok(Some(ChevronColor::Other(rc)))
 }
 
@@ -824,7 +1208,12 @@ fn register_character_stat(thread: &mut Thread, chars: &Rc<RefCell<Characters>>)
     let ch = chars.clone();
     b.static_fn("register", move |c| {
         let id = str_arg(c, 0).map(|s| s.to_string()).unwrap_or_default();
-        let s = ch.borrow_mut().sim.character_stats.register(&id, float_arg(c, 1), float_arg(c, 2), float_arg(c, 3));
+        let s = ch.borrow_mut().sim.character_stats.register(
+            &id,
+            float_arg(c, 1),
+            float_arg(c, 2),
+            float_arg(c, 3),
+        );
         Ok(c.push(stat_value(Some(&s))))
     });
     let ch = chars.clone();
@@ -879,7 +1268,13 @@ fn with_stats<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut Stats) -> R) -> LuaResu
 
 fn register_stats(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     let b = expose_class(thread, STATS_CLASS, None);
-    b.ctor(|c| Ok(c.push(Value::Object(Rc::new(StatsObject::Owned(RefCell::new(Stats::default())))))));
+    b.ctor(|c| {
+        Ok(
+            c.push(Value::Object(Rc::new(StatsObject::Owned(RefCell::new(
+                Stats::default(),
+            ))))),
+        )
+    });
     type StatFn = fn(&mut Stats, &CharacterStatRef) -> Value;
     let by_stat: [(&str, StatFn); 6] = [
         ("get", |s, k| float_value(s.get(k))),
@@ -897,8 +1292,11 @@ fn register_stats(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
         });
     }
     type AmountFn = fn(&mut Stats, &CharacterStatRef, f32) -> bool;
-    let by_amount: [(&str, AmountFn); 3] =
-        [("set", |s, k, v| s.set(k, v)), ("add", |s, k, v| s.add(k, v)), ("remove", |s, k, v| s.remove(k, v))];
+    let by_amount: [(&str, AmountFn); 3] = [
+        ("set", |s, k, v| s.set(k, v)),
+        ("add", |s, k, v| s.add(k, v)),
+        ("remove", |s, k, v| s.remove(k, v)),
+    ];
     for (name, f) in by_amount {
         b.method(name, move |c| {
             let k = stat_arg(c, 1)?;
@@ -950,7 +1348,9 @@ fn register_stats(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     let floats: [(&str, FloatGet); 4] = [
         ("getLastEndurance", Stats::last_endurance),
         ("getTrippingRotAngle", Stats::tripping_rot_angle),
-        ("getEnduranceDangerWarning", |_| Stats::ENDURANCE_DANGER_WARNING),
+        ("getEnduranceDangerWarning", |_| {
+            Stats::ENDURANCE_DANGER_WARNING
+        }),
         ("getEnduranceWarning", |_| Stats::ENDURANCE_WARNING),
     ];
     for (name, f) in floats {
@@ -991,15 +1391,26 @@ fn moodles_chr(c: &NativeCall<'_>) -> LuaResult<LuaGameCharacterRef> {
     with_this::<MoodlesObject, _>(c, |o| o.0.clone())
 }
 
-fn moodle_this(c: &NativeCall<'_>) -> LuaResult<(LuaGameCharacterRef, Rc<pz_scripts::registry::RegistryKey>)> {
+fn moodle_this(
+    c: &NativeCall<'_>,
+) -> LuaResult<(LuaGameCharacterRef, Rc<pz_scripts::registry::RegistryKey>)> {
     with_this::<MoodleObject, _>(c, |o| (o.chr.clone(), o.moodle_type.clone()))
 }
 
 /// The canonical Lua object of `chr`'s moodle of type `t` (the original
 /// hands `Moodle`s to its UI, not to scripts).
 pub fn moodle_value(chr: &LuaGameCharacterRef, t: &Rc<pz_scripts::registry::RegistryKey>) -> Value {
-    let id = (Handle::Moodle, Rc::as_ptr(chr) as usize, Rc::as_ptr(t) as usize);
-    canonical(id, || Value::Object(Rc::new(MoodleObject { chr: chr.clone(), moodle_type: t.clone() })))
+    let id = (
+        Handle::Moodle,
+        Rc::as_ptr(chr) as usize,
+        Rc::as_ptr(t) as usize,
+    );
+    canonical(id, || {
+        Value::Object(Rc::new(MoodleObject {
+            chr: chr.clone(),
+            moodle_type: t.clone(),
+        }))
+    })
 }
 
 fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
@@ -1018,13 +1429,21 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
     b.method("getMoodleLevel", |c| {
         let t = key_arg(c, 1)?;
         let chr = moodles_chr(c)?;
-        let v = chr.borrow().moodles.moodle_level(t.as_deref()).map_err(java_error)?;
+        let v = chr
+            .borrow()
+            .moodles
+            .moodle_level(t.as_deref())
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     b.method("isMaxMoodleLevel", |c| {
         let t = key_arg(c, 1)?;
         let chr = moodles_chr(c)?;
-        let v = chr.borrow().moodles.is_max_moodle_level(t.as_deref()).map_err(java_error)?;
+        let v = chr
+            .borrow()
+            .moodles
+            .is_max_moodle_level(t.as_deref())
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     let get_text = || {
@@ -1034,13 +1453,21 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
     b.method("getMoodleDisplayString", move |c| {
         let t = key_arg(c, 1)?;
         let chr = moodles_chr(c)?;
-        let v = chr.borrow().moodles.moodle_display_string(t.as_deref(), &get_text()).map_err(java_error)?;
+        let v = chr
+            .borrow()
+            .moodles
+            .moodle_display_string(t.as_deref(), &get_text())
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     b.method("getMoodleDescriptionString", move |c| {
         let t = key_arg(c, 1)?;
         let chr = moodles_chr(c)?;
-        let v = chr.borrow().moodles.moodle_description_string(t.as_deref(), &get_text()).map_err(java_error)?;
+        let v = chr
+            .borrow()
+            .moodles
+            .moodle_description_string(t.as_deref(), &get_text())
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     b.method("UI_RefreshNeeded", |c| {
@@ -1050,7 +1477,10 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
     });
     b.method("setMoodlesStateChanged", |c| {
         let v = bool_arg(c, 1);
-        moodles_chr(c)?.borrow_mut().moodles.set_moodles_state_changed(v);
+        moodles_chr(c)?
+            .borrow_mut()
+            .moodles
+            .set_moodles_state_changed(v);
         Ok(0)
     });
     let ch = chars.clone();
@@ -1059,7 +1489,9 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
         let chr = moodles_chr(c)?;
         let v = character_value(&chr);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().update_moodles(&s, &chars, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().update_moodles(&s, &chars, ctx)
+        })?;
         Ok(0)
     });
 
@@ -1068,7 +1500,10 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
         let (_, t) = moodle_this(c)?;
         Ok(c.push(key_value(MOODLE_TYPE_CLASS, Some(&t))))
     });
-    fn with_moodle<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut pz_characters::character::Moodle) -> R) -> LuaResult<R> {
+    fn with_moodle<R>(
+        c: &NativeCall<'_>,
+        f: impl FnOnce(&mut pz_characters::character::Moodle) -> R,
+    ) -> LuaResult<R> {
         let (chr, t) = moodle_this(c)?;
         let mut chr = chr.borrow_mut();
         chr.moodles.moodle_mut(&t).map(f).ok_or_else(npe)
@@ -1113,7 +1548,12 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
         let chars = ch.borrow();
         let changed = with_ctx(c, &v, |ctx| {
             let mut g = chr.borrow_mut();
-            let Some(i) = g.moodles.all().iter().position(|m| m.moodle_type().location == t.location) else {
+            let Some(i) = g
+                .moodles
+                .all()
+                .iter()
+                .position(|m| m.moodle_type().location == t.location)
+            else {
                 return Err(ScriptError::new("java.lang.NullPointerException"));
             };
             let mut m = g.moodles.all()[i].clone();
@@ -1151,8 +1591,12 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
                 3 => g.add_xp_no_multiplier_flag(&s, &chars, p, amount, flags[0], false, ctx),
                 4 => g.add_xp_no_multiplier_flag(&s, &chars, p, amount, flags[0], flags[1], ctx),
                 // AddXP(perk, amount, callLua, doXPBoost, remote[, haloText])
-                5 => g.add_xp_full(&s, &chars, p, amount, flags[0], flags[1], flags[2], false, ctx),
-                _ => g.add_xp_full(&s, &chars, p, amount, flags[0], flags[1], flags[2], flags[3], ctx),
+                5 => g.add_xp_full(
+                    &s, &chars, p, amount, flags[0], flags[1], flags[2], false, ctx,
+                ),
+                _ => g.add_xp_full(
+                    &s, &chars, p, amount, flags[0], flags[1], flags[2], flags[3], ctx,
+                ),
             }
         })?;
         Ok(0)
@@ -1164,7 +1608,10 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
         let perk = perk_arg(c, 1)?;
         let amount = float_arg(c, 2);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().add_xp_halo_text(&s, &chars, perk.as_ref(), amount, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut()
+                .add_xp_halo_text(&s, &chars, perk.as_ref(), amount, ctx)
+        })?;
         Ok(0)
     });
     let (s, ch) = (sm.clone(), chars.clone());
@@ -1174,13 +1621,18 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
         let perk = perk_arg(c, 1)?;
         let amount = float_arg(c, 2);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().add_xp_no_multiplier(&s, &chars, perk.as_ref(), amount, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut()
+                .add_xp_no_multiplier(&s, &chars, perk.as_ref(), amount, ctx)
+        })?;
         Ok(0)
     });
     b.method("addXpMultiplier", |c| {
         let chr = xp_chr(c)?;
         let perk = perk_arg(c, 1)?.ok_or_else(npe)?;
-        chr.borrow_mut().xp.add_xp_multiplier(&perk, float_arg(c, 2), int_arg(c, 3), int_arg(c, 4));
+        chr.borrow_mut()
+            .xp
+            .add_xp_multiplier(&perk, float_arg(c, 2), int_arg(c, 3), int_arg(c, 4));
         Ok(0)
     });
     b.method("getMultiplier", |c| {
@@ -1195,7 +1647,12 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
                 .xp
                 .xp_map_multiplier
                 .iter()
-                .map(|(p, m)| (perk_value(Some(p)), Value::Object(Rc::new(XpMultiplierObject(*m)))))
+                .map(|(p, m)| {
+                    (
+                        perk_value(Some(p)),
+                        Value::Object(Rc::new(XpMultiplierObject(*m))),
+                    )
+                })
                 .collect()
         };
         Ok(c.push(Value::Object(Rc::new(JavaMap::live(read, None)))))
@@ -1215,7 +1672,9 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
         let chr = xp_chr(c)?;
         let perk = perk_arg(c, 1)?;
         let chars = ch.borrow();
-        chr.borrow_mut().xp_set_perk_boost(&chars, perk.as_ref(), int_arg(c, 2)).map_err(java_error)?;
+        chr.borrow_mut()
+            .xp_set_perk_boost(&chars, perk.as_ref(), int_arg(c, 2))
+            .map_err(java_error)?;
         Ok(0)
     });
     b.method("getLevel", |c| {
@@ -1245,10 +1704,15 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
     b.method("setXPToLevel", move |c| {
         let chr = xp_chr(c)?;
         let v = character_value(&chr);
-        let Some(perk) = perk_arg(c, 1)? else { return Ok(0) };
+        let Some(perk) = perk_arg(c, 1)? else {
+            return Ok(0);
+        };
         let level = int_arg(c, 2);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().xp_set_xp_to_level(&chars, &perk, level, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut()
+                .xp_set_xp_to_level(&chars, &perk, level, ctx)
+        })?;
         Ok(0)
     });
 
@@ -1261,15 +1725,124 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
 }
 
 fn perk_info_value(chr: &LuaGameCharacterRef, perk: &PerkRef) -> Value {
-    let id = (Handle::PerkInfo, Rc::as_ptr(chr) as usize, Rc::as_ptr(perk) as usize);
-    canonical(id, || Value::Object(Rc::new(PerkInfoObject { chr: chr.clone(), perk: perk.clone() })))
+    let id = (
+        Handle::PerkInfo,
+        Rc::as_ptr(chr) as usize,
+        Rc::as_ptr(perk) as usize,
+    );
+    canonical(id, || {
+        Value::Object(Rc::new(PerkInfoObject {
+            chr: chr.clone(),
+            perk: perk.clone(),
+        }))
+    })
 }
 
-fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
-    let b = expose_class(thread, ISO_GAME_CHARACTER_CLASS, None);
-    for class in [ISO_PLAYER_CLASS, ISO_SURVIVOR_CLASS, ISO_ZOMBIE_CLASS, ISO_ANIMAL_CLASS] {
-        expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
+fn running_query(c: &mut NativeCall<'_>) -> LuaResult<usize> {
+    let sm = shared_script_manager();
+    let running = chr_of(c)?.borrow().is_running(&sm);
+    Ok(c.push(running))
+}
+
+fn sprint_query(c: &mut NativeCall<'_>, can_sprint: bool) -> LuaResult<usize> {
+    // canSprint's only context read is Core.gameMode. Resolve it at this
+    // call, so Lua changes are visible even with an older FrameSim installed.
+    struct SprintMode(String);
+    impl SimContext for SprintMode {
+        fn game_mode(&self) -> &str {
+            &self.0
+        }
     }
+    let mode = SprintMode(crate::bind_core::shared_core().borrow().get_game_mode());
+    let sm = shared_script_manager();
+    let chr = chr_of(c)?;
+    let chr = chr.borrow();
+    let value = if can_sprint {
+        chr.can_sprint(&sm, &mode)
+    } else {
+        chr.is_sprinting(&sm, &mode)
+    };
+    Ok(c.push(value))
+}
+
+fn register_character(
+    thread: &mut Thread,
+    sm: &Rc<ScriptManager>,
+    chars: &Rc<RefCell<Characters>>,
+) {
+    let b = expose_class(thread, ISO_GAME_CHARACTER_CLASS, None);
+    for class in [
+        ISO_PLAYER_CLASS,
+        ISO_SURVIVOR_CLASS,
+        ISO_ZOMBIE_CLASS,
+        ISO_ANIMAL_CLASS,
+    ] {
+        let sub = expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
+        if class == ISO_PLAYER_CLASS || class == ISO_ANIMAL_CLASS {
+            control::register_player(&sub);
+        }
+    }
+    control::register(&b);
+    control::register_globals(thread);
+    known_poison::register(&b, sm, chars);
+    reading::register(&b);
+    read_flags::register(&b);
+    b.method("createKeyRing", key_ring::create_key_ring);
+    b.method("getModData", |c| {
+        let table = chr_of(c)?.borrow_mut().get_mod_data();
+        Ok(c.push(table))
+    });
+    b.method("hasModData", |c| {
+        let has_data = chr_of(c)?.borrow().has_mod_data();
+        Ok(c.push(has_data))
+    });
+    b.method("setModData", |c| {
+        let table = match c.arg(1) {
+            Value::Nil => None,
+            Value::Table(table) => Some(table),
+            _ => return Err(LuaError::runtime("Expected a KahluaTable")),
+        };
+        chr_of(c)?.borrow_mut().mod_data = table;
+        Ok(0)
+    });
+    b.method("getX", |c| {
+        let v = chr_of(c)?.borrow().vars.x;
+        Ok(c.push(float_value(v)))
+    });
+    b.method("getY", |c| {
+        let v = chr_of(c)?.borrow().vars.y;
+        Ok(c.push(float_value(v)))
+    });
+    b.method("getZ", |c| {
+        let v = chr_of(c)?.borrow().vars.z;
+        Ok(c.push(float_value(v)))
+    });
+    // The character holds its current square's coordinates; return the
+    // same handle the world exposes, including `nil` for an unloaded square.
+    for name in ["getCurrentSquare", "getSquare"] {
+        b.method(name, |c| {
+            let square = chr_of(c)?.borrow().current_square_xyz();
+            let value = square.map_or(Value::Nil, |(x, y, z)| {
+                crate::bind_world::square_value(x, y, z)
+            });
+            Ok(c.push(value))
+        });
+    }
+    // `IsoMovingObject.isOutside()`: `current != null && current.isOutside()`.
+    b.method("isOutside", |c| {
+        let square = chr_of(c)?.borrow().current_square_xyz();
+        let v = match square {
+            Some((x, y, z)) if !crate::bind_world::square_value(x, y, z).is_nil() => {
+                crate::bind_world::square_queries::square_is_outside(x, y, z)?
+            }
+            _ => false,
+        };
+        Ok(c.push(v))
+    });
+    b.method("getCell", |c| {
+        chr_of(c)?;
+        Ok(c.push(crate::bind_world::current_cell()))
+    });
     // `new IsoSurvivor(desc, cell, x, y, z)` (character creation's avatar):
     // `GameCharacter::new_survivor`, `desc.setInstance(this)`, then the
     // `OnCreateSurvivor` and `OnCreateLivingCharacter` events.
@@ -1279,14 +1852,23 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
             let d = desc_arg(c, 0)?;
             let desc_value = c.arg(0);
             adopt_survivor_desc_value(&desc_value);
-            let chr = Rc::new(RefCell::new(LuaGameCharacter::new_survivor(&sm, d.clone(), || {
-                crate::bind_items::create_item("Base.BareHands", 1.0).map(|i| i.borrow().clone())
-            })));
+            let chr = Rc::new(RefCell::new(LuaGameCharacter::new_survivor(
+                &sm,
+                d.clone(),
+                || {
+                    crate::bind_items::create_item("Base.BareHands", 1.0)
+                        .map(|i| i.borrow().clone())
+                },
+            )));
             let v = character_value(&chr);
             set_survivor_desc_instance(&d, v.clone());
             if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
                 sink(c.thread, "OnCreateSurvivor", std::slice::from_ref(&v));
-                sink(c.thread, "OnCreateLivingCharacter", &[v.clone(), desc_value]);
+                sink(
+                    c.thread,
+                    "OnCreateLivingCharacter",
+                    &[v.clone(), desc_value],
+                );
             }
             Ok(c.push(v))
         });
@@ -1307,7 +1889,9 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     });
     b.method("getXp", |c| {
         let chr = chr_of(c)?;
-        let v = canonical((Handle::Xp, Rc::as_ptr(&chr) as usize, 0), || Value::Object(Rc::new(XpObject(chr.clone()))));
+        let v = canonical((Handle::Xp, Rc::as_ptr(&chr) as usize, 0), || {
+            Value::Object(Rc::new(XpObject(chr.clone())))
+        });
         Ok(c.push(v))
     });
     b.method("getPerkLevel", |c| {
@@ -1336,7 +1920,9 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         let v = character_value(&chr);
         let perk = perk_arg(c, 1)?;
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().level_perk(&chars, perk.as_ref(), ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().level_perk(&chars, perk.as_ref(), ctx)
+        })?;
         Ok(0)
     });
     let ch = chars.clone();
@@ -1365,12 +1951,21 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     b.method("getPerkInfo", |c| {
         let chr = chr_of(c)?;
         let perk = perk_arg(c, 1)?;
-        let found = chr.borrow().perk_info(perk.as_ref()).map(|i| i.perk.clone());
+        let found = chr
+            .borrow()
+            .perk_info(perk.as_ref())
+            .map(|i| i.perk.clone());
         Ok(c.push(found.map_or(Value::Nil, |p| perk_info_value(&chr, &p))))
     });
     b.method("getPerkList", |c| {
         let chr = chr_of(c)?;
-        let read = move || chr.borrow().perk_list.iter().map(|i| perk_info_value(&chr, &i.perk)).collect();
+        let read = move || {
+            chr.borrow()
+                .perk_list
+                .iter()
+                .map(|i| perk_info_value(&chr, &i.perk))
+                .collect()
+        };
         Ok(c.push(Value::Object(Rc::new(JavaList::live(read, None)))))
     });
     b.method("getPerkToUnit", |c| {
@@ -1380,12 +1975,18 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     });
     let ch = chars.clone();
     b.method("getXpForLevel", move |c| {
-        let v = chr_of(c)?.borrow().xp_for_level(&ch.borrow(), int_arg(c, 1)).map_err(java_error)?;
+        let v = chr_of(c)?
+            .borrow()
+            .xp_for_level(&ch.borrow(), int_arg(c, 1))
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     let ch = chars.clone();
     b.method("getLevelUpLevels", move |c| {
-        let v = chr_of(c)?.borrow().level_up_levels(&ch.borrow(), int_arg(c, 1)).map_err(java_error)?;
+        let v = chr_of(c)?
+            .borrow()
+            .level_up_levels(&ch.borrow(), int_arg(c, 1))
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     let ch = chars.clone();
@@ -1399,12 +2000,22 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         let mut any = false;
         for i in 1..c.nargs().max(2) {
             let t = key_arg(c, i)?;
-            if chr.borrow().character_traits.get(t.as_ref()).map_err(java_error)? {
+            if chr
+                .borrow()
+                .character_traits
+                .get(t.as_ref())
+                .map_err(java_error)?
+            {
                 any = true;
                 break;
             }
         }
         Ok(c.push(any))
+    });
+    let s = sm.clone();
+    b.method("isInventive", move |c| {
+        let v = chr_of(c)?.borrow().is_inventive(&s).map_err(java_error)?;
+        Ok(c.push(v))
     });
     b.method("isUnlimitedEndurance", |c| {
         let ctx = CONTEXT.with(|c| c.borrow().clone());
@@ -1419,6 +2030,33 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     b.method("isAsleep", |c| {
         let v = chr_of(c)?.borrow().is_asleep();
         Ok(c.push(v))
+    });
+    b.method("isSneaking", |c| {
+        let v = chr_of(c)?.borrow().is_sneaking();
+        Ok(c.push(v))
+    });
+    b.method("isRunning", running_query);
+    // IsoObject.getDir delegates to the virtual getForwardIsoDirection;
+    // characters inherit its read of the current dir field.
+    for name in ["getDir", "getForwardIsoDirection"] {
+        b.method(name, |c| {
+            let direction = chr_of(c)?.borrow().vars.dir;
+            Ok(c.push(crate::expose::enum_value(
+                crate::bind_iso_enums::ISO_DIRECTIONS,
+                &format!("{direction:?}"),
+            )))
+        });
+    }
+    b.method("isDraggingCorpse", |c| {
+        let value = chr_of(c)?.borrow().is_dragging_corpse();
+        Ok(c.push(value))
+    });
+    b.method("isSprinting", |c| sprint_query(c, false));
+    b.method("canSprint", |c| sprint_query(c, true));
+    b.method("setSneaking", |c| {
+        let v = bool_arg(c, 1);
+        chr_of(c)?.borrow_mut().environment.sneaking = v;
+        Ok(0)
     });
     b.method("setAsleep", |c| {
         let v = bool_arg(c, 1);
@@ -1454,7 +2092,10 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     });
     let (s, ch) = (sm.clone(), chars.clone());
     b.method("getRecoveryMod", move |c| {
-        let v = chr_of(c)?.borrow().recovery_mod(&s, &ch.borrow()).map_err(java_error)?;
+        let v = chr_of(c)?
+            .borrow()
+            .recovery_mod(&s, &ch.borrow())
+            .map_err(java_error)?;
         Ok(c.push(float_value(v)))
     });
     let (s, ch) = (sm.clone(), chars.clone());
@@ -1462,7 +2103,10 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         let chr = chr_of(c)?;
         let v = character_value(&chr);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().update_endurance_while_sitting(&s, &chars, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut()
+                .update_endurance_while_sitting(&s, &chars, ctx)
+        })?;
         Ok(0)
     });
     b.method("getDescriptor", |c| {
@@ -1470,7 +2114,11 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         Ok(c.push(d.as_ref().map_or(Value::Nil, survivor_desc_value)))
     });
     b.method("setDescriptor", |c| {
-        let d = if c.arg(1).is_nil() { None } else { Some(desc_arg(c, 1)?) };
+        let d = if c.arg(1).is_nil() {
+            None
+        } else {
+            Some(desc_arg(c, 1)?)
+        };
         adopt_survivor_desc_value(&c.arg(1));
         chr_of(c)?.borrow_mut().descriptor = d;
         Ok(0)
@@ -1478,7 +2126,10 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     b.method("modifyTraitXPBoost", |c| {
         let def = trait_def_arg(c, 1)?;
         let removing = bool_arg(c, 2);
-        chr_of(c)?.borrow_mut().modify_trait_xp_boost(def.as_ref(), removing).map_err(java_error)?;
+        chr_of(c)?
+            .borrow_mut()
+            .modify_trait_xp_boost(def.as_ref(), removing)
+            .map_err(java_error)?;
         Ok(0)
     });
     let (s, ch) = (sm.clone(), chars.clone());
@@ -1488,8 +2139,10 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         let traits: Option<Vec<Option<Rc<pz_scripts::registry::RegistryKey>>>> = match c.arg(1) {
             Value::Nil => None,
             Value::Object(o) => {
-                let list =
-                    o.as_any().downcast_ref::<JavaList>().ok_or_else(|| class_cast(&c.arg(1), "java.util.List"))?;
+                let list = o
+                    .as_any()
+                    .downcast_ref::<JavaList>()
+                    .ok_or_else(|| class_cast(&c.arg(1), "java.util.List"))?;
                 let mut out = Vec::new();
                 for item in list.snapshot() {
                     out.push(match &item {
@@ -1498,9 +2151,16 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
                             k.as_any()
                                 .downcast_ref::<crate::bind_registry::KeyObject>()
                                 .map(|k| k.key.clone())
-                                .ok_or_else(|| class_cast(&item, crate::bind_registry::CHARACTER_TRAIT_CLASS))?,
+                                .ok_or_else(|| {
+                                    class_cast(&item, crate::bind_registry::CHARACTER_TRAIT_CLASS)
+                                })?,
                         ),
-                        other => return Err(class_cast(other, crate::bind_registry::CHARACTER_TRAIT_CLASS)),
+                        other => {
+                            return Err(class_cast(
+                                other,
+                                crate::bind_registry::CHARACTER_TRAIT_CLASS,
+                            ))
+                        }
                     });
                 }
                 Some(out)
@@ -1508,12 +2168,18 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
             other => return Err(class_cast(&other, "java.util.List")),
         };
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().apply_traits(&s, &chars, traits.as_deref(), ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut()
+                .apply_traits(&s, &chars, traits.as_deref(), ctx)
+        })?;
         Ok(0)
     });
     let s = sm.clone();
     b.method("applyProfessionRecipes", move |c| {
-        chr_of(c)?.borrow_mut().apply_profession_recipes(&s).map_err(java_error)?;
+        chr_of(c)?
+            .borrow_mut()
+            .apply_profession_recipes(&s)
+            .map_err(java_error)?;
         Ok(0)
     });
     let s = sm.clone();
@@ -1524,16 +2190,23 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use pz_characters::SurvivorDesc;
     use pz_kahlua::TableRef;
-    use pz_scripts::registry::builtin::{BuiltinTables, CharacterStatDecl, MoodleStatDecl, PerkDecl, PerkInit};
+    use pz_scripts::registry::builtin::{
+        BuiltinTables, CharacterStatDecl, MoodleStatDecl, PerkDecl, PerkInit,
+    };
 
-    fn run(t: &mut Thread, src: &str) -> Result<(), String> {
+    pub(crate) fn run(t: &mut Thread, src: &str) -> Result<(), String> {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map(|_| ()).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map(|_| ())
+            .map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
     }
 
     /// Invented stats, moodle types, traits and perks.
@@ -1541,7 +2214,9 @@ mod tests {
         setup_with(ScriptManager::new())
     }
 
-    fn setup_with(sm: ScriptManager) -> (Thread, LuaGameCharacterRef, Rc<RefCell<Vec<String>>>) {
+    pub(crate) fn setup_with(
+        sm: ScriptManager,
+    ) -> (Thread, LuaGameCharacterRef, Rc<RefCell<Vec<String>>>) {
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end")
@@ -1560,12 +2235,24 @@ mod tests {
                 ("moodle_type", "PANIC", "t:Scared"),
                 ("moodle_type", "FOOD_EATEN", "t:Fed"),
             ] {
-                sm.registries.get(reg).unwrap().borrow_mut().register_id(id, false).unwrap();
+                sm.registries
+                    .get(reg)
+                    .unwrap()
+                    .borrow_mut()
+                    .register_id(id, false)
+                    .unwrap();
                 st.constants.insert(reg, field, id);
             }
         }
         let mut tables = BuiltinTables::default();
-        for f in ["PANIC", "FITNESS", "STRESS", "NICOTINE_WITHDRAWAL", "TEMPERATURE", "ZOMBIE_INFECTION"] {
+        for f in [
+            "PANIC",
+            "FITNESS",
+            "STRESS",
+            "NICOTINE_WITHDRAWAL",
+            "TEMPERATURE",
+            "ZOMBIE_INFECTION",
+        ] {
             let max = if f == "PANIC" { 100.0 } else { 1.0 };
             tables.character_stats.push(CharacterStatDecl {
                 field: f.into(),
@@ -1581,11 +2268,20 @@ mod tests {
             thresholds: [0.0, 5.0, 10.0, 20.0, 40.0],
         }];
         tables.level_up_levels = vec![5, 10];
-        let decl = |f: &str| PerkDecl { field: f.into(), id: f.into(), parent: None };
-        tables.perks = ["None", "Fitness", "Strength", "Sprinting", "Knit", "MAX"].map(decl).to_vec();
+        let decl = |f: &str| PerkDecl {
+            field: f.into(),
+            id: f.into(),
+            parent: None,
+        };
+        tables.perks = ["None", "Fitness", "Strength", "Sprinting", "Knit", "MAX"]
+            .map(decl)
+            .to_vec();
         tables.perk_ids = tables.perks.iter().map(|p| p.id.clone()).collect();
         let xp = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-        tables.perk_init = vec![PerkInit::SetParent { perk: "None".into(), parent: "None".into() }];
+        tables.perk_init = vec![PerkInit::SetParent {
+            perk: "None".into(),
+            parent: "None".into(),
+        }];
         for p in ["Fitness", "Strength", "Sprinting", "Knit"] {
             tables.perk_init.push(PerkInit::AddPerk {
                 perk: p.into(),
@@ -1596,8 +2292,10 @@ mod tests {
             });
         }
         *sm.builtin_tables.borrow_mut() = tables.clone();
-        let mut chars =
-            Characters { perks: pz_characters::PerkFactory::from_tables(&tables).unwrap(), ..Default::default() };
+        let mut chars = Characters {
+            perks: pz_characters::PerkFactory::from_tables(&tables).unwrap(),
+            ..Default::default()
+        };
         chars.perks.init(&tables, &|k| k.to_string()).unwrap();
         chars.sim = pz_characters::SimStatics::from_tables(&tables).unwrap();
         let desc = SurvivorDesc::<LuaItem>::new_unregistered(&mut chars, &sm).unwrap();
@@ -1613,11 +2311,73 @@ mod tests {
         t.globals().set_str("player", character_value(&chr));
         let log: Rc<RefCell<Vec<String>>> = Rc::default();
         let l = log.clone();
-        install_event_sink(Rc::new(move |_t: &mut Thread, name: &str, args: &[Value]| {
-            let rest: Vec<String> = args.iter().skip(1).map(pz_kahlua::exec::java_value_of).collect();
-            l.borrow_mut().push(format!("{name} {}", rest.join(" ")));
-        }));
+        install_event_sink(Rc::new(
+            move |_t: &mut Thread, name: &str, args: &[Value]| {
+                let rest: Vec<String> = args
+                    .iter()
+                    .skip(1)
+                    .map(pz_kahlua::exec::java_value_of)
+                    .collect();
+                l.borrow_mut().push(format!("{name} {}", rest.join(" ")));
+            },
+        ));
         (t, chr, log)
+    }
+
+    #[test]
+    fn mod_data_is_live_per_character_and_survives_save_table_import() {
+        let (mut thread, player, _) = setup();
+        let other = Rc::new(RefCell::new(GameCharacter::new(
+            &shared_script_manager(),
+            CharacterKind::Zombie,
+        )));
+        thread.globals().set_str("other", character_value(&other));
+        thread.globals().set_str("alias", character_value(&player));
+        run(
+            &mut thread,
+            r#"
+            assert(not player:hasModData())
+            held = player:getModData()
+            heldNested = { fitnessMod = 2.5, [1] = true }
+            held.nested = heldNested
+            held.strengthUpTimer = -50000
+            assert(held == player:getModData() and held == alias:getModData())
+            assert(player:hasModData())
+            otherHeld = other:getModData()
+            assert(held ~= otherHeld and not other:hasModData())
+            heldNested.fitnessMod = 3.5
+        "#,
+        )
+        .unwrap();
+        let owned = player.borrow_mut().get_mod_data();
+        owned.set_str("fromRust", Value::str("live"));
+        let snapshot = player.borrow().saved_mod_data().unwrap().unwrap();
+        other.borrow_mut().load_mod_data(&snapshot).unwrap();
+        run(
+            &mut thread,
+            r#"
+            assert(held.fromRust == 'live')
+            assert(otherHeld == other:getModData())
+            assert(otherHeld.strengthUpTimer == -50000)
+            assert(otherHeld.nested.fitnessMod == 3.5 and otherHeld.nested[1] == true)
+            assert(otherHeld.nested ~= heldNested)
+            heldNested.fitnessMod = 4.5
+            assert(player:getModData().nested.fitnessMod == 4.5)
+            assert(other:getModData().nested.fitnessMod == 3.5)
+            replacement = { flag = true }
+            player:setModData(replacement)
+            assert(player:getModData() == replacement and held ~= replacement)
+            replacement.flag = nil
+            assert(not player:hasModData())
+            player:setModData(nil)
+            assert(not player:hasModData())
+            assert(player:getModData() ~= replacement)
+            local ok = pcall(function() player:setModData(12) end)
+            assert(not ok)
+            assert(heldNested.fitnessMod == 4.5)
+        "#,
+        )
+        .unwrap();
     }
 
     /// A script manager with an invented item, loaded from a unique temp
@@ -1625,13 +2385,24 @@ mod tests {
     fn item_scripts() -> ScriptManager {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("pz-bind-character-inv-{}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("pz-bind-character-inv-{}-{n}", std::process::id()));
         let p = dir.join("media/scripts/test.txt");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, "module Base { item TestBrick { DisplayName = Test Brick, ItemType = base:normal, Weight = 2.5, } }").unwrap();
         let sm = ScriptManager::new();
-        sm.registries.get("item_type").unwrap().borrow_mut().register_id("base:normal", true).unwrap();
-        sm.statics.items.borrow_mut().constants.insert("item_type", "NORMAL", "base:normal");
+        sm.enable_texture_capture();
+        sm.registries
+            .get("item_type")
+            .unwrap()
+            .borrow_mut()
+            .register_id("base:normal", true)
+            .unwrap();
+        sm.statics
+            .items
+            .borrow_mut()
+            .constants
+            .insert("item_type", "NORMAL", "base:normal");
         sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
         sm
@@ -1667,8 +2438,15 @@ mod tests {
         )
         .unwrap();
         // The Rust side sees the same container and item.
-        let Value::Object(o) = t.globals().get_str("s") else { panic!("no survivor") };
-        let chr = o.as_any().downcast_ref::<CharacterObject>().unwrap().0.clone();
+        let Value::Object(o) = t.globals().get_str("s") else {
+            panic!("no survivor")
+        };
+        let chr = o
+            .as_any()
+            .downcast_ref::<CharacterObject>()
+            .unwrap()
+            .0
+            .clone();
         let (id, weight) = {
             let c = chr.borrow();
             let i = c.items.primary_hand_item().expect("held brick");
@@ -1678,23 +2456,37 @@ mod tests {
         };
         assert_eq!(chr.borrow().items.inventory_items().len(), 1);
         // Held: `getEquippedWeight`, the same from Lua and Rust.
-        let mult = current_sim_context().zomboid_globals().equipped_or_worn_encumbrance_multiplier as f32;
+        let mult = current_sim_context()
+            .zomboid_globals()
+            .equipped_or_worn_encumbrance_multiplier as f32;
         assert_eq!(weight, 2.5 * mult);
-        assert!(t.globals().get_str("heldWeight").raw_equals(&float_value(weight)));
+        assert!(t
+            .globals()
+            .get_str("heldWeight")
+            .raw_equals(&float_value(weight)));
         // Removing the item from Lua takes it out of the hand (`removeFromHands`).
         run(&mut t, "s:getInventory():Remove(brick) assert(s:getPrimaryHandItem() == nil and brick:getContainer() == nil)")
             .unwrap();
-        assert!(chr.borrow().items.item(id).is_none() && chr.borrow().items.primary_hand_item.is_none());
+        assert!(
+            chr.borrow().items.item(id).is_none() && chr.borrow().items.primary_hand_item.is_none()
+        );
         assert!(log.borrow().iter().any(|l| l.starts_with("OnEquipPrimary")));
-        assert_eq!(log.borrow().iter().filter(|l| l.starts_with("OnEquipPrimary")).count(), 2);
+        assert_eq!(
+            log.borrow()
+                .iter()
+                .filter(|l| l.starts_with("OnEquipPrimary"))
+                .count(),
+            2
+        );
     }
 
     /// A script manager with invented clothing (`t:` body locations and
     /// tags), loaded from a unique temp dir.
-    fn clothing_scripts() -> ScriptManager {
+    pub(crate) fn clothing_scripts() -> ScriptManager {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("pz-bind-character-worn-{}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("pz-bind-character-worn-{}-{n}", std::process::id()));
         let p = dir.join("media/scripts/test.txt");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         let item = |name: &str, loc: &str, extra: &str| {
@@ -1709,6 +2501,7 @@ mod tests {
         );
         std::fs::write(&p, src).unwrap();
         let sm = ScriptManager::new();
+        sm.enable_texture_capture();
         for (reg, id, field) in [
             ("item_type", "t:clothing", "CLOTHING"),
             ("item_body_location", "t:hat", "HAT"),
@@ -1718,8 +2511,17 @@ mod tests {
             ("item_body_location", "t:ring", "RIGHT_RING_FINGER"),
             ("item_tag", "t:noragdoll", "NO_RAGDOLL"),
         ] {
-            sm.registries.get(reg).unwrap().borrow_mut().register_id(id, true).unwrap();
-            sm.statics.items.borrow_mut().constants.insert(reg, field, id);
+            sm.registries
+                .get(reg)
+                .unwrap()
+                .borrow_mut()
+                .register_id(id, true)
+                .unwrap();
+            sm.statics
+                .items
+                .borrow_mut()
+                .constants
+                .insert(reg, field, id);
         }
         sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
@@ -1798,12 +2600,31 @@ mod tests {
             "#,
         )
         .unwrap();
-        let Value::Object(o) = t.globals().get_str("s") else { panic!("no survivor") };
-        let chr = o.as_any().downcast_ref::<CharacterObject>().unwrap().0.clone();
-        let cap = chr.borrow().items.inventory_items().iter().find(|i| i.borrow().get_type() == "TestCap").unwrap().borrow().id;
+        let Value::Object(o) = t.globals().get_str("s") else {
+            panic!("no survivor")
+        };
+        let chr = o
+            .as_any()
+            .downcast_ref::<CharacterObject>()
+            .unwrap()
+            .0
+            .clone();
+        let cap = chr
+            .borrow()
+            .items
+            .inventory_items()
+            .iter()
+            .find(|i| i.borrow().get_type() == "TestCap")
+            .unwrap()
+            .borrow()
+            .id;
         assert!(chr.borrow().items.is_worn(cap));
         // `onWornItemsChanged` reads the worn tags (the raw `WornItems.setItem` does not run it).
-        run(&mut t, "s:clearWornItems() assert(w:size() == 0) s:setWornItem(ItemBodyLocation.HAT, cap)").unwrap();
+        run(
+            &mut t,
+            "s:clearWornItems() assert(w:size() == 0) s:setWornItem(ItemBodyLocation.HAT, cap)",
+        )
+        .unwrap();
         assert!(!chr.borrow().worn_clothing_can_ragdoll);
         // A worn item taken out of the inventory reads back as nil.
         run(&mut t, "s:getInventory():Remove(cap) assert(w:size() == 1 and w:get(0):getItem() == nil and s:getClothingItem_Head() == nil)")
@@ -1811,7 +2632,11 @@ mod tests {
         run(&mut t, "s:clearWornItems() assert(w:isEmpty())").unwrap();
         assert!(chr.borrow().worn_clothing_can_ragdoll);
         // Without worn items (a character made without `initWornItems`).
-        run(&mut t, "assert(player:getWornItems() == nil and player:getBodyLocationGroup() == nil)").unwrap();
+        run(
+            &mut t,
+            "assert(player:getWornItems() == nil and player:getBodyLocationGroup() == nil)",
+        )
+        .unwrap();
         assert!(run(&mut t, "player:getWornItem(ItemBodyLocation.HAT)").is_err());
         assert!(run(&mut t, "player:isEquippedClothing(nil)").is_err());
         run(&mut t, "player:clearWornItems()").unwrap();
@@ -1822,18 +2647,185 @@ mod tests {
     struct RecFloor(Vec<((i32, i32, i32), i32)>);
 
     impl FloorWorld for RecFloor {
-        fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> Option<(i32, i32, i32)> {
-            Some((x, y, z))
+        fn solid_floor_ref_at(
+            &self,
+            x: i32,
+            y: i32,
+            z: i32,
+        ) -> pz_inventory::floor_drop::HostResult<Option<pz_inventory::floor_drop::FloorSquare>>
+        {
+            self.solid_floor_at(x, y, z)
+                .map(|sq| sq.map(pz_inventory::floor_drop::FloorSquare::data_projection))
         }
-        fn apparent_z(&self, sq: (i32, i32, i32), _dx: f32, _dy: f32) -> f32 {
-            sq.2 as f32
+        fn apparent_z_on(
+            &self,
+            sq: &pz_inventory::floor_drop::FloorSquare,
+            x: f32,
+            y: f32,
+        ) -> pz_inventory::floor_drop::HostResult<f32> {
+            assert!(
+                sq.owner_slot().is_none(),
+                "explicit coordinate-only test profile"
+            );
+            self.apparent_z(sq.position(), x, y)
         }
-        fn rand_float(&mut self, min: f32, _max: f32) -> f32 {
-            min
+        fn add_world_inventory_item_on(
+            &mut self,
+            sq: &pz_inventory::floor_drop::FloorSquare,
+            item: &pz_inventory::shared::ItemRef,
+            x: f32,
+            y: f32,
+            h: f32,
+        ) -> pz_inventory::floor_drop::HostResult<()> {
+            assert!(
+                sq.owner_slot().is_none(),
+                "explicit coordinate-only test profile"
+            );
+            self.add_world_inventory_item(sq.position(), item, x, y, h)
         }
-        fn add_world_inventory_item(&mut self, sq: (i32, i32, i32), item: &pz_inventory::shared::ItemRef, _x: f32, _y: f32, _h: f32) {
+
+        fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<(i32, i32, i32)>> {
+            Ok(Some((x, y, z)))
+        }
+        fn apparent_z(&self, sq: (i32, i32, i32), _dx: f32, _dy: f32) -> HostResult<f32> {
+            Ok(sq.2 as f32)
+        }
+        fn rand_float(&mut self, min: f32, _max: f32) -> HostResult<f32> {
+            Ok(min)
+        }
+        fn add_world_inventory_item(
+            &mut self,
+            sq: (i32, i32, i32),
+            item: &pz_inventory::shared::ItemRef,
+            _x: f32,
+            _y: f32,
+            _h: f32,
+        ) -> HostResult<()> {
             self.0.push((sq, item.borrow().id));
+            Ok(())
         }
+    }
+
+    #[test]
+    fn drop_host_failure_preserves_typed_error_and_only_completed_prefix_events() {
+        struct FailingFloor { calls: Rc<std::cell::Cell<usize>>, fail_at: usize }
+        impl FloorWorld for FailingFloor {
+            fn solid_floor_ref_at(
+                &self,
+                x: i32,
+                y: i32,
+                z: i32,
+            ) -> pz_inventory::floor_drop::HostResult<Option<pz_inventory::floor_drop::FloorSquare>>
+            {
+                self.solid_floor_at(x, y, z)
+                    .map(|sq| sq.map(pz_inventory::floor_drop::FloorSquare::data_projection))
+            }
+            fn apparent_z_on(
+                &self,
+                sq: &pz_inventory::floor_drop::FloorSquare,
+                x: f32,
+                y: f32,
+            ) -> pz_inventory::floor_drop::HostResult<f32> {
+                assert!(
+                    sq.owner_slot().is_none(),
+                    "explicit coordinate-only test profile"
+                );
+                self.apparent_z(sq.position(), x, y)
+            }
+            fn add_world_inventory_item_on(
+                &mut self,
+                sq: &pz_inventory::floor_drop::FloorSquare,
+                item: &pz_inventory::shared::ItemRef,
+                x: f32,
+                y: f32,
+                h: f32,
+            ) -> pz_inventory::floor_drop::HostResult<()> {
+                assert!(
+                    sq.owner_slot().is_none(),
+                    "explicit coordinate-only test profile"
+                );
+                self.add_world_inventory_item(sq.position(), item, x, y, h)
+            }
+
+            fn solid_floor_at(
+                &self,
+                x: i32,
+                y: i32,
+                z: i32,
+            ) -> HostResult<Option<(i32, i32, i32)>> {
+                Ok(Some((x, y, z)))
+            }
+            fn apparent_z(&self, sq: (i32, i32, i32), _: f32, _: f32) -> HostResult<f32> {
+                Ok(sq.2 as f32)
+            }
+            fn rand_float(&mut self, min: f32, _: f32) -> HostResult<f32> {
+                Ok(min)
+            }
+            fn add_world_inventory_item(
+                &mut self,
+                _: (i32, i32, i32),
+                _: &pz_inventory::shared::ItemRef,
+                _: f32,
+                _: f32,
+                _: f32,
+            ) -> HostResult<()> {
+                self.calls.set(self.calls.get() + 1);
+                if self.calls.get() == self.fail_at {
+                    return Err(RuntimeHostError::Unsupported {
+                        operation: "fixture floor placement phase",
+                        kind: None,
+                    });
+                }
+                Ok(())
+            }
+        }
+        struct Restore(Option<FloorWorldRef>);
+        impl Drop for Restore { fn drop(&mut self) { drop(install_floor_world(self.0.take())); } }
+        for fail_at in [1,2] {
+            let (mut t, player, log) = setup_with(clothing_scripts());
+            let _restore = Restore(floor_world());
+            crate::bind_items::install_item_env(Rc::new(crate::bind_items::GameItemEnv::new(None)));
+            crate::bind_items::register(&mut t);
+            crate::bind_item_container::register(&mut t);
+            crate::bind_item_visual::register(&mut t);
+            player.borrow_mut().path.current_square=Some((4,6,0));
+            run(&mut t, "local inv=player:getInventory(); first=inv:AddItem('Base.TestBoots'); second=inv:AddItem('Base.TestBoots'); player:setPrimaryHandItem(first); player:setSecondaryHandItem(second)").unwrap();
+            let calls=Rc::new(std::cell::Cell::new(0));
+            drop(install_floor_world(Some(Rc::new(RefCell::new(FailingFloor {calls:calls.clone(),fail_at})))));
+            log.borrow_mut().clear();
+            let error=run(&mut t,"player:dropHandItems(); error('false success after failed placement')").unwrap_err();
+            assert!(error.contains("fixture floor placement phase") && error.contains("pz.host.Unsupported"));
+            assert!(!error.contains("false success"));
+            assert_eq!(calls.get(),fail_at);
+            let events=log.borrow();
+            assert_eq!(events.iter().filter(|e|e.starts_with("OnContainerUpdate ")).count(),fail_at-1);
+            assert_eq!(events.iter().filter(|e|e.starts_with("onItemFall ")).count(),fail_at-1);
+            assert!(player.borrow().items.primary_hand_item.is_none());
+            if fail_at==1 { assert!(player.borrow().items.secondary_hand_item.is_some()); }
+        }
+    }
+
+    #[test]
+    fn held_drop_world_is_typed_borrow_and_does_not_run_later_drop_work() {
+        let (mut t, player, log)=setup_with(clothing_scripts());
+        crate::bind_items::install_item_env(Rc::new(crate::bind_items::GameItemEnv::new(None)));
+        crate::bind_items::register(&mut t);
+        crate::bind_item_container::register(&mut t);
+        crate::bind_item_visual::register(&mut t);
+        player.borrow_mut().path.current_square=Some((4,6,0));
+        run(&mut t,"local inv=player:getInventory(); first=inv:AddItem('Base.TestBoots'); player:setPrimaryHandItem(first)").unwrap();
+        log.borrow_mut().clear();
+        let old=floor_world();
+        let floor=Rc::new(RefCell::new(RecFloor::default()));
+        drop(install_floor_world(Some(floor.clone())));
+        let guard=floor.borrow_mut();
+        let error=run(&mut t,"player:dropHandItems(); error('false success')").unwrap_err();
+        assert!(error.contains("pz.host.Borrowed") && !error.contains("false success"));
+        assert!(guard.0.is_empty());
+        assert!(log.borrow().is_empty());
+        assert!(player.borrow().items.primary_hand_item.is_some());
+        drop(guard);
+        drop(install_floor_world(old));
     }
 
     /// `setWornItem`'s `forceDropTooHeavy` and `dropHandItems` from Lua
@@ -1854,8 +2846,9 @@ mod tests {
             p.path.current_square = Some((4, 6, 0));
             p.items.inventory.borrow_mut().capacity = 1;
         }
-        // Without a floor world nothing drops.
-        install_floor_world(None);
+        // These still-default names have no effective item weight, so the
+        // native capacity check does not need a floor service yet.
+        drop(install_floor_world(None));
         run(
             &mut t,
             r#"
@@ -1877,7 +2870,7 @@ mod tests {
             i.borrow_mut().name = "Invented".into();
         }
         let floor = Rc::new(RefCell::new(RecFloor::default()));
-        install_floor_world(Some(floor.clone()));
+        drop(install_floor_world(Some(floor.clone())));
         // The swap leaves the coat unequipped (1; the worn tee weighs 0 with
         // this context's multiplier): no room for another 1 in a capacity
         // of 1, so it drops; with forceDropTooHeavy false it stays.
@@ -1898,11 +2891,14 @@ mod tests {
             "#,
         )
         .unwrap();
-        install_floor_world(None);
+        drop(install_floor_world(None));
         let ids: Vec<i32> = floor.borrow().0.iter().map(|d| d.1).collect();
         let (coat, boots) = {
             let id = |n: &str| match t.globals().get_str(n) {
-                Value::Object(o) => o.as_any().downcast_ref::<crate::bind_items::LuaInventoryItem>().map(|i| i.item.borrow().id),
+                Value::Object(o) => o
+                    .as_any()
+                    .downcast_ref::<crate::bind_items::LuaInventoryItem>()
+                    .map(|i| i.item.borrow().id),
                 _ => None,
             };
             (id("coat"), id("boots"))
@@ -2003,6 +2999,117 @@ mod tests {
     }
 
     #[test]
+    fn player_num_and_vehicle_from_lua() {
+        let (mut t, chr, _) = setup();
+        chr.borrow_mut().player.player_index = 2;
+        run(
+            &mut t,
+            r#"
+            assert(player:getPlayerNum() == 2 and player:getIndex() == 2)
+            assert(player:getVehicle() == nil)
+            assert(player:getJoypadBind() == -1)
+            "#,
+        )
+        .unwrap();
+        // A vehicle id the manager does not know reads as no vehicle.
+        chr.borrow_mut().path.vehicle = Some(i16::MAX);
+        run(&mut t, "assert(player:getVehicle() == nil)").unwrap();
+        chr.borrow_mut().player.input.joypad_bind = 3;
+        run(&mut t, "assert(player:getJoypadBind() == 3)").unwrap();
+    }
+
+    #[test]
+    fn character_coordinates_and_local_player_membership_from_lua() {
+        struct Restore {
+            context: Rc<dyn SimContext>,
+            slot: Option<LuaGameCharacterRef>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                install_sim_context(self.context.clone());
+                crate::bind_players::set_player(0, self.slot.clone());
+            }
+        }
+        struct Server;
+        impl SimContext for Server {
+            fn is_server(&self) -> bool {
+                true
+            }
+        }
+        let _restore = Restore {
+            context: current_sim_context(),
+            slot: crate::bind_players::player(0),
+        };
+        let (mut t, chr, _) = setup();
+        {
+            let mut c = chr.borrow_mut();
+            (c.vars.x, c.vars.y, c.vars.z) = (12.5, -7.75, 3.125);
+        }
+        run(
+            &mut t,
+            "assert(player:getX() == 12.5 and player:getY() == -7.75 and player:getZ() == 3.125)",
+        )
+        .unwrap();
+        {
+            let mut c = chr.borrow_mut();
+            (c.vars.x, c.vars.y, c.vars.z) = (-22.25, 14.0, -1.0);
+        }
+        run(
+            &mut t,
+            "assert(player:getX() == -22.25 and player:getY() == 14 and player:getZ() == -1)",
+        )
+        .unwrap();
+
+        install_sim_context(Rc::new(DefaultSimContext));
+        crate::bind_players::set_player(0, Some(chr.clone()));
+        run(&mut t, "assert(player:isLocalPlayer())").unwrap();
+        crate::bind_players::set_player(0, None);
+        run(&mut t, "assert(not player:isLocalPlayer())").unwrap();
+        crate::bind_players::set_player(0, Some(chr));
+        install_sim_context(Rc::new(Server));
+        run(&mut t, "assert(not player:isLocalPlayer())").unwrap();
+    }
+
+    #[test]
+    fn character_world_handles_follow_loaded_cell() {
+        let (mut t, chr, _) = setup();
+        crate::bind_world::register(&mut t);
+        crate::bind_world::set_cell(None);
+        run(
+            &mut t,
+            "assert(player:getCurrentSquare() == nil and player:getCell() == nil)",
+        )
+        .unwrap();
+
+        let mut cell = pz_world::IsoCell::default();
+        let mut chunk = pz_world::IsoChunk::new(0, 0);
+        chunk.set_square(
+            1,
+            2,
+            0,
+            Some((pz_world::IsoGridSquare::new(1, 2, 0)).into()),
+        );
+        cell.chunks.insert((0, 0), chunk);
+        crate::bind_world::set_cell(Some(cell));
+        chr.borrow_mut().path.current_square = Some((1, 2, 0));
+        run(
+            &mut t,
+            r#"
+            local cell = IsoWorld.instance:getCell()
+            local square = cell:getGridSquare(1, 2, 0)
+            assert(player:getCell() == cell)
+            assert(player:getCurrentSquare() == square and player:getSquare() == square)
+            "#,
+        )
+        .unwrap();
+        // A coordinate outside the loaded cell does not create a square.
+        chr.borrow_mut().path.current_square = Some((100, 100, 0));
+        run(&mut t, "assert(player:getCurrentSquare() == nil)").unwrap();
+        crate::bind_world::set_cell(None);
+        run(&mut t, "assert(player:getCell() == nil)").unwrap();
+    }
+
+    #[test]
     fn states_and_variables_from_lua() {
         let (mut t, chr, _) = setup();
         crate::bind_states::register(&mut t, &Rc::new(ScriptManager::new()));
@@ -2034,7 +3141,11 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(chr.borrow().state.action_context.has_event_occurred("eventx", None));
+        assert!(chr
+            .borrow()
+            .state
+            .action_context
+            .has_event_occurred("eventx", None));
     }
 
     #[test]
@@ -2100,6 +3211,9 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(chr.borrow().moodles.all().iter().map(|m| m.level()).max(), Some(2));
+        assert_eq!(
+            chr.borrow().moodles.all().iter().map(|m| m.level()).max(),
+            Some(2)
+        );
     }
 }

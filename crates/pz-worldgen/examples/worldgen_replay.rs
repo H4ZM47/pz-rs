@@ -230,6 +230,10 @@ fn main() {
             chunks.iter().map(|c| c.1).min().unwrap(),
             chunks.iter().map(|c| c.1).max().unwrap(),
         );
+        let blood_body_parts =
+            pz_world::save::SaveTables::from_game_jar(&game.join("projectzomboid.jar"))
+                .expect("visual body tables")
+                .blood_body_parts;
         let mut cell = IsoCell::default();
         let mut cache = LotCache::default();
         let mut order = Vec::new();
@@ -238,6 +242,7 @@ fn main() {
                 let mut rand = JavaRandom::new(((wx as i64) << 32) ^ (wy as i64 & 0xffff_ffff));
                 let mut hooks = NoHooks;
                 let mut env = ChunkLoadEnv {
+                    blood_body_parts: blood_body_parts,
                     sprites: &mut sprites,
                     fix2x: &fix2x,
                     rand: &mut rand,
@@ -266,21 +271,28 @@ fn main() {
             let (g_null, g_obj, g_room) = &game_sq[&k];
             n += 1;
             let ours = cell.get_grid_square(k.0, k.1, k.2);
-            let p_obj = ours.map(|sq| {
+            let p_obj = ours.as_ref().map(|sq| {
+                let sq = sq.borrow();
                 sq.objects
                     .iter()
                     .map(|o| {
+                        let o = o.borrow();
                         format!(
                             "{}:{}",
                             o.kind.class_name(),
-                            o.sprite.map_or("null", |s| sprites.sprites[s].name())
+                            o.sprite
+                                .try_read(&sprites)
+                                .expect("worldgen replay requires unborrowed actual sprite")
+                                .as_ref()
+                                .map_or("null", |s| s.name())
                         )
                     })
                     .collect::<Vec<_>>()
                     .join(";")
             });
             let p_null = ours.is_none();
-            let p_room = ours.map_or((String::new(), false), |sq| {
+            let p_room = ours.as_ref().map_or((String::new(), false), |sq| {
+                let sq = sq.borrow();
                 (
                     sq.room_id.to_string(),
                     sq.room_def(&meta).is_some_and(|r| r.building.is_some()),

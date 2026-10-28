@@ -84,7 +84,7 @@ pub fn get<I: 'static>(var: CharVar, c: &GameCharacter<I>) -> Option<VariableVal
         CharVar::ZMovingNetwork => B(c.vars.moving),
         CharVar::ZHitHeadType => Int(c.vars.hit_head_while_on_floor),
         CharVar::ZRealState => S("Idle".into()),
-        CharVar::ZReanimatedForGrappleOnly => B(z.reanimated_for_grapple_only),
+        CharVar::ZReanimatedForGrappleOnly => B(z.is_reanimated_for_grapple_only()),
         CharVar::ZAttack => B(should_attack(c)),
         CharVar::ZIsFacingTarget => B(has && c.is_facing_target_at(Some((t.x, t.y)))),
         CharVar::ZTargetSeenTime => F(z.target_seen_time),
@@ -200,7 +200,7 @@ pub fn is_read_only(var: CharVar) -> Option<bool> {
 fn should_attack<I: 'static>(c: &GameCharacter<I>) -> bool {
     let z = &c.zombie;
     let t = &z.target_view;
-    if t.system_zombies_dont_attack || z.reanimated_for_grapple_only {
+    if t.system_zombies_dont_attack || z.is_reanimated_for_grapple_only() {
         return false;
     }
     let target = c.vars.target.filter(|_| !z.clear_target_requested.get());

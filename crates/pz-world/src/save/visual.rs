@@ -257,6 +257,28 @@ impl MovingBase {
 
     /// [`MovingBase::save`] writing `(x, y)` as the position.
     pub fn save_at(&self, w: &mut Writer, class_id: i8, x: f32, y: f32) {
+        self.save_header(w, class_id, x, y);
+        match self.mod_data.as_ref().filter(|t| !t.is_empty()) {
+            Some(t) => {
+                w.i8(1);
+                t.save(w);
+            }
+            None => w.i8(0),
+        }
+    }
+
+    /// The runtime character's live table, already serialized with
+    /// `KahluaTableImpl.save(ByteBuffer)`. `Some` retains the presence
+    /// flag even when the payload contains zero saveable entries.
+    pub fn save_with_mod_data_bytes(&self, w: &mut Writer, class_id: i8, mod_data: Option<&[u8]>) {
+        self.save_header(w, class_id, self.x, self.y);
+        w.bool(mod_data.is_some());
+        if let Some(bytes) = mod_data {
+            w.bytes(bytes);
+        }
+    }
+
+    fn save_header(&self, w: &mut Writer, class_id: i8, x: f32, y: f32) {
         w.i8(1);
         w.i8(class_id);
         w.f32(self.offset_x);
@@ -265,13 +287,6 @@ impl MovingBase {
         w.f32(y);
         w.f32(self.z);
         w.i32(self.dir);
-        match self.mod_data.as_ref().filter(|t| !t.is_empty()) {
-            Some(t) => {
-                w.i8(1);
-                t.save(w);
-            }
-            None => w.i8(0),
-        }
     }
 }
 

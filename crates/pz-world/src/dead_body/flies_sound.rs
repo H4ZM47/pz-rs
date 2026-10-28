@@ -18,16 +18,17 @@
 use std::collections::HashMap;
 
 use pz_core::debug::DebugType;
+use pz_entity::runtime_load::{HostResult, RuntimeHostError};
 
-use crate::chunk::IsoCell;
 use crate::defs::BuildingIdx;
-use crate::meta_grid::IsoMetaGrid;
 use crate::square_mutation::{RenderSquareHooks, SquarePos};
+use crate::SquareRef;
 
-use super::corpse_count::{coorddivision, get_corpse_count, square_building};
+use super::corpse_count::coorddivision;
 
-/// `FliesSound.maxCorpseCount`.
-pub const MAX_CORPSE_COUNT: i32 = 25;
+/// Initial value of native mutable `FliesSound.maxCorpseCount` (unused by
+/// this selected update path); not a substitute for a live static read.
+pub const INITIAL_MAX_CORPSE_COUNT: i32 = 25;
 
 /// The sound `ChunkLevelData.update` loops.
 pub const CORPSE_FLIES_SOUND: &str = "CorpseFlies";
@@ -59,7 +60,7 @@ pub trait FliesSoundHooks {
 
 /// What `FliesSound.update` reads about a local player
 /// (`IsoPlayer.players[i]`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct FliesPlayer {
     /// `playerIndex`.
     pub index: usize,
@@ -68,7 +69,7 @@ pub struct FliesPlayer {
     pub yi: i32,
     pub zi: i32,
     /// `getCurrentSquare()` (`None` skips the player).
-    pub square: Option<SquarePos>,
+    pub square: Option<SquareRef>,
     /// `hasTrait(CharacterTrait.DEAF)`.
     pub deaf: bool,
 }
@@ -92,33 +93,56 @@ pub struct FliesEnv {
 /// square's chunk level (`OBJECT_ADD` on, `OBJECT_REMOVE` off) and is
 /// passed to the render snapshot ([`RenderSquareHooks::flies_changed`]).
 pub fn set_has_flies(
-    cell: &mut IsoCell,
+    square: &SquareRef,
     render: &mut dyn RenderSquareHooks,
-    pos: SquarePos,
     flies: bool,
-) {
-    let Some(sq) = cell.get_grid_square_mut(pos.0, pos.1, pos.2) else {
-        return;
+) -> HostResult<()> {
+    let changed = {
+        let sq = square
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("setHasFlies square read"))?;
+        if sq.has_flies == flies {
+            None
+        } else {
+            Some((sq.x, sq.y, sq.z))
+        }
     };
-    if sq.has_flies != flies {
-        sq.has_flies = flies;
+    if let Some(pos) = changed {
         render.invalidate_render_chunk_level(
             pos.0.div_euclid(8),
             pos.1.div_euclid(8),
             pos.2,
             if flies { 64 } else { 128 },
         );
-        render.flies_changed(pos, flies);
+    }
+    // Actual native setHasFlies invalidates before its putfield, including
+    // any observation through the invalidation service. No guard crosses it.
+    square
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("setHasFlies square write"))?
+        .has_flies = flies;
+    if changed.is_some() {
+        render.flies_changed(square.clone(), flies);
+    }
+    Ok(())
+}
+
+// A displaced actual square can own VM-backed children. Its final owner
+// retires at the existing outer host boundary, after enclosing guards end.
+fn retire_square(square: Option<SquareRef>) {
+    if let Some(square) = square {
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_owner(pz_entity::EntityOwner::from_ref(&square));
+        pz_inventory::component_host::retire_components(retired);
     }
 }
 
 /// `FliesSound.FadeEmitter`.
-#[derive(Clone, Debug, PartialEq)]
 struct FadeEmitter {
     emitter: Option<EmitterId>,
     volume: f32,
     target_volume: f32,
-    sq: Option<SquarePos>,
+    sq: Option<SquareRef>,
     /// The chunk owning it was unloaded: freed once out of the fade list.
     orphan: bool,
 }
@@ -139,7 +163,13 @@ impl FadeEmitter {
         self.emitter = None;
         self.volume = 1.0;
         self.target_volume = 1.0;
-        self.sq = None;
+        retire_square(self.sq.take());
+    }
+}
+
+impl Drop for FadeEmitter {
+    fn drop(&mut self) {
+        retire_square(self.sq.take());
     }
 }
 
@@ -176,7 +206,7 @@ impl Default for PlayerData {
 }
 
 /// `FliesSound.instance`.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Default)]
 pub struct FliesSound {
     player_data: [PlayerData; 4],
     /// `fadeEmitters`, indices into `emitters` (duplicates possible, as
@@ -189,12 +219,34 @@ pub struct FliesSound {
     chunks: HashMap<(i32, i32), Vec<[Option<usize>; 4]>>,
 }
 
-/// What [`FliesSound::update`] works on.
-pub struct FliesWorld<'a> {
-    pub cell: &'a mut IsoCell,
-    pub meta: &'a IsoMetaGrid,
-    pub render: &'a mut dyn RenderSquareHooks,
-    pub hooks: &'a mut dyn FliesSoundHooks,
+/// Current-world services for the algorithm. Each query is callback-free and
+/// ends its WORLD/square guards before returning. Sound/render services run
+/// after those queries, and may reenter the actual retained square.
+///
+/// An engine adapter must use the current actual chunk/count/building fields,
+/// return the same retained SquareRefs, and enumerate corpse squares in native
+/// row order. It must not hold a parent WORLD guard throughout `update`.
+/// Live engine activation and native building/chunk identity remain follow-up.
+pub trait FliesWorld {
+    fn building(&self, square: &SquareRef) -> HostResult<Option<BuildingIdx>>;
+    fn has_chunk(&self, wx: i32, wy: i32) -> HostResult<bool>;
+    fn corpse_count(
+        &self,
+        wx: i32,
+        wy: i32,
+        z: i32,
+        building: Option<BuildingIdx>,
+        zombie_health_impact: bool,
+    ) -> HostResult<i32>;
+    fn corpse_squares(
+        &self,
+        wx: i32,
+        wy: i32,
+        z: i32,
+        building: Option<BuildingIdx>,
+    ) -> HostResult<Vec<SquareRef>>;
+    fn set_has_flies(&mut self, square: &SquareRef, flies: bool) -> HostResult<()>;
+    fn hooks(&mut self) -> &mut dyn FliesSoundHooks;
 }
 
 impl FliesSound {
@@ -224,11 +276,32 @@ impl FliesSound {
 
     /// The emitters playing now, with their square, volume and target
     /// volume, in creation order of their slots.
-    pub fn playing(&self) -> Vec<(EmitterId, Option<SquarePos>, f32, f32)> {
-        self.emitters
-            .iter()
-            .filter_map(|e| e.emitter.map(|id| (id, e.sq, e.volume, e.target_volume)))
-            .collect()
+    pub fn playing(&self) -> HostResult<Vec<(EmitterId, Option<SquarePos>, f32, f32)>> {
+        let mut playing = Vec::new();
+        for emitter in &self.emitters {
+            let Some(id) = emitter.emitter else { continue };
+            let pos = match emitter.sq.as_ref() {
+                Some(square) => {
+                    let sq = square
+                        .try_borrow()
+                        .map_err(|_| RuntimeHostError::Borrowed("FliesSound playing square"))?;
+                    Some((sq.x, sq.y, sq.z))
+                }
+                None => None,
+            };
+            playing.push((id, pos, emitter.volume, emitter.target_volume));
+        }
+        Ok(playing)
+    }
+
+    /// Trace every physical actual-square field when the engine owns this
+    /// manager. Coordinate metadata from `playing` is never a replacement.
+    pub fn visit_square_refs(&self, mut visit: impl FnMut(&SquareRef)) {
+        for emitter in &self.emitters {
+            if let Some(square) = emitter.sq.as_ref() {
+                visit(square);
+            }
+        }
     }
 
     fn level_slot(&self, wx: i32, wy: i32, z: i32, pn: usize) -> Option<usize> {
@@ -312,26 +385,26 @@ impl FliesSound {
     /// when the sandbox's `DecayingCorpseHealthImpact` is 1.
     pub fn update(
         &mut self,
-        w: &mut FliesWorld<'_>,
+        w: &mut dyn FliesWorld,
         players: &[Option<FliesPlayer>],
         env: &FliesEnv,
-    ) {
+    ) -> HostResult<()> {
         if env.decaying_corpse_health_impact == 1 {
-            return;
+            return Ok(());
         }
         for i in 0..env.num_players.min(4) {
-            let Some(p) = players.get(i).copied().flatten() else {
+            let Some(p) = players.get(i).and_then(Option::as_ref) else {
                 continue;
             };
             if p.square.is_none() {
                 continue;
             }
-            self.update_player(i, w, &p, env);
+            self.update_player(i, w, p, env)?;
         }
         let mut i = 0;
         while i < self.fade_emitters.len() {
             let e = self.fade_emitters[i];
-            if self.update_fade(e, w.hooks, env.thirty_fps_multiplier) {
+            if self.update_fade(e, w.hooks(), env.thirty_fps_multiplier) {
                 self.fade_emitters.remove(i);
                 if self.emitters[e].orphan && !self.fade_emitters.contains(&e) {
                     self.emitters[e].orphan = false;
@@ -341,6 +414,7 @@ impl FliesSound {
             }
             i += 1;
         }
+        Ok(())
     }
 
     /// `FadeEmitter.update()`: whether it leaves the fade list.
@@ -372,12 +446,18 @@ impl FliesSound {
     fn update_player(
         &mut self,
         pn: usize,
-        w: &mut FliesWorld<'_>,
+        w: &mut dyn FliesWorld,
         p: &FliesPlayer,
         env: &FliesEnv,
-    ) {
-        let sq = p.square.unwrap();
-        let building = square_building(w.cell, w.meta, sq.0, sq.1, sq.2);
+    ) -> HostResult<()> {
+        let square = p.square.as_ref().unwrap();
+        let sq = {
+            let sq = square
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("FliesSound player square"))?;
+            (sq.x, sq.y, sq.z)
+        };
+        let building = w.building(square)?;
         let d = &mut self.player_data[pn];
         if d.deaf != p.deaf {
             d.force_update = true;
@@ -389,7 +469,7 @@ impl FliesSound {
             && coorddivision(p.yi, 8) == d.wy
             && p.zi == d.z;
         if !d.force_update && same {
-            return;
+            return Ok(());
         }
         d.force_update = false;
         d.wx = coorddivision(sq.0, 8);
@@ -398,29 +478,33 @@ impl FliesSound {
         d.building = building;
         d.refs.clear();
         let (wx, wy, z) = (d.wx, d.wy, d.z);
-        let mut refs = Vec::new();
         for dy in -1..=1 {
             for dx in -1..=1 {
                 // `getChunkData((wx + dx) * 8, (wy + dy) * 8)`.
                 let key = ((wx + dx) * 8).div_euclid(8);
                 let key = (key, ((wy + dy) * 8).div_euclid(8));
-                if !self.chunks.contains_key(&key) || !w.cell.chunks.contains_key(&key) {
+                if !self.chunks.contains_key(&key) || !w.has_chunk(key.0, key.1)? {
                     continue;
                 }
                 let level = (key.0, key.1, z);
-                self.update_level(level, wx + dx, wy + dy, z, pn, building, w, p, env);
-                refs.push(level);
+                self.update_level(level, wx + dx, wy + dy, z, pn, building, w, p, env)?;
+                // Native refs.add follows each successful level update.
+                // A later failure preserves this completed field prefix.
+                self.player_data[pn].refs.push(level);
             }
         }
-        let prev = std::mem::take(&mut self.player_data[pn].refs_prev);
-        for l in &prev {
-            if !refs.contains(l) {
-                self.deref(*l, pn, w);
+        for i in 0..self.player_data[pn].refs_prev.len() {
+            let previous = self.player_data[pn].refs_prev[i];
+            if !self.player_data[pn].refs.contains(&previous) {
+                self.deref(previous, pn, w)?;
             }
         }
+        // Only after every deref succeeds does the native method clear
+        // refsPrev and copy the completed current refs into it.
         let d = &mut self.player_data[pn];
-        d.refs = refs.clone();
-        d.refs_prev = refs;
+        d.refs_prev.clear();
+        d.refs_prev.extend_from_slice(&d.refs);
+        Ok(())
     }
 
     fn slot(&mut self, level: LevelKey, pn: usize) -> &mut Option<usize> {
@@ -446,28 +530,23 @@ impl FliesSound {
         z: i32,
         pn: usize,
         building: Option<BuildingIdx>,
-        w: &mut FliesWorld<'_>,
+        w: &mut dyn FliesWorld,
         p: &FliesPlayer,
         env: &FliesEnv,
-    ) {
-        let hooks = &*w.hooks;
-        let zombies = |x: i32, y: i32, z: i32| hooks.zombie_count(x, y, z);
-        let mut corpse_count = get_corpse_count(
-            w.cell,
-            w.meta,
-            wx,
-            wy,
-            z,
-            building,
-            env.zombie_health_impact
-                .then_some(&zombies as &dyn Fn(i32, i32, i32) -> i32),
-        );
+    ) -> HostResult<()> {
+        let mut corpse_count = w.corpse_count(wx, wy, z, building, env.zombie_health_impact)?;
         if p.deaf {
             corpse_count = 0;
         }
-        if w.hooks.sickness_from_corpses_rate(corpse_count) as f64 > env.food_sickness_decrease {
-            let Some(sound_sq) = self.calc_sound_pos(w, wx, wy, z, building) else {
-                return;
+        if w.hooks().sickness_from_corpses_rate(corpse_count) as f64 > env.food_sickness_decrease {
+            let Some(sound_sq) = self.calc_sound_pos(w, wx, wy, z, building)? else {
+                return Ok(());
+            };
+            let sound_pos = {
+                let sq = sound_sq
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("FliesSound selected square"))?;
+                (sq.x, sq.y, sq.z)
             };
             if self.slot(level, pn).is_none() {
                 let i = self.alloc();
@@ -476,35 +555,37 @@ impl FliesSound {
             let fe = self.slot(level, pn).unwrap();
             match self.emitters[fe].emitter {
                 None => {
-                    let id =
-                        w.hooks
-                            .get_free_emitter(sound_sq.0 as f32, sound_sq.1 as f32, z as f32);
-                    w.hooks.play_sound_looped_impl(id, CORPSE_FLIES_SOUND);
-                    w.hooks.set_volume_all(id, 0.0);
+                    let id = w.hooks().get_free_emitter(
+                        sound_pos.0 as f32,
+                        sound_pos.1 as f32,
+                        z as f32,
+                    );
+                    w.hooks().play_sound_looped_impl(id, CORPSE_FLIES_SOUND);
+                    w.hooks().set_volume_all(id, 0.0);
                     self.emitters[fe].emitter = Some(id);
                     self.emitters[fe].volume = 0.0;
                     self.fade_emitters.push(fe);
                 }
                 Some(id) => {
-                    if let Some(old) = self.emitters[fe].sq {
-                        set_has_flies(w.cell, w.render, old, false);
+                    if let Some(old) = self.emitters[fe].sq.as_ref() {
+                        w.set_has_flies(old, false)?;
                     }
-                    w.hooks
-                        .set_pos(id, sound_sq.0 as f32, sound_sq.1 as f32, z as f32);
+                    w.hooks()
+                        .set_pos(id, sound_pos.0 as f32, sound_pos.1 as f32, z as f32);
                     if self.emitters[fe].target_volume != 1.0 && !self.fade_emitters.contains(&fe) {
                         self.fade_emitters.push(fe);
                     }
                 }
             }
             self.emitters[fe].target_volume = 1.0;
-            self.emitters[fe].sq = Some(sound_sq);
-            set_has_flies(w.cell, w.render, sound_sq, true);
+            retire_square(self.emitters[fe].sq.replace(sound_sq.clone()));
+            w.set_has_flies(&sound_sq, true)?;
         } else {
             let Some(fe) = *self.slot(level, pn) else {
-                return;
+                return Ok(());
             };
             if self.emitters[fe].emitter.is_none() {
-                return;
+                return Ok(());
             }
             if !self.fade_emitters.contains(&fe) {
                 self.fade_emitters.push(fe);
@@ -513,10 +594,11 @@ impl FliesSound {
                 self.emitters[fe].volume = 0.0;
             }
             self.emitters[fe].target_volume = 0.0;
-            if let Some(sq) = self.emitters[fe].sq {
-                set_has_flies(w.cell, w.render, sq, false);
+            if let Some(sq) = self.emitters[fe].sq.as_ref() {
+                w.set_has_flies(sq, false)?;
             }
         }
+        Ok(())
     }
 
     /// `ChunkLevelData.calcSoundPos(wx, wy, z, building)`: the middle one
@@ -524,47 +606,34 @@ impl FliesSound {
     /// hold corpses and are in `building`.
     fn calc_sound_pos(
         &self,
-        w: &FliesWorld<'_>,
+        w: &dyn FliesWorld,
         wx: i32,
         wy: i32,
         z: i32,
         building: Option<BuildingIdx>,
-    ) -> Option<SquarePos> {
-        let chunk = w.cell.chunks.get(&(wx, wy))?;
-        let mut found = Vec::new();
-        for cy in 0..8 {
-            for cx in 0..8 {
-                let Some(sq) = chunk.get_grid_square(cx, cy, z) else {
-                    continue;
-                };
-                if sq.static_moving.is_empty()
-                    || sq.room_def(w.meta).and_then(|r| r.building) != building
-                {
-                    continue;
-                }
-                found.push((sq.x, sq.y, sq.z));
-            }
-        }
-        found
-            .get(found.len() / 2)
-            .copied()
-            .filter(|_| !found.is_empty())
+    ) -> HostResult<Option<SquareRef>> {
+        let found = w.corpse_squares(wx, wy, z, building)?;
+        Ok(found.get(found.len() / 2).cloned())
     }
 
     /// `ChunkLevelData.deref(player)`.
-    fn deref(&mut self, level: LevelKey, pn: usize, w: &mut FliesWorld<'_>) {
+    fn deref(&mut self, level: LevelKey, pn: usize, w: &mut dyn FliesWorld) -> HostResult<()> {
         let Some(fe) = self.level_slot(level.0, level.1, level.2, pn) else {
-            return;
+            return Ok(());
         };
         if self.emitters[fe].emitter.is_none() {
-            return;
+            return Ok(());
         }
         if !self.fade_emitters.contains(&fe) {
             self.fade_emitters.push(fe);
         }
         self.emitters[fe].target_volume = 0.0;
-        if let Some(sq) = self.emitters[fe].sq {
-            set_has_flies(w.cell, w.render, sq, false);
+        if let Some(sq) = self.emitters[fe].sq.as_ref() {
+            w.set_has_flies(sq, false)?;
         }
+        Ok(())
     }
 }
+
+#[cfg(test)]
+mod phase_tests;

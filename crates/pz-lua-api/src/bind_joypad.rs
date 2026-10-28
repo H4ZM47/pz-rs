@@ -316,6 +316,12 @@ fn register_globals(t: &mut Thread) {
         let i = int_arg(c, 0);
         Ok(c.push(ST.with(|s| s.borrow().input.controller(i).is_some())))
     });
+    // `getButtonCount(joypad)`: 0 outside the controller range or when
+    // the slot is empty.
+    global(t, "getButtonCount", |c| {
+        let i = int_arg(c, 0);
+        Ok(c.push(ST.with(|s| s.borrow().input.controller(i).map_or(0, |ct| ct.button_count())) as f64))
+    });
     global(t, "getControllerGUID", |c| Ok(c.push(controller_str(c, |ct| ct.guid.clone()))));
     global(t, "getControllerName", |c| Ok(c.push(controller_str(c, |ct| ct.gamepad_name.clone()))));
     global(t, "getControllerAxisValue", |c| {

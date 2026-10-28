@@ -580,7 +580,7 @@ impl<I: 'static> State<I> for SwipeStatePlayer {
     }
 
     fn execute(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
-        if !owner.environment.dragging_corpse {
+        if !owner.is_dragging_corpse() {
             cx.ctx.event(SimEvent::StopAllActionQueue);
         }
     }
@@ -674,7 +674,7 @@ impl<I: 'static> State<I> for SwipeStatePlayer {
         owner.vars.attack_started = false;
         owner.vars.attack_type = String::new();
         owner.vars.do_shove = false;
-        owner.vars.do_grapple = false;
+        owner.set_do_grapple(false);
         for v in ["RackWeapon", "PlayedSwingSound", "PlayerVoiceSound", "PistolWhipAnim", "SlowingMovement"] {
             owner.clear_variable(v);
         }

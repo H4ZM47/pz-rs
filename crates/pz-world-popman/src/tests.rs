@@ -1,8 +1,8 @@
 use super::*;
-use pz_sandbox::ZombieConfig;
 use pz_popman::native::Native;
 use pz_popman::state_flags::{ZombieStateFlag, ZombieStateFlags};
 use pz_popman::ZombiePopulationManager;
+use pz_sandbox::ZombieConfig;
 use pz_world::defs::room_id;
 use pz_world::meta_grid::IsoMetaCell;
 use pz_world::sprite::SpriteTables;
@@ -90,7 +90,7 @@ impl World {
     }
 
     /// A square at `(x, y, z)` with the named flags and object types.
-    fn put(&mut self, x: i32, y: i32, z: i32, names: &[&str]) -> &mut IsoGridSquare {
+    fn put(&mut self, x: i32, y: i32, z: i32, names: &[&str]) -> pz_world::SquareRef {
         let mut sq = IsoGridSquare::new(x, y, z);
         for n in names {
             if let Some(f) = self.m.tables.flag_from_string(n) {
@@ -106,11 +106,11 @@ impl World {
             .chunks
             .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
             .unwrap();
-        ch.set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some(sq));
+        ch.set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some((sq).into()));
         self.cell.get_grid_square_mut(x, y, z).unwrap()
     }
 
-    fn sq(&self, x: i32, y: i32, z: i32) -> &IsoGridSquare {
+    fn sq(&self, x: i32, y: i32, z: i32) -> pz_world::SquareRef {
         self.cell.get_grid_square(x, y, z).unwrap()
     }
 }
@@ -235,10 +235,10 @@ fn square_reads_floor_room_and_building() {
     w.put(20, 20, 0, &["solidfloor"]);
     w.put(21, 20, 0, &[]);
     w.put(22, 20, 0, &["stairsTN"]);
-    w.put(23, 20, 0, &["solidfloor"]).room_id = room(ROOM);
-    w.put(24, 20, 0, &["solidfloor"]).room_id = room(OUTSIDE_ROOM);
+    w.put(23, 20, 0, &["solidfloor"]).borrow_mut().room_id = room(ROOM);
+    w.put(24, 20, 0, &["solidfloor"]).borrow_mut().room_id = room(OUTSIDE_ROOM);
     // A room id the meta grid does not know: `getRoom()` finds no room.
-    w.put(25, 20, 0, &["solidfloor"]).room_id = room(9);
+    w.put(25, 20, 0, &["solidfloor"]).borrow_mut().room_id = room(9);
     let (checks, mut rand, mut zs) = (
         NoSittingObstacles,
         ListRand(vec![], vec![]),
@@ -284,7 +284,7 @@ fn wall_type_bits() {
     w.put(23, 21, 0, &["WallNW"]);
     w.put(24, 21, 0, &["WallNW"]);
     let f = WallFlags::new(&w.m);
-    let t = |x, y| wall_type(w.sq(x, y, 0), &w.cell, &f);
+    let t = |x, y| wall_type(&w.sq(x, y, 0).borrow(), &w.cell, &f);
     // North wall here; west wall on the square to the east; north wall on
     // the square to the south.
     assert_eq!(t(20, 20), 1 | 8 | 2);
@@ -298,7 +298,7 @@ fn wall_type_bits() {
     assert_eq!(t(23, 21), 5 | 8);
     // No square to the south or east (outside the loaded chunks).
     w.put(39, 39, 0, &["WallW"]);
-    assert_eq!(wall_type(w.sq(39, 39, 0), &w.cell, &f), 4);
+    assert_eq!(wall_type(&w.sq(39, 39, 0).borrow(), &w.cell, &f), 4);
 }
 
 #[test]
@@ -319,7 +319,7 @@ fn is_free_rules() {
     w.put(20, 21, 0, &["solidfloor"]);
     let (mut rand, mut zs) = (ListRand(vec![], vec![]), Zombies::default());
     let h = WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, &mut zs);
-    let free = |x, y| h.is_free(w.sq(x, y, 0));
+    let free = |x, y| h.is_free(&w.sq(x, y, 0).borrow());
     assert!(free(20, 20));
     assert!(!free(21, 20));
     assert!(!free(22, 20));
@@ -329,7 +329,7 @@ fn is_free_rules() {
     // `isFree(true)` counts the characters on the square.
     assert!(!free(26, 20));
     assert!(!free(20, 21));
-    assert!(is_free_ignoring_movers(w.sq(26, 20, 0), &w.m));
+    assert!(is_free_ignoring_movers(&w.sq(26, 20, 0).borrow(), &w.m));
 }
 
 #[test]
@@ -340,9 +340,13 @@ fn sitting_wall_type_tests_in_order() {
     // No wall.
     w.put(21, 20, 0, &["solidfloor"]);
     // Inside a building.
-    w.put(22, 20, 0, &["solidfloor", "WallN"]).room_id = room(ROOM);
+    w.put(22, 20, 0, &["solidfloor", "WallN"])
+        .borrow_mut()
+        .room_id = room(ROOM);
     // A room without a building is not a building.
-    w.put(23, 20, 0, &["solidfloor", "WallW"]).room_id = room(OUTSIDE_ROOM);
+    w.put(23, 20, 0, &["solidfloor", "WallW"])
+        .borrow_mut()
+        .room_id = room(OUTSIDE_ROOM);
     // Not free.
     w.put(24, 20, 0, &["solidfloor", "WallN", "solid"]);
     // A character stands there.
@@ -501,7 +505,8 @@ fn manager_sits_a_zombie_against_a_wall_of_the_cell() {
             WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, &mut zs);
         let mut tick = |m: &mut ZombiePopulationManager<u32>| {
             clock.set(clock.get() + 50);
-            m.update_main(&mut host, 1.0, 10.0, &[(0, 0)], 10, &[]).unwrap();
+            m.update_main(&mut host, 1.0, 10.0, &[(0, 0)], 10, &[])
+                .unwrap();
             m.thread_step();
         };
         for _ in 0..3 {
@@ -537,4 +542,145 @@ fn manager_sits_a_zombie_against_a_wall_of_the_cell() {
         ]
     );
     m.stop();
+}
+
+/// Zombie ops that hold the world mutably, as `RealZombies` holds a
+/// `StatesWorldAdapter`; created zombies stand on their squares.
+struct OwningZombies {
+    w: World,
+    checks: Checks,
+    inner: Zombies,
+    standing: Vec<(i32, i32, i32)>,
+}
+
+impl ZombieOps for OwningZombies {
+    type Zombie = u32;
+    fn create_real_zombie(
+        &mut self,
+        outfit: i32,
+        dir: IsoDirections,
+        persistent_id: i32,
+        square: (i32, i32, i32),
+    ) -> Result<Option<u32>, String> {
+        // A mutation of the held world between reads.
+        let _ = self
+            .w
+            .cell
+            .get_grid_square_mut(square.0, square.1, square.2);
+        self.standing.push(square);
+        self.inner
+            .create_real_zombie(outfit, dir, persistent_id, square)
+    }
+    fn real_zombie_info(&self, z: u32) -> Option<RealZombieInfo<u32>> {
+        self.inner.real_zombie_info(z)
+    }
+    fn set_persistent_id(&mut self, z: u32, id: i32) {
+        self.inner.set_persistent_id(z, id);
+    }
+    fn set_position(&mut self, z: u32, x: f32, y: f32) {
+        self.inner.set_position(z, x, y);
+    }
+    fn sit_against_wall(&mut self, z: u32, x: f32, y: f32, dir: Option<IsoDirections>) {
+        self.inner.sit_against_wall(z, x, y, dir);
+    }
+    fn make_fake_dead(&mut self, z: u32, health: f32) {
+        self.inner.make_fake_dead(z, health);
+    }
+    fn make_crawler(&mut self, z: u32, can_walk: bool) {
+        self.inner.make_crawler(z, can_walk);
+    }
+    fn set_can_crawl_under_vehicle(&mut self, z: u32, v: bool) {
+        self.inner.set_can_crawl_under_vehicle(z, v);
+    }
+    fn set_reanimated_for_grapple_only(&mut self, z: u32, v: bool) {
+        self.inner.set_reanimated_for_grapple_only(z, v);
+    }
+    fn path_to(&mut self, z: u32, x: i32, y: i32) {
+        self.inner.path_to(z, x, y);
+    }
+    fn die(&mut self, z: u32) {
+        self.inner.die(z);
+    }
+    fn remove_zombie(&mut self, z: u32) {
+        self.inner.remove_zombie(z);
+    }
+}
+
+fn owning_view(z: &OwningZombies) -> PopulationView<'_> {
+    PopulationView {
+        cell: &z.w.cell,
+        meta: &z.w.meta,
+        sprites: &z.w.m,
+        checks: &z.checks,
+    }
+}
+
+fn owning_movers(z: &OwningZombies, x: i32, y: i32, l: i32) -> bool {
+    z.standing.contains(&(x, y, l))
+}
+
+/// The world read through the ops answers as the borrowed world does, and
+/// the ops' own movers count after a zombie is created between reads.
+#[test]
+fn from_ops_reads_the_world_the_ops_hold() {
+    let mut w = World::new();
+    w.put(20, 20, 0, &["solidfloor", "WallN"]);
+    w.put(21, 20, 0, &["solidfloor"]);
+    w.put(22, 20, 0, &["solidfloor", "WallN"])
+        .borrow_mut()
+        .room_id = room(ROOM);
+    w.put(23, 20, 0, &["solidfloor", "WallW"])
+        .borrow_mut()
+        .room_id = room(OUTSIDE_ROOM);
+    w.put(25, 20, 0, &["solidfloor", "WallN"]);
+    w.put(26, 20, 0, &["solidfloor", "WallN"]);
+    let checks = Checks {
+        movers: vec![(25, 20, 0)],
+        blocked_to: vec![(26.5, 20.5)],
+        ..Checks::default()
+    };
+    let mut ops = OwningZombies {
+        w,
+        checks,
+        inner: Zombies::default(),
+        standing: Vec::new(),
+    };
+    let mut rand = ListRand(vec![7], vec![]);
+    let mut h =
+        WorldPopulationHost::from_ops(owning_view, Some(owning_movers), &mut rand, &mut ops);
+    let t =
+        |h: &WorldPopulationHost<'_, OwningZombies>, x| h.sitting_wall_type(x, 20, 0, 18.25, 21.75);
+    assert_eq!(t(&h, 20), Some(1));
+    assert_eq!(t(&h, 21), None);
+    assert_eq!(t(&h, 22), None);
+    assert_eq!(t(&h, 23), Some(4));
+    assert_eq!(t(&h, 25), None);
+    assert_eq!(t(&h, 26), None);
+    assert_eq!(h.square(22, 20, 0).unwrap().place.building, Some(BUILDING));
+    assert_eq!(h.rand().next(4), 7);
+    // A zombie created on (20, 20) is on its square at once.
+    let z = h
+        .create_real_zombie(0, IsoDirections::S, 5, (20, 20, 0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(t(&h, 20), None);
+    assert_eq!(t(&h, 23), Some(4));
+    h.set_position(z, 20.5, 20.5);
+    assert_eq!(rand.1, vec![4]);
+    assert_eq!(
+        *ops.checks.calls.borrow(),
+        vec![
+            (18.25, 21.75, 20.5, 20.5, 0, false, true),
+            (18.25, 21.75, 23.5, 20.5, 0, false, true),
+            (18.25, 21.75, 26.5, 20.5, 0, false, true),
+            (18.25, 21.75, 23.5, 20.5, 0, false, true),
+        ]
+    );
+    assert_eq!(
+        ops.inner.ops,
+        vec![
+            Op::Create(0, IsoDirections::S, 5, (20, 20, 0)),
+            Op::Pos(1, 20.5, 20.5),
+        ]
+    );
 }

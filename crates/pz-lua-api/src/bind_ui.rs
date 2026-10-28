@@ -934,7 +934,7 @@ fn register_manager(thread: &mut Thread) {
     });
     // `init` is `hud::init_ui` (registered by `hud::register`).
     b.static_fn("update", |c| {
-        UIManager::update(c.thread);
+        UIManager::update(c.thread)?;
         Ok(0)
     });
     b.static_fn("render", |c| {
@@ -1283,7 +1283,7 @@ mod tests {
 
     fn tick(t: &mut Thread, at: i64) {
         with_ui(|m| m.time_override_ms = Some(at));
-        UIManager::update(t);
+        UIManager::update(t).unwrap();
         with_ui(|m| m.mouse.end_frame());
     }
 
@@ -1365,6 +1365,63 @@ mod tests {
         );
         assert!(eval(&mut t, "UIManager.getUI():contains(root.javaObject)").truthy());
         assert!(eval(&mut t, "a.javaObject:isReallyVisible()").truthy());
+    }
+
+    #[test]
+    fn tooltip_host_fault_stops_manager_tail_and_lua_caller_after_completed_update_prefix() {
+        let mut t = setup();
+        run(
+            &mut t,
+            "w=Widget:new('prefix',0,0,10,10); w:addToUIManager()",
+        );
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let observed = calls.clone();
+        with_ui(|m| {
+            m.mouse.x = 123;
+            m.mouse.y = 234;
+            m.fade_in_time = 3;
+            m.update_tooltip_hook = Some(Rc::new(move |_, x, y| {
+                assert_eq!((x, y), (123, 234));
+                with_ui(|m| assert!(m.updating));
+                observed.set(observed.get() + 1);
+                Err(pz_kahlua::LuaError::Runtime {
+                    class: "pz.host.Unsupported",
+                    message: "actual tooltip metadata".into(),
+                })
+            }));
+        });
+        let source = pz_kahlua::compiler::compile(
+            "UIManager.update(); reachedAfterFault=true",
+            Some("typed-update"),
+            Some("typed-update"),
+            None,
+        )
+        .unwrap();
+        let call = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(source),
+            t.globals().clone(),
+        ));
+        assert!(matches!(
+            t.call(&call, &[]),
+            Err(pz_kahlua::LuaError::Runtime {
+                class: "pz.host.Unsupported",
+                ..
+            })
+        ));
+        assert!(t.globals().get_str("reachedAfterFault").is_nil());
+        assert_eq!(calls.get(), 1);
+        assert!(log(&t).iter().any(|line| line == "update prefix"));
+        with_ui(|m| {
+            assert_eq!(m.fade_in_time, 2);
+            assert_eq!((m.last_mouse_x, m.last_mouse_y), (123, 234));
+            assert!(
+                m.updating,
+                "native error bypasses the final updating=false write"
+            );
+            m.update_tooltip_hook = None;
+        });
+        UIManager::update(&mut t).unwrap();
+        with_ui(|m| assert!(!m.updating));
     }
 
     #[test]

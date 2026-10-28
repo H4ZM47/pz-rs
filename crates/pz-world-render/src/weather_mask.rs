@@ -27,9 +27,9 @@ pub fn master_region(
     y: i32,
     z: i32,
 ) -> Option<RegionId> {
-    cell.get_grid_square(x, y, z)?
-        .get_iso_world_region(regions)
-        .map(|r| r.0)
+    let square = cell.get_grid_square(x, y, z)?;
+    let region = square.borrow().get_iso_world_region(regions);
+    region.map(|r| r.0)
 }
 
 impl FxMaskWorld for WorldFxMask<'_> {
@@ -41,7 +41,10 @@ impl FxMaskWorld for WorldFxMask<'_> {
     /// the square, else `IsoRegions.getIsoWorldRegion(x, y, z)`.
     fn world_region(&self, x: i32, y: i32, z: i32) -> Option<RegionId> {
         match self.cell.get_grid_square(x, y, z) {
-            Some(sq) => sq.get_iso_world_region(self.regions),
+            Some(sq) => {
+                let region = sq.borrow().get_iso_world_region(self.regions);
+                region
+            }
             None => self.regions.get_iso_world_region(x, y, z),
         }
         .map(|r| r.0)
@@ -116,7 +119,7 @@ mod tests {
         let regions = regions();
         let mut cell = IsoCell::default();
         let mut ch = IsoChunk::new(0, 0);
-        ch.set_square(3, 3, 0, Some(IsoGridSquare::new(3, 3, 0)));
+        ch.set_square(3, 3, 0, Some((IsoGridSquare::new(3, 3, 0)).into()));
         cell.chunks.insert((0, 0), ch);
         let mut render = RenderWorld::default();
         render.squares.insert((3, 3, 0), RenderSquare::new(3, 3, 0));

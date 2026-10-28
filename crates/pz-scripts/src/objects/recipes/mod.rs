@@ -47,6 +47,15 @@ pub fn get_recipe(sm: &ScriptManager, name: &str) -> Option<Rc<RefCell<Recipe>>>
     sm.get(ScriptType::Recipe, name)
 }
 
+/// Actual recipe lookup preserving borrowed-source errors separately from
+/// genuine absence. No recipe body borrow is needed to return its identity.
+pub fn try_get_recipe(sm: &ScriptManager, name: &str) -> Result<Option<Rc<RefCell<Recipe>>>, crate::native_item_keys::ScriptAccessError> {
+    match sm.try_get_script(ScriptType::Recipe, name)? {
+        None => Ok(None),
+        Some(script) => script.downcast::<Recipe>().map(Some).ok_or(crate::native_item_keys::ScriptAccessError::Unsupported("wrong actual Recipe class")),
+    }
+}
+
 /// `ScriptManager.getAllRecipes`.
 pub fn get_all_recipes(sm: &ScriptManager) -> Vec<Rc<RefCell<Recipe>>> {
     sm.get_all(ScriptType::Recipe)

@@ -14,6 +14,7 @@
 //! the meta grid is built. The tables files are read from the installed game
 //! and are not part of this repository.
 
+use pz_world::ObjectSlot;
 use std::fmt::Write as _;
 
 use pz_fs::GameFs;
@@ -65,7 +66,7 @@ impl GameRand for JavaRandom {
 /// in derelict and user-defined rooms (`IsoGridSquare.isNoPower`).
 struct GridOn;
 impl ObjectLoadHooks for GridOn {
-    fn square_powered(&mut self, _sq: &pz_world::IsoGridSquare, room: &pz_world::RoomDef) -> bool {
+    fn square_powered(&mut self, _sq: pz_world::SquareRef, room: &pz_world::RoomDef) -> bool {
         !room.name.to_lowercase().contains("derelict") && !room.user_defined
     }
 }
@@ -91,7 +92,7 @@ fn object_line(m: &IsoSpriteManager, o: &IsoObject) -> String {
     let mut l = format!(
         "  {} {} tile={} out={} tint={:x},{:x},{:x} ry={:x}",
         o.kind.class_name(),
-        name(m, o.sprite),
+        name(m, o.sprite.tile_projection()),
         o.tile.as_deref().unwrap_or("null"),
         o.outline_on_mouseover as u8,
         o.tint_r.to_bits(),
@@ -247,12 +248,14 @@ fn main() {
         a[11].parse().unwrap(),
         a[12].parse().unwrap(),
     );
+    let blood_body_parts = pz_world::save::SaveTables::from_game_jar(&game.join("projectzomboid.jar")).expect("visual body tables").blood_body_parts;
     let mut cell = IsoCell::default();
     let mut out = String::new();
     let mut counts = std::collections::BTreeMap::<&str, usize>::new();
     for wx in wx0..=wx1 {
         for wy in wy0..=wy1 {
             let mut env = ChunkLoadEnv {
+                blood_body_parts: blood_body_parts,
                 sprites: &mut sprites,
                 fix2x: &fix2x,
                 rand: &mut rand,
@@ -275,17 +278,17 @@ fn main() {
                 writeln!(
                     out,
                     " sq {},{},{} room={} assoc={} roof={}",
-                    sq.x,
-                    sq.y,
-                    sq.z,
-                    sq.room_id,
-                    bid(sq.associated_building),
-                    bid(sq.roof_hide_building)
+                    sq.borrow().x,
+                    sq.borrow().y,
+                    sq.borrow().z,
+                    sq.borrow().room_id,
+                    bid(sq.borrow().associated_building),
+                    bid(sq.borrow().roof_hide_building)
                 )
                 .unwrap();
-                for o in &sq.objects {
+                for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
                     *counts.entry(o.kind.class_name()).or_default() += 1;
-                    writeln!(out, "{}", object_line(&sprites, o)).unwrap();
+                    writeln!(out, "{}", object_line(&sprites, &o)).unwrap();
                 }
             }
         }

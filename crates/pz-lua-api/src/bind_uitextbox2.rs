@@ -2218,7 +2218,7 @@ mod tests {
             eval(&mut t, "b.javaObject:getCursorPos()").as_num(),
             Some(0.0)
         );
-        UIManager::update(&mut t);
+        UIManager::update(&mut t).unwrap();
         assert_eq!(e.class_name(), UITEXTBOX2);
         assert!(e.super_classes().contains(&UIELEMENT));
         // The frame is the one child; the height grew to one line.
@@ -2316,7 +2316,7 @@ mod tests {
             Some("aB")
         );
         run(&mut t, "b.javaObject:setMasked(false); b.javaObject:setMaxTextLength(1); b.javaObject:setForceUpperCase(true)");
-        UIManager::update(&mut t);
+        UIManager::update(&mut t).unwrap();
         assert_eq!(tb(&e).internal_text(), "A");
     }
 
@@ -2328,7 +2328,7 @@ mod tests {
         // The constructor leaves the cursor at 0; End moves after "one".
         type_keys(&mut t, &[207, 28], "two");
         assert_eq!(tb(&e).internal_text(), "one\ntwo");
-        UIManager::update(&mut t);
+        UIManager::update(&mut t).unwrap();
         assert_eq!(tb(&e).lines(), ["one", "two"]);
         // Max lines reached: Enter no longer adds a line.
         type_keys(&mut t, &[28, 28], "");
@@ -2350,7 +2350,7 @@ mod tests {
             &mut t,
             "b = newBox(10, 10, 200, 30, 'abcdef'); b.javaObject:setClearButton(true)",
         );
-        UIManager::update(&mut t);
+        UIManager::update(&mut t).unwrap();
         let e = el(&mut t, "b");
         // Button_Close.png stands in (no game textures in tests).
         tb(&e).st.borrow_mut().clear_button_texture =
@@ -2370,7 +2370,7 @@ mod tests {
             m.mouse.y = 600;
             m.mouse.down[0] = true;
         });
-        UIManager::update(&mut t);
+        UIManager::update(&mut t).unwrap();
         assert!(!is_doing_text_entry());
         assert!(current_text_entry_box().is_none());
         assert_eq!(log(&mut t), ["lost"]);
@@ -2383,7 +2383,7 @@ mod tests {
             &mut t,
             "b = newBox(10, 20, 200, 30, 'hi'); b.javaObject:setMasked(true)",
         );
-        UIManager::update(&mut t);
+        UIManager::update(&mut t).unwrap();
         UIManager::render(&mut t);
         let texts: Vec<(String, f32, f32)> = with_ui(|m| {
             m.sprite

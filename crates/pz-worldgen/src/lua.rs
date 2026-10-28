@@ -188,7 +188,7 @@ impl WorldGenLua {
 /// `WorldGenUtils.getFiles(basePath)`: the `.lua` files under
 /// `media/<basePath>`, depth first in directory-listing order like
 /// `Files.walk`, relative to the game directory.
-fn get_files(fs: &GameFs, base: &str) -> Vec<String> {
+pub fn get_files(fs: &GameFs, base: &str) -> Vec<String> {
     let mut out = Vec::new();
     let Some(root) = fs.resolve(&format!("media/{base}")) else {
         return out;

@@ -43,9 +43,24 @@ fn java_string(s: &str) -> Vec<u8> {
 }
 
 fn set_mtime(p: &Path, secs: u64) {
+    #[cfg(windows)]
+    let f = {
+        use std::os::windows::fs::OpenOptionsExt;
+        // A directory handle needs BACKUP_SEMANTICS; SetFileTime needs
+        // FILE_WRITE_ATTRIBUTES, rather than permission to write its data.
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(p)
+            .unwrap()
+    };
+    #[cfg(not(windows))]
     let f = std::fs::File::open(p).unwrap();
-    f.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
-        .unwrap();
+    let time = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+    f.set_modified(time).unwrap();
+    assert_eq!(f.metadata().unwrap().modified().unwrap(), time);
 }
 
 struct Env {

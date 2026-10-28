@@ -75,6 +75,58 @@ pub struct BasementsPerMap {
     pub spawn_locations: Vec<BasementSpawnLocation>,
 }
 
+impl BasementsPerMap {
+    /// `BasementsV1.addAccessDefinitions(mapID, table)` on this map.
+    pub fn add_access_definitions(&mut self, t: &TableRef) -> Result<(), String> {
+        for d in parse_definitions(t)? {
+            self.access_by_name
+                .insert(d.name.clone(), self.access_definitions.len());
+            self.access_definitions.push(d);
+        }
+        Ok(())
+    }
+
+    /// `BasementsV1.addBasementDefinitions(mapID, table)` on this map.
+    pub fn add_basement_definitions(&mut self, t: &TableRef) -> Result<(), String> {
+        for d in parse_definitions(t)? {
+            self.definition_by_name
+                .insert(d.name.clone(), self.definitions.len());
+            self.definitions.push(d);
+        }
+        Ok(())
+    }
+
+    /// `BasementsV1.addSpawnLocations(mapID, table)` on this map.
+    pub fn add_spawn_locations(&mut self, t: &TableRef) -> Result<(), String> {
+        let spawns = parse_spawn_locations(t)?;
+        self.spawn_locations.extend(spawns);
+        Ok(())
+    }
+}
+
+/// `Basements.getOrCreatePerMap(mapID)` over a per-map list: `None` for a
+/// blank id (`IllegalArgumentException`).
+pub fn get_or_create_per_map<'a>(
+    per_map: &'a mut Vec<BasementsPerMap>,
+    map_id: &str,
+) -> Option<&'a mut BasementsPerMap> {
+    let id = map_id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let i = match per_map.iter().position(|p| p.map_id == id) {
+        Some(i) => i,
+        None => {
+            per_map.push(BasementsPerMap {
+                map_id: id.to_string(),
+                ..Default::default()
+            });
+            per_map.len() - 1
+        }
+    };
+    Some(&mut per_map[i])
+}
+
 /// One call of the Lua API (`Basements.getAPIv1()`).
 enum ApiCall {
     Access(String, TableRef),
@@ -176,28 +228,11 @@ impl Basements {
         let calls = std::mem::take(&mut *calls.borrow_mut());
         for call in calls {
             match call {
-                ApiCall::Access(map, t) => {
-                    let defs = parse_definitions(&t)?;
-                    let pm = self.per_map_mut(&map);
-                    for d in defs {
-                        pm.access_by_name
-                            .insert(d.name.clone(), pm.access_definitions.len());
-                        pm.access_definitions.push(d);
-                    }
-                }
+                ApiCall::Access(map, t) => self.per_map_mut(&map).add_access_definitions(&t)?,
                 ApiCall::Basements(map, t) => {
-                    let defs = parse_definitions(&t)?;
-                    let pm = self.per_map_mut(&map);
-                    for d in defs {
-                        pm.definition_by_name
-                            .insert(d.name.clone(), pm.definitions.len());
-                        pm.definitions.push(d);
-                    }
+                    self.per_map_mut(&map).add_basement_definitions(&t)?
                 }
-                ApiCall::Spawns(map, t) => {
-                    let spawns = parse_spawn_locations(&t)?;
-                    self.per_map_mut(&map).spawn_locations.extend(spawns);
-                }
+                ApiCall::Spawns(map, t) => self.per_map_mut(&map).add_spawn_locations(&t)?,
             }
         }
         Ok(())
@@ -531,16 +566,37 @@ fn parse_spawn_locations(t: &TableRef) -> Result<Vec<BasementSpawnLocation>, Str
 /// A `Basement` zone of `objects.lua` (`registerBasementSpawnLocation`).
 pub fn spawn_location_from_zone(t: &TableRef) -> BasementSpawnLocation {
     let n = |k: &str| t.get_str(k).as_num().unwrap_or(0.0) as i32;
+    let props = t.get_str("properties").as_table().cloned();
+    spawn_location_from_properties(
+        n("x"),
+        n("y"),
+        n("z"),
+        n("width"),
+        n("height"),
+        props.as_ref(),
+    )
+}
+
+/// `BasementsV1.registerBasementSpawnLocation(mapID, name, type, x, y, z,
+/// width, height, properties)`: the location it adds.
+pub fn spawn_location_from_properties(
+    x: i32,
+    y: i32,
+    z: i32,
+    w: i32,
+    h: i32,
+    properties: Option<&TableRef>,
+) -> BasementSpawnLocation {
     let mut loc = BasementSpawnLocation {
-        x: n("x"),
-        y: n("y"),
-        z: n("z"),
-        w: n("width"),
-        h: n("height"),
+        x,
+        y,
+        z,
+        w,
+        h,
         north: true,
         ..Default::default()
     };
-    if let Some(p) = t.get_str("properties").as_table() {
+    if let Some(p) = properties {
         if let Some(v) = p.get_str("StairX").as_num() {
             loc.stair_x = v as i32;
         }
@@ -705,13 +761,13 @@ fn add_to_iso_chunk(
                 if chunk.get_grid_square(x - cx, y - cy, z).is_none() {
                     let mut sq = IsoGridSquare::new(x, y, z);
                     sq.associated_building = meta.get_associated_building_at(x, y)?;
-                    chunk.set_square(x - cx, y - cy, z, Some(sq));
+                    chunk.set_square(x - cx, y - cy, z, Some((sq).into()));
                 }
                 let room_id = meta.get_room_at(x, y, z).map_or(-1, |r| r.id);
                 let square = chunk
                     .get_grid_square_mut(x - cx, y - cy, z)
                     .expect("square");
-                square.room_id = room_id;
+                square.borrow_mut().room_id = room_id;
                 if room_id != -1 {
                     meta.get_room_by_id(room_id, env.rand);
                 }
@@ -721,14 +777,18 @@ fn add_to_iso_chunk(
                 let keep_other = attributes & 4 != 0;
                 if keep_floors || keep_walls || keep_other {
                     let m = &*env.sprites;
-                    let mut i = square.objects.len();
+                    let mut i = square.borrow().objects.len();
                     while i > 0 {
                         i -= 1;
-                        let o = &square.objects[i];
-                        let spr = o.sprite.map(|s| &m.sprites[s]);
-                        let is_floor = spr.is_some_and(|s| s.solidfloor);
+                        let object = square.borrow().objects[i].ref_handle();
+                        let o = object.borrow();
+                        let spr = o
+                            .sprite
+                            .try_read(m)
+                            .expect("legacy world generation requires unborrowed resolved actual sprite metadata");
+                        let is_floor = spr.as_ref().is_some_and(|s| s.solidfloor);
                         let has = |f: Option<pz_world::sprite::IsoFlagType>| {
-                            f.is_some_and(|f| spr.is_some_and(|s| s.properties.has(f)))
+                            f.is_some_and(|f| spr.as_ref().is_some_and(|s| s.properties.has(f)))
                         };
                         let is_wall = spr.is_some()
                             && (has(wall_w) || has(wall_n) || has(wall_nw) || has(wall_se));
@@ -740,12 +800,14 @@ fn add_to_iso_chunk(
                             continue;
                         }
                         let id = o.id;
-                        square.objects.remove(i);
-                        square.special_objects.retain(|&s| s != id);
+                        drop(spr);
+                        drop(o);
+                        square.borrow_mut().remove_object_slot(i);
+                        square.borrow_mut().special_objects.retain(|&s| s != id);
                     }
                 } else {
-                    square.objects.clear();
-                    square.special_objects.clear();
+                    square.borrow_mut().clear_objects();
+                    square.borrow_mut().special_objects.clear();
                 }
                 for &n in ints {
                     let tile = header
@@ -759,6 +821,7 @@ fn add_to_iso_chunk(
                     };
                     let ty = env.sprites.sprites[spr].tile_type;
                     let mut oe = ObjectEnv {
+                        blood_body_parts: env.blood_body_parts,
                         sprites: &mut *env.sprites,
                         rand: &mut *env.rand,
                         tables: env.tables,
@@ -768,15 +831,16 @@ fn add_to_iso_chunk(
                     let square = chunk
                         .get_grid_square_mut(x - cx, y - cy, z)
                         .expect("square");
-                    do_tile_object_creation(&mut oe, meta, square, spr, ty, &tile)?;
+                    do_tile_object_creation(&mut oe, meta, &square, spr, ty, &tile)?;
                 }
                 let m = &*env.sprites;
                 chunk
                     .get_grid_square_mut(x - cx, y - cy, z)
                     .expect("square")
+                    .borrow_mut()
                     .fix_stackable_objects(m);
             }
-            remove_floors_above_stairs(chunk, env, x - cx, y - cy, tz + header.levels);
+            remove_floors_above_stairs(chunk, env, x - cx, y - cy, tz + header.levels)?;
         }
     }
     Ok(())
@@ -790,27 +854,43 @@ fn remove_floors_above_stairs(
     lx: i32,
     ly: i32,
     z: i32,
-) {
+) -> Result<(), String> {
     if chunk.get_grid_square(lx, ly, z).is_none() {
-        return;
+        return Ok(());
     }
     let m = &*env.sprites;
-    let Some(below) = chunk.get_grid_square_mut(lx, ly, z - 1) else {
-        return;
+    let Some(below_owner) = chunk.get_grid_square_mut(lx, ly, z - 1) else {
+        return Ok(());
     };
+    let mut below = below_owner.borrow_mut();
     below.recalc_properties(m);
     if !below.has_stairs(m) && !below.has_sloped_surface() {
-        return;
+        return Ok(());
     }
-    let square = chunk.get_grid_square_mut(lx, ly, z).expect("square");
+    drop(below);
+    let square_owner = chunk.get_grid_square_mut(lx, ly, z).expect("square");
+    let mut square = square_owner.borrow_mut();
     let f = m.tables.flag.solidfloor;
-    if let Some(i) = square
-        .objects
-        .iter()
-        .position(|o| o.sprite.is_some_and(|s| m.sprites[s].properties.has(f)))
-    {
-        square.objects.remove(i);
+    let mut floor = None;
+    for (i, object) in square.objects.iter().enumerate() {
+        let object = object
+            .owner_slot()
+            .try_borrow()
+            .expect("legacy world generation requires unborrowed actual object bodies");
+        if object
+            .sprite
+            .try_read(m)
+            .expect("legacy world generation requires unborrowed resolved actual sprite metadata")
+            .is_some_and(|sprite| sprite.properties.has(f))
+        {
+            floor = Some(i);
+            break;
+        }
     }
+    if let Some(i) = floor {
+        square.remove_object_slot(i);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

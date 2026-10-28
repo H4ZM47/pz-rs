@@ -242,6 +242,13 @@ impl IsoSpriteManager {
         self.sprites.len() - 1
     }
 
+    /// Explicit tile-arena data projection, not native unmanaged allocation.
+    /// Native CreateSprite uses runtime::create_runtime_sprite and keeps its
+    /// actual allocation outside this arena and both manager maps.
+    pub fn create_sprite_data_projection(&mut self) -> SpriteIdx {
+        self.new_sprite()
+    }
+
     /// `AddSprite(tex)`: a new sprite under `tex` in `namedMap`.
     pub fn add_sprite_named(&mut self, tex: &str) -> SpriteIdx {
         let s = self.new_sprite();

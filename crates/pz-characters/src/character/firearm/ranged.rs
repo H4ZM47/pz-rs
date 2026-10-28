@@ -125,7 +125,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `getAttackingWeapon()`: the bare hands for a hand-to-hand attack,
     /// else the weapon in use, else the primary hand weapon.
     pub fn attacking_weapon(&self, sm: &ScriptManager) -> (WeaponStats, Option<InventoryItem>) {
-        let hand_to_hand = self.vars.do_shove || self.vars.do_grapple;
+        let hand_to_hand = self.vars.do_shove || self.is_do_grapple();
         if !hand_to_hand {
             if let Some(item) = self.use_hand_weapon_item() {
                 let item = &*item.borrow();
@@ -177,7 +177,7 @@ impl<I: 'static> GameCharacter<I> {
         if t.is_dead() || (t.is_god_mod(ctx) && !t.is_zombie()) {
             return true;
         }
-        if t.is_zombie() && (t.is_current_state_id(ids::FAKE_DEAD_ZOMBIE) || t.zombie.reanimated_for_grapple_only) {
+        if t.is_zombie() && (t.is_current_state_id(ids::FAKE_DEAD_ZOMBIE) || t.zombie.is_reanimated_for_grapple_only()) {
             return true;
         }
         if t.id == self.id || !on_square {
@@ -669,7 +669,7 @@ impl<I: 'static> GameCharacter<I> {
             self.vars.do_shove = true;
         }
         if self.vars.performing_grapple_grab_animation {
-            self.vars.do_grapple = true;
+            self.set_do_grapple(true);
         }
         cx.ctx.event(SimEvent::WeaponSwingHitPoint);
         let mut ignore_damage = self.vars.do_shove && !self.vars.shove_stomp_anim;

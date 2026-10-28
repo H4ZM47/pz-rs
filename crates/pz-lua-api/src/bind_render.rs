@@ -11,9 +11,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use pz_fs::GameFs;
-use pz_kahlua::value::LuaObject;
 use pz_kahlua::{NativeCall, Value};
-use pz_render::{Texture, TextureManager};
+use pz_render::{
+    Texture, TextureHostError, TextureLookup, TextureManager, TextureRef, TextureResult,
+};
 
 use crate::expose::{expose_class, int_arg, str_arg, with_this};
 use crate::LuaManager;
@@ -29,7 +30,31 @@ type TextureKey = (Option<u32>, [u32; 4], Rc<str>);
 thread_local! {
     static TEXTURES: Rc<RefCell<TextureManager>> = Rc::new(RefCell::new(TextureManager::new()));
     /// Lua objects by texture identity (image id + region + name).
-    static OBJECTS: RefCell<HashMap<TextureKey, Value>> = RefCell::new(HashMap::new());
+    static OBJECTS: RefCell<HashMap<TextureKey, TextureRef>> = RefCell::new(HashMap::new());
+}
+
+thread_local! {
+    /// The file system `register` was given, for [`try_get_texture`].
+    static FS: RefCell<Option<Rc<RefCell<GameFs>>>> = const { RefCell::new(None) };
+}
+
+/// Legacy descriptor projection; actual producers use typed render APIs.
+pub fn try_get_texture(name: &str) -> Option<Texture> {
+    pz_render::try_get_texture_ref(name)
+        .expect("legacy texture projection requires installed unborrowed host")
+        .map(|texture| {
+            pz_render::try_texture_descriptor(&texture)
+                .expect("legacy texture projection requires unborrowed body")
+        })
+}
+/// Legacy descriptor projection; actual producers use typed render APIs.
+pub fn get_shared_texture(name: &str) -> Option<Texture> {
+    pz_render::get_shared_texture_ref(name)
+        .expect("legacy texture projection requires installed unborrowed host")
+        .map(|texture| {
+            pz_render::try_texture_descriptor(&texture)
+                .expect("legacy texture projection requires unborrowed body")
+        })
 }
 
 /// The texture tables shared by Lua and the renderer.
@@ -37,28 +62,93 @@ pub fn textures() -> Rc<RefCell<TextureManager>> {
     TEXTURES.with(Rc::clone)
 }
 
-/// The Lua object for `t`, created once per texture.
-pub fn texture_value(t: Option<Texture>) -> Value {
-    let Some(t) = t else { return Value::Nil };
+/// Canonical actual allocation. The key identifies the imported Texture
+/// descriptor; later cache hits preserve mutations of its actual body.
+fn cached_texture_ref(t: Option<Texture>) -> TextureResult<Option<TextureRef>> {
+    let Some(t) = t else { return Ok(None) };
     let key = (t.id, t.uv.map(f32::to_bits), t.name.clone());
-    OBJECTS.with(|o| o.borrow_mut().entry(key).or_insert_with(|| Value::Object(Rc::new(LuaTexture::new(t)))).clone())
+    OBJECTS.with(|objects| {
+        let mut objects = objects
+            .try_borrow_mut()
+            .map_err(|_| TextureHostError::Borrowed("texture identity cache"))?;
+        Ok(Some(
+            objects
+                .entry(key)
+                .or_insert_with(|| Rc::new(LuaTexture::new(t)))
+                .clone(),
+        ))
+    })
 }
-
-fn shared(fs: &RefCell<GameFs>, name: &str) -> Value {
-    let fs = fs.borrow();
-    let tm = textures();
-    let t = tm.borrow_mut().shared_texture(&fs, name);
-    texture_value(t)
+pub fn texture_ref(t: Option<Texture>) -> TextureResult<Option<TextureRef>> {
+    let texture = cached_texture_ref(t)?;
+    if let Some(texture) = &texture {
+        pz_render::observe_texture_ref(texture);
+    }
+    Ok(texture)
 }
-
+pub fn texture_value_ref(texture: Option<&TextureRef>) -> Value {
+    texture.map_or(Value::Nil, |texture| Value::Object(texture.clone()))
+}
+/// Legacy descriptor import. Actual item/script getters use texture_value_ref.
+pub fn texture_value(t: Option<Texture>) -> Value {
+    let texture = texture_ref(t).expect("unborrowed legacy texture descriptor import");
+    texture_value_ref(texture.as_ref())
+}
+pub fn texture_error(error: TextureHostError) -> pz_kahlua::LuaError {
+    let class = match error {
+        TextureHostError::Borrowed(_) => "pz.host.Borrowed",
+        TextureHostError::Unavailable(_) => "pz.host.Unsupported",
+    };
+    pz_kahlua::LuaError::Runtime {
+        class,
+        message: error.to_string(),
+    }
+}
+/// Install before ScriptManager.Load, using the same FS and image manager
+/// later used by Lua. All actual capture accesses are fallible.
+pub fn install_texture_capture(fs: Rc<RefCell<GameFs>>) {
+    // Metadata installation is available before the first Lua registry. The
+    // weak pending observer retries registration rather than replacing assets.
+    crate::component_gc::install_texture_observer();
+    let old_fs = FS.with(|slot| std::mem::replace(&mut *slot.borrow_mut(), Some(fs.clone())));
+    let provider: pz_render::TextureRefLoader = Rc::new(move |lookup, name| {
+        let descriptor = {
+            let fs = fs
+                .try_borrow()
+                .map_err(|_| TextureHostError::Borrowed("texture file system"))?;
+            let manager = textures();
+            let mut manager = manager
+                .try_borrow_mut()
+                .map_err(|_| TextureHostError::Borrowed("texture manager"))?;
+            match lookup {
+                TextureLookup::Try => manager.try_get_texture(&fs, name),
+                TextureLookup::Shared => manager.shared_texture(&fs, name),
+            }
+        };
+        cached_texture_ref(descriptor)
+    });
+    let old_provider = pz_render::install_texture_ref_loader(Some(provider));
+    let mut retired = pz_entity::RetiredComponents::new();
+    retired.push_payload(Box::new((old_fs, old_provider)));
+    pz_inventory::component_host::retire_components(retired);
+}
 fn get<R>(c: &NativeCall<'_>, f: impl FnOnce(&Texture) -> R) -> pz_kahlua::LuaResult<R> {
-    with_this::<LuaTexture, _>(c, |t| f(&t.0.borrow()))
+    with_this::<LuaTexture, _>(c, |t| {
+        t.0.try_borrow()
+            .map(|texture| f(&texture))
+            .map_err(|_| texture_error(TextureHostError::Borrowed("actual texture body")))
+    })?
 }
 
 pub fn register(mgr: &mut LuaManager) {
     let fs = mgr.fs.clone();
+    install_texture_capture(fs.clone());
     let f = fs.clone();
-    pz_render::install_shared_texture_loader(move |name| textures().borrow_mut().shared_texture(&f.borrow(), name));
+    // Existing descriptor-only UI consumers remain an explicit compatibility
+    // boundary; new captured producers exclusively use the typed provider.
+    pz_render::install_shared_texture_loader(move |name| {
+        textures().borrow_mut().shared_texture(&f.borrow(), name)
+    });
     let thread = &mut mgr.thread;
 
     let asset = expose_class(thread, ASSET, None);
@@ -81,31 +171,51 @@ pub fn register(mgr: &mut LuaManager) {
         let name = str_arg(c, 0).unwrap_or_else(|| Rc::from(""));
         let v = if c.nargs() >= 2 {
             let tm = textures();
-            let t = tm
-                .borrow_mut()
-                .shared_texture_flags(&f.borrow(), &name, int_arg(c, 1));
-            texture_value(t)
+            let t = {
+                let fs = f.try_borrow().map_err(|_| {
+                    texture_error(TextureHostError::Borrowed("texture file system"))
+                })?;
+                let mut manager = tm
+                    .try_borrow_mut()
+                    .map_err(|_| texture_error(TextureHostError::Borrowed("texture manager")))?;
+                manager.shared_texture_flags(&fs, &name, int_arg(c, 1))
+            };
+            let texture = texture_ref(t).map_err(texture_error)?;
+            texture_value_ref(texture.as_ref())
         } else {
-            shared(&f, &name)
+            let texture = pz_render::get_shared_texture_ref(&name).map_err(texture_error)?;
+            texture_value_ref(texture.as_ref())
         };
         Ok(c.push(v))
     });
-    let f = fs.clone();
     b.static_fn("trygetTexture", move |c| {
         let name = str_arg(c, 0).unwrap_or_else(|| Rc::from(""));
-        let t = textures().borrow_mut().try_get_texture(&f.borrow(), &name);
-        Ok(c.push(texture_value(t)))
+        let texture = pz_render::try_get_texture_ref(&name).map_err(texture_error)?;
+        Ok(c.push(texture_value_ref(texture.as_ref())))
     });
     b.static_fn("getWhite", |c| {
-        let t = textures().borrow_mut().white();
-        Ok(c.push(texture_value(Some(t))))
+        let manager = textures();
+        let t = manager
+            .try_borrow_mut()
+            .map_err(|_| texture_error(TextureHostError::Borrowed("texture manager")))?
+            .white();
+        let texture = texture_ref(Some(t)).map_err(texture_error)?;
+        Ok(c.push(texture_value_ref(texture.as_ref())))
     });
     b.static_fn("getErrorTexture", |c| {
-        let t = textures().borrow_mut().error_texture();
-        Ok(c.push(texture_value(Some(t))))
+        let manager = textures();
+        let t = manager
+            .try_borrow_mut()
+            .map_err(|_| texture_error(TextureHostError::Borrowed("texture manager")))?
+            .error_texture();
+        let texture = texture_ref(Some(t)).map_err(texture_error)?;
+        Ok(c.push(texture_value_ref(texture.as_ref())))
     });
     b.static_fn("onTexturePacksChanged", |_c| {
-        textures().borrow_mut().on_texture_packs_changed();
+        textures()
+            .try_borrow_mut()
+            .map_err(|_| texture_error(TextureHostError::Borrowed("texture manager")))?
+            .on_texture_packs_changed();
         Ok(0)
     });
     b.static_fn("processFilePath", |c| {
@@ -184,31 +294,47 @@ pub fn register(mgr: &mut LuaManager) {
     });
     b.method("setOffsetX", |c| {
         let v = int_arg(c, 1) as f32;
-        with_this::<LuaTexture, _>(c, |t| t.0.borrow_mut().offset_x = v)?;
+        with_this::<LuaTexture, _>(c, |t| {
+            t.0.try_borrow_mut()
+                .map(|mut texture| texture.offset_x = v)
+                .map_err(|_| texture_error(TextureHostError::Borrowed("actual texture body")))
+        })??;
         Ok(0)
     });
     b.method("setOffsetY", |c| {
         let v = int_arg(c, 1) as f32;
-        with_this::<LuaTexture, _>(c, |t| t.0.borrow_mut().offset_y = v)?;
+        with_this::<LuaTexture, _>(c, |t| {
+            t.0.try_borrow_mut()
+                .map(|mut texture| texture.offset_y = v)
+                .map_err(|_| texture_error(TextureHostError::Borrowed("actual texture body")))
+        })??;
         Ok(0)
     });
     b.method("toString", |c| {
-        let s = with_this::<LuaTexture, _>(c, |t| t.to_lua_string())?;
+        let s = get(c, |t| {
+            format!(
+                "Texture{{ name:\"{}\", w:{}, h:{} }}",
+                t.name, t.width, t.height
+            )
+        })?;
         Ok(c.push(Value::str(&s)))
     });
 
-    let f = fs.clone();
     crate::expose::global(thread, "getTexture", move |c| {
         let name = str_arg(c, 0).unwrap_or_else(|| Rc::from(""));
-        Ok(c.push(shared(&f, &name)))
+        let texture = pz_render::get_shared_texture_ref(&name).map_err(texture_error)?;
+        Ok(c.push(texture_value_ref(texture.as_ref())))
     });
-    let f = fs;
     crate::expose::global(thread, "tryGetTexture", move |c| {
         let name = str_arg(c, 0).unwrap_or_else(|| Rc::from(""));
-        let t = textures().borrow_mut().try_get_texture(&f.borrow(), &name);
-        Ok(c.push(texture_value(t)))
+        let texture = pz_render::try_get_texture_ref(&name).map_err(texture_error)?;
+        Ok(c.push(texture_value_ref(texture.as_ref())))
     });
 }
+
+#[cfg(test)]
+#[path = "bind_render/capture_tests.rs"]
+mod capture_tests;
 
 #[cfg(test)]
 mod tests {

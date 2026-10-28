@@ -37,6 +37,26 @@ singleton!(PlayerGetUpState, ids::PLAYER_GET_UP, get_up);
 singleton!(CollideWithWallState, ids::COLLIDE_WITH_WALL, collide_with_wall);
 singleton!(PlayerAimState, ids::PLAYER_AIM, aim);
 singleton!(PlayerStrafeState, ids::PLAYER_STRAFE, strafe);
+singleton!(PlayerActionsState, ids::PLAYER_ACTIONS, actions);
+
+impl<I: 'static> State<I> for PlayerActionsState {
+    fn id(&self) -> StateId { Self::ID }
+    fn sync_flags(&self) -> SyncFlags { SyncFlags::new(true, true, true, true) }
+    fn enter(&self, owner: &mut GameCharacter<I>, _cx: &mut StateCx<'_, I>) {
+        let weapon = |item: Option<pz_inventory::shared::ItemRef>| item.is_some_and(|i| matches!(i.borrow().kind, pz_inventory::item::ItemKind::Weapon(_)));
+        if !weapon(owner.items.primary_hand_item()) && !weapon(owner.items.secondary_hand_item()) { owner.vars.hide_weapon_model = true; }
+    }
+    fn exit(&self, owner: &mut GameCharacter<I>, _cx: &mut StateCx<'_, I>) {
+        owner.vars.hide_weapon_model = false;
+        owner.clear_variable("PlayerVoiceSound");
+    }
+    fn anim_event(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>, e: &AnimEventRecord) {
+        if is(e, "PlayerVoiceSound") && !owner.get_variable_boolean("PlayerVoiceSound") && owner.is_player() {
+            owner.set_variable_bool("PlayerVoiceSound", true);
+            cx.ctx.event(SimEvent::PlayerVoiceSoundNamed(e.event.parameter_value.clone().unwrap_or_default()));
+        }
+    }
+}
 
 fn param_bool(e: &AnimEventRecord) -> bool {
     parse_boolean(e.event.parameter_value.as_deref())

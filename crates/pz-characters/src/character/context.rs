@@ -276,6 +276,26 @@ pub enum SimEvent {
     ContainerUpdate,
     /// `LuaEventManager.triggerEvent("onItemFall", item)`.
     ItemFall(pz_inventory::shared::ItemRef),
+    /// `IsoPlayer.triggerMusicIntensityEvent(name)` (a local player).
+    MusicIntensityEvent(&'static str),
+    /// `createFallingItem(item)`: a worn item that fell off
+    /// (`helmetFall`), already out of the inventory and the worn items.
+    FallingItem(pz_inventory::shared::ItemRef),
+    /// `PersistentOutfits.instance.setFallenHat(chr, true)`.
+    FallenHat,
+    /// `IsoPlayer.stopPlayerVoiceSound(name)`.
+    StopPlayerVoiceSound(&'static str),
+    /// `LuaEventManager.triggerEvent("OnCharacterDeath", chr)`.
+    CharacterDeath,
+    /// `UIManager.FadeIn(playerIndex, seconds)` (a sleeping player that
+    /// dies).
+    FadeIn(f64),
+    /// The rest of `IsoPlayer.OnDeath()` after `dropHandItems()`, the
+    /// engine's: the death music once all players are dead,
+    /// `OnPlayerDeath` and leaving the vehicle for a local player,
+    /// `removeSaveFile()`, `forceAwake()` for one that becomes a zombie,
+    /// `getMoodles().Update()` and `getCell().setDrag(null, index)`.
+    PlayerDeath { local: bool },
 }
 
 /// The singletons the simulation reads. Every method has the default a
@@ -590,6 +610,10 @@ pub trait SimContext {
     fn lore_zombies_fall_damage(&self) -> f64 {
         1.0
     }
+    /// `SandboxOptions.easyClimbing`.
+    fn easy_climbing(&self) -> bool {
+        false
+    }
     /// `lore.disableFakeDead` (1 world zombies, 2 world and combat, 3 never).
     fn lore_disable_fake_dead(&self) -> i32 {
         1
@@ -724,6 +748,10 @@ pub trait SimContext {
     fn debug_always_hit_target(&self) -> bool {
         false
     }
+    /// `DebugOptions.instance.character.debug.alwaysTripOverFence`.
+    fn debug_always_trip_over_fence(&self) -> bool {
+        false
+    }
 }
 
 /// `java.lang.Math.random()`: one `java.util.Random` seeded from the clock
@@ -772,8 +800,6 @@ pub struct CharacterEnvironment {
     /// `Temperature.getWindChillAmountForPlayer(player)` when no climate
     /// runs ([`SimContext::climate`] is `None`).
     pub wind_chill_amount: f32,
-    /// `isDraggingCorpse()`.
-    pub dragging_corpse: bool,
     /// `isFallOnFront()`.
     pub fall_on_front: bool,
     /// `getCurrentSquare().haveRoof`.
@@ -853,7 +879,6 @@ impl Default for CharacterEnvironment {
             total_blood: 0.0,
             building_toxic: false,
             wind_chill_amount: 0.0,
-            dragging_corpse: false,
             fall_on_front: false,
             square_have_roof: false,
             vehicle_has_roof: false,

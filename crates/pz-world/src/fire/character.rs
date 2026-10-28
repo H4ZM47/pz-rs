@@ -102,14 +102,15 @@ pub fn set_on_fire(mgr: &mut IsoFireManager, c: &mut dyn FireCharacter, rand: &m
     if c.on_fire() {
         return;
     }
+    // setOnFire(true): charactersOnFire is a server's list.
     c.set_on_fire_flag(true);
-    mgr.set_character_on_fire(c.id(), true);
     let dx = 8 - rand.next(16);
     let dy = 10 + rand.next(20);
     mgr.add_burning_character(c.id());
     let (lo, hi) = c.burn_part_range();
     let part = rand.next_range(lo, hi);
-    let part = (c.kind() == CharacterKind::Player).then_some(part);
+    // `this instanceof IsoPlayer` (animals are players too).
+    let part = matches!(c.kind(), CharacterKind::Player | CharacterKind::Animal).then_some(part);
     c.attach_fire(dx, dy, part);
 }
 
@@ -120,7 +121,6 @@ pub fn stop_burning(mgr: &mut IsoFireManager, c: &mut dyn FireCharacter) {
     }
     mgr.remove_burning_character(c.id());
     c.set_on_fire_flag(false);
-    mgr.set_character_on_fire(c.id(), false);
     c.detach_fire();
 }
 
@@ -149,14 +149,21 @@ pub fn fire_check(
     let burning = c
         .square()
         .and_then(|(x, y, z)| w.sq(x, y, z))
-        .is_some_and(|sq| sq.has(w.flags.burning));
+        .is_some_and(|sq| sq.borrow().has(w.flags.burning));
     if !burning {
         return;
     }
     let kind = c.kind();
+    // `this instanceof IsoPlayer && Rand.Next(...) == 0 || isZombie() ||
+    // this instanceof IsoAnimal`: an animal is an IsoPlayer, so it draws
+    // too.
     let catches = match kind {
         CharacterKind::Player => rand.next(frame.adjust_for_framerate(70)) == 0,
-        CharacterKind::Zombie | CharacterKind::Animal => true,
+        CharacterKind::Animal => {
+            rand.next(frame.adjust_for_framerate(70));
+            true
+        }
+        CharacterKind::Zombie => true,
         CharacterKind::Other => false,
     };
     if catches {
@@ -224,12 +231,14 @@ pub fn spread_fire(
         return;
     }
     let Some(at) = c.square() else { return };
-    let Some(sq) = w.sq(at.0, at.1, at.2) else {
+    let Some(sq_owner) = w.sq(at.0, at.1, at.2) else {
         return;
     };
+    let sq = sq_owner.borrow();
     if sq.has(w.flags.burning) {
         return;
     }
+    drop(sq);
     if rand.next(frame.adjust_for_framerate(3000)) < c.fire_spread_probability() {
         mgr.start_fire(w, rand, at.0, at.1, at.2, false, 80, 0);
     }

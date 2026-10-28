@@ -228,29 +228,32 @@ impl Map {
         let mut sq = IsoGridSquare::new(x, y, 0);
         for o in objs {
             let id = sq.new_object_id();
-            sq.objects.push(IsoObject::new(
+            sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
                 id,
                 ObjectKind::Object,
                 Some(self.m.named_map[*o]),
-            ));
+            )));
         }
         sq.recalc_properties(&self.m);
         self.cell
             .chunks
             .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
             .unwrap()
-            .set_square(x.rem_euclid(8), y.rem_euclid(8), 0, Some(sq));
+            .set_square(x.rem_euclid(8), y.rem_euclid(8), 0, Some((sq).into()));
     }
 
     /// Adds a special object (door) to a square.
     pub fn add_special(&mut self, x: i32, y: i32, name: &str, kind: ObjectKind) -> ObjectRef {
-        let mut sq = self.cell.get_grid_square(x, y, 0).unwrap().clone();
+        let sq = self.cell.get_grid_square(x, y, 0).unwrap();
+        let mut sq = sq.borrow_mut();
         let id = sq.new_object_id();
-        sq.objects
-            .push(IsoObject::new(id, kind, Some(self.m.named_map[name])));
+        sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
+            id,
+            kind,
+            Some(self.m.named_map[name]),
+        )));
         sq.special_objects.push(id);
         sq.recalc_properties(&self.m);
-        *self.cell.get_grid_square_mut(x, y, 0).unwrap() = sq;
         ObjectRef { x, y, z: 0, id }
     }
 

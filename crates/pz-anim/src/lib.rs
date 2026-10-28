@@ -91,6 +91,9 @@ impl AnimBoneWeight {
 /// `IsoGameCharacter` and the `RagdollController` the player holds (which
 /// lives with the host here, since it drives the physics world).
 pub trait RagdollHost {
+    /// Internal host abort control. The actual typed error remains with the
+    /// character's action context; this is not a native canRagdoll answer.
+    fn host_action_failed(&self) -> bool { false }
     /// `getIsoGameCharacter() != null`.
     fn has_character(&self) -> bool;
     /// `character.canRagdoll()`.

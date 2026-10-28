@@ -110,7 +110,7 @@ fn add(sq: &mut IsoGridSquare, m: &IsoSpriteManager, name: &str, kind: ObjectKin
     let id = sq.new_object_id();
     let special = !matches!(kind, ObjectKind::Object);
     sq.objects
-        .push(IsoObject::new(id, kind, Some(m.named_map[name])));
+        .push((IsoObject::new(id, kind, Some(m.named_map[name]))).into());
     if special {
         sq.special_objects.push(id);
     }
@@ -143,23 +143,24 @@ impl World {
         }
     }
 
-    fn put(&mut self, x: i32, y: i32, z: i32, objs: &[&str]) -> &mut IsoGridSquare {
+    fn put(&mut self, x: i32, y: i32, z: i32, objs: &[&str]) -> crate::SquareRef {
         let sq = square(&self.m, x, y, z, objs);
         let ch = self
             .cell
             .chunks
             .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
             .unwrap();
-        ch.set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some(sq));
+        ch.set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some((sq).into()));
         self.cell.get_grid_square_mut(x, y, z).unwrap()
     }
 
     fn add(&mut self, x: i32, y: i32, z: i32, name: &str, kind: ObjectKind) {
-        let sq = self.cell.get_grid_square_mut(x, y, z).unwrap();
-        add(sq, &self.m, name, kind);
+        let sq_owner = self.cell.get_grid_square_mut(x, y, z).unwrap();
+        let mut sq = sq_owner.borrow_mut();
+        add(&mut sq, &self.m, name, kind);
     }
 
-    fn sq(&self, x: i32, y: i32, z: i32) -> &IsoGridSquare {
+    fn sq(&self, x: i32, y: i32, z: i32) -> crate::SquareRef {
         self.cell.get_grid_square(x, y, z).unwrap()
     }
 
@@ -241,10 +242,10 @@ fn roof_clears_exterior_below() {
     w.put(11, 10, 0, &["floor"]);
     w.recalc();
     let m = &w.m;
-    assert!(w.sq(10, 10, 0).have_roof);
-    assert!(!w.sq(10, 10, 0).is_exterior(m));
-    assert!(w.sq(10, 10, 1).is_exterior(m));
-    assert!(w.sq(11, 10, 0).is_exterior(m));
+    assert!(w.sq(10, 10, 0).borrow().have_roof);
+    assert!(!w.sq(10, 10, 0).borrow().is_exterior(m));
+    assert!(w.sq(10, 10, 1).borrow().is_exterior(m));
+    assert!(w.sq(11, 10, 0).borrow().is_exterior(m));
     // Level 0 squares are created for the whole chunk, and the 3x3 around
     // non-empty squares on other levels.
     assert!(w.cell.get_grid_square(8, 8, 0).is_some());
@@ -262,20 +263,22 @@ fn vision_blocked_by_walls_and_solids() {
     w.recalc();
     let a = w.sq(10, 10, 0);
     // The south neighbour has a north wall.
-    assert!(a.get_vision_matrix(0, 1, 0));
-    assert!(w.sq(10, 11, 0).get_vision_matrix(0, -1, 0));
+    assert!(a.borrow().get_vision_matrix(0, 1, 0));
+    assert!(w.sq(10, 11, 0).borrow().get_vision_matrix(0, -1, 0));
     // A solid object blocks vision into its square, not out of it.
-    assert!(a.get_vision_matrix(1, 0, 0));
-    assert!(!w.sq(11, 10, 0).get_vision_matrix(-1, 0, 0));
+    assert!(a.borrow().get_vision_matrix(1, 0, 0));
+    assert!(!w.sq(11, 10, 0).borrow().get_vision_matrix(-1, 0, 0));
     // A transparent north wall does not block going west.
-    assert!(!a.get_vision_matrix(-1, 0, 0));
+    assert!(!a.borrow().get_vision_matrix(-1, 0, 0));
     // The diagonal past the wall is blocked.
-    assert!(a.get_vision_matrix(1, 1, 0));
+    assert!(a.borrow().get_vision_matrix(1, 1, 0));
     // No square above: not blocked.
-    assert!(!a.get_vision_matrix(0, 0, 1));
+    assert!(!a.borrow().get_vision_matrix(0, 0, 1));
     let b = w.sq(10, 11, 0);
-    assert!(a.calculate_vision_blocked(Some(b), &w.m, &w.cell));
-    assert!(!a.calculate_vision_blocked(None, &w.m, &w.cell));
+    assert!(a
+        .borrow()
+        .calculate_vision_blocked(Some(&(b).borrow()), &w.m, &w.cell));
+    assert!(!a.borrow().calculate_vision_blocked(None, &w.m, &w.cell));
 }
 
 #[test]
@@ -286,9 +289,9 @@ fn vision_between_levels() {
     w.put(12, 12, 0, &["floor"]);
     w.put(12, 12, 1, &["glass_floor"]);
     w.recalc();
-    assert!(w.sq(10, 10, 0).get_vision_matrix(0, 0, 1));
-    assert!(w.sq(10, 10, 1).get_vision_matrix(0, 0, -1));
-    assert!(!w.sq(12, 12, 0).get_vision_matrix(0, 0, 1));
+    assert!(w.sq(10, 10, 0).borrow().get_vision_matrix(0, 0, 1));
+    assert!(w.sq(10, 10, 1).borrow().get_vision_matrix(0, 0, -1));
+    assert!(!w.sq(12, 12, 0).borrow().get_vision_matrix(0, 0, 1));
 }
 
 #[test]
@@ -300,16 +303,16 @@ fn collide_matrix_and_walls() {
     w.put(12, 10, 0, &["floor", "wall_w"]);
     w.recalc();
     let a = w.sq(10, 10, 0);
-    assert!(a.test_collide_adjacent(&w.meta, 0, 1, 0));
-    assert!(!a.test_collide_adjacent(&w.meta, 1, 0, 0));
-    assert!(a.test_collide_adjacent(&w.meta, 2, 0, 0));
+    assert!(a.borrow().test_collide_adjacent(&w.meta, 0, 1, 0));
+    assert!(!a.borrow().test_collide_adjacent(&w.meta, 1, 0, 0));
+    assert!(a.borrow().test_collide_adjacent(&w.meta, 2, 0, 0));
     let (b, e, ee) = (w.sq(10, 11, 0), w.sq(11, 10, 0), w.sq(12, 10, 0));
-    assert!(a.is_wall_to(Some(b), &w.m, &w.cell));
-    assert!(b.is_wall_to(Some(a), &w.m, &w.cell));
-    assert!(!a.is_wall_to(Some(e), &w.m, &w.cell));
-    assert!(e.is_wall_to(Some(ee), &w.m, &w.cell));
-    assert!(ee.is_wall_to(Some(e), &w.m, &w.cell));
-    assert!(!a.is_wall_to(Some(a), &w.m, &w.cell));
+    assert!(a.borrow().is_wall_to(Some(&(b).borrow()), &w.m, &w.cell));
+    assert!(b.borrow().is_wall_to(Some(&(a).borrow()), &w.m, &w.cell));
+    assert!(!a.borrow().is_wall_to(Some(&(e).borrow()), &w.m, &w.cell));
+    assert!(e.borrow().is_wall_to(Some(&(ee).borrow()), &w.m, &w.cell));
+    assert!(ee.borrow().is_wall_to(Some(&(e).borrow()), &w.m, &w.cell));
+    assert!(!a.borrow().is_wall_to(Some(&(a).borrow()), &w.m, &w.cell));
 }
 
 #[test]
@@ -342,17 +345,24 @@ fn windows_and_doors_to() {
     w.recalc();
     let g = &w.cell;
     let (a, b) = (w.sq(10, 10, 0), w.sq(10, 11, 0));
-    assert!(a.is_window_to(Some(b), &w.m, g));
-    assert!(!a.is_wall_to(Some(b), &w.m, g));
-    assert!(a.is_window_blocked_to(Some(b), g, &NoSquareHooks));
-    let found = a.get_window_to(Some(b), g).unwrap();
-    assert!(matches!(found.kind, ObjectKind::Window(_)));
-    assert!(b.get_window_to(Some(a), g).is_some());
-    assert!(a.get_window_to(Some(w.sq(12, 10, 0)), g).is_none());
+    assert!(a.borrow().is_window_to(Some(&(b).borrow()), &w.m, g));
+    assert!(!a.borrow().is_wall_to(Some(&(b).borrow()), &w.m, g));
+    assert!(a
+        .borrow()
+        .is_window_blocked_to(Some(&(b).borrow()), g, &NoSquareHooks));
+    let found = a.borrow().get_window_to(Some(&(b).borrow()), g).unwrap();
+    assert!(matches!(found.borrow().kind, ObjectKind::Window(_)));
+    assert!(b.borrow().get_window_to(Some(&(a).borrow()), g).is_some());
+    assert!(a
+        .borrow()
+        .get_window_to(Some(&(w.sq(12, 10, 0)).borrow()), g)
+        .is_none());
     let (c, d) = (w.sq(12, 10, 0), w.sq(12, 11, 0));
-    assert!(c.is_door_to(Some(d), &w.m, g));
-    assert!(c.is_door_blocked_to(Some(d), g, &NoSquareHooks));
-    assert!(!a.is_door_to(Some(b), &w.m, g));
+    assert!(c.borrow().is_door_to(Some(&(d).borrow()), &w.m, g));
+    assert!(c
+        .borrow()
+        .is_door_blocked_to(Some(&(d).borrow()), g, &NoSquareHooks));
+    assert!(!a.borrow().is_door_to(Some(&(b).borrow()), &w.m, g));
 }
 
 struct Barricaded;
@@ -375,8 +385,12 @@ fn barricade_hook_blocks_open_window() {
     };
     w.add(10, 11, 0, "window_n", ObjectKind::Window(open));
     let (a, b) = (w.sq(10, 10, 0), w.sq(10, 11, 0));
-    assert!(!a.is_window_blocked_to(Some(b), &w.cell, &NoSquareHooks));
-    assert!(a.is_window_blocked_to(Some(b), &w.cell, &Barricaded));
+    assert!(!a
+        .borrow()
+        .is_window_blocked_to(Some(&(b).borrow()), &w.cell, &NoSquareHooks));
+    assert!(a
+        .borrow()
+        .is_window_blocked_to(Some(&(b).borrow()), &w.cell, &Barricaded));
 }
 
 #[test]
@@ -386,8 +400,8 @@ fn chunk_edges_use_the_cell() {
     w.put(15, 10, 0, &["floor"]);
     w.put(16, 10, 0, &["floor", "wall_w"]);
     w.recalc();
-    assert!(w.sq(15, 10, 0).get_vision_matrix(1, 0, 0));
-    assert!(w.sq(16, 10, 0).get_vision_matrix(-1, 0, 0));
+    assert!(w.sq(15, 10, 0).borrow().get_vision_matrix(1, 0, 0));
+    assert!(w.sq(16, 10, 0).borrow().get_vision_matrix(-1, 0, 0));
     let ch = &w.cell.chunks[&(1, 1)];
     assert!(ChunkGetter(ch).get_grid_square(16, 10, 0).is_none());
     assert!(ChunkGetter(ch).get_grid_square(15, 10, 0).is_some());
@@ -506,7 +520,7 @@ fn main_thread_load_sees_only_chunks_added_before() {
         w
     };
     let bit = |w: &World, dx: i32, dy: i32| {
-        get_matrix_bit(w.sq(8, 15, 0).collide_matrix, dx + 1, dy + 1, 1)
+        get_matrix_bit(w.sq(8, 15, 0).borrow().collide_matrix, dx + 1, dy + 1, 1)
     };
     let w = build(true);
     // The window next to the east seat lets it be passed (solidtrans with a
@@ -541,8 +555,9 @@ impl World {
     /// like here).
     fn add_special(&mut self, x: i32, y: i32, z: i32, name: &str) -> ObjectId {
         self.add(x, y, z, name, ObjectKind::Object);
-        let sq = self.cell.get_grid_square_mut(x, y, z).unwrap();
-        let id = sq.objects.last().unwrap().id;
+        let sq_owner = self.cell.get_grid_square_mut(x, y, z).unwrap();
+        let mut sq = sq_owner.borrow_mut();
+        let id = sq.objects.last().unwrap().borrow().id;
         sq.special_objects.push(id);
         id
     }
@@ -565,24 +580,25 @@ fn stairs_heights_and_edges() {
     w.put(11, 10, 0, &["floor"]);
     let m = &w.m;
     let (top, mid, bottom) = (w.sq(10, 10, 0), w.sq(10, 11, 0), w.sq(10, 12, 0));
-    assert_eq!(top.get_stairs_direction(m), Some(IsoDirections::N));
-    assert_eq!(w.sq(10, 9, 0).get_stairs_direction(m), None);
-    assert_eq!(top.get_stairs_height(IsoDirections::N, m), 1.0);
-    assert_eq!(top.get_stairs_height(IsoDirections::S, m), 0.66);
-    assert_eq!(top.get_stairs_height(IsoDirections::E, m), -1.0);
-    assert_eq!(mid.get_stairs_height(IsoDirections::N, m), 0.66);
+    assert_eq!(top.borrow().get_stairs_direction(m), Some(IsoDirections::N));
+    assert_eq!(w.sq(10, 9, 0).borrow().get_stairs_direction(m), None);
+    assert_eq!(top.borrow().get_stairs_height(IsoDirections::N, m), 1.0);
+    assert_eq!(top.borrow().get_stairs_height(IsoDirections::S, m), 0.66);
+    assert_eq!(top.borrow().get_stairs_height(IsoDirections::E, m), -1.0);
+    assert_eq!(mid.borrow().get_stairs_height(IsoDirections::N, m), 0.66);
     // Bottom stairs report 0 for both ends, as in the original.
-    assert_eq!(bottom.get_stairs_height_max(m), 0.0);
-    assert_eq!(bottom.get_stairs_height_min(m), 0.0);
+    assert_eq!(bottom.borrow().get_stairs_height_max(m), 0.0);
+    assert_eq!(bottom.borrow().get_stairs_height_min(m), 0.0);
     let g = &w.cell;
     // The top step is 1 high to the north, the floor beyond is 0.
-    assert!(top.is_stairs_edge_blocked(IsoDirections::N, m, g));
-    assert!(!top.is_stairs_edge_blocked(IsoDirections::S, m, g));
-    assert!(top.is_stairs_edge_blocked(IsoDirections::E, m, g));
+    assert!(top.borrow().is_stairs_edge_blocked(IsoDirections::N, m, g));
+    assert!(!top.borrow().is_stairs_edge_blocked(IsoDirections::S, m, g));
+    assert!(top.borrow().is_stairs_edge_blocked(IsoDirections::E, m, g));
     // No square to the west.
-    assert!(top.is_stairs_edge_blocked(IsoDirections::W, m, g));
+    assert!(top.borrow().is_stairs_edge_blocked(IsoDirections::W, m, g));
     assert!(!w
         .sq(10, 9, 0)
+        .borrow()
         .is_stairs_edge_blocked(IsoDirections::S, m, g));
 }
 
@@ -648,42 +664,51 @@ fn adjacent_windows_and_hoppables() {
         ),
     ]);
     let (m, g, none) = (&w.m, &w.cell, &NoSquareHooks);
-    assert!(w.sq(9, 10, 0).is_adjacent_to_window(m, g, none));
-    assert!(w.sq(9, 11, 0).is_adjacent_to_window(m, g, none));
-    assert!(w.sq(11, 10, 0).is_adjacent_to_window(m, g, none));
-    assert!(!w.sq(13, 10, 0).is_adjacent_to_window(m, g, none));
-    assert!(w.sq(13, 10, 0).is_adjacent_to_window(m, g, &hooks));
-    assert!(!w.sq(15, 12, 0).is_adjacent_to_window(m, g, &hooks));
-    assert!(w.sq(15, 12, 0).is_adjacent_to_hoppable(m, g, none));
-    assert!(w.sq(15, 11, 0).is_adjacent_to_hoppable(m, g, none));
+    assert!(w.sq(9, 10, 0).borrow().is_adjacent_to_window(m, g, none));
+    assert!(w.sq(9, 11, 0).borrow().is_adjacent_to_window(m, g, none));
+    assert!(w.sq(11, 10, 0).borrow().is_adjacent_to_window(m, g, none));
+    assert!(!w.sq(13, 10, 0).borrow().is_adjacent_to_window(m, g, none));
+    assert!(w.sq(13, 10, 0).borrow().is_adjacent_to_window(m, g, &hooks));
+    assert!(!w.sq(15, 12, 0).borrow().is_adjacent_to_window(m, g, &hooks));
+    assert!(w.sq(15, 12, 0).borrow().is_adjacent_to_hoppable(m, g, none));
+    assert!(w.sq(15, 11, 0).borrow().is_adjacent_to_hoppable(m, g, none));
     // The window frame's sprite counts as hoppable too.
-    assert!(w.sq(11, 10, 0).is_adjacent_to_hoppable(m, g, none));
-    assert!(!w.sq(9, 14, 0).is_adjacent_to_hoppable(m, g, none));
-    assert!(w.sq(9, 14, 0).is_adjacent_to_hoppable(m, g, &hooks));
+    assert!(w.sq(11, 10, 0).borrow().is_adjacent_to_hoppable(m, g, none));
+    assert!(!w.sq(9, 14, 0).borrow().is_adjacent_to_hoppable(m, g, none));
+    assert!(w
+        .sq(9, 14, 0)
+        .borrow()
+        .is_adjacent_to_hoppable(m, g, &hooks));
     // The thumpable window is on the north edge of (13, 10).
     w.put(13, 9, 0, &["floor"]);
     w.put(13, 11, 0, &["floor"]);
     let (m, g) = (&w.m, &w.cell);
     let a = w.sq(13, 10, 0);
     let (sq, o) = a
-        .get_window_thumpable_to(g.get_grid_square(13, 9, 0), m, g, &hooks)
+        .get_window_thumpable_to(g.get_grid_square(13, 9, 0).as_ref(), m, g, &hooks)
         .unwrap();
-    assert_eq!(((sq.x, sq.y), o.id), ((13, 10), tw));
+    assert_eq!(
+        ((sq.borrow().x, sq.borrow().y), o.borrow().id),
+        ((13, 10), tw)
+    );
     assert!(a
-        .get_window_thumpable_to(g.get_grid_square(13, 11, 0), m, g, &hooks)
+        .get_window_thumpable_to(g.get_grid_square(13, 11, 0).as_ref(), m, g, &hooks)
         .is_none());
     assert!(w
         .sq(11, 10, 0)
-        .get_window_frame_to(w.cell.get_grid_square(10, 10, 0), g)
+        .get_window_frame_to(w.cell.get_grid_square(10, 10, 0).as_ref(), g)
         .is_none());
     w.put(10, 10, 0, &["floor"]);
     let g = &w.cell;
     let (sq, obj) = w
         .sq(10, 10, 0)
-        .get_window_frame_to(g.get_grid_square(11, 10, 0), g)
+        .get_window_frame_to(g.get_grid_square(11, 10, 0).as_ref(), g)
         .unwrap();
-    assert_eq!((sq.x, sq.y), (11, 10));
-    assert!(matches!(obj.kind, ObjectKind::WindowFrame { north: false }));
+    assert_eq!((sq.borrow().x, sq.borrow().y), (11, 10));
+    assert!(matches!(
+        obj.borrow().kind,
+        ObjectKind::WindowFrame { north: false }
+    ));
 }
 
 #[test]
@@ -721,17 +746,97 @@ fn doors_to_and_reach() {
     let hooks = Specials(vec![((12, 11, 0), th, SpecialObject::Thumpable(door_th))]);
     let (m, g, none) = (&w.m, &w.cell, &NoSquareHooks);
     let at = |x, y| g.get_grid_square(x, y, 0);
-    let (_, d) = w.sq(10, 10, 0).get_door_to(at(10, 11), g, none).unwrap();
-    assert!(matches!(d.kind, ObjectKind::Door(_)));
-    assert!(w.sq(12, 10, 0).get_door_to(at(12, 11), g, none).is_none());
-    let (sq, d) = w.sq(12, 10, 0).get_door_to(at(12, 11), g, &hooks).unwrap();
-    assert_eq!(((sq.x, sq.y), d.id), ((12, 11), th));
+    let (_, d) = w
+        .sq(10, 10, 0)
+        .get_door_to(at(10, 11).as_ref(), g, none)
+        .unwrap();
+    assert!(matches!(d.borrow().kind, ObjectKind::Door(_)));
+    assert!(w
+        .sq(12, 10, 0)
+        .get_door_to(at(12, 11).as_ref(), g, none)
+        .is_none());
+    let (sq, d) = w
+        .sq(12, 10, 0)
+        .get_door_to(at(12, 11).as_ref(), g, &hooks)
+        .unwrap();
+    assert_eq!(
+        ((sq.borrow().x, sq.borrow().y), d.borrow().id),
+        ((12, 11), th)
+    );
     // Closed doors and walls stop reaching; open floor does not.
-    assert!(!w.sq(10, 10, 0).can_reach_to(w.sq(10, 11, 0), m, g, none));
-    assert!(!w.sq(14, 10, 0).can_reach_to(w.sq(14, 11, 0), m, g, none));
-    assert!(w.sq(8, 8, 0).can_reach_to(w.sq(9, 8, 0), m, g, none));
-    assert!(w.sq(8, 8, 0).can_reach_to(w.sq(8, 8, 0), m, g, none));
-    assert!(!w.sq(8, 8, 0).can_reach_to(w.sq(10, 10, 0), m, g, none));
+    assert!(!w
+        .sq(10, 10, 0)
+        .borrow()
+        .can_reach_to(&(w.sq(10, 11, 0)).borrow(), m, g, none));
+    assert!(!w
+        .sq(14, 10, 0)
+        .borrow()
+        .can_reach_to(&(w.sq(14, 11, 0)).borrow(), m, g, none));
+    assert!(w
+        .sq(8, 8, 0)
+        .borrow()
+        .can_reach_to(&(w.sq(9, 8, 0)).borrow(), m, g, none));
+    assert!(w
+        .sq(8, 8, 0)
+        .borrow()
+        .can_reach_to(&(w.sq(8, 8, 0)).borrow(), m, g, none));
+    assert!(!w
+        .sq(8, 8, 0)
+        .borrow()
+        .can_reach_to(&(w.sq(10, 10, 0)).borrow(), m, g, none));
+}
+
+#[test]
+fn reach_exclusions_preserve_both_directions_of_each_edge_and_null_names() {
+    let mut w = World::new();
+    let north = w.m.named_map["wall_n"];
+    let west = w.m.named_map["wall_w"];
+    w.m.sprites[north]
+        .properties
+        .unset_flag(w.m.tables.flag.collideN);
+    w.m.sprites[west]
+        .properties
+        .unset_flag(w.m.tables.flag.collideW);
+    w.m.sprites[north].cut_n = true;
+    w.m.sprites[west].cut_w = true;
+    w.put(8, 8, 0, &["floor"]);
+    w.put(8, 9, 0, &["wall_n"]);
+    w.put(9, 8, 0, &["wall_w"]);
+    let pairs = [
+        ((8, 8), (8, 9)),
+        ((8, 9), (8, 8)),
+        ((8, 8), (9, 8)),
+        ((9, 8), (8, 8)),
+    ];
+    for (from, to) in pairs {
+        let (a, b) = (w.sq(from.0, from.1, 0), w.sq(to.0, to.1, 0));
+        assert!(!a
+            .borrow()
+            .can_reach_to(&(b).borrow(), &w.m, &w.cell, &NoSquareHooks));
+        assert!(a.borrow().can_reach_to_excluding(
+            &(b).borrow(),
+            &w.m,
+            &w.cell,
+            &NoSquareHooks,
+            &[Some("wall_n".into()), Some("wall_w".into())]
+        ));
+    }
+    w.m.sprites[north].name = None;
+    let (a, b) = (w.sq(8, 8, 0), w.sq(8, 9, 0));
+    assert!(!a.borrow().can_reach_to_excluding(
+        &(b).borrow(),
+        &w.m,
+        &w.cell,
+        &NoSquareHooks,
+        &[Some("wall_n".into())]
+    ));
+    assert!(a.borrow().can_reach_to_excluding(
+        &(b).borrow(),
+        &w.m,
+        &w.cell,
+        &NoSquareHooks,
+        &[None]
+    ));
 }
 
 #[test]
@@ -797,6 +902,7 @@ fn vision_through_edges() {
     let env = VisionEnv::new(&w.cell, &w.m, &hooks);
     let tva = |x, y, dx, dy, ignore, env: &VisionEnv<'_, IsoCell>| {
         w.sq(x, y, 0)
+            .borrow()
             .test_vision_adjacent(dx, dy, 0, true, ignore, env)
     };
     use TestResults::*;
@@ -875,4 +981,31 @@ fn physics_check_flags() {
     assert!(ch.physics_check(0) && !ch.physics_check(-1) && !ch.physics_check(1));
     ch.set_min_max_level(-1, 1);
     assert!(!ch.physics_check(1));
+}
+
+#[test]
+fn window_vision_distinguishes_same_coordinate_archive_from_actual_square() {
+    let owner = crate::SquareSlot::new(IsoGridSquare::new(4, 4, 0)).ref_handle();
+    let alias = owner.clone();
+    let snapshot = owner.borrow().try_archive_copy().unwrap();
+    let north = IsoGridSquare::new(4, 3, 0);
+    let window = IsoObject::new(
+        7,
+        ObjectKind::Window(IsoWindow {
+            north: true,
+            ..Default::default()
+        }),
+        None,
+    );
+    let m = manager();
+    // Both guards identify the same native body even though the Ref wrappers differ.
+    assert_eq!(
+        window.test_vision(&owner.borrow(), &alias.borrow(), &north, &m, &NoSquareHooks),
+        VisionResult::Unblocked
+    );
+    // A same-coordinate archive allocation is a distinct native receiver.
+    assert_eq!(
+        window.test_vision(&owner.borrow(), &snapshot, &north, &m, &NoSquareHooks),
+        VisionResult::NoEffect
+    );
 }

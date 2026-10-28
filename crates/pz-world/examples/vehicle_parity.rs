@@ -14,6 +14,7 @@
 //! classes) `resave/map/...`, `resave/vehicles/<wx>_<wy>_<i>.bin` and
 //! `synth_digest.txt`. Prints counts per kind.
 
+use pz_world::ObjectSlot;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -424,7 +425,7 @@ fn main() {
                     let Some(sq) = ch.get_grid_square(x, y, z) else {
                         continue;
                     };
-                    for o in &sq.objects {
+                    for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
                         match &o.kind {
                             ObjectKind::AnimalTrack(t) => rt.push(format!(
                                 "track {wx},{wy} {} {} {} {} {} {} {} sprite={}",
@@ -438,7 +439,7 @@ fn main() {
                                 }),
                                 t.added_time,
                                 t.added_to_world,
-                                o.sprite
+                                o.sprite.tile_projection()
                                     .and_then(|s| sprites.sprites[s].name.clone())
                                     .unwrap_or_else(|| "null".into())
                             )),
@@ -455,9 +456,8 @@ fn main() {
                                 ["N", "NW", "W", "SW", "S", "SE", "E", "NE"][p.base.dir as usize],
                                 f(p.base.offset_x),
                                 f(p.base.offset_y),
-                                o.sprite.map_or_else(
-                                    || o.sprite_id_override
-                                        .map_or("null".into(), |i| i.to_string()),
+                                o.sprite.tile_projection().map_or_else(
+                                    || match &o.sprite { pz_world::objects::ObjectSprite::ArchiveUnmanaged(id) => id.to_string(), _ => "null".into() },
                                     |s| ctx.sprite_id(s).to_string()
                                 ),
                                 o.container.as_ref().map_or("null".into(), |c| format!(

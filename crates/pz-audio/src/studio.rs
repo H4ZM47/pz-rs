@@ -55,6 +55,8 @@ pub struct Studio {
     global_params: HashMap<Guid, f32>,
     /// Runtime state of each bus effect (`None`: passes the signal through).
     dsps: HashMap<Guid, Option<Box<dyn crate::dsp::Dsp>>>,
+    /// Loose sound files on FMOD core channels.
+    pub channels: crate::channels::Channels,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,6 +148,7 @@ impl Studio {
             listener: [[0.0; 3], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
             global_params: HashMap::new(),
             dsps: HashMap::new(),
+            channels: Default::default(),
             strings: crate::strings::StringTable::default(),
         }
     }
@@ -912,6 +915,10 @@ impl Studio {
             }
         }
         self.process_buses(out);
+        let mut channels = std::mem::take(&mut self.channels);
+        channels.mix(out, |p| self.relative(p));
+        channels.reap();
+        self.channels = channels;
     }
 
     pub fn lookup_event(&self, strings: &crate::strings::StringTable, path: &str) -> Option<Guid> {

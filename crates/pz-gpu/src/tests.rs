@@ -529,3 +529,90 @@ fn device_loss_is_reported() {
     g.render_frame(&[(opaque_black(8, 8), &dl)], &mut tm);
     assert!(matches!(g.try_read_pixels(), Err(GpuError::DeviceLost(_))));
 }
+
+/// `pz_render::vbo` runs: an x/y translation by whole pixels' centres so
+/// lines run along pixel rows and columns.
+fn vbo_translate(tx: f32, ty: f32) -> [[f32; 4]; 4] {
+    [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [tx, ty, 0.0, 1.0]]
+}
+
+/// `Model.debugDrawAxis`: one-pixel red and green lines from the origin
+/// (the z axis, seen end on, draws nothing), no depth test.
+#[test]
+fn vbo_axis_lines_are_one_pixel_wide() {
+    let Some(mut g) = gpu(16, 16) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    // Origin at pixel centre (8.5, 7.5 from the top).
+    let run = pz_render::vbo::debug_draw_axis(vbo_translate(0.0625, 0.0625), 0.5, [false; 3]);
+    dl.cmds.push(DrawCmd::VboRun(Box::new(run)));
+    g.render_frame(&[(opaque_black(16, 16), &dl)], &mut tm);
+    let p = g.read_pixels();
+    for x in 9..12 {
+        assert_eq!(px(&p, 16, x, 7)[..3], [255, 0, 0], "x {x}");
+        assert_eq!(px(&p, 16, x, 6)[..3], [0, 0, 0]);
+        assert_eq!(px(&p, 16, x, 8)[..3], [0, 0, 0]);
+    }
+    for y in 4..7 {
+        assert_eq!(px(&p, 16, 8, y)[..3], [0, 255, 0], "y {y}");
+        assert_eq!(px(&p, 16, 7, y)[..3], [0, 0, 0]);
+    }
+    assert_eq!(px(&p, 16, 13, 7)[..3], [0, 0, 0]);
+}
+
+/// `addCylinder_Fill` seen from the side (z up the screen): the strip's
+/// triangles fill the cylinder's silhouette, a cone's narrows to its tip.
+#[test]
+fn vbo_cylinder_fills_its_silhouette() {
+    let Some(mut g) = gpu(32, 32) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::GlDisable(gl::BLEND));
+    // (x, y, z) -> (x, z): looking along y.
+    let side = [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [-0.5, -0.5, 0.0, 1.0]];
+    for run in pz_render::vbo::cylinder_fill(side, 0.25, 0.25, 0.5, 8, 1, [0.0, 0.5, 0.0, 1.0]) {
+        dl.cmds.push(DrawCmd::VboRun(Box::new(run)));
+    }
+    let cone = [[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.5, -0.5, 0.0, 1.0]];
+    for run in pz_render::vbo::cylinder_fill(cone, 0.25, 0.0, 1.0, 8, 1, [1.0, 0.0, 0.0, 1.0]) {
+        dl.cmds.push(DrawCmd::VboRun(Box::new(run)));
+    }
+    g.render_frame(&[(opaque_black(32, 32), &dl)], &mut tm);
+    let p = g.read_pixels();
+    // Cylinder: x in -0.75..-0.25 (pixels 4..12), z 0..0.5 (rows 16..24
+    // from the top, NDC y -0.5..0).
+    assert!(near_rgb(px(&p, 32, 8, 20), [0, 128, 0]), "{:?}", px(&p, 32, 8, 20));
+    assert!(near_rgb(px(&p, 32, 5, 17), [0, 128, 0]));
+    assert!(near_rgb(px(&p, 32, 11, 23), [0, 128, 0]));
+    assert_eq!(px(&p, 32, 2, 20)[..3], [0, 0, 0]);
+    assert_eq!(px(&p, 32, 8, 14)[..3], [0, 0, 0]);
+    // Cone: base 0.25 wide either side at NDC y -0.5 (row 24), tip at
+    // NDC y 0.5 (row 8) over x 0.5 (column 24).
+    assert_eq!(px(&p, 32, 21, 22)[..3], [255, 0, 0]);
+    assert_eq!(px(&p, 32, 24, 10)[..3], [255, 0, 0]);
+    assert_eq!(px(&p, 32, 21, 10)[..3], [0, 0, 0]);
+}
+
+/// `addTorus`: the half of the ring facing along the camera ray is drawn
+/// at half colour and alpha 0.25 over what is below.
+#[test]
+fn vbo_torus_fades_its_far_half() {
+    let Some(mut g) = gpu(32, 32) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::GlEnable(gl::BLEND));
+    dl.cmds.push(DrawCmd::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA));
+    let id = vbo_translate(0.0, 0.0);
+    // Ring radius 2 * 0.25 = 0.5 (8 pixels), tube 2 * 0.06 either side.
+    for run in pz_render::vbo::torus(id, 0.06, 0.25, 8, 32, [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]) {
+        dl.cmds.push(DrawCmd::VboRun(Box::new(run)));
+    }
+    g.render_frame(&[(opaque_black(32, 32), &dl)], &mut tm);
+    let p = g.read_pixels();
+    // Near (-x) side opaque blue; far (+x) side half blue at alpha 0.25,
+    // twice (the tube's upper and lower surfaces overlap seen from above):
+    // 32, then 32 + 0.75 * 32.
+    assert!(near_rgb(px(&p, 32, 8, 16), [0, 0, 255]), "{:?}", px(&p, 32, 8, 16));
+    assert!(near_rgb(px(&p, 32, 23, 16), [0, 0, 56]), "{:?}", px(&p, 32, 23, 16));
+    assert_eq!(px(&p, 32, 16, 16)[..3], [0, 0, 0]);
+}

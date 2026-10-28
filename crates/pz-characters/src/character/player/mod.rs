@@ -21,12 +21,15 @@ pub use aiming::AimingMode;
 pub use context::{ContextualAction, ContextualActionKind};
 pub use control::{CharacterInput, CharacterInputMode, InputOwner, TimedInputHandler};
 pub use input::{JoypadAxis2dBinding, NoInput, PlayerInput};
+pub use update::{PlayerUpdatePhase, PlayerUpdateStep};
 pub use vision::PlayerRenderInputs;
 
 /// `IsoPlayer`'s control-loop fields (and the `IsoGameCharacter` ones only
 /// the player loop uses).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerControl {
+    /// IsoPlayer.isFarming; maintained by Lua farming/timed actions.
+    pub is_farming: bool,
     /// `playerIndex`.
     pub player_index: i32,
     /// `CharacterInputComponent`.
@@ -139,6 +142,9 @@ pub struct PlayerControl {
     pub lunge_fall_timer: f32,
     /// `isNpc()`.
     pub npc: bool,
+    /// `climbOverWallSuccess`, `climbOverWallStruggle`.
+    pub climb_over_wall_success: bool,
+    pub climb_over_wall_struggle: bool,
 }
 
 impl Default for PlayerControl {
@@ -195,6 +201,7 @@ impl Default for PlayerControl {
             collidable: true,
             seen_this_frame: false,
             could_be_seen_this_frame: false,
+            is_farming: false,
             action_blocks_movement: false,
             action_overrides_animation: false,
             has_actions: false,
@@ -204,6 +211,8 @@ impl Default for PlayerControl {
             climate_wind_force_movement: 0.0,
             lunge_fall_timer: 0.0,
             npc: false,
+            climb_over_wall_success: false,
+            climb_over_wall_struggle: false,
         }
     }
 }

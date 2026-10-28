@@ -97,7 +97,12 @@ fn registry_get(
         .get(id)
 }
 
-fn registry_constant(sm: &ScriptManager, registry: &str, field: &str) -> Option<Rc<RegistryKey>> {
+pub fn registry_constant(sm: &ScriptManager, registry: &str, field: &str) -> Option<Rc<RegistryKey>> {
+    if let Some(keys) = sm.native_item_key_statics() {
+        if registry == "item_tag" || registry == "item_type" {
+            return keys.constant(registry, field).cloned();
+        }
+    }
     let id = sm
         .statics
         .items
@@ -319,7 +324,7 @@ pub(crate) fn is_constant(
     field: &str,
 ) -> bool {
     match (key, registry_constant(sm, registry, field)) {
-        (Some(k), Some(c)) => k.location == c.location,
+        (Some(k), Some(c)) => Rc::ptr_eq(k, &c),
         _ => false,
     }
 }

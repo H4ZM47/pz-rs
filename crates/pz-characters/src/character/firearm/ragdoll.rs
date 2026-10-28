@@ -141,6 +141,7 @@ impl<'a, 'w, I: 'static> CharacterRagdoll<'a, 'w, I> {
 
 #[cfg(any(feature = "bullet", test))]
 impl<I: 'static> pz_ragdoll::RagdollCharacter for CharacterRagdoll<'_, '_, I> {
+    fn host_action_failed(&self) -> bool { self.cx.has_host_error() }
     fn id(&self) -> i32 {
         self.chr.id
     }
@@ -178,6 +179,7 @@ impl<I: 'static> pz_ragdoll::RagdollCharacter for CharacterRagdoll<'_, '_, I> {
     /// `moveUnmoddedInternal`, then `setX(getNextX())`, `setY(getNextY())`,
     /// `setZ(getZ() + dz)`.
     fn do_deferred_movement_from_ragdoll(&mut self, player: &pz_anim::AnimationPlayer, m: pz_ragdoll::Vec3) {
+        if self.cx.has_host_error() { return; }
         if !player.is_ragdolling() {
             return;
         }

@@ -20,32 +20,49 @@
 //! toggling) comes from a [`StatesEngine`] the caller supplies. Character,
 //! path-finding, lighting and audio methods of [`StateWorld`] keep their
 //! defaults; the engine wraps this adapter for those.
+//!
+//! The adapter is also the population manager's [`SittingChecks`]
+//! (`pz-world-popman`), and [`population_host`] runs that manager over the
+//! adapter `RealZombies` holds ([`population`]).
+//!
+//! [`SittingChecks`]: pz_world_popman::SittingChecks
 
 mod bent_fences;
+mod broken_fences;
 mod climb;
 mod collide;
+mod floor;
+pub mod population;
 mod query;
 mod thump;
 mod vehicles;
+mod windows;
 
 pub use bent_fences::{BentFenceEntry, BentFences, FenceTileDef, ThumpData};
+pub use broken_fences::{
+    AdjacentDamage, BrokenFences, BrokenTile, DebrisItem, FenceRand, UnknownTile,
+};
 pub use collide::{CollideMoverInfo, NewRenderEffect, RenderEffectType, StatesFire, WorldView};
+pub use population::{population_host, population_view, real_zombie_on_square};
 pub use query::Env;
 pub use vehicles::{VehicleBox, VehicleGeometry};
 
 use std::collections::HashMap;
 
 use pz_characters::character::state::{
-    CorpseInfo, EatTarget, SquareInfo, StateWorld, ThumpInfo, ThumpTarget,
+    CorpseInfo, EatTarget, SheetRopeExit, SheetRopeSquare, SquareInfo, StateWorld, ThumpInfo,
+    ThumpTarget, WindowInfo,
 };
 use pz_characters::GameCharacter;
 use pz_pathfind::mover::{CharacterView, MoverId, ObjectRef};
 use pz_world::java::{fastfloor, GameRand};
 use pz_world::los::{self, TestResults};
+use pz_world::object_slot::IsoObjectRef;
 use pz_world::objects::IsoObject;
 use pz_world::square::{EdgeFacing, HoppableAction};
 use pz_world::{
-    BuildingIdx, IsoCell, IsoDirections, IsoGridSquare, IsoMetaGrid, IsoSpriteManager, VisionEnv,
+    BuildingIdx, IsoCell, IsoDirections, IsoGridSquare, IsoMetaGrid, IsoSpriteManager, SquareRef,
+    VisionEnv,
 };
 
 /// What a thumper or a character the thump code looks at is, as the world
@@ -167,6 +184,84 @@ pub trait StatesEngine {
     /// `Rand` (`zombie.core.random.Rand`): the game's random source.
     fn rand(&mut self) -> &mut dyn GameRand;
 
+    /// Actual floor mutation service. State adapters already hold the cell
+    /// and sprites and must not re-enter global WORLD to perform placement.
+    fn add_world_inventory_item(
+        &mut self,
+        _cell: &mut IsoCell,
+        _meta: &IsoMetaGrid,
+        _sprites: &mut IsoSpriteManager,
+        _square: (i32, i32, i32),
+        _item: &pz_inventory::shared::ItemRef,
+        _x: f32,
+        _y: f32,
+        _height: f32,
+    ) -> pz_inventory::floor_drop::HostResult<()> {
+        Err(pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+            operation: "actual state floor placement service",
+            kind: None,
+        })
+    }
+
+    fn add_world_inventory_item_on(
+        &mut self,
+        _cell: &mut IsoCell,
+        _meta: &IsoMetaGrid,
+        _sprites: &mut IsoSpriteManager,
+        _square: &pz_world::SquareRef,
+        _item: &pz_inventory::shared::ItemRef,
+        _x: f32,
+        _y: f32,
+        _height: f32,
+    ) -> pz_inventory::floor_drop::HostResult<()> {
+        Err(pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+            operation: "actual retained state floor placement service",
+            kind: None,
+        })
+    }
+
+    fn validate_floor_session(&self) -> pz_inventory::floor_drop::HostResult<()> {
+        Err(pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+            operation: "actual state floor session",
+            kind: None,
+        })
+    }
+
+    fn floor_fbo_render_chunk(&self) -> pz_inventory::floor_drop::HostResult<bool> {
+        Err(pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+            operation: "actual floor render configuration",
+            kind: None,
+        })
+    }
+
+    // ---- the live character animation owner ----
+    fn thumps_this_frame(&mut self, _chr: i32) -> i32 {
+        0
+    }
+    fn turn_alerted_enter(&mut self, _chr: i32, _target_angle: f32) {}
+    fn deferred_movement_step(
+        &mut self,
+        _chr: i32,
+        _input: &pz_anim::DeferredMovementInput,
+    ) -> Option<(f32, f32)> {
+        None
+    }
+    fn deferred_movement_length_sq(&self, _chr: i32) -> f32 {
+        0.0
+    }
+    fn contains_any_idle_nodes(&self, _chr: i32) -> bool {
+        false
+    }
+    fn animation_player_ready(&self, _chr: i32) -> bool {
+        false
+    }
+    fn rendered_angle(&self, _chr: i32) -> Option<f32> {
+        None
+    }
+    fn primary_hand_model_ready(&self, _chr: i32) -> bool {
+        false
+    }
+
     // ---- characters (pz-characters' owner) ----
 
     /// A character by id, as the thump code reads it.
@@ -218,7 +313,7 @@ pub trait StatesEngine {
     }
     /// `BrokenFences.getInstance().addItems(obj, square)` (the debris items
     /// of a removed fence piece; draws `Rand`).
-    fn broken_fence_items(&mut self, _sq: (i32, i32, i32), _obj: &IsoObject) {}
+    fn broken_fence_items(&mut self, _sq: (i32, i32, i32), _obj: &IsoObjectRef) {}
     /// `BentFences.collapse`'s characters: the zombies in `trip` that are
     /// not behind `fence` fall on their front (`setOnFloor`,
     /// `setFallOnFront`, hit reaction `Floor`); in `crush`, zombies fall
@@ -292,10 +387,10 @@ pub trait StatesEngine {
     }
     /// `dumpContentsInSquare()` / the containers' items dropped on the
     /// square, for `obj` just before it is removed.
-    fn dump_contents(&mut self, _sq: (i32, i32, i32), _obj: &IsoObject) {}
+    fn dump_contents(&mut self, _sq: (i32, i32, i32), _obj: &IsoObjectRef) {}
     /// `obj` left `sq` (`OnObjectAboutToBeRemoved` / `OnTileRemoved`, and
     /// `OnDestroyIsoThumpable` for destroyed thumpables when `destroyed`).
-    fn object_removed(&mut self, _sq: (i32, i32, i32), _obj: &IsoObject, _destroyed: bool) {}
+    fn object_removed(&mut self, _sq: (i32, i32, i32), _obj: &IsoObjectRef, _destroyed: bool) {}
     /// `LuaEventManager.triggerEvent("OnContainerUpdate")`.
     fn on_container_update(&mut self) {}
     /// `building.forceAwake()`.
@@ -307,6 +402,21 @@ pub trait StatesEngine {
     fn toggle_door(&mut self, _cell: &mut IsoCell, _door: ObjectRef, _chr: i32) {}
     /// `IsoWindow.ToggleWindow(chr)` on the cell.
     fn toggle_window(&mut self, _cell: &mut IsoCell, _window: ObjectRef, _chr: i32) {}
+    /// `LuaEventManager.triggerEvent("OnWeaponHitThumpable", chr, null,
+    /// obj)` (a bare-handed window smash).
+    fn weapon_hit_thumpable(&mut self, _chr: i32, _obj: ObjectRef) {}
+    /// `VehicleWindow.isDestroyed()` of a vehicle's part (the vehicles'
+    /// owner; `None`: no such window).
+    fn vehicle_window_destroyed(&self, _vehicle: i16, _part: &str) -> Option<bool> {
+        None
+    }
+    /// `VehicleWindow.hit(chr)`.
+    fn vehicle_window_hit(&mut self, _vehicle: i16, _part: &str, _chr: i32) {}
+    /// The local player's input this frame (`pressedMovement`,
+    /// `pressedCancelAction` in the window states).
+    fn player_input(&self) -> Option<&dyn pz_characters::character::player::PlayerInput> {
+        None
+    }
     /// `BrokenFences.getInstance().isBreakableObject(obj)` (the sprite
     /// lists Lua registers).
     fn is_breakable_fence(&self, _sprite_name: &str) -> bool {
@@ -433,7 +543,22 @@ impl<'a> StatesWorldAdapter<'a> {
         Env::new(self.cell, self.sprites, self.meta)
     }
 
-    fn at(&self, p: (i32, i32, i32)) -> Option<&IsoGridSquare> {
+    /// Retain an overwritten actual sprite until the outer host retirement
+    /// boundary, after the object guard and any caller WORLD guard are gone.
+    fn replace_object_sprite_tile(&mut self, object: &IsoObjectRef, sprite: Option<usize>) {
+        let (old, native_class) = {
+            let mut object = object.borrow_mut();
+            let native_class = object.kind.native_class_name();
+            let old = std::mem::replace(&mut object.sprite, sprite.into());
+            (old, native_class)
+        };
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_payload(Box::new(old));
+        self.cell.retire_components(retired);
+        pz_world::object_slot::observe_object(object, native_class);
+    }
+
+    fn at(&self, p: (i32, i32, i32)) -> Option<pz_world::SquareRef> {
         self.cell.get_grid_square(p.0, p.1, p.2)
     }
 
@@ -450,13 +575,12 @@ impl<'a> StatesWorldAdapter<'a> {
     ) -> Option<ObjectRef> {
         let env = self.env();
         let this = env.at(from)?;
-        let (sq, id) = env.test_collide_special_objects(this, env.at(to))?;
-        Some(ObjectRef {
-            x: sq.x,
-            y: sq.y,
-            z: sq.z,
-            id,
-        })
+        let (sq, id) = env.test_collide_special_objects(&this, env.at(to).as_ref())?;
+        let (x, y, z) = {
+            let sq = sq.borrow();
+            (sq.x, sq.y, sq.z)
+        };
+        Some(ObjectRef { x, y, z, id })
     }
 
     fn vision_line(
@@ -486,13 +610,14 @@ impl<'a> StatesWorldAdapter<'a> {
         let mut t = 0.5f32;
         let mut t2 = 0.5f32;
         let mut b = env.sq(x0, y0, z0);
-        let step = |a: Option<&IsoGridSquare>, b: Option<&IsoGridSquare>, doors: bool| -> bool {
+        let step = |a: Option<&SquareRef>, b: Option<&SquareRef>, doors: bool| -> bool {
             let (Some(a), Some(b)) = (a, b) else {
                 return false;
             };
+            let (a, b) = (a.borrow(), b.borrow());
             let mut blocked =
-                a.calculate_collide(Some(b), false, false, true, true, self.sprites, &env);
-            if doors && !ignore_doors && a.is_door_blocked_to(Some(b), &env, &hooks) {
+                a.calculate_collide(Some(&b), false, false, true, true, self.sprites, &env);
+            if doors && !ignore_doors && a.is_door_blocked_to(Some(&b), &env, &hooks) {
                 blocked = true;
             }
             blocked
@@ -510,7 +635,7 @@ impl<'a> StatesWorldAdapter<'a> {
                 t += m;
                 t2 += m2;
                 let a = env.sq(x0, fastfloor(t), fastfloor(t2));
-                if step(a, b, true) {
+                if step(a.as_ref(), b.as_ref(), true) {
                     return true;
                 }
                 b = a;
@@ -528,7 +653,7 @@ impl<'a> StatesWorldAdapter<'a> {
                 t += m;
                 t2 += m2;
                 let a = env.sq(fastfloor(t), y0, fastfloor(t2));
-                if step(a, b, true) {
+                if step(a.as_ref(), b.as_ref(), true) {
                     return true;
                 }
                 b = a;
@@ -546,7 +671,7 @@ impl<'a> StatesWorldAdapter<'a> {
                 t += m;
                 t2 += m2;
                 let a = env.sq(fastfloor(t), fastfloor(t2), z0);
-                if step(a, b, false) {
+                if step(a.as_ref(), b.as_ref(), false) {
                     return true;
                 }
                 b = a;
@@ -556,10 +681,11 @@ impl<'a> StatesWorldAdapter<'a> {
     }
 
     /// The corpse with `id` (see [`corpse_id`]).
-    fn corpse(&self, id: i64) -> Option<(&IsoGridSquare, usize)> {
+    fn corpse(&self, id: i64) -> Option<(pz_world::SquareRef, usize)> {
         let (x, y, z, i) = corpse_pos(id);
-        let sq = self.cell.get_grid_square(x, y, z)?;
-        (i < sq.static_moving.len()).then_some((sq, i))
+        let sq_owner = self.cell.get_grid_square(x, y, z)?;
+        let exists = i < sq_owner.borrow().static_moving.len();
+        exists.then_some((sq_owner, i))
     }
 
     fn corpse_info(&self, sq: &IsoGridSquare, i: usize) -> CorpseInfo {
@@ -609,17 +735,51 @@ pub fn corpse_pos(id: i64) -> (i32, i32, i32, usize) {
 }
 
 impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
+    fn floor(&mut self) -> Option<&mut dyn pz_inventory::floor_drop::FloorWorld> {
+        Some(self)
+    }
+
+    fn thumps_this_frame(&mut self, chr: i32) -> i32 {
+        self.engine.thumps_this_frame(chr)
+    }
+    fn turn_alerted_enter(&mut self, chr: i32, target_angle: f32) {
+        self.engine.turn_alerted_enter(chr, target_angle);
+    }
+    fn deferred_movement_step(
+        &mut self,
+        chr: i32,
+        input: &pz_anim::DeferredMovementInput,
+    ) -> Option<(f32, f32)> {
+        self.engine.deferred_movement_step(chr, input)
+    }
+    fn deferred_movement_length_sq(&self, chr: i32) -> f32 {
+        self.engine.deferred_movement_length_sq(chr)
+    }
+    fn contains_any_idle_nodes(&self, chr: i32) -> bool {
+        self.engine.contains_any_idle_nodes(chr)
+    }
+    fn animation_player_ready(&self, chr: i32) -> bool {
+        self.engine.animation_player_ready(chr)
+    }
+    fn rendered_angle(&self, chr: i32) -> Option<f32> {
+        self.engine.rendered_angle(chr)
+    }
+    fn primary_hand_model_ready(&self, chr: i32) -> bool {
+        self.engine.primary_hand_model_ready(chr)
+    }
     fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
-        let sq = self.cell.get_grid_square(x, y, z)?;
-        Some(self.square_info(sq))
+        let sq_owner = self.cell.get_grid_square(x, y, z)?;
+        let sq = sq_owner.borrow();
+        Some(self.square_info(&sq))
     }
 
     fn sloped_surface_height(&self, sq: (i32, i32, i32), dx: f32, dy: f32) -> f32 {
-        self.at(sq).map_or(0.0, |s| s.get_sloped_surface_height_at(dx, dy))
+        self.at(sq)
+            .map_or(0.0, |s| s.borrow().get_sloped_surface_height_at(dx, dy))
     }
 
     fn wall_type(&self, sq: (i32, i32, i32)) -> i32 {
-        self.at(sq).map_or(0, |s| self.wall_type_of(s))
+        self.at(sq).map_or(0, |s| self.wall_type_of(&s.borrow()))
     }
 
     fn vault_over(
@@ -663,7 +823,8 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     }
 
     fn reroute_collide(&self, obj: ObjectRef) -> bool {
-        self.find(obj).is_some_and(|(_, o)| o.reroute_collide.is_some())
+        self.find(obj)
+            .is_some_and(|(_, o)| o.borrow().reroute_collide.is_some())
     }
 
     fn has_broken_glass(&self, sq: (i32, i32, i32)) -> bool {
@@ -694,16 +855,21 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     }
 
     fn square_room(&self, sq: (i32, i32, i32)) -> Option<i64> {
-        self.at(sq).filter(|s| s.room_id != -1).map(|s| s.room_id)
+        self.at(sq).and_then(|s| {
+            let id = s.borrow().room_id;
+            (id != -1).then_some(id)
+        })
     }
 
     fn square_building(&self, sq: (i32, i32, i32)) -> Option<i64> {
         let s = self.at(sq)?;
-        self.square_building_idx(s).map(|b| b.0 as i64)
+        let building = self.square_building_idx(&s.borrow());
+        building.map(|b| b.0 as i64)
     }
 
     fn square_smoke(&self, sq: (i32, i32, i32)) -> bool {
-        self.at(sq).is_some_and(|s| self.env().sq_has(s, "smoke"))
+        self.at(sq)
+            .is_some_and(|s| self.env().sq_has(&s.borrow(), "smoke"))
     }
 
     fn square_can_see(&self, sq: (i32, i32, i32), player_index: i32) -> bool {
@@ -718,23 +884,25 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         let env = self.env();
         self.at(sq)
             .map(|s| {
+                let s = s.borrow();
                 s.objects
                     .iter()
-                    .filter_map(|o| env.sprite_name(o))
-                    .map(str::to_string)
+                    .filter_map(|o| env.sprite_name(&o.borrow()))
                     .collect()
             })
             .unwrap_or_default()
     }
 
     fn grid_sneak_modifier(&self, sq: (i32, i32, i32), only_solid_trans: bool) -> f32 {
-        self.at(sq)
-            .map_or(1.0, |s| self.env().grid_sneak_modifier(s, only_solid_trans))
+        self.at(sq).map_or(1.0, |s| {
+            self.env()
+                .grid_sneak_modifier(&s.borrow(), only_solid_trans)
+        })
     }
 
     fn is_something_to(&self, a: (i32, i32, i32), b: (i32, i32, i32)) -> bool {
         match (self.at(a), self.at(b)) {
-            (Some(a), Some(b)) => self.env().is_something_to(a, b),
+            (Some(a), Some(b)) => self.env().is_something_to(&a.borrow(), &b.borrow()),
             _ => false,
         }
     }
@@ -742,12 +910,12 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     /// `isFree(true)`.
     fn square_is_free(&self, sq: (i32, i32, i32)) -> bool {
         let Some(s) = self.at(sq) else { return false };
-        !self.engine.has_moving_objects(sq) && self.env().is_free(s)
+        !self.engine.has_moving_objects(sq) && self.env().is_free(&s.borrow())
     }
 
     fn same_staircase(&self, sq: (i32, i32, i32), x: i32, y: i32, z: i32) -> bool {
         self.at(sq)
-            .is_some_and(|s| self.env().is_same_staircase(s, x, y, z))
+            .is_some_and(|s| self.env().is_same_staircase(&s.borrow(), x, y, z))
     }
 
     fn vehicle_between(&self, from: (f32, f32, f32), to: (f32, f32, f32)) -> bool {
@@ -813,11 +981,12 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     /// `getSheetRope() != null`.
     fn has_sheet_rope(&self, sq: (i32, i32, i32)) -> bool {
         self.at(sq).is_some_and(|s| {
+            let s = s.borrow();
             let env = self.env();
             ["climbSheetN", "climbSheetE", "climbSheetS", "climbSheetW"]
                 .into_iter()
-                .any(|n| env.sq_has(s, n))
-                && env.sheet_rope_index(s).is_some()
+                .any(|n| env.sq_has(&s, n))
+                && env.sheet_rope_index(&s).is_some()
         })
     }
 
@@ -871,14 +1040,14 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         dy: i32,
         dz: i32,
     ) -> pz_world::square::CollideAdjacent {
-        let Some(sq) = self.cell.get_grid_square(from.0, from.1, from.2) else {
+        let Some(sq_owner) = self.cell.get_grid_square(from.0, from.1, from.2) else {
             return pz_world::square::CollideAdjacent {
                 blocked: true,
                 ..Default::default()
             };
         };
         self.collide_env()
-            .test_collide_adjacent(sq, Some(mover), dx, dy, dz)
+            .test_collide_adjacent(&sq_owner, Some(mover), dx, dy, dz)
     }
 
     fn hoppable_actions(
@@ -914,7 +1083,7 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         let (dx, dy) = dir.delta();
         let opp = (from.0 + dx, from.1 + dy, from.2);
         self.check_damage_hoppable_fence(from, opp);
-        Some(self.fence_opposite(self.at(opp)))
+        Some(self.fence_opposite(self.at(opp).as_ref().map(|s| s.borrow()).as_deref()))
     }
 
     /// `checkBreakHoppable()`, `checkHitHoppable()` and
@@ -946,10 +1115,10 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             // the noise.
             let env = self.env();
             env.at(sq).is_some_and(|s| {
+                let s = s.borrow();
                 s.has_type(self.sprites.tables.ty.tree)
                     || s.objects.iter().any(|o| {
-                        o.sprite.is_some_and(|i| {
-                            let spr = &self.sprites.sprites[i];
+                        env.metadata(&o.borrow()).is_some_and(|spr| {
                             spr.tileset_name.as_deref() == Some("f_bushes_1")
                                 || spr.properties.get(&self.sprites.alias, "Bush").is_some()
                         })
@@ -995,6 +1164,7 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             cell: &mut *self.cell,
             meta: self.meta,
             sprites: &mut *self.sprites,
+            mutation: f.mutation,
             flags: f.flags,
             settings: f.settings,
             hooks: f.hooks,
@@ -1024,6 +1194,10 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         self.engine.resolve_collision_radius(view, chr, radius)
     }
 
+    fn floor_sprite_name(&self, sq: (i32, i32, i32)) -> Option<String> {
+        self.floor_sprite_name_at(sq)
+    }
+
     fn path_cancel_request(&mut self, chr: &mut dyn pz_pathfind::mover::PathMover) {
         self.engine.path_cancel_request(chr.mover_id());
     }
@@ -1038,12 +1212,14 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     /// `square.getDeadBody()`: the first corpse in `staticMovingObjects`.
     fn dead_body_at(&self, sq: (i32, i32, i32)) -> Option<CorpseInfo> {
         let s = self.at(sq)?;
-        (!s.static_moving.is_empty()).then(|| self.corpse_info(s, 0))
+        let s = s.borrow();
+        (!s.static_moving.is_empty()).then(|| self.corpse_info(&s, 0))
     }
 
     fn dead_body(&self, id: i64) -> Option<CorpseInfo> {
         let (sq, i) = self.corpse(id)?;
-        Some(self.corpse_info(sq, i))
+        let info = self.corpse_info(&sq.borrow(), i);
+        Some(info)
     }
 
     fn set_eating(&mut self, target: EatTarget, zombie: i32, eating: bool) {
@@ -1060,6 +1236,73 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             }
             EatTarget::Character(c) => self.engine.set_character_eating(c, zombie, eating),
         }
+    }
+
+    fn square_is_outside(&self, sq: (i32, i32, i32)) -> bool {
+        self.at(sq)
+            .is_some_and(|s| self.env().sq_has(&s.borrow(), "exterior"))
+    }
+
+    // ---- windows, sheet ropes and walls ----
+
+    fn player_input(&self) -> Option<&dyn pz_characters::character::player::PlayerInput> {
+        self.engine.player_input()
+    }
+
+    fn window_info(&self, window: ObjectRef) -> Option<WindowInfo> {
+        self.window_info_of(window)
+    }
+
+    fn toggle_window(&mut self, window: ObjectRef, chr: i32) {
+        self.engine.toggle_window(self.cell, window, chr);
+    }
+
+    fn set_window_perma_locked(&mut self, window: ObjectRef, perma: bool) {
+        self.set_window_perma_locked_at(window, perma);
+    }
+
+    fn window_weapon_hit(&mut self, window: ObjectRef, chr: &GameCharacter<I>) {
+        let t = Thumper::of(chr);
+        self.window_weapon_hit_by(window, &t, chr.is_player());
+    }
+
+    fn vehicle_window_destroyed(&self, vehicle: i16, part: &str) -> Option<bool> {
+        self.engine.vehicle_window_destroyed(vehicle, part)
+    }
+
+    fn vehicle_window_hit(&mut self, vehicle: i16, part: &str, chr: &GameCharacter<I>) {
+        self.engine.vehicle_window_hit(vehicle, part, chr.id);
+    }
+
+    fn sheet_rope_square(&self, sq: (i32, i32, i32)) -> Option<SheetRopeSquare> {
+        self.sheet_rope_square_at(sq)
+    }
+
+    fn chunk_levels(&self, sq: (i32, i32, i32)) -> (i32, i32) {
+        self.chunk_levels_at(sq)
+    }
+
+    fn sheet_rope_exit(
+        &mut self,
+        chr: &GameCharacter<I>,
+        target: (i32, i32, i32),
+        dir: IsoDirections,
+    ) -> SheetRopeExit {
+        let t = Thumper::of(chr);
+        self.sheet_rope_exit_for(&t, target, dir)
+    }
+
+    fn can_climb_over_wall(&self, chr: &GameCharacter<I>, dir: IsoDirections) -> bool {
+        self.can_climb_over_wall_for(&Thumper::of(chr), dir)
+    }
+
+    fn climb_wall_fence_type(
+        &self,
+        start: (i32, i32, i32),
+        end: (i32, i32),
+        dir: IsoDirections,
+    ) -> Option<i32> {
+        self.climb_wall_fence_type_at(start, end, dir)
     }
 
     fn eating_count(&self, target: EatTarget) -> usize {

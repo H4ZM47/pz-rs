@@ -586,8 +586,8 @@ pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>, events: EventManag
 
     // Player slots and states.
     global(thread, "getMaxActivePlayers", |c| Ok(c.push(4.0)));
-    // GameWindow.states.current is MainScreenState on the menu path.
-    global(thread, "isIngameState", |c| Ok(c.push(false)));
+    // `GameWindow.isIngameState()`, as the engine's state machine reports it.
+    global(thread, "isIngameState", |c| Ok(c.push(INGAME_STATE.with(Cell::get))));
     // SafetySystemManager.getCooldown(null): no connection, no cooldown.
     global(thread, "isQuitCooldown", |c| Ok(c.push(false)));
 
@@ -661,6 +661,22 @@ pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>, events: EventManag
     // (-Dargs.server.connect/password); none are passed here.
     global(thread, "getServerAddressFromArgs", nil);
     global(thread, "getServerPasswordFromArgs", nil);
+}
+
+thread_local! {
+    /// `GameWindow.isIngameState()`.
+    static INGAME_STATE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// `GameWindow.isIngameState()`.
+pub fn is_ingame_state() -> bool {
+    INGAME_STATE.with(Cell::get)
+}
+
+/// Sets what `isIngameState()` answers: the engine calls it when
+/// `IngameState` becomes (or stops being) the current or a listed state.
+pub fn set_ingame_state(ingame: bool) {
+    INGAME_STATE.with(|c| c.set(ingame));
 }
 
 // ---- zombie.ui.UITransition ---------------------------------------------------------

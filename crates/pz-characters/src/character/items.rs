@@ -30,7 +30,7 @@ use pz_scripts::registry::RegistryKey;
 use pz_scripts::{ScriptManager, ScriptResult};
 
 use super::context::SimContext;
-use super::floor_drop::FloorCx;
+use super::floor_drop::{CharacterActionResult, FloorCx};
 use super::item_owner::CharacterItemContext;
 use super::GameCharacter;
 use crate::worn_items::{BodyLocationGroup, BodyLocationGroupRef, WornItems};
@@ -344,6 +344,16 @@ impl CharacterItems {
     /// `getSecondaryHandItem()`.
     pub fn secondary_hand_item(&self) -> Option<ItemRef> {
         self.secondary_hand_item.and_then(|id| self.item(id))
+    }
+
+    /// `IsoPlayer.getActiveLightItem()`: the right hand (secondary), then
+    /// the left (primary), then attached items, the first emitting light.
+    /// Characters hold no `AttachedItems` yet, so only the hands count.
+    pub fn active_light_item(&self) -> Option<ItemRef> {
+        [self.secondary_hand_item(), self.primary_hand_item()]
+            .into_iter()
+            .flatten()
+            .find(|item| item.borrow().is_emitting_light())
     }
 
     /// `wornItems.getLocation(item)` for the worn item `id`.
@@ -742,7 +752,7 @@ impl<I> GameCharacter<I> {
         id: Option<i32>,
         force_drop_too_heavy: bool,
         floor: Option<FloorCx<'_>>,
-    ) -> ScriptResult<bool> {
+    ) -> CharacterActionResult<bool> {
         let current = self.worn_item(location.as_ref())?;
         if id == current {
             return Ok(false);
@@ -750,7 +760,7 @@ impl<I> GameCharacter<I> {
         let worn = self.items.worn_items.as_mut().ok_or_else(crate::npe)?;
         worn.set_item(location.clone(), id)?;
         if let Some(cx) = floor {
-            self.force_drop_too_heavy(sm, cx, force_drop_too_heavy, current);
+            self.force_drop_too_heavy(sm, cx, force_drop_too_heavy, current)?;
         }
         if self.is_player() {
             let hat = |f| body_location_key(sm, f).is_some_and(|k| location.as_ref().is_some_and(|l| l.location == k.location));
@@ -782,7 +792,7 @@ impl<I> GameCharacter<I> {
         id: Option<i32>,
         force_drop_too_heavy: bool,
         floor: Option<FloorCx<'_>>,
-    ) -> ScriptResult<bool> {
+    ) -> CharacterActionResult<bool> {
         let worn = self.worn_items_or_npe()?;
         let location = id.and_then(|id| worn.location(&id));
         self.set_worn_item(sm, styles, location, None, force_drop_too_heavy, floor)

@@ -10,10 +10,11 @@
 //! [`Nutrition::load`](super::Nutrition::load),
 //! [`Fitness::load`](super::Fitness::load) and [`PlayerCheats::load`](super::PlayerCheats::load).
 //!
-//! Hand and worn items are the ids of inventory items (see
-//! [`super::items`]); the saved indices refer to `savedInventoryItems`,
-//! the list `CompressIdenticalItems` reads and writes, which can hold items
-//! that could not be loaded.
+//! Actual receiver coordinators retain the same inventory and saved-list
+//! allocations, with nullable actual item references in saved order. Existing
+//! hand/worn fields still use an explicit unique-main-inventory ID bridge;
+//! unrepresentable references fail visibly. Owned archive methods select an
+//! exclusive ID projection instead of maintaining a second runtime mirror.
 //!
 //! Not modelled (rendering, sound and network state the load sets up):
 //! `InitSpriteParts`/`initSpritePartsEmpty`, `setEquipParent`,
@@ -40,6 +41,11 @@ use super::body_damage::SaveReader;
 use super::context::SimContext;
 use super::thermoregulator::Thermoregulator;
 use super::GameCharacter;
+mod ref_player;
+pub use ref_player::{
+    install_saved_inventory_observer, load_player_ref, save_player_ref,
+    CharacterPersistenceError, CharacterPersistenceResult, SavedInventoryItems, SavedInventoryListRef,
+};
 use crate::survivor::SurvivorDesc;
 use crate::worn_items::{ItemIdentity, WornItems};
 use crate::{npe, Characters};
@@ -156,12 +162,12 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
     /// The id of `savedInventoryItems[index]` (`None` out of range or for
     /// an item that could not be loaded).
     fn saved_item(&self, index: i32) -> Option<Option<i32>> {
-        usize::try_from(index).ok().and_then(|i| self.saved_inventory_items.get(i)).copied()
+        self.saved_inventory_items.archive_ids().and_then(|items| usize::try_from(index).ok().and_then(|i| items.get(i)).copied())
     }
 
     /// `savedInventoryItems.indexOf(item)` as a short (`-1` when absent).
     fn saved_index(&self, id: Option<i32>) -> i16 {
-        id.and_then(|id| self.saved_inventory_items.iter().position(|s| *s == Some(id))).map_or(-1, |i| i as i16)
+        self.saved_inventory_items.archive_ids().and_then(|items| items.iter().position(|s| *s == id)).map_or(-1, |i| i as i16)
     }
 
     /// The worn items of `IsoPlayer.load` and `IsoZombie.load`: a byte
@@ -213,6 +219,7 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         ctx.is_debug() && !ctx.is_client() && !ctx.is_server()
     }
 
+    /// Owned archive-profile facade. Actual receivers use [`load_player_ref`].
     /// `IsoPlayer.load(input, worldVersion, isDebugSave)` into this
     /// character (a `new IsoPlayer(cell)`, as `PlayerDB.loadPlayer` uses):
     /// the serialise and class bytes, `IsoGameCharacter.load`, then the
@@ -233,11 +240,15 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         let _serialise = e(r.i8())?;
         let _object_id = e(r.i8())?;
         self.load_game_character(sm, chars, ctx, env, r, world_version, set_on_fire)?;
+        self.load_player_tail(sm, chars, ctx, env, r, world_version, false).map_err(CharacterPersistenceError::into_archive_error)
+    }
+
+    fn load_player_tail(&mut self, sm: &ScriptManager, chars: &mut Characters, ctx: &dyn SimContext, env: &SaveEnv<'_>, r: &mut Reader<'_>, world_version: i32, actual: bool) -> CharacterPersistenceResult<()> {
         self.hours_survived = e(r.f64())?;
         // setFemale(descriptor.isFemale()) sets the descriptor's own gender;
         // a missing descriptor is a NullPointerException.
         if self.descriptor.is_none() {
-            return Err(npe());
+            return Err(npe().into());
         }
         // speakColour: three draws (a client then takes MpTextColor).
         let mut c = [0.0f32; 4];
@@ -247,14 +258,14 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         c[3] = 1.0;
         self.player_fields.speak_colour = c;
         self.zombie_kills = e(r.i32())?;
-        self.load_worn_items(sm, chars, r)?;
+        if actual { self.load_worn_refs(sm, chars, r)?; } else { self.load_worn_items(sm, chars, r)?; }
         self.on_worn_items_changed(sm);
         let index = e(r.i16())?;
-        if let Some(item) = self.saved_item(index as i32) {
+        if let Some(item) = self.persistence_saved_item(index as i32, actual)? {
             self.items.primary_hand_item = item;
         }
         let index = e(r.i16())?;
-        if let Some(item) = self.saved_item(index as i32) {
+        if let Some(item) = self.persistence_saved_item(index as i32, actual)? {
             self.items.secondary_hand_item = item;
         }
         let weapon = self.weapon_type(sm);
@@ -345,6 +356,15 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         world_version: i32,
         set_on_fire: &mut dyn FnMut(&mut Self),
     ) -> ScriptResult {
+        self.load_game_prefix(sm, chars, env, r, world_version)?;
+        let mut loaded = self.items.inventory.borrow().to_container();
+        let saved = e(loaded.load_saved(r, world_version, env.items))?;
+        self.saved_inventory_items = SavedInventoryItems::ArchiveIds(saved.iter().map(|s| s.map(|i| loaded.items[i].id())).collect());
+        pz_inventory::shared::load_into(&self.items.inventory, loaded);
+        self.load_game_tail(sm, chars, ctx, r, world_version, set_on_fire, false).map_err(CharacterPersistenceError::into_archive_error)
+    }
+
+    fn load_game_prefix(&mut self, sm: &ScriptManager, chars: &mut Characters, env: &SaveEnv<'_>, r: &mut Reader<'_>, world_version: i32) -> ScriptResult {
         // IsoMovingObject.load: the saved offsets are dropped (a player's
         // are 0), IsoWorld.saveoffsetx/y are 0 outside the editor.
         let base = e(MovingBase::load(r, world_version, (0.0, 0.0)))?;
@@ -360,29 +380,32 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         self.vars.dir = dir;
         let (fx, fy) = super::zombie::math::vector_from_direction(dir);
         self.set_forward_direction(fx, fy);
-        if base.mod_data.is_some() {
-            self.mod_data = base.mod_data;
+        if let Some(mod_data) = base.mod_data.as_ref() {
+            self.load_mod_data(mod_data)?;
         }
+        self.load_game_visual_prefix(sm, chars, env, r, world_version)
+    }
+
+    fn load_game_visual_prefix(&mut self, sm: &ScriptManager, chars: &mut Characters, env: &SaveEnv<'_>, r: &mut Reader<'_>, world_version: i32) -> ScriptResult {
         if e(r.bool())? {
             let mut d = SurvivorDesc::new_unregistered(chars, sm)?;
             d.load(sm, chars, r, world_version)?;
             self.descriptor = Some(Rc::new(std::cell::RefCell::new(d)));
         }
         self.human_visual = Some(e(HumanVisual::load(r, env.tables.blood_body_parts))?);
-        // `inventory.load(input, worldVersion)`: into the same (shared)
-        // container object.
-        let mut loaded = self.items.inventory.borrow().to_container();
-        let saved = e(loaded.load_saved(r, world_version, env.items))?;
-        self.saved_inventory_items = saved.iter().map(|s| s.map(|i| loaded.items[i].id())).collect();
-        pz_inventory::shared::load_into(&self.items.inventory, loaded);
+        Ok(())
+    }
+
+    fn load_game_tail(&mut self, sm: &ScriptManager, chars: &mut Characters, ctx: &dyn SimContext, r: &mut Reader<'_>, world_version: i32, set_on_fire: &mut dyn FnMut(&mut Self), actual: bool) -> CharacterPersistenceResult<()> {
         self.asleep = e(r.bool())?;
         self.force_wake_up_time = e(r.f32())?;
         if !self.is_zombie() {
             let n = self.stats.load(&chars.sim.character_stats, &r.buf[r.pos.min(r.buf.len())..])?;
             r.pos += n;
             let mut sr = SaveReader { data: r.buf, pos: r.pos };
-            self.load_body_damage(sm, chars, ctx, &mut sr, world_version)?;
+            let body_result = self.load_body_damage(sm, chars, ctx, &mut sr, world_version);
             r.pos = sr.pos;
+            body_result?;
             if e(r.bool())? {
                 match self.body_damage.thermoregulator.as_mut() {
                     Some(t) => e(t.load(r, world_version))?,
@@ -391,18 +414,25 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
                 }
             }
             self.load_xp(sm, chars, ctx, r, world_version)?;
-            // Hand items: indices into includingObsoleteItems, which is
-            // the saved list.
+            // Native base hand indices read the CURRENT includingObsoleteItems;
+            // the owned archive facade uses its projected saved order.
             let n = e(r.i32())?;
-            if let Some(item) = self.saved_item(n) {
+            if let Some(item) = self.persistence_base_item(n, actual)? {
                 self.items.primary_hand_item = item;
             }
             let n = e(r.i32())?;
-            if let Some(item) = self.saved_item(n) {
+            if let Some(item) = self.persistence_base_item(n, actual)? {
                 self.items.secondary_hand_item = item;
             }
         }
+        if actual && !self.is_zombie() {
+            if self.items.primary_hand_item.is_some() || self.items.secondary_hand_item.is_some() {
+                return Err(ref_player::unsupported("actual loaded hand setEquipParent/onEquip/onUnEquip").into());
+            }
+            self.set_use_hand_weapon(None);
+        }
         if e(r.bool())? {
+            if actual { return Err(ref_player::unsupported("actual loaded character SetOnFire manager").into()); }
             set_on_fire(self);
         }
         self.depress_effect = e(r.f32())?;
@@ -466,17 +496,22 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         Ok(())
     }
 
+    /// Owned archive-profile facade. Actual receivers use [`save_player_ref`].
     /// `IsoPlayer.save(output, isDebugSave)`: the record
     /// [`GameCharacter::load_player`] reads (the current world version's
     /// layout). The saved vehicle is [`GameCharacter::saved_vehicle`] (the
     /// original writes the vehicle the player sits in).
     pub fn save_player(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, env: &SaveEnv<'_>, w: &mut Writer) -> ScriptResult {
         self.save_game_character(sm, chars, ctx, env, w)?;
+        self.save_player_tail(ctx, env, w, false).map_err(CharacterPersistenceError::into_archive_error)
+    }
+
+    fn save_player_tail(&self, ctx: &dyn SimContext, env: &SaveEnv<'_>, w: &mut Writer, actual: bool) -> CharacterPersistenceResult<()> {
         w.f64(self.hours_survived);
         w.i32(self.zombie_kills);
-        self.save_worn_items(w)?;
-        w.i16(self.saved_index(self.items.primary_hand_item));
-        w.i16(self.saved_index(self.items.secondary_hand_item));
+        if actual { self.save_worn_refs(w)?; } else { self.save_worn_items(w)?; }
+        w.i16(self.persistence_saved_index(self.items.primary_hand_item, actual)?);
+        w.i16(self.persistence_saved_index(self.items.secondary_hand_item, actual)?);
         w.i32(self.survivor_kills);
         self.nutrition.as_ref().ok_or_else(npe)?.save(w);
         let p = &self.player_fields;
@@ -565,6 +600,14 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
     /// [`GameCharacter::saved_inventory_items`] to the written order, as the
     /// original does.
     fn save_game_character(&mut self, _sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, env: &SaveEnv<'_>, w: &mut Writer) -> ScriptResult {
+        self.save_game_prefix(env, w)?;
+        let inventory = self.items.inventory.borrow().to_container();
+        let order = e(inventory.save_saved(w, env.items, None))?;
+        self.saved_inventory_items = SavedInventoryItems::ArchiveIds(order.iter().map(|&i| Some(inventory.items[i].id())).collect());
+        self.save_game_tail(chars, ctx, w, false).map_err(CharacterPersistenceError::into_archive_error)
+    }
+
+    fn save_game_prefix(&self, env: &SaveEnv<'_>, w: &mut Writer) -> ScriptResult {
         let base = MovingBase {
             offset_x: 0.0,
             offset_y: 0.0,
@@ -572,15 +615,19 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             y: self.vars.y,
             z: self.vars.z,
             dir: self.vars.dir as i32,
-            mod_data: self.mod_data.clone(),
+            mod_data: None,
         };
         // `IsoObject.factoryGetClassID(getObjectName())`.
         let name = if self.is_zombie() { "Zombie" } else { "Player" };
-        base.save(w, env.tables.class_id(name));
+        base.save_with_mod_data_bytes(w, env.tables.class_id(name), self.mod_data_bytes()?.as_deref());
+        self.save_game_visual_prefix(env, w).map_err(CharacterPersistenceError::into_archive_error)
+    }
+
+    fn save_game_visual_prefix(&self, env: &SaveEnv<'_>, w: &mut Writer) -> CharacterPersistenceResult<()> {
         match &self.descriptor {
             Some(d) => {
                 w.i8(1);
-                d.borrow().save(w)?;
+                d.try_borrow().map_err(|_| pz_inventory::floor_drop::RuntimeHostError::Borrowed("character save descriptor"))?.save(w)?;
             }
             None => w.i8(0),
         }
@@ -588,12 +635,10 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             Some(v) => v.save(w),
             None => HumanVisual::new(env.tables.blood_body_parts).save(w),
         }
-        // `inventory.save(output, this)`: `ItemContainer.save` passes `null`
-        // as `CompressIdenticalItems.save`'s `noCompress`, so equipped
-        // items join runs too.
-        let inventory = self.items.inventory.borrow().to_container();
-        let order = e(inventory.save_saved(w, env.items, None))?;
-        self.saved_inventory_items = order.iter().map(|&i| Some(inventory.items[i].id())).collect();
+        Ok(())
+    }
+
+    fn save_game_tail(&self, chars: &Characters, ctx: &dyn SimContext, w: &mut Writer, actual: bool) -> CharacterPersistenceResult<()> {
         w.bool(self.asleep);
         w.f32(self.force_wake_up_time);
         if !self.is_zombie() {
@@ -607,11 +652,8 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
                 None => w.i8(0),
             }
             self.save_xp(w);
-            let index = |id: Option<i32>| {
-                id.and_then(|id| inventory.items.iter().position(|i| i.id() == id)).map_or(-1, |i| i as i32)
-            };
-            w.i32(index(self.items.primary_hand_item));
-            w.i32(index(self.items.secondary_hand_item));
+            w.i32(self.persistence_main_index(self.items.primary_hand_item, actual)?);
+            w.i32(self.persistence_main_index(self.items.secondary_hand_item, actual)?);
         }
         w.bool(self.vars.on_fire);
         for f in [

@@ -1,5 +1,7 @@
 //! A player walking over hand-made save directories.
 
+mod retirement;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -146,7 +148,12 @@ impl Fixture {
         let mut ch = IsoChunk::new(wx, wy);
         for x in 0..8 {
             for y in 0..8 {
-                ch.set_square(x, y, 0, Some(IsoGridSquare::new(wx * 8 + x, wy * 8 + y, 0)));
+                ch.set_square(
+                    x,
+                    y,
+                    0,
+                    Some((IsoGridSquare::new(wx * 8 + x, wy * 8 + y, 0)).into()),
+                );
             }
         }
         ch.saved.loot_respawn_hour = mark;

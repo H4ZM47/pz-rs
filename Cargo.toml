@@ -11,6 +11,7 @@ publish = false
 pz-kahlua = { path = "crates/pz-kahlua" }
 pz-fs = { path = "crates/pz-fs" }
 pz-scripts = { path = "crates/pz-scripts" }
+pz-script-parser = { path = "crates/pz-script-parser" }
 pz-entity = { path = "crates/pz-entity" }
 pz-classfile = { path = "crates/pz-classfile" }
 pz-sandbox = { path = "crates/pz-sandbox" }
@@ -46,6 +47,7 @@ pz-ragdoll = { path = "crates/pz-ragdoll" }
 pz-video = { path = "crates/pz-video" }
 pz-animals = { path = "crates/pz-animals" }
 pz-radio = { path = "crates/pz-radio" }
+pz-worldmap = { path = "crates/pz-worldmap" }
 indexmap = "2"
 jiff = "0.2"
 macroquad = { version = "0.4", default-features = false }

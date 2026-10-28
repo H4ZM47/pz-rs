@@ -17,6 +17,30 @@ use pz_render::{Rgba, Texture};
 use pz_text::UIFont;
 use std::rc::Rc;
 
+/// Resolved inputs for one `UIElement.DrawItemIcon` call. The caller reads
+/// the item's actual texture handles and fluid component before drawing;
+/// this value does not own or replace those game objects.
+#[derive(Clone, Copy, Debug)]
+pub struct InventoryItemIcon<'a> {
+    pub texture: Option<&'a Texture>,
+    /// `InventoryItem.getR/getG/getB` (`col`, not `colorRed/Green/Blue`).
+    pub color: [f32; 3],
+    pub color_mask: Option<&'a Texture>,
+    pub fluid_mask: Option<&'a Texture>,
+    /// The item's fluid component, or its actual world item's component
+    /// when the item itself has none.
+    pub fluid: Option<InventoryItemIconFluid>,
+}
+
+/// The fluid reads consumed by a single icon draw. Division happens as
+/// `float`, as in the original, before the mask's double geometry.
+#[derive(Clone, Copy, Debug)]
+pub struct InventoryItemIconFluid {
+    pub color: [f32; 3],
+    pub amount: f32,
+    pub capacity: f32,
+}
+
 fn rgba(r: f64, g: f64, b: f64, a: f64) -> Rgba {
     Rgba(r as f32, g as f32, b as f32, a as f32)
 }
@@ -388,9 +412,41 @@ impl UIElement {
         sprite(|s| s.render4(tx(tex), pts, rgba(r, g, b, a)));
     }
 
-    /// `DrawItemIcon(item, ...)`. TODO(world): needs `InventoryItem`
-    /// (texture, tint, fluid and colour masks).
+    /// Legacy binding entry until `DrawItemIcon` supplies the resolved
+    /// item inputs to [`Self::draw_inventory_item_icon`].
     pub fn draw_item_icon(&self) {}
+
+    /// `DrawItemIcon(item, x, y, alpha, width, height)` after resolving the
+    /// native item's textures, tint and fluid reads. Texture descriptors
+    /// must reflect the current shared handles, including offset changes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_inventory_item_icon(
+        &self,
+        icon: &InventoryItemIcon<'_>,
+        x: f64,
+        y: f64,
+        alpha: f64,
+        width: f64,
+        height: f64,
+    ) {
+        if !self.is_visible() {
+            return;
+        }
+        let Some(texture) = icon.texture else { return };
+        let [r, g, b] = if icon.color_mask.is_some() { [1.0; 3] } else { icon.color };
+        if let (Some(fluid), Some(mask)) = (icon.fluid, icon.fluid_mask) {
+            self.draw_texture_icon(Some(texture), x, y, width, height, r as f64, g as f64, b as f64, alpha);
+            let ratio = (fluid.amount / fluid.capacity) as f64;
+            let [r, g, b] = fluid.color;
+            self.draw_texture_icon_mask(Some(mask), ratio, x, y, width, height, r as f64, g as f64, b as f64, alpha);
+        } else {
+            self.draw_texture_scaled_aspect(Some(texture), x, y, width, height, r as f64, g as f64, b as f64, alpha);
+        }
+        if let Some(mask) = icon.color_mask {
+            let [r, g, b] = icon.color;
+            self.draw_texture_icon_mask(Some(mask), 1.0, x, y, width, height, r as f64, g as f64, b as f64, alpha);
+        }
+    }
 
     /// `DrawScriptItemIcon(scriptItem, ...)`. TODO(world): needs script
     /// `Item`.
@@ -452,7 +508,10 @@ impl UIElement {
         }
         let Some(t) = tex else { return };
         let (dx, dy, w, h) = self.icon_fit(t, x, y, w, h);
-        let ratio = (y_ratio as f32).max(0.15) as f64;
+        // `PZMath.max(0.15f, (float)yRatio)` returns its second argument
+        // for NaN. Rust's f32::max would instead replace NaN with 0.15.
+        let ratio = y_ratio as f32;
+        let ratio = if 0.15f32 > ratio { 0.15f32 } else { ratio } as f64;
         self.bottom_up(t, ratio, dx, dy, w, h, rgba(r, g, b, a));
     }
 
@@ -678,3 +737,6 @@ impl UIElement {
         sprite(|s| s.repaint_stencil((x + ax) as i32, (y + ay) as i32, w as i32, h as i32));
     }
 }
+
+#[cfg(test)]
+mod item_icon_tests;

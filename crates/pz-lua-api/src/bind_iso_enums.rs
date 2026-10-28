@@ -124,20 +124,26 @@ thread_local! {
 /// The contents of `IsoGridSquare.ignoreBlockingSprites` (sprite names Lua
 /// adds; `isBlockedTo`-style wall checks skip them).
 pub fn ignore_blocking_sprites() -> Vec<String> {
-    IGNORE_BLOCKING_SPRITES.with(|l| match &*l.borrow() {
+    ignore_blocking_sprite_names().into_iter().flatten().collect()
+}
+
+/// Java `ArrayList.contains(sprite.name)` also matches a null entry to
+/// an unnamed sprite. Other element types cannot equal String or null.
+pub(crate) fn ignore_blocking_sprite_names() -> Vec<Option<String>> {
+    let list = IGNORE_BLOCKING_SPRITES.with(|list| list.borrow().clone());
+    match list {
         Some(Value::Object(o)) => o
             .as_any()
             .downcast_ref::<JavaList>()
-            .map(|l| l.items.borrow().iter().filter_map(str_value).collect())
+            .map(|list| {
+                list.snapshot().into_iter().filter_map(|value| match value {
+                    Value::Nil => Some(None),
+                    Value::Str(value) => Some(Some(value.to_string())),
+                    _ => None,
+                }).collect()
+            })
             .unwrap_or_default(),
         _ => Vec::new(),
-    })
-}
-
-fn str_value(v: &Value) -> Option<String> {
-    match v {
-        Value::Str(s) => Some(s.to_string()),
-        _ => None,
     }
 }
 

@@ -23,6 +23,13 @@ pub mod fluids;
 pub mod io;
 pub mod java;
 pub mod meta;
+pub mod runtime;
+pub mod runtime_attributes;
+pub mod runtime_durability;
+pub mod runtime_event;
+pub mod runtime_fluid;
+pub mod runtime_load;
+pub mod runtime_pool;
 pub mod tables;
 
 pub use context::{
@@ -36,7 +43,16 @@ pub use fluids::{FluidContainer, FluidFilter, FluidInstance, FluidRef, FluidRegi
 pub use io::{EntityError, Result};
 pub use meta::{load_meta_entities, save_meta_entities, MetaEntity};
 pub use pz_scripts::objects::entity::ComponentType;
-pub use tables::AttributeTypes;
+pub use runtime::{
+    ComponentBodyMut, ComponentRef, EncodedComponent, EntityOwner, EntryPresence, Promotion,
+    RejectedComponent, RejectedComponentRef, RejectedEncoded, RejectedValues, RetiredComponents,
+    RuntimeComponent, RuntimeComponents, RuntimeEntryView, RuntimeError,
+};
+pub use runtime_durability::RuntimeDurability;
+pub use tables::{
+    AttributeTypeDefinition, AttributeTypeRef, AttributeTypes, NumericAttributeBounds,
+    NumericAttributeValidation,
+};
 
 #[cfg(test)]
 mod tests;

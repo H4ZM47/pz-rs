@@ -259,7 +259,7 @@ pub struct ZombieFields {
     pub vision_radius_result: f32,
     pub attack_did_damage: bool,
     pub attack_outcome: String,
-    pub reanimated_for_grapple_only: bool,
+    pub(crate) reanimated_for_grapple_only: super::grapple::ZombieFlag,
     /// `spottedLast` (by id).
     pub spotted_last: Option<i32>,
     pub spot_sound_delay: i32,
@@ -325,6 +325,11 @@ pub struct ZombieFields {
     /// What the variable slots read about the target (refreshed before the
     /// action context runs).
     pub target_view: vars::TargetView,
+}
+
+impl ZombieFields {
+    pub fn is_reanimated_for_grapple_only(&self) -> bool { self.reanimated_for_grapple_only.get() }
+    pub fn set_reanimated_for_grapple_only(&self, value: bool) { self.reanimated_for_grapple_only.set(value); }
 }
 
 impl Default for ZombieFields {
@@ -399,7 +404,7 @@ impl Default for ZombieFields {
             vision_radius_result: 20.0,
             attack_did_damage: false,
             attack_outcome: String::new(),
-            reanimated_for_grapple_only: false,
+            reanimated_for_grapple_only: Default::default(),
             spotted_last: None,
             spot_sound_delay: 0,
             movex: 0.0,

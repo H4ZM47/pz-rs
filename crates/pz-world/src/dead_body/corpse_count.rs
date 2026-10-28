@@ -10,14 +10,15 @@
 use std::collections::HashMap;
 
 use pz_core::debug::DebugType;
+use pz_entity::runtime_load::{HostResult, RuntimeHostError};
 
 use crate::chunk::{IsoCell, IsoChunk};
 use crate::defs::BuildingIdx;
 use crate::java::fastfloor;
 use crate::meta_grid::IsoMetaGrid;
 
-/// `CorpseCount.maxCorpseCount`.
-pub const MAX_CORPSE_COUNT: i32 = 25;
+/// Initial value of mutable `CorpseCount.maxCorpseCount`; never its live authority.
+pub const INITIAL_MAX_CORPSE_COUNT: i32 = 25;
 
 /// `CorpseCount.ChunkLevelData`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -33,13 +34,14 @@ impl CorpseLevelCount {
     /// `corpseAdded(building)`.
     pub fn corpse_added(&mut self, building: Option<BuildingIdx>) {
         match building {
-            None => self.corpse_count += 1,
+            None => self.corpse_count = self.corpse_count.wrapping_add(1),
             Some(b) => {
-                *self
+                let count = self
                     .building_corpse_count
                     .get_or_insert_with(HashMap::new)
                     .entry(b)
-                    .or_insert(0) += 1
+                    .or_insert(0);
+                *count = count.wrapping_add(1);
             }
         }
     }
@@ -48,7 +50,7 @@ impl CorpseLevelCount {
     /// zero; the outside count may go negative.
     pub fn corpse_removed(&mut self, building: Option<BuildingIdx>) {
         match building {
-            None => self.corpse_count -= 1,
+            None => self.corpse_count = self.corpse_count.wrapping_sub(1),
             Some(b) => {
                 if let Some(m) = self.building_corpse_count.as_mut() {
                     if let Some(c) = m.get_mut(&b) {
@@ -122,8 +124,16 @@ pub fn square_building(
     x: i32,
     y: i32,
     z: i32,
-) -> Option<BuildingIdx> {
-    cell.get_grid_square(x, y, z)?.room_def(meta)?.building
+) -> HostResult<Option<BuildingIdx>> {
+    let Some(square) = cell.get_grid_square(x, y, z) else {
+        return Ok(None);
+    };
+    let building = square
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("CorpseCount building square"))?
+        .room_def(meta)
+        .and_then(|room| room.building);
+    Ok(building)
 }
 
 fn check_z(x: i32, y: i32, z: i32) -> bool {
@@ -134,21 +144,44 @@ fn check_z(x: i32, y: i32, z: i32) -> bool {
     true
 }
 
-fn change(cell: &mut IsoCell, meta: &IsoMetaGrid, x: i32, y: i32, z: i32, added: bool) {
+fn change(
+    cell: &mut IsoCell,
+    meta: &IsoMetaGrid,
+    x: i32,
+    y: i32,
+    z: i32,
+    added: bool,
+) -> HostResult<()> {
     if !check_z(x, y, z) {
-        return;
+        return Ok(());
     }
-    let building = square_building(cell, meta, x, y, z);
-    let Some(ch) = cell.chunks.get_mut(&(x.div_euclid(8), y.div_euclid(8))) else {
-        return;
-    };
+    let chunk_key = (x.div_euclid(8), y.div_euclid(8));
+    // Native outer CorpseCount admits getChunkData before the inner
+    // ChunkData method reads the square/building. Genuine absence skips
+    // that read, including a held unrelated square body.
+    if !cell
+        .chunks
+        .get(&chunk_key)
+        .is_some_and(|chunk| chunk.corpse_count.is_some())
+    {
+        return Ok(());
+    }
+    let building = square_building(cell, meta, x, y, z)?;
+    // This building query is callback-free over the same exclusive cell;
+    // the admitted receiver cannot be replaced during it. Level admission
+    // follows the building read, at getOrCreateLevelData's native phase.
+    let ch = cell
+        .chunks
+        .get_mut(&chunk_key)
+        .expect("admitted callback-free corpse-count chunk");
     let valid = ch.is_valid_level(z);
-    let Some(data) = ch.corpse_count.as_mut() else {
-        return;
-    };
+    let data = ch
+        .corpse_count
+        .as_mut()
+        .expect("admitted callback-free corpse-count receiver");
     // `getOrCreateLevelData(z)`.
     if !valid {
-        return;
+        return Ok(());
     }
     let l = data.levels.entry(z).or_default();
     if added {
@@ -156,21 +189,35 @@ fn change(cell: &mut IsoCell, meta: &IsoMetaGrid, x: i32, y: i32, z: i32, added:
     } else {
         l.corpse_removed(building);
     }
+    Ok(())
 }
 
 /// `CorpseCount.corpseAdded(x, y, z)`.
-pub fn corpse_added(cell: &mut IsoCell, meta: &IsoMetaGrid, x: i32, y: i32, z: i32) {
-    change(cell, meta, x, y, z, true);
+pub fn corpse_added(
+    cell: &mut IsoCell,
+    meta: &IsoMetaGrid,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> HostResult<()> {
+    change(cell, meta, x, y, z, true)
 }
 
 /// `CorpseCount.corpseRemoved(x, y, z)`.
-pub fn corpse_removed(cell: &mut IsoCell, meta: &IsoMetaGrid, x: i32, y: i32, z: i32) {
-    change(cell, meta, x, y, z, false);
+pub fn corpse_removed(
+    cell: &mut IsoCell,
+    meta: &IsoMetaGrid,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> HostResult<()> {
+    change(cell, meta, x, y, z, false)
 }
 
 /// `CorpseCount.getCorpseCount(wx, wy, z, building)`: the corpses of the
 /// nine chunks around chunk `(wx, wy)` on level `z` outside (no building)
-/// or in `building`, stopping at [`MAX_CORPSE_COUNT`]; with the sandbox's
+/// or in `building`, rereading current `max_corpse_count` at each native
+/// threshold check; with the sandbox's
 /// `ZombieHealthImpact` (`zombie_count` is then `getZombieCount()` of a
 /// square), also the zombies on the squares within 12 of the chunk's
 /// corner that are in the same building.
@@ -181,9 +228,10 @@ pub fn get_corpse_count(
     wy: i32,
     z: i32,
     building: Option<BuildingIdx>,
+    max_corpse_count: &dyn Fn() -> HostResult<i32>,
     zombie_count: Option<&dyn Fn(i32, i32, i32) -> i32>,
-) -> i32 {
-    let mut count = 0;
+) -> HostResult<i32> {
+    let mut count = 0_i32;
     for dy in -1..=1 {
         for dx in -1..=1 {
             let Some(data) = cell
@@ -197,15 +245,15 @@ pub fn get_corpse_count(
                 continue;
             };
             match building {
-                None => count += l.corpse_count,
+                None => count = count.wrapping_add(l.corpse_count),
                 Some(b) => {
                     if let Some(c) = l.building_corpse_count.as_ref().and_then(|m| m.get(&b)) {
-                        count += *c;
+                        count = count.wrapping_add(*c);
                     }
                 }
             }
-            if count >= MAX_CORPSE_COUNT {
-                return count;
+            if count >= max_corpse_count()? {
+                return Ok(count);
             }
         }
     }
@@ -216,16 +264,23 @@ pub fn get_corpse_count(
                 let Some(sq) = cell.get_grid_square(x + dx, y + dy, z) else {
                     continue;
                 };
-                if building == sq.room_def(meta).and_then(|r| r.building) {
-                    count += zombies(x + dx, y + dy, z);
+                let same_building = {
+                    sq.try_borrow()
+                        .map_err(|_| RuntimeHostError::Borrowed("CorpseCount zombie square"))?
+                        .room_def(meta)
+                        .and_then(|r| r.building)
+                        == building
+                };
+                if same_building {
+                    count = count.wrapping_add(zombies(x + dx, y + dy, z));
                 }
-                if count >= MAX_CORPSE_COUNT {
-                    return count;
+                if count >= max_corpse_count()? {
+                    return Ok(count);
                 }
             }
         }
     }
-    count
+    Ok(count)
 }
 
 /// `CorpseCount.getCorpseCount(chr)` for a character at `(x, y, z)`
@@ -240,21 +295,30 @@ pub fn get_corpse_count_at(
     yi: i32,
     zi: i32,
     building: Option<BuildingIdx>,
+    max_corpse_count: &dyn Fn() -> HostResult<i32>,
     zombie_count: Option<&dyn Fn(i32, i32, i32) -> i32>,
-) -> i32 {
+) -> HostResult<i32> {
     if !has_square {
-        return 0;
+        return Ok(0);
     }
     let div = |v: i32| coorddivision(v, 8);
-    get_corpse_count(cell, meta, div(xi), div(yi), zi, building, zombie_count)
+    get_corpse_count(
+        cell,
+        meta,
+        div(xi),
+        div(yi),
+        zi,
+        building,
+        max_corpse_count,
+        zombie_count,
+    )
 }
 
-/// `hasBuildingCorpseCount(chunk, z, building)`.
-pub fn has_building_corpse_count(chunk: &IsoChunk, z: i32, building: BuildingIdx) -> bool {
-    chunk
-        .corpse_count
-        .as_ref()
-        .and_then(|d| d.level(z))
+/// Scalar part of `hasBuildingCorpseCount` after the caller admits the
+/// actual nonnull `chunk.corpseCount` receiver. Null receiver handling is
+/// a distinct native phase and is never coerced into false here.
+pub fn has_building_corpse_count(data: &CorpseChunkCount, z: i32, building: BuildingIdx) -> bool {
+    data.level(z)
         .and_then(|l| l.building_corpse_count.as_ref())
         .is_some_and(|m| m.contains_key(&building))
 }

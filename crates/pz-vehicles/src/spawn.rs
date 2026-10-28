@@ -103,7 +103,7 @@ impl SpawnWorld for CellSpawnWorld<'_> {
     fn is_outside(&self, x: i32, y: i32, z: i32) -> bool {
         self.cell
             .get_grid_square(x, y, z)
-            .is_some_and(|s| s.is_exterior(self.sprites))
+            .is_some_and(|s| s.borrow().is_exterior(self.sprites))
     }
     fn vehicle_zone_at(&self, x: i32, y: i32, z: i32) -> bool {
         self.meta.vehicle_zone_at(x, y, z).is_some()

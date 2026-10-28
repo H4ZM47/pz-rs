@@ -32,13 +32,15 @@
 
 use crate::bind_core::LuaColorInfo;
 use crate::bind_item_visual::{ImmutableColor, IMMUTABLE_COLOR_CLASS};
-use crate::bind_misc_classes::{immutable_color_arg, immutable_color_value};
 use crate::bind_java_util::{class_cast, JavaList};
+use crate::bind_misc_classes::{immutable_color_arg, immutable_color_value};
 use crate::bind_registry::{
-    java_error, key_arg, key_value, shared_script_manager, CHARACTER_PROFESSION_CLASS, CHARACTER_TRAIT_CLASS,
-    ITEM_BODY_LOCATION_CLASS,
+    java_error, key_arg, key_value, shared_script_manager, CHARACTER_PROFESSION_CLASS,
+    CHARACTER_TRAIT_CLASS, ITEM_BODY_LOCATION_CLASS,
 };
-use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg, with_this, JavaEnum};
+use crate::expose::{
+    bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg, with_this, JavaEnum,
+};
 use pz_characters::survivor::{meet, set_torso};
 use pz_characters::{
     BodyLocationGroupRef, BodyLocationRef, CharacterGender, CharacterTraits, Characters, ItemIdentity, Observation,
@@ -80,6 +82,13 @@ thread_local! {
     static INSTANCES: RefCell<HashMap<usize, Value>> = RefCell::new(HashMap::new());
 }
 
+/// Canonical descriptors and their character instances belong to one
+/// Lua environment; fresh character statics are installed by bootstrap.
+pub(crate) fn reset_session_handles() {
+    HANDLES.with(|h| h.borrow_mut().clear());
+    INSTANCES.with(|i| i.borrow_mut().clear());
+}
+
 /// `SurvivorDesc.HairCommonColors`: a live `ArrayList<ImmutableColor>`.
 fn hair_common_colors_value(chars: &Rc<RefCell<Characters>>) -> Value {
     let (r, w) = (chars.clone(), chars.clone());
@@ -90,20 +99,36 @@ fn hair_common_colors_value(chars: &Rc<RefCell<Characters>>) -> Value {
                 .survivor_desc
                 .hair_common_colors
                 .iter()
-                .map(|k| immutable_color_value(ImmutableColor { r: k.r, g: k.g, b: k.b, a: k.a }))
+                .map(|k| {
+                    immutable_color_value(ImmutableColor {
+                        r: k.r,
+                        g: k.g,
+                        b: k.b,
+                        a: k.a,
+                    })
+                })
                 .collect()
         },
         Some(Box::new(move |v: Vec<Value>| -> LuaResult<()> {
             let cols = v
                 .iter()
-                .map(|x| match x {
-                    Value::Object(o) => o.as_any().downcast_ref::<ImmutableColor>().copied(),
-                    _ => None,
-                }
-                .ok_or_else(|| class_cast(x, IMMUTABLE_COLOR_CLASS)))
+                .map(|x| {
+                    match x {
+                        Value::Object(o) => o.as_any().downcast_ref::<ImmutableColor>().copied(),
+                        _ => None,
+                    }
+                    .ok_or_else(|| class_cast(x, IMMUTABLE_COLOR_CLASS))
+                })
                 .collect::<LuaResult<Vec<_>>>()?;
-            w.borrow_mut().survivor_desc.hair_common_colors =
-                cols.into_iter().map(|k| pz_characters::ImmutableColor { r: k.r, g: k.g, b: k.b, a: k.a }).collect();
+            w.borrow_mut().survivor_desc.hair_common_colors = cols
+                .into_iter()
+                .map(|k| pz_characters::ImmutableColor {
+                    r: k.r,
+                    g: k.g,
+                    b: k.b,
+                    a: k.a,
+                })
+                .collect();
             Ok(())
         })),
     );
@@ -145,11 +170,16 @@ fn trait_value(k: Option<&Rc<RegistryKey>>) -> Value {
 }
 
 fn trait_list(keys: &[Option<Rc<RegistryKey>>]) -> Value {
-    Value::Object(Rc::new(JavaList::new(keys.iter().map(|k| trait_value(k.as_ref())).collect())))
+    Value::Object(Rc::new(JavaList::new(
+        keys.iter().map(|k| trait_value(k.as_ref())).collect(),
+    )))
 }
 
 fn npe() -> LuaError {
-    LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" }
+    LuaError::Runtime {
+        message: String::new(),
+        class: "java.lang.NullPointerException",
+    }
 }
 
 /// A live `ArrayList<String>` over an owner's strings.
@@ -162,12 +192,21 @@ fn live_strings<O: 'static>(
     let write = move |v: Vec<Value>| -> LuaResult<()> {
         let v = v
             .iter()
-            .map(|x| x.as_str().map(str::to_string).ok_or_else(|| class_cast(x, "java.lang.String")))
+            .map(|x| {
+                x.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| class_cast(x, "java.lang.String"))
+            })
             .collect::<LuaResult<Vec<_>>>()?;
         *pick_mut(&mut owner.borrow_mut()) = v;
         Ok(())
     };
-    let read = move || pick(&r.borrow()).iter().map(|s| Value::from(s.as_str())).collect();
+    let read = move || {
+        pick(&r.borrow())
+            .iter()
+            .map(|s| Value::from(s.as_str()))
+            .collect()
+    };
     Value::Object(Rc::new(JavaList::live(read, Some(Box::new(write)))))
 }
 
@@ -204,7 +243,10 @@ pub fn trait_def_value(d: Option<&CharacterTraitDefinitionRef>) -> Value {
     }
 }
 
-pub fn trait_def_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<CharacterTraitDefinitionRef>> {
+pub fn trait_def_arg(
+    c: &NativeCall<'_>,
+    i: usize,
+) -> LuaResult<Option<CharacterTraitDefinitionRef>> {
     match c.arg(i) {
         Value::Nil => Ok(None),
         Value::Object(o) => match o.as_any().downcast_ref::<TraitDefObject>() {
@@ -234,7 +276,10 @@ pub fn profession_def_value(d: Option<&CharacterProfessionDefinitionRef>) -> Val
     }
 }
 
-fn profession_def_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<CharacterProfessionDefinitionRef>> {
+fn profession_def_arg(
+    c: &NativeCall<'_>,
+    i: usize,
+) -> LuaResult<Option<CharacterProfessionDefinitionRef>> {
     match c.arg(i) {
         Value::Nil => Ok(None),
         Value::Object(o) => match o.as_any().downcast_ref::<ProfessionDefObject>() {
@@ -411,7 +456,9 @@ impl LuaObject for BodyLocationGroupObject {
 }
 
 pub(crate) fn group_value(g: &BodyLocationGroupRef) -> Value {
-    canonical(g, || Value::Object(Rc::new(BodyLocationGroupObject(g.clone()))))
+    canonical(g, || {
+        Value::Object(Rc::new(BodyLocationGroupObject(g.clone())))
+    })
 }
 
 /// A `BodyLocation`.
@@ -467,8 +514,13 @@ fn survivor_type_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<SurvivorT
     match c.arg(i) {
         Value::Nil => Ok(None),
         Value::Object(o) => match o.as_any().downcast_ref::<JavaEnum>() {
-            Some(e) if e.class == SURVIVOR_TYPE_CLASS => Ok(Some(SurvivorType::VALUES[e.ordinal as usize])),
-            _ => Err(LuaError::runtime(format!("Expected SurvivorType but got {}", o.class_name()))),
+            Some(e) if e.class == SURVIVOR_TYPE_CLASS => {
+                Ok(Some(SurvivorType::VALUES[e.ordinal as usize]))
+            }
+            _ => Err(LuaError::runtime(format!(
+                "Expected SurvivorType but got {}",
+                o.class_name()
+            ))),
         },
         _ => Err(LuaError::runtime("Expected SurvivorType")),
     }
@@ -513,7 +565,9 @@ fn register_trait_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let s = sm.clone();
     b.static_fn("getCharacterTraitDefinition", move |c| {
         let k = key_arg(c, 0)?;
-        Ok(c.push(trait_def_value(defs::character_trait_definition(&s, k.as_ref()).as_ref())))
+        Ok(c.push(trait_def_value(
+            defs::character_trait_definition(&s, k.as_ref()).as_ref(),
+        )))
     });
     let s = sm.clone();
     b.static_fn("addCharacterTraitDefinition", move |c| {
@@ -608,7 +662,11 @@ fn register_trait_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     });
     b.method("getGrantedRecipes", |c| {
         let d = tdef(c)?;
-        Ok(c.push(live_strings(d, |d| &d.granted_recipes, |d| &mut d.granted_recipes)))
+        Ok(c.push(live_strings(
+            d,
+            |d| &d.granted_recipes,
+            |d| &mut d.granted_recipes,
+        )))
     });
     b.method("isGrantedRecipe", |c| {
         let d = tdef(c)?;
@@ -639,8 +697,17 @@ fn register_trait_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
             w.borrow_mut().mutually_exclusive_traits = v.iter().map(trait_elem).collect::<LuaResult<_>>()?;
             Ok(())
         };
-        let read = move || r.borrow().mutually_exclusive_traits.iter().map(|k| trait_value(k.as_ref())).collect();
-        Ok(c.push(Value::Object(Rc::new(JavaList::live(read, Some(Box::new(write)))))))
+        let read = move || {
+            r.borrow()
+                .mutually_exclusive_traits
+                .iter()
+                .map(|k| trait_value(k.as_ref()))
+                .collect()
+        };
+        Ok(c.push(Value::Object(Rc::new(JavaList::live(
+            read,
+            Some(Box::new(write)),
+        )))))
     });
     b.method("addMutuallyExclusive", |c| {
         let d = tdef(c)?;
@@ -674,7 +741,9 @@ fn register_profession_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let s = sm.clone();
     b.static_fn("getCharacterProfessionDefinition", move |c| {
         let k = key_arg(c, 0)?;
-        Ok(c.push(profession_def_value(defs::character_profession_definition(&s, k.as_ref()).as_ref())))
+        Ok(c.push(profession_def_value(
+            defs::character_profession_definition(&s, k.as_ref()).as_ref(),
+        )))
     });
     let s = sm.clone();
     b.static_fn("addCharacterProfessionDefinition", move |c| {
@@ -710,7 +779,10 @@ fn register_profession_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
 
     b.method("getType", |c| {
         let d = pdef(c)?;
-        let v = key_value(CHARACTER_PROFESSION_CLASS, d.borrow().character_profession_type.as_ref());
+        let v = key_value(
+            CHARACTER_PROFESSION_CLASS,
+            d.borrow().character_profession_type.as_ref(),
+        );
         Ok(c.push(v))
     });
     for name in ["getUIName", "getLabel", "getLeftLabel"] {
@@ -747,7 +819,11 @@ fn register_profession_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     });
     b.method("getGrantedRecipes", |c| {
         let d = pdef(c)?;
-        Ok(c.push(live_strings(d, |d| &d.granted_recipes, |d| &mut d.granted_recipes)))
+        Ok(c.push(live_strings(
+            d,
+            |d| &d.granted_recipes,
+            |d| &mut d.granted_recipes,
+        )))
     });
     b.method("isGrantedRecipe", |c| {
         let d = pdef(c)?;
@@ -781,7 +857,11 @@ fn register_character_traits(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let s = sm.clone();
     b.ctor(move |c| {
         let t = CharacterTraits::new(&s);
-        Ok(c.push(Value::Object(Rc::new(CharacterTraitsObject(RefCell::new(t))))))
+        Ok(
+            c.push(Value::Object(Rc::new(CharacterTraitsObject(RefCell::new(
+                t,
+            ))))),
+        )
     });
     b.method("get", |c| {
         let k = key_arg(c, 1)?;
@@ -810,9 +890,18 @@ fn register_character_traits(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     });
     type Modifier = fn(&CharacterTraits, &ScriptManager) -> pz_scripts::ScriptResult<f32>;
     let modifiers: [(&str, Modifier); 3] = [
-        ("getTraitDamageDealtReductionModifier", CharacterTraits::trait_damage_dealt_reduction_modifier),
-        ("getTraitEnduranceLossModifier", CharacterTraits::trait_endurance_loss_modifier),
-        ("getTraitWeatherPenaltyModifier", CharacterTraits::trait_weather_penalty_modifier),
+        (
+            "getTraitDamageDealtReductionModifier",
+            CharacterTraits::trait_damage_dealt_reduction_modifier,
+        ),
+        (
+            "getTraitEnduranceLossModifier",
+            CharacterTraits::trait_endurance_loss_modifier,
+        ),
+        (
+            "getTraitWeatherPenaltyModifier",
+            CharacterTraits::trait_weather_penalty_modifier,
+        ),
     ];
     for (name, f) in modifiers {
         let s = sm.clone();
@@ -833,7 +922,11 @@ fn register_observations(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     let ch = chars.clone();
     b.static_fn("addObservation", move |c| {
         let t = opt_string(c, 0).ok_or_else(npe)?;
-        ch.borrow_mut().observations.add_observation(&t, str_arg(c, 1).as_deref(), str_arg(c, 2).as_deref());
+        ch.borrow_mut().observations.add_observation(
+            &t,
+            str_arg(c, 1).as_deref(),
+            str_arg(c, 2).as_deref(),
+        );
         Ok(0)
     });
     let ch = chars.clone();
@@ -843,14 +936,24 @@ fn register_observations(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     });
     let ch = chars.clone();
     b.static_fn("setMutualExclusive", move |c| {
-        let (a, bb) = (opt_string(c, 0).ok_or_else(npe)?, opt_string(c, 1).ok_or_else(npe)?);
-        ch.borrow().observations.set_mutual_exclusive(&a, &bb).map_err(java_error)?;
+        let (a, bb) = (
+            opt_string(c, 0).ok_or_else(npe)?,
+            opt_string(c, 1).ok_or_else(npe)?,
+        );
+        ch.borrow()
+            .observations
+            .set_mutual_exclusive(&a, &bb)
+            .map_err(java_error)?;
         Ok(0)
     });
 
     let b = expose_class(thread, OBSERVATION_CLASS, None);
     b.ctor(|c| {
-        let o = Observation::new(str_arg(c, 0).as_deref(), str_arg(c, 1).as_deref(), str_arg(c, 2).as_deref());
+        let o = Observation::new(
+            str_arg(c, 0).as_deref(),
+            str_arg(c, 1).as_deref(),
+            str_arg(c, 2).as_deref(),
+        );
         Ok(c.push(observation_value(Some(&Rc::new(RefCell::new(o))))))
     });
     for name in ["getLabel", "getLeftLabel", "getName"] {
@@ -885,12 +988,36 @@ fn register_observations(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     });
 }
 
-
-fn register_survivor_factory(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
+fn register_survivor_factory(
+    thread: &mut Thread,
+    sm: &Rc<ScriptManager>,
+    chars: &Rc<RefCell<Characters>>,
+) {
     let b = expose_class(thread, SURVIVOR_FACTORY_CLASS, None);
-    b.field("FemaleForenames", live_strings(chars.clone(), |c| &c.survivor_factory.female_forenames, |c| &mut c.survivor_factory.female_forenames));
-    b.field("MaleForenames", live_strings(chars.clone(), |c| &c.survivor_factory.male_forenames, |c| &mut c.survivor_factory.male_forenames));
-    b.field("Surnames", live_strings(chars.clone(), |c| &c.survivor_factory.surnames, |c| &mut c.survivor_factory.surnames));
+    b.field(
+        "FemaleForenames",
+        live_strings(
+            chars.clone(),
+            |c| &c.survivor_factory.female_forenames,
+            |c| &mut c.survivor_factory.female_forenames,
+        ),
+    );
+    b.field(
+        "MaleForenames",
+        live_strings(
+            chars.clone(),
+            |c| &c.survivor_factory.male_forenames,
+            |c| &mut c.survivor_factory.male_forenames,
+        ),
+    );
+    b.field(
+        "Surnames",
+        live_strings(
+            chars.clone(),
+            |c| &c.survivor_factory.surnames,
+            |c| &mut c.survivor_factory.surnames,
+        ),
+    );
     let ch = chars.clone();
     b.static_fn("Reset", move |_| {
         ch.borrow_mut().survivor_factory_reset();
@@ -995,7 +1122,11 @@ fn color_info_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<pz_core::core::Colo
     }
 }
 
-fn register_survivor_desc(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
+fn register_survivor_desc(
+    thread: &mut Thread,
+    sm: &Rc<ScriptManager>,
+    chars: &Rc<RefCell<Characters>>,
+) {
     let b = expose_class(thread, SURVIVOR_DESC_CLASS, None);
     let ch = chars.clone();
     b.static_fn("getIDCount", move |c| {
@@ -1033,7 +1164,10 @@ fn register_survivor_desc(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &R
         Some(Box::new(move |v: Vec<Value>| -> LuaResult<()> {
             let cols = v
                 .iter()
-                .map(|x| crate::bind_misc_classes::color_of(x).ok_or_else(|| class_cast(x, "zombie.core.Color")))
+                .map(|x| {
+                    crate::bind_misc_classes::color_of(x)
+                        .ok_or_else(|| class_cast(x, "zombie.core.Color"))
+                })
                 .collect::<LuaResult<Vec<_>>>()?;
             w.borrow_mut().survivor_desc.trouser_common_colors =
                 cols.into_iter().map(|[r, g, b, a]| pz_characters::Color { r, g, b, a }).collect();
@@ -1069,15 +1203,31 @@ fn register_survivor_desc(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &R
         let visuals = crate::bind_appearance::with_dress_context(c.thread, |ctx| {
             let mut desc = d.borrow_mut();
             let female = desc.is_female();
-            let mut hv = std::mem::replace(&mut desc.human_visual, pz_inventory::visual::HumanVisual::new(0));
+            let mut hv = std::mem::replace(
+                &mut desc.human_visual,
+                pz_inventory::visual::HumanVisual::new(0),
+            );
             let mut v = Vec::new();
-            let r = pz_characters::population::dress_in_named_outfit(&mut hv, female, name.as_deref(), &mut v, ctx);
+            let r = pz_characters::population::dress_in_named_outfit(
+                &mut hv,
+                female,
+                name.as_deref(),
+                &mut v,
+                ctx,
+            );
             desc.human_visual = hv;
             r.map(|()| v)
         })
         .unwrap_or_else(|| Ok(Vec::new()))
         .map_err(LuaError::runtime)?;
-        crate::bind_item_visual::set_worn_items_from_item_visuals(&mut d.borrow_mut(), &visuals).map_err(java_error)?;
+        crate::bind_item_visual::set_worn_items_from_item_visuals(c.thread, &d, &visuals).map_err(
+            |error| match error {
+                pz_inventory::worn_items::WornInventoryError::Script(error) => java_error(error),
+                pz_inventory::worn_items::WornInventoryError::Host(error) => {
+                    crate::bind_world_object::host_error(error)
+                }
+            },
+        )?;
         Ok(0)
     });
     let (s, ch) = (sm.clone(), chars.clone());
@@ -1160,7 +1310,9 @@ fn register_survivor_desc(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &R
             _ => None,
         };
         // A `null` gender reads as male (`characterGender == FEMALE` fails).
-        desc(c, |d| d.character_gender = g.unwrap_or(CharacterGender::Male))?;
+        desc(c, |d| {
+            d.character_gender = g.unwrap_or(CharacterGender::Male)
+        })?;
         Ok(0)
     });
     b.method("getFullname", |c| {
@@ -1216,8 +1368,17 @@ fn register_survivor_desc(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &R
             w.borrow_mut().observations = obs;
             Ok(())
         };
-        let read = move || r.borrow().observations.iter().map(|o| observation_value(Some(o))).collect();
-        Ok(c.push(Value::Object(Rc::new(JavaList::live(read, Some(Box::new(write)))))))
+        let read = move || {
+            r.borrow()
+                .observations
+                .iter()
+                .map(|o| observation_value(Some(o)))
+                .collect()
+        };
+        Ok(c.push(Value::Object(Rc::new(JavaList::live(
+            read,
+            Some(Box::new(write)),
+        )))))
     });
     let ch = chars.clone();
     b.method("addObservation", move |c| {
@@ -1267,7 +1428,12 @@ fn register_survivor_desc(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &R
     });
     b.method("getWornItems", |c| {
         let v = dobj(c, |o| {
-            o.worn_items.borrow_mut().get_or_insert_with(|| Value::Object(Rc::new(WornItemsObject::Desc(o.desc.clone())))).clone()
+            o.worn_items
+                .borrow_mut()
+                .get_or_insert_with(|| {
+                    Value::Object(Rc::new(WornItemsObject::Desc(o.desc.clone())))
+                })
+                .clone()
         })?;
         Ok(c.push(v))
     });
@@ -1297,7 +1463,10 @@ fn register_survivor_desc(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &R
         let tough = r.into_iter().next().unwrap_or_default();
         match tough {
             Value::Num(n) => Ok(c.push(n as i32)),
-            _ => Err(LuaError::Runtime { message: String::new(), class: "java.lang.ClassCastException" }),
+            _ => Err(LuaError::Runtime {
+                message: String::new(),
+                class: "java.lang.ClassCastException",
+            }),
         }
     });
 }
@@ -1312,7 +1481,10 @@ fn survivor_meta(c: &mut NativeCall<'_>) -> LuaResult<Value> {
     let r = c.thread.pcall(&f, &[this]).map_err(|(e, _)| LuaError::Kahlua(e))?;
     let meta = r.into_iter().next().unwrap_or_default();
     if !matches!(meta, Value::Table(_) | Value::Nil) {
-        return Err(LuaError::Runtime { message: String::new(), class: "java.lang.ClassCastException" });
+        return Err(LuaError::Runtime {
+            message: String::new(),
+            class: "java.lang.ClassCastException",
+        });
     }
     dobj(c, |o| *o.meta.borrow_mut() = meta.clone())?;
     Ok(meta)
@@ -1326,12 +1498,19 @@ fn visual<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut LuaSurvivorDesc) -> R) -> L
 /// descriptor) and the real style lookups ([`crate::bind_appearance::with_styles`]).
 fn visual_styled<R>(
     c: &NativeCall<'_>,
-    f: impl FnOnce(&mut pz_inventory::visual::HumanVisual, &LuaSurvivorDesc, &dyn pz_inventory::visual::human::HumanStyles) -> R,
+    f: impl FnOnce(
+        &mut pz_inventory::visual::HumanVisual,
+        &LuaSurvivorDesc,
+        &dyn pz_inventory::visual::human::HumanStyles,
+    ) -> R,
 ) -> LuaResult<R> {
     let desc = with_this::<HumanVisualObject, _>(c, |o| o.0.clone())?;
     Ok(crate::bind_appearance::with_styles(c.thread, |styles| {
         let mut d = desc.borrow_mut();
-        let mut hv = std::mem::replace(&mut d.human_visual, pz_inventory::visual::HumanVisual::new(0));
+        let mut hv = std::mem::replace(
+            &mut d.human_visual,
+            pz_inventory::visual::HumanVisual::new(0),
+        );
         let r = f(&mut hv, &d, styles);
         d.human_visual = hv;
         r
@@ -1339,7 +1518,9 @@ fn visual_styled<R>(
 }
 
 fn rgb_value(c: Option<pz_inventory::visual::Rgb>) -> Value {
-    c.map_or(Value::Nil, |[r, g, b]| immutable_color_value(ImmutableColor { r, g, b, a: 1.0 }))
+    c.map_or(Value::Nil, |[r, g, b]| {
+        immutable_color_value(ImmutableColor { r, g, b, a: 1.0 })
+    })
 }
 
 /// An `ImmutableColor` argument as the visual's RGB (`null` stays unset).
@@ -1408,13 +1589,36 @@ fn register_human_visual(thread: &mut Thread) {
         visual(c, |d| d.human_visual.set_skin_texture_name(v.as_deref()))?;
         Ok(0)
     });
-    type GetColor = fn(&mut HumanVisual, &dyn pz_inventory::visual::human::HumanStyles) -> Option<pz_inventory::visual::Rgb>;
+    type GetColor = fn(
+        &mut HumanVisual,
+        &dyn pz_inventory::visual::human::HumanStyles,
+    ) -> Option<pz_inventory::visual::Rgb>;
     type SetColor = fn(&mut HumanVisual, Option<pz_inventory::visual::Rgb>);
     let colors: [(&str, GetColor, &str, SetColor); 4] = [
-        ("getHairColor", |v, s| v.get_hair_color(s), "setHairColor", HumanVisual::set_hair_color),
-        ("getBeardColor", |v, s| v.get_beard_color(s), "setBeardColor", HumanVisual::set_beard_color),
-        ("getNaturalHairColor", |v, s| v.get_natural_hair_color(s), "setNaturalHairColor", HumanVisual::set_natural_hair_color),
-        ("getNaturalBeardColor", |v, s| v.get_natural_beard_color(s), "setNaturalBeardColor", HumanVisual::set_natural_beard_color),
+        (
+            "getHairColor",
+            |v, s| v.get_hair_color(s),
+            "setHairColor",
+            HumanVisual::set_hair_color,
+        ),
+        (
+            "getBeardColor",
+            |v, s| v.get_beard_color(s),
+            "setBeardColor",
+            HumanVisual::set_beard_color,
+        ),
+        (
+            "getNaturalHairColor",
+            |v, s| v.get_natural_hair_color(s),
+            "setNaturalHairColor",
+            HumanVisual::set_natural_hair_color,
+        ),
+        (
+            "getNaturalBeardColor",
+            |v, s| v.get_natural_beard_color(s),
+            "setNaturalBeardColor",
+            HumanVisual::set_natural_beard_color,
+        ),
     ];
     for (get, g, set, st) in colors {
         b.method(get, move |c| {
@@ -1464,7 +1668,11 @@ fn register_human_visual(thread: &mut Thread) {
         Ok(0)
     });
     b.method("lerp", |c| {
-        let v = HumanVisual::lerp(num_arg(c, 1) as f32, num_arg(c, 2) as f32, num_arg(c, 3) as f32);
+        let v = HumanVisual::lerp(
+            num_arg(c, 1) as f32,
+            num_arg(c, 2) as f32,
+            num_arg(c, 3) as f32,
+        );
         Ok(c.push(v as f64))
     });
     b.method("hasBodyVisualFromItemType", |c| {
@@ -1594,7 +1802,10 @@ fn register_worn_items(thread: &mut Thread) {
         let i = int_arg(c, 1);
         let v = with_worn!(c, |b| {
             let w = b.with(|w| w.get(i).cloned())?.map_err(java_error)?;
-            WornItemObject { location: w.location, item: b.value(Some(w.item)) }
+            WornItemObject {
+                location: w.location,
+                item: b.value(Some(w.item)),
+            }
         });
         Ok(c.push(Value::Object(Rc::new(v))))
     });
@@ -1673,7 +1884,10 @@ fn register_body_locations(thread: &mut Thread, chars: &Rc<RefCell<Characters>>)
     let ch = chars.clone();
     b.static_fn("getGroup", move |c| {
         let Some(id) = opt_string(c, 0) else {
-            return Err(LuaError::Runtime { message: "id is null".into(), class: "java.lang.NullPointerException" });
+            return Err(LuaError::Runtime {
+                message: "id is null".into(),
+                class: "java.lang.NullPointerException",
+            });
         };
         let g = ch.borrow_mut().body_locations.get_group(&id).map_err(java_error)?;
         Ok(c.push(group_value(&g)))
@@ -1686,7 +1900,17 @@ fn register_body_locations(thread: &mut Thread, chars: &Rc<RefCell<Characters>>)
     let ch = chars.clone();
     b.static_fn("getAllGroups", move |c| {
         let ch = ch.clone();
-        let view = JavaList::live(move || ch.borrow().body_locations.all_groups().iter().map(group_value).collect(), None);
+        let view = JavaList::live(
+            move || {
+                ch.borrow()
+                    .body_locations
+                    .all_groups()
+                    .iter()
+                    .map(group_value)
+                    .collect()
+            },
+            None,
+        );
         Ok(c.push(Value::Object(Rc::new(view))))
     });
 
@@ -1744,8 +1968,14 @@ fn register_body_locations(thread: &mut Thread, chars: &Rc<RefCell<Characters>>)
         Option<&Rc<RegistryKey>>,
     ) -> pz_scripts::ScriptResult<bool>;
     let tests: [(&str, GroupTest); 3] = [
-        ("isExclusive", pz_characters::BodyLocationGroup::is_exclusive),
-        ("isHideModel", pz_characters::BodyLocationGroup::is_hide_model),
+        (
+            "isExclusive",
+            pz_characters::BodyLocationGroup::is_exclusive,
+        ),
+        (
+            "isHideModel",
+            pz_characters::BodyLocationGroup::is_hide_model,
+        ),
         ("isAltModel", pz_characters::BodyLocationGroup::is_alt_model),
     ];
     for (name, f) in tests {
@@ -1767,8 +1997,16 @@ fn register_body_locations(thread: &mut Thread, chars: &Rc<RefCell<Characters>>)
     });
     b.method("getAllLocations", |c| {
         let g = group(c)?;
-        let view =
-            JavaList::live(move || g.borrow().all_locations().iter().map(|l| body_location_value(Some(l))).collect(), None);
+        let view = JavaList::live(
+            move || {
+                g.borrow()
+                    .all_locations()
+                    .iter()
+                    .map(|l| body_location_value(Some(l)))
+                    .collect()
+            },
+            None,
+        );
         Ok(c.push(Value::Object(Rc::new(view))))
     });
 
@@ -1853,7 +2091,11 @@ mod tests {
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end").unwrap();
         crate::bind_java_util::register(&mut t);
-        crate::bind_core::register(&mut t, None, Rc::new(RefCell::new(pz_core::core::Core::new())));
+        crate::bind_core::register(
+            &mut t,
+            None,
+            Rc::new(RefCell::new(pz_core::core::Core::new())),
+        );
         let sm = sm_with_keys();
         crate::bind_registry::register(&mut t, sm.clone());
         let chars = Rc::new(RefCell::new(Characters::default()));
@@ -1863,8 +2105,13 @@ mod tests {
 
     fn run(t: &mut Thread, src: &str) -> Result<(), String> {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map(|_| ()).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map(|_| ())
+            .map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
     }
 
     #[test]
@@ -1922,8 +2169,10 @@ mod tests {
         // `getHairModel` keeps a known style (invented table).
         let pop = pz_characters::population::Population {
             hair_styles: Some(
-                pz_characters::population::HairStyles::from_xml(b"<hairStyles><male><name>Bald</name><model/></male></hairStyles>")
-                    .unwrap(),
+                pz_characters::population::HairStyles::from_xml(
+                    b"<hairStyles><male><name>Bald</name><model/></male></hairStyles>",
+                )
+                .unwrap(),
             ),
             ..Default::default()
         };
@@ -1978,7 +2227,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(chars.borrow().survivor_desc.hair_common_colors.len(), 1);
-        let e = run(&mut t, "SurvivorFactory.CreateSurvivor():setWornItem(nil, {})").unwrap_err();
+        let e = run(
+            &mut t,
+            "SurvivorFactory.CreateSurvivor():setWornItem(nil, {})",
+        )
+        .unwrap_err();
         assert!(e.contains("NullPointerException"), "{e}");
         run(&mut t, "SurvivorFactory.Reset()").unwrap();
         let e = run(&mut t, "SurvivorFactory.getRandomSurname()").unwrap_err();
@@ -2015,8 +2268,17 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(chars.borrow().body_locations.all_groups()[0].borrow().size(), 3);
-        let e = run(&mut t, "BodyLocations.getGroup('Human'):setExclusive(nil, ItemBodyLocation.HAT)").unwrap_err();
+        assert_eq!(
+            chars.borrow().body_locations.all_groups()[0]
+                .borrow()
+                .size(),
+            3
+        );
+        let e = run(
+            &mut t,
+            "BodyLocations.getGroup('Human'):setExclusive(nil, ItemBodyLocation.HAT)",
+        )
+        .unwrap_err();
         assert!(e.contains("NullPointerException"), "{e}");
         let e = run(&mut t, "BodyLocations.getGroup('')").unwrap_err();
         assert!(e.contains("id is empty"), "{e}");
@@ -2031,7 +2293,10 @@ mod tests {
         pop.pop_template.female_skins = vec!["SkinA".into(), "SkinB".into(), "SkinC".into()];
         crate::bind_appearance::install_population(Rc::new(RefCell::new(pop)));
         pz_core::random::outfit_rng::set_seed(77);
-        let (colour, skin) = (pz_core::random::outfit_rng::next(2), pz_core::random::outfit_rng::next(3));
+        let (colour, skin) = (
+            pz_core::random::outfit_rng::next(2),
+            pz_core::random::outfit_rng::next(3),
+        );
         pz_core::random::outfit_rng::set_seed(77);
         run(
             &mut t,

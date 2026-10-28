@@ -6,6 +6,9 @@
 //! world only implements what it has.
 
 use pz_scripts::ScriptManager;
+use pz_inventory::floor_drop::{HostResult, RuntimeHostError};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::character::{GameCharacter, SimContext};
 use crate::Characters;
@@ -143,6 +146,9 @@ pub trait StateWorld<I> {
 
     /// `getPathFindBehavior2().cancel()`.
     fn path_cancel(&mut self, _chr: &mut dyn PathMover) {}
+
+    /// `getPathFindBehavior2().reset()`.
+    fn path_reset(&mut self, _chr: &mut dyn PathMover) {}
 
     /// `PathfindNative.instance.cancelRequest(chr)`: drops `chr`'s pending
     /// request (`PathfindService::cancel_request(chr.mover_id())`); its
@@ -619,6 +625,123 @@ pub trait StateWorld<I> {
     /// `fence.destroyFence(dir)` at 0 or below (two zombies climbing over
     /// it at once, `ClimbOverFenceState`'s `OnFloor`).
     fn damage_fence(&mut self, _fence: pz_pathfind::mover::ObjectRef, _damage: i32, _dir: IsoDirections) {}
+
+    // ---- windows, sheet ropes and walls (#208; the climb states are #204) ----
+
+    /// The local player's input this frame, for the states' own
+    /// `pressedMovement` / `pressedCancelAction` (`None`: nothing pressed).
+    fn player_input(&self) -> Option<&dyn crate::character::player::PlayerInput> {
+        None
+    }
+    /// An `IsoWindow` (`None`: no window, or not an `IsoWindow`).
+    fn window_info(&self, _window: pz_pathfind::mover::ObjectRef) -> Option<WindowInfo> {
+        None
+    }
+    /// `IsoWindow.ToggleWindow(chr)`.
+    fn toggle_window(&mut self, _window: pz_pathfind::mover::ObjectRef, _chr: i32) {}
+    /// `window.setPermaLocked(perma)` then `window.sync()`.
+    fn set_window_perma_locked(&mut self, _window: pz_pathfind::mover::ObjectRef, _perma: bool) {}
+    /// `IsoWindow.WeaponHit(chr, null)` (bare hands smash a window).
+    fn window_weapon_hit(&mut self, _window: pz_pathfind::mover::ObjectRef, _chr: &GameCharacter<I>) {}
+    /// `VehicleWindow.isDestroyed()` of a vehicle part (`None`: no window).
+    fn vehicle_window_destroyed(&self, _vehicle: i16, _part: &str) -> Option<bool> {
+        None
+    }
+    /// `VehicleWindow.hit(chr)`.
+    fn vehicle_window_hit(&mut self, _vehicle: i16, _part: &str, _chr: &GameCharacter<I>) {}
+    /// The sheet-rope view of a square (`None`: no square).
+    fn sheet_rope_square(&self, _sq: (i32, i32, i32)) -> Option<SheetRopeSquare> {
+        None
+    }
+    /// `square.getChunk().getMinLevel()` / `getMaxLevel()`.
+    fn chunk_levels(&self, _sq: (i32, i32, i32)) -> (i32, i32) {
+        (0, 0)
+    }
+    /// `ClimbSheetRopeState.calculateClimbOutcome`: what the top of a rope
+    /// at `target` leads to when facing `dir` (a shut window there is
+    /// opened, `ToggleWindow`).
+    fn sheet_rope_exit(&mut self, _chr: &GameCharacter<I>, _target: (i32, i32, i32), _dir: IsoDirections) -> SheetRopeExit {
+        SheetRopeExit::Undefined
+    }
+    /// `IsoPlayer.canClimbOverWall(dir)` without its `isSprinting()` test.
+    fn can_climb_over_wall(&self, _chr: &GameCharacter<I>, _dir: IsoDirections) -> bool {
+        false
+    }
+    /// `ClimbOverWallState.getFenceType(getFence(owner))` (`None`: no
+    /// climbable wall between the squares).
+    fn climb_wall_fence_type(&self, _start: (i32, i32, i32), _end: (i32, i32), _dir: IsoDirections) -> Option<i32> {
+        None
+    }
+
+    // ---- falls (`handleLandingImpact`, #204) ----
+
+    /// `sq.getFloor().getSprite().getName()`.
+    fn floor_sprite_name(&self, _sq: (i32, i32, i32)) -> Option<String> {
+        None
+    }
+}
+
+/// What the window states read of an `IsoWindow`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowInfo {
+    /// `getSquare()`.
+    pub square: (i32, i32, i32),
+    /// `isNorth()`.
+    pub north: bool,
+    /// `getObjectIndex() != -1`.
+    pub in_world: bool,
+    pub locked: bool,
+    pub perma_locked: bool,
+    /// `IsOpen()`.
+    pub open: bool,
+    /// `isDestroyed()`.
+    pub destroyed: bool,
+    /// `isInvincible()`.
+    pub invincible: bool,
+}
+
+impl WindowInfo {
+    /// `getOppositeSquare()`.
+    pub fn opposite(&self) -> (i32, i32, i32) {
+        let (x, y, z) = self.square;
+        if self.north {
+            (x, y - 1, z)
+        } else {
+            (x - 1, y, z)
+        }
+    }
+}
+
+/// A square as the sheet-rope states read it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SheetRopeSquare {
+    /// `IsoWindow.isSheetRopeHere(sq)`.
+    pub sheet_rope: bool,
+    /// `IsoWindow.canClimbHere(sq)`.
+    pub can_climb_here: bool,
+    /// `IsoWindow.isTopOfSheetRopeHere(sq)`.
+    pub top: bool,
+    /// `TreatAsSolidFloor()`.
+    pub solid_floor: bool,
+    /// `has(IsoFlagType.solidtrans)`.
+    pub solidtrans: bool,
+    /// `climbSheetN || climbSheetTopN`, and the other sides.
+    pub n: bool,
+    pub s: bool,
+    pub w: bool,
+    pub e: bool,
+}
+
+/// `ClimbSheetRopeState.ClimbStatus`, with the object it climbs through.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SheetRopeExit {
+    #[default]
+    Undefined,
+    Blocked,
+    /// An `IsoWindow` or a window `IsoThumpable`.
+    OpenWindow(pz_pathfind::mover::ObjectRef),
+    WindowFrame(pz_pathfind::mover::ObjectRef),
+    Fence,
 }
 
 /// The ground of a square (`hasNaturalFloor`, `hasSand`,
@@ -796,15 +919,37 @@ pub struct StateCx<'a, I> {
     pub chars: &'a Characters,
     pub ctx: &'a dyn SimContext,
     pub world: &'a mut dyn StateWorld<I>,
+    // One immediate first-fault carrier per outer action. Reborrows share
+    // the same fault, so nested void State callbacks cannot hide it.
+    host_fault: Rc<RefCell<Option<RuntimeHostError>>>,
 }
 
 impl<'a, I> StateCx<'a, I> {
     pub fn new(sm: &'a ScriptManager, chars: &'a Characters, ctx: &'a dyn SimContext, world: &'a mut dyn StateWorld<I>) -> Self {
-        StateCx { sm, chars, ctx, world }
+        StateCx { sm, chars, ctx, world, host_fault: Rc::new(RefCell::new(None)) }
     }
 
     /// The same context with a shorter borrow (to pass on).
     pub fn reborrow(&mut self) -> StateCx<'_, I> {
-        StateCx { sm: self.sm, chars: self.chars, ctx: self.ctx, world: &mut *self.world }
+        StateCx { sm: self.sm, chars: self.chars, ctx: self.ctx, world: &mut *self.world, host_fault: self.host_fault.clone() }
+    }
+
+    /// Stop this action at its first host failure. No callback/event queue is
+    /// involved, and later failures must not replace the original domain.
+    pub fn record_host_error(&self, error: RuntimeHostError) {
+        let mut fault = self.host_fault.borrow_mut();
+        if fault.is_none() { *fault = Some(error); }
+    }
+
+    pub fn has_host_error(&self) -> bool { self.host_fault.borrow().is_some() }
+
+    /// Every production outer engine/Lua action boundary must return this
+    /// result before any further action/state work. Inspecting never clears
+    /// the first fault or turns failure into native absence.
+    pub fn host_result(&self) -> HostResult<()> {
+        match &*self.host_fault.borrow() {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
     }
 }

@@ -4,6 +4,7 @@
 //! bindings and the game loop can use it.
 
 pub mod calendar;
+pub mod java_date;
 pub mod config;
 pub mod core;
 pub mod debug;
@@ -14,3 +15,5 @@ pub mod game_time;
 pub mod game_time_save;
 pub mod save_trackers;
 pub mod thumbnail;
+
+pub mod pool_statistics;

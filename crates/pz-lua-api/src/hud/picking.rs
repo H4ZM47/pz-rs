@@ -12,7 +12,8 @@
 //! the filters, the mask tests and the score are here.
 
 use super::host::HudPicking;
-use pz_kahlua::Value;
+use pz_entity::runtime_load::HostResult;
+use pz_kahlua::{LuaResult, Value};
 use pz_render::iso::{coordmodulof, fastfloor, TILE_SCALE};
 use pz_ui::tooltip::TooltipObject;
 use std::cmp::Ordering;
@@ -192,8 +193,8 @@ pub trait PickWorld {
     /// `IsoCamera.getOffX(0)` / `getOffY(0)`.
     fn camera_offset(&self) -> (f32, f32);
     /// `square.getObjects()` of the square at `x, y, z`, in order; `None`
-    /// without a square.
-    fn objects(&self, x: i32, y: i32, z: i32) -> Option<Vec<PickObject>>;
+    /// without a square. Actual body/provider faults remain Err and stop traversal.
+    fn objects(&self, x: i32, y: i32, z: i32) -> HostResult<Option<Vec<PickObject>>>;
     /// The corpses among the square's `getStaticMovingObjects()`.
     fn corpses(&self, _x: i32, _y: i32, _z: i32) -> Vec<PickObject> {
         Vec::new()
@@ -239,9 +240,15 @@ fn to_iso(w: &dyn PickWorld, sx: f32, sy: f32, z: f32) -> (f32, f32) {
     (x, y)
 }
 
-fn objects_on_square(w: &dyn PickWorld, x: i32, y: i32, z: i32, out: &mut Vec<Rc<PickObject>>) {
-    let Some(objs) = w.objects(x, y, z) else {
-        return;
+fn objects_on_square(
+    w: &dyn PickWorld,
+    x: i32,
+    y: i32,
+    z: i32,
+    out: &mut Vec<Rc<PickObject>>,
+) -> HostResult<()> {
+    let Some(objs) = w.objects(x, y, z)? else {
+        return Ok(());
     };
     for o in objs {
         let ri = o.render;
@@ -257,6 +264,7 @@ fn objects_on_square(w: &dyn PickWorld, x: i32, y: i32, z: i32, out: &mut Vec<Rc
         }
         out.push(Rc::new(o));
     }
+    Ok(())
 }
 
 fn corpses_near(
@@ -281,7 +289,12 @@ fn corpses_near(
 }
 
 /// `getObjectsAt(screenX, screenY)` (zoomed screen coordinates).
-fn objects_at(w: &dyn PickWorld, p: &PickPlayer, sx: i32, sy: i32) -> Vec<Rc<PickObject>> {
+fn objects_at(
+    w: &dyn PickWorld,
+    p: &PickPlayer,
+    sx: i32,
+    sy: i32,
+) -> HostResult<Vec<Rc<PickObject>>> {
     let mut out = Vec::new();
     let levels: Vec<i32> = if p.zi < 0 {
         (-32..0).collect()
@@ -302,11 +315,11 @@ fn objects_at(w: &dyn PickWorld, p: &PickPlayer, sx: i32, sy: i32) -> Vec<Rc<Pic
             (fastfloor(wx), fastfloor(wy))
         };
         for i in (0..dxy.len()).step_by(2) {
-            objects_on_square(w, bx + dxy[i], by + dxy[i + 1], z, &mut out);
+            objects_on_square(w, bx + dxy[i], by + dxy[i + 1], z, &mut out)?;
         }
         corpses_near(w, fastfloor(wx), fastfloor(wy), z, sx, sy, &mut out);
     }
-    out
+    Ok(out)
 }
 
 /// `shouldIgnoreCutawayWall`.
@@ -352,15 +365,19 @@ fn water_click(w: &dyn PickWorld, o: &Rc<PickObject>) -> Option<ClickObject> {
 
 /// `getClickObjects(screenX, screenY)`: the objects under the point with
 /// their drawn rectangles, by level, render layer and square.
-pub fn click_objects(w: &dyn PickWorld, screen_x: i32, screen_y: i32) -> Vec<ClickObject> {
+pub fn click_objects(
+    w: &dyn PickWorld,
+    screen_x: i32,
+    screen_y: i32,
+) -> HostResult<Vec<ClickObject>> {
     let Some(p) = w.player0() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let zoom = w.zoom();
     let x = screen_x as f32 * zoom;
     let y = screen_y as f32 * zoom;
     let mut out = Vec::new();
-    for o in objects_at(w, &p, x as i32, y as i32) {
+    for o in objects_at(w, &p, x as i32, y as i32)? {
         let Some((cx, cy)) = w.chunk_render_xy(o.square) else {
             continue;
         };
@@ -408,7 +425,7 @@ pub fn click_objects(w: &dyn PickWorld, screen_x: i32, screen_y: i32) -> Vec<Cli
                     .cmp(&0),
             )
     });
-    out
+    Ok(out)
 }
 
 /// `shouldIgnoreWallLikeObject`.
@@ -536,13 +553,19 @@ fn compare(a: &ClickObject, b: &ClickObject) -> Ordering {
 /// object whose drawn mask is under the point. (The negated comparisons
 /// are the original's, false for NaN.)
 #[allow(clippy::neg_cmp_op_on_partial_ord)]
-pub fn context_pick(w: &dyn PickWorld, screen_x: i32, screen_y: i32) -> Option<ClickObject> {
-    let p = w.player0()?;
+pub fn context_pick(
+    w: &dyn PickWorld,
+    screen_x: i32,
+    screen_y: i32,
+) -> HostResult<Option<ClickObject>> {
+    let Some(p) = w.player0() else {
+        return Ok(None);
+    };
     let zoom = w.zoom();
     let x = screen_x as f32 * zoom;
     let y = screen_y as f32 * zoom;
     let mut choices = Vec::new();
-    for mut c in click_objects(w, screen_x, screen_y).into_iter().rev() {
+    for mut c in click_objects(w, screen_x, screen_y)?.into_iter().rev() {
         let o = c.tile.clone();
         if matches!(o.kind, PickKind::Player { local0: true }) {
             continue;
@@ -579,13 +602,13 @@ pub fn context_pick(w: &dyn PickWorld, screen_x: i32, screen_y: i32) -> Option<C
         choices.push(c);
     }
     if choices.is_empty() {
-        return None;
+        return Ok(None);
     }
     for c in &mut choices {
         c.score = score(c, &p);
     }
     choices.sort_by(compare);
-    choices.pop()
+    Ok(choices.pop())
 }
 
 /// [`HudPicking`] over a [`PickWorld`]: `ContextPick` at the mouse.
@@ -594,14 +617,18 @@ pub struct WorldPicking<W: PickWorld> {
 }
 
 impl<W: PickWorld> HudPicking for WorldPicking<W> {
-    fn picked_tile(&self) -> Option<TooltipObject> {
+    fn picked_tile(&self) -> LuaResult<Option<TooltipObject>> {
         let (mx, my) = pz_ui::with_ui(|m| (m.mouse.x, m.mouse.y));
-        let c = context_pick(&self.world, mx, my)?;
-        Some(TooltipObject {
+        let Some(c) =
+            context_pick(&self.world, mx, my).map_err(crate::bind_world_object::host_error)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(TooltipObject {
             id: c.tile.id,
             have_special_tooltip: c.tile.have_special_tooltip,
             square: c.tile.square_value.clone(),
-        })
+        }))
     }
     fn square_coords(&self, square: &Value) -> Option<(i32, i32, i32)> {
         crate::bind_world::square_coords(square)
@@ -655,8 +682,8 @@ mod tests {
         fn camera_offset(&self) -> (f32, f32) {
             (0.0, 0.0)
         }
-        fn objects(&self, x: i32, y: i32, z: i32) -> Option<Vec<PickObject>> {
-            self.squares.get(&[x, y, z]).cloned()
+        fn objects(&self, x: i32, y: i32, z: i32) -> HostResult<Option<Vec<PickObject>>> {
+            Ok(self.squares.get(&[x, y, z]).cloned())
         }
         fn chunk_render_xy(&self, _square: [i32; 3]) -> Option<(f32, f32)> {
             Some((0.0, 0.0))
@@ -701,11 +728,11 @@ mod tests {
         crate_.has_container = true;
         let w = world(vec![floor, crate_]);
         let (x, y) = point_over(sq);
-        let c = context_pick(&w, x, y).expect("picked");
+        let c = context_pick(&w, x, y).unwrap().expect("picked");
         assert_eq!(c.tile.id, 2);
         // The floor alone is still picked (the only choice).
         let w = world(vec![obj(1, sq, 0, PickKind::Object, RenderLayer::Floor)]);
-        assert_eq!(context_pick(&w, x, y).unwrap().tile.id, 1);
+        assert_eq!(context_pick(&w, x, y).unwrap().unwrap().tile.id, 1);
     }
 
     #[test]
@@ -719,20 +746,29 @@ mod tests {
             PickKind::Player { local0: false },
             RenderLayer::MinusFloor,
         )]);
-        assert!(context_pick(&w, x, y).is_none());
+        assert!(context_pick(&w, x, y).unwrap().is_none());
         let mut o = obj(2, sq, 0, PickKind::Object, RenderLayer::MinusFloor);
         o.mask = Some(Rc::new(|_, _, _| false));
-        assert!(context_pick(&world(vec![o]), x, y).is_none());
+        assert!(context_pick(&world(vec![o]), x, y).unwrap().is_none());
         let mut wall = obj(3, sq, 0, PickKind::Object, RenderLayer::MinusFloor);
         wall.sprite = Some(SpriteFlags {
             cut_w: true,
             ..Default::default()
         });
         wall.render.target_alpha = 0.5;
-        assert!(context_pick(&world(vec![wall.clone()]), x, y).is_none());
+        assert!(context_pick(&world(vec![wall.clone()]), x, y)
+            .unwrap()
+            .is_none());
         // A faded door still picks.
         wall.kind = PickKind::Door;
-        assert_eq!(context_pick(&world(vec![wall]), x, y).unwrap().tile.id, 3);
+        assert_eq!(
+            context_pick(&world(vec![wall]), x, y)
+                .unwrap()
+                .unwrap()
+                .tile
+                .id,
+            3
+        );
     }
 
     #[test]
@@ -748,7 +784,7 @@ mod tests {
             PickKind::Object,
             RenderLayer::MinusFloor,
         )));
-        let c = context_pick(&world(vec![a, b]), x, y).unwrap();
+        let c = context_pick(&world(vec![a, b]), x, y).unwrap().unwrap();
         assert_eq!(c.tile.id, 9);
         assert_eq!(
             (c.lx, c.ly),
@@ -791,5 +827,81 @@ mod tests {
         assert_eq!(score(&mk(PickKind::Object, None), &p), -99_997);
         assert_eq!(score(&mk(PickKind::LightSwitch, Some(4)), &p), 24);
         assert_eq!(score(&mk(PickKind::Window, None), &p), 7);
+    }
+
+    #[test]
+    fn actual_pick_fault_keeps_prefix_and_stops_later_square_corpse_and_mask_work() {
+        use pz_entity::runtime_load::RuntimeHostError;
+        use std::cell::Cell;
+        struct FaultWorld {
+            queries: Cell<usize>,
+            corpses: Cell<usize>,
+            chunks: Cell<usize>,
+        }
+        impl PickWorld for FaultWorld {
+            fn player0(&self) -> Option<PickPlayer> {
+                Some(PickPlayer::default())
+            }
+            fn zoom(&self) -> f32 {
+                1.0
+            }
+            fn camera_offset(&self) -> (f32, f32) {
+                (0.0, 0.0)
+            }
+            fn objects(&self, x: i32, y: i32, z: i32) -> HostResult<Option<Vec<PickObject>>> {
+                self.queries.set(self.queries.get() + 1);
+                if self.queries.get() == 2 {
+                    return Err(RuntimeHostError::Borrowed("actual picked sprite body"));
+                }
+                Ok(Some(vec![obj(
+                    101,
+                    [x, y, z],
+                    0,
+                    PickKind::Object,
+                    RenderLayer::Floor,
+                )]))
+            }
+            fn corpses(&self, _: i32, _: i32, _: i32) -> Vec<PickObject> {
+                self.corpses.set(self.corpses.get() + 1);
+                Vec::new()
+            }
+            fn chunk_render_xy(&self, _: [i32; 3]) -> Option<(f32, f32)> {
+                self.chunks.set(self.chunks.get() + 1);
+                Some((0.0, 0.0))
+            }
+        }
+        let world = FaultWorld {
+            queries: Cell::new(0),
+            corpses: Cell::new(0),
+            chunks: Cell::new(0),
+        };
+        let mut prefix = Vec::new();
+        objects_on_square(&world, 0, 0, 0, &mut prefix).unwrap();
+        assert_eq!(prefix.len(), 1);
+        assert!(matches!(
+            objects_on_square(&world, 1, 0, 0, &mut prefix),
+            Err(RuntimeHostError::Borrowed("actual picked sprite body"))
+        ));
+        assert_eq!(prefix[0].id, 101);
+        assert_eq!(prefix.len(), 1);
+        world.queries.set(0);
+        assert!(matches!(
+            context_pick(&world, 12, 18),
+            Err(RuntimeHostError::Borrowed("actual picked sprite body"))
+        ));
+        assert_eq!(world.queries.get(), 2);
+        assert_eq!(world.corpses.get(), 0);
+        assert_eq!(world.chunks.get(), 0);
+        world.queries.set(0);
+        let picker = WorldPicking { world };
+        assert!(matches!(
+            picker.picked_tile(),
+            Err(pz_kahlua::LuaError::Runtime {
+                class: "pz.host.Borrowed",
+                ..
+            })
+        ));
+        assert_eq!(picker.world.queries.get(), 2);
+        assert_eq!(picker.world.corpses.get(), 0);
     }
 }
