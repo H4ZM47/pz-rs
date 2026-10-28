@@ -97,10 +97,46 @@ impl Gpu {
         g.mvp = mvp;
         g.alpha_func = 8;
         g.clip_z = 0.5;
-        // `startRenderThread`: the offscreen size and its texture size.
+        // `startThumbnail` retains the player's weather/search values,
+        // centres the thumbnail at zoom 1, then `startRenderThread`
+        // uploads every screen-shader uniform. A zero size is the source
+        // viewport; the engine supplies a player's size for split screen.
+        let mut p = params;
+        if p.offscreen_width <= 0.0 || p.offscreen_height <= 0.0 {
+            (p.offscreen_width, p.offscreen_height) = (tw, th);
+        }
+        let u = p
+            .thumbnail(size as i32, size as i32, 1.0)
+            .uniforms([tw, th]);
         g.screen = [
-            [params.desaturation, params.timer, tw, th],
-            [tw, th, 0.0, 0.0],
+            [
+                u.desaturation_val,
+                u.timer,
+                u.bgl_rendered_texture_width,
+                u.bgl_rendered_texture_height,
+            ],
+            [
+                u.texture_size[0],
+                u.texture_size[1],
+                u.timer_wrap,
+                u.night_value,
+            ],
+        ];
+        g.surface = [
+            u.search_mode,
+            u.screen_info,
+            u.param_info,
+            u.var_info,
+            [
+                u.night_vision_goggles,
+                u.drunk_factor,
+                u.blur_factor,
+                u.zoom,
+            ],
+        ];
+        g.screen_ext = [
+            [u.light[0], u.light[1], u.light[2], u.light_intensity],
+            [u.exterior, 0.0, 0.0, 0.0],
         ];
         let corner = |x: f32, y: f32, u: f32, v: f32| Vertex {
             pos: [x, y],

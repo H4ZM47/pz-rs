@@ -104,3 +104,80 @@ fn without_offscreen_buffer_reads_the_screen() {
     assert_eq!(px(&t, 10, 0), [0, 0, 255, 255]);
     assert_eq!(px(&t, 10, 99), [255, 0, 0, 255]);
 }
+
+/// A default size describes this player's viewport, not the width of the
+/// texture shared by two players. The search circle must use that size.
+#[test]
+fn thumbnail_default_effect_size_uses_the_selected_player_viewport() {
+    let Some(mut g) = gpu(768, 512) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::OffscreenBegin {
+        width: 768,
+        height: 512,
+    });
+    dl.render_rect(0, 0, 768, 512, Rgba(0.8, 0.3, 0.15, 1.0));
+    dl.cmds.push(DrawCmd::OffscreenEnd);
+    g.render_frame(&[(FrameParams::ui(768, 512), &dl)], &mut tm);
+    let player = PlayerScreen {
+        left: 384,
+        top: 0,
+        width: 384,
+        height: 512,
+    };
+    let input = ScreenParams {
+        zoom: 2.0,
+        tile_width: 64.0,
+        search: pz_render::SearchModeShader {
+            enabled: true,
+            radius: 0.75,
+            gradient_width: 1.5,
+            darkness: 0.8,
+            ..Default::default()
+        },
+        ..params()
+    };
+    let captured = capture_thumbnail(&mut g, player, full(384, 512), input).unwrap();
+    let sx = player.left + player.width / 2 - 128;
+    let sy = player.top + player.height / 2 - 128;
+    let expected = g
+        .read_offscreen_thumbnail(
+            sx,
+            sy,
+            ScreenParams {
+                offscreen_width: 384.0,
+                offscreen_height: 512.0,
+                ..input
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(captured.rgba, expected);
+    let wrong_shared_size = g
+        .read_offscreen_thumbnail(
+            sx,
+            sy,
+            ScreenParams {
+                offscreen_width: 768.0,
+                offscreen_height: 512.0,
+                ..input
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let changed = captured
+        .rgba
+        .chunks_exact(4)
+        .zip(wrong_shared_size.chunks_exact(4))
+        .filter(|(a, b)| {
+            a[..3]
+                .iter()
+                .zip(&b[..3])
+                .any(|(x, y)| (i32::from(*x) - i32::from(*y)).abs() > 4)
+        })
+        .count();
+    assert!(
+        changed > 512,
+        "wrong viewport did not affect the search circle: {changed}"
+    );
+}

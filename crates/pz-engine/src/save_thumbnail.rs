@@ -46,6 +46,15 @@ pub fn capture_thumbnail(
     let half = THUMB_SIZE / 2;
     let sx = player.left + player.width / 2 - half;
     let sy = player.top + player.height / 2 - half;
+    // Resolve ScreenParams' zero-size viewport default for this player,
+    // before the GPU only sees the texture shared by several players.
+    // Native display scaling can produce a different offscreen size;
+    // callers supply those actual dimensions as nonzero params.
+    let mut params = params;
+    if params.offscreen_width <= 0.0 || params.offscreen_height <= 0.0 {
+        (params.offscreen_width, params.offscreen_height) =
+            (player.width as f32, player.height as f32);
+    }
     let read = match gpu.read_offscreen_thumbnail(sx, sy, params) {
         Ok(Some(rgba)) => Ok(Some(Thumbnail {
             width: THUMB_SIZE,

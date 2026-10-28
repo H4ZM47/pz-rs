@@ -207,3 +207,135 @@ fn without_offscreen_buffer_the_back_buffer_is_read() {
     // Outside the target: zero.
     assert_eq!(px(&p, 64, 60, 15), [0, 0, 0, 0]);
 }
+
+// Dense, asymmetric colour boundaries make the blur/deformation branches
+// observable; flat background alone would let a missing uniform pass.
+fn weather_frame(params: ScreenParams) -> DrawList {
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::OffscreenBegin {
+        width: 256,
+        height: 256,
+    });
+    for y in 0..16 {
+        for x in 0..16 {
+            let r = if (x + y) % 2 == 0 { 0.85 } else { 0.12 };
+            let g = 0.15 + y as f32 * 0.035;
+            let b = 0.2 + x as f32 * 0.03;
+            dl.render_rect(x * 16, y * 16, 16, 16, Rgba(r, g, b, 1.0));
+        }
+    }
+    dl.cmds.push(DrawCmd::OffscreenEnd);
+    dl.cmds.push(DrawCmd::ScreenPass {
+        x: 0.0,
+        y: 0.0,
+        w: 256.0,
+        h: 256.0,
+        tex: [0.0, 0.0, 256.0, 256.0],
+        params,
+    });
+    dl
+}
+
+fn assert_weather_thumbnail(mut input: ScreenParams, effect: &str) {
+    let Some(mut g) = gpu(256, 256) else { return };
+    let mut tm = TextureManager::new();
+    input.offscreen_width = 256.0;
+    input.offscreen_height = 256.0;
+    input.tile_width = 64.0;
+    input.timer = 37.0;
+    input.timer_wrap = -0.75;
+    // The thumbnail must replace the camera's ordinary zoom and offset,
+    // while preserving this player's actual effects and frame timer.
+    input.zoom = 2.25;
+    input.right_click = [37.0, -21.0];
+    let reference = weather_frame(input.thumbnail(256, 256, 1.0));
+    g.render_frame(&[(FrameParams::ui(256, 256), &reference)], &mut tm);
+    let screen = g.read_pixels();
+    let thumb = g.read_offscreen_thumbnail(0, 0, input).unwrap().unwrap();
+    let plain = ScreenParams {
+        night_vision_goggles: false,
+        drunk_factor: 0.0,
+        blur_factor: 0.0,
+        search: Default::default(),
+        ..input
+    };
+    let no_effect = g.read_offscreen_thumbnail(0, 0, plain).unwrap().unwrap();
+    let (mut worst, mut changed) = (0, 0);
+    for row in 0..256 {
+        for col in 0..256 {
+            let a = px(&thumb, 256, col, row);
+            let b = px(&screen, 256, col, 255 - row);
+            for k in 0..4 {
+                worst = worst.max((i32::from(a[k]) - i32::from(b[k])).abs());
+            }
+            let old = px(&no_effect, 256, col, row);
+            if a[..3]
+                .iter()
+                .zip(old)
+                .any(|(v, p)| (i32::from(*v) - i32::from(p)).abs() > 4)
+            {
+                changed += 1;
+            }
+        }
+    }
+    assert!(
+        worst <= 2,
+        "{effect}: thumbnail differs from screen by {worst}"
+    );
+    assert!(
+        changed > 512,
+        "{effect}: effect not observable ({changed} pixels)"
+    );
+}
+
+#[test]
+fn thumbnail_preserves_night_vision_and_night_value() {
+    assert_weather_thumbnail(
+        ScreenParams {
+            night_vision_goggles: true,
+            night_value: 0.72,
+            ..params()
+        },
+        "night vision",
+    );
+}
+
+#[test]
+fn thumbnail_preserves_drunk_deformation_and_timer_wrap() {
+    assert_weather_thumbnail(
+        ScreenParams {
+            drunk_factor: 0.9,
+            ..params()
+        },
+        "drunk deformation",
+    );
+}
+
+#[test]
+fn thumbnail_preserves_short_sighted_blur() {
+    assert_weather_thumbnail(
+        ScreenParams {
+            blur_factor: 0.95,
+            ..params()
+        },
+        "short-sighted blur",
+    );
+}
+
+#[test]
+fn thumbnail_preserves_search_mode_at_thumbnail_zoom() {
+    assert_weather_thumbnail(
+        ScreenParams {
+            search: pz_render::SearchModeShader {
+                enabled: true,
+                blur: 0.65,
+                radius: 1.0,
+                gradient_width: 1.25,
+                desat: 0.7,
+                darkness: 0.6,
+            },
+            ..params()
+        },
+        "search mode",
+    );
+}
