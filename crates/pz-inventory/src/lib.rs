@@ -13,6 +13,7 @@ pub mod component_host;
 pub mod container;
 pub mod context;
 pub mod device;
+pub mod device_sim;
 pub mod dictionary;
 pub mod env;
 pub mod factory;

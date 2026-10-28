@@ -171,7 +171,7 @@ fn presets_draw_per_channel_in_range() {
         *it.next().unwrap()
     });
     assert_eq!(bounds, vec![1000, 1000, 1000, 1000]);
-    let names: Vec<_> = d.presets.presets.iter().map(|p| p.name.as_str()).collect();
+    let names: Vec<_> = d.presets.list().borrow().iter().map(|p| p.borrow().name.clone()).collect();
     assert_eq!(names, ["E1", "R1"]);
     // Two-way and high tier: Amateur and Military are drawn too.
     let mut d2 = DeviceData {
@@ -187,14 +187,14 @@ fn presets_draw_per_channel_in_range() {
         0
     });
     assert_eq!(n, 6);
-    assert_eq!(d2.presets.presets.len(), 5);
+    assert_eq!(d2.presets.len(), 5);
     // A television takes every in-range channel without drawing.
     let mut tv = DeviceData {
         is_television: true,
         ..Default::default()
     };
     tv.generate_presets(&l, &mut |_| panic!("no draw"));
-    assert_eq!(tv.presets.presets.len(), 1);
+    assert_eq!(tv.presets.len(), 1);
 }
 
 #[test]
@@ -247,7 +247,7 @@ fn new_radio_draws_presets_then_channel_then_the_item_draws() {
     assert_eq!(d.transmit_range, 0);
     assert_eq!(d.use_delta, 0.6 / 60.0);
     assert!(d.is_battery_powered);
-    assert_eq!(d.presets.presets.len(), 1);
+    assert_eq!(d.presets.len(), 1);
     assert_eq!(d.channel, 90000);
 }
 

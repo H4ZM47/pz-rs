@@ -237,7 +237,32 @@ impl ItemFactory for NoItems {
     }
 }
 
+/// The radio and television simulation of vehicle parts
+/// (`VehiclePart.updateSignalDevice`).
+pub trait VehicleDevices {
+    /// The world as the radio of `part` on `vehicle` sees it (time, RNG,
+    /// the radio's channels and media, sounds, events). The part-specific
+    /// answers (parent kind, power, position) are filled in by the
+    /// vehicle code. `None` skips the simulation.
+    fn device_env(
+        &self,
+        _vehicle: &crate::BaseVehicle,
+        _part: &crate::PartRef,
+    ) -> Option<Box<dyn pz_inventory::device_sim::DeviceEnv>> {
+        None
+    }
+    /// `IsoPlayer.players[0..numPlayers]` positions (`None` for a missing
+    /// or dead player).
+    fn local_players(&self) -> Vec<Option<(f32, f32)>> {
+        Vec::new()
+    }
+}
+
+struct NoDevices;
+impl VehicleDevices for NoDevices {}
+
 thread_local! {
+    static DEVICES: RefCell<Rc<dyn VehicleDevices>> = RefCell::new(Rc::new(NoDevices));
     static NOW_MS: Cell<i64> = const { Cell::new(0) };
     static TIME: Cell<GameTimeState> = Cell::new(GameTimeState::default());
     static SANDBOX: RefCell<SandboxVehicle> = RefCell::new(SandboxVehicle::default());
@@ -290,6 +315,14 @@ pub fn events() -> Rc<dyn VehicleEvents> {
 
 pub fn set_events(e: Rc<dyn VehicleEvents>) {
     EVENTS.with(|c| *c.borrow_mut() = e);
+}
+
+pub fn devices() -> Rc<dyn VehicleDevices> {
+    DEVICES.with(|w| w.borrow().clone())
+}
+
+pub fn set_devices(d: Rc<dyn VehicleDevices>) {
+    DEVICES.with(|c| *c.borrow_mut() = d);
 }
 
 pub fn items() -> Rc<dyn ItemFactory> {

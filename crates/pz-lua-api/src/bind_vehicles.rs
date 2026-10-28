@@ -63,13 +63,16 @@ fn item_of(v: &Value) -> Option<ItemRef> {
 
 /// Where a `DeviceData` lives.
 #[derive(Clone)]
-enum DeviceOwner {
+pub enum DeviceOwner {
     Part(PartRef),
     Item(ItemRef),
+    /// A world object (`IsoRadio` / `IsoTelevision`), reached through the
+    /// engine's accessor.
+    World(Rc<dyn crate::bind_radio::WorldDevice>),
 }
 
-/// `DeviceData` of a vehicle part (radio) or of a radio item.
-pub struct LuaDeviceData(DeviceOwner);
+/// `DeviceData` of a vehicle part (radio), a radio item or a world object.
+pub struct LuaDeviceData(pub DeviceOwner);
 
 impl LuaObject for LuaDeviceData {
     fn class_name(&self) -> &str {
@@ -81,13 +84,23 @@ impl LuaObject for LuaDeviceData {
 }
 
 impl LuaDeviceData {
-    fn with<R>(&self, f: impl FnOnce(&mut DeviceData) -> R) -> Option<R> {
+    pub fn with<R>(&self, f: impl FnOnce(&mut DeviceData) -> R) -> Option<R> {
         match &self.0 {
             DeviceOwner::Part(p) => p.st_mut().device_data.as_mut().map(f),
             DeviceOwner::Item(i) => match &mut i.borrow_mut().kind {
                 ItemKind::Radio(_, d) => Some(f(d)),
                 _ => None,
             },
+            DeviceOwner::World(w) => {
+                let mut f = Some(f);
+                let mut out = None;
+                w.with_device(&mut |d| {
+                    if let Some(f) = f.take() {
+                        out = Some(f(d));
+                    }
+                });
+                out
+            }
         }
     }
 }
@@ -801,10 +814,7 @@ fn register_items(thread: &mut Thread) {
     macro_rules! dset {
         ($name:literal, |$d:ident, $c:ident| $body:expr) => {
             b.method($name, |$c| {
-                let owner = with_this::<LuaDeviceData, _>($c, |dd| match &dd.0 {
-                    DeviceOwner::Part(p) => DeviceOwner::Part(p.clone()),
-                    DeviceOwner::Item(i) => DeviceOwner::Item(i.clone()),
-                })?;
+                let owner = with_this::<LuaDeviceData, _>($c, |dd| dd.0.clone())?;
                 let a = $c.arg(1);
                 let dd = LuaDeviceData(owner);
                 dd.with(|$d| {

@@ -270,7 +270,7 @@ pub struct IsoTree {
     pub damage: i32,
 }
 
-pub use pz_inventory::device::{DeviceData, DevicePresets, PresetEntry};
+pub use pz_inventory::device::{DeviceData, DevicePresets, DevicePresetsRef, PresetEntry};
 
 /// `IsoWorldInventoryObject`: an item lying on the floor.
 #[derive(Clone, Debug, PartialEq)]
@@ -1166,16 +1166,14 @@ mod tests {
 
     #[test]
     fn presets_and_tables() {
-        let mut p = DevicePresets {
-            max_presets: 2,
-            ..Default::default()
-        };
+        let p = DevicePresetsRef::default();
+        p.set_max_presets(2);
         p.add_preset("a", 1);
         p.add_preset("a", 2);
         p.add_preset("b", 1);
         p.add_preset("c", 3);
         p.add_preset("d", 4);
-        assert_eq!(p.presets.len(), 2);
+        assert_eq!(p.len(), 2);
         let t = ObjectTables::from_text("2,2,3,3,4,4,5,5\n0:0,1:9,2:7\n").unwrap();
         assert_eq!(t.window_lock_chance(1), 9);
         assert_eq!(t.window_lock_chance(9), 7);

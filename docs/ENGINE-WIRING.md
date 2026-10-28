@@ -1670,6 +1670,49 @@ registered):
       window-unlock cheat, the `Hit_Door` render effect on a bare-handed
       barricade hit.
 
+- [ ] Radio devices: implement `pz_inventory::device_sim::DeviceEnv`
+      per device (GameTime minutes stamp / multiplier, `Rand`, the
+      parent kind, `canBePoweredHere` power via `MainsPower`, the
+      `getIsoObject` position and closest listener distance, the room
+      test, the radio item's player and deafness, `DeviceAudio` over a
+      `pz_sound` emitter taken with `IsoWorld.getFreeEmitter` /
+      returned with `returnOwnershipOfEmitter`, with the device's
+      `DeviceVolume` parameter) and wrap it in
+      `pz_radio::WithRadio` so channels and recorded media come from the
+      radio (apply `WithRadio::apply_listens` afterwards). Handle every
+      `DeviceEvent`: chat lines on the device's / player's
+      `ChatElement`, `SayRadio`, `showRadioMessage` /
+      `showStaticRadioSound`, `OnDeviceText` (with the device as the last
+      argument), `WorldSoundManager.addSound(Repeating)` at the device
+      (object, `IsoPlayer.getInstance()` for items, the vehicle),
+      `IsoGenerator.updateGenerator`, `updateEquippedRadioFreq`, the TV
+      lamppost (`AddLight` / `LightChanged` / `RemoveLight`, light
+      recalculation) and overlay sprite (`TvOverlay`), the chat element
+      history range, and in multiplayer the `RadioDeviceDataState`
+      packets (`Transmit`). Per frame: `IsoRadio` / `IsoTelevision`
+      static updaters call `DeviceData::update_wave_signal` (TVs pass
+      `TvUpdate` with the screen sprites found at offsets 16..=64 and
+      whether the sprite changed), radio items `device_sim::
+      update_radio_item` (equipped by a local player), vehicles go
+      through `pz_vehicles::env::set_devices` (`device_env`,
+      `local_players`). `RadioWorld::device` answers with
+      `pz_radio::device_view` and `add_device_text` with
+      `pz_radio::deliver_line`. `IsoWaveSignal.saveState/loadState`
+      are `DeviceData::save_state/load_state`; generator draw is
+      `generator_power_consumption` (#205).
+- [ ] Radio Lua: `bind_radio::install_radio(Some(radio))` when the world
+      radio exists (and `None` on reset), `radio_api_created()` after
+      `ZomboidRadio.init`, `install_text` (Translator `getText` /
+      `getTextMediaEN`), `install_hooks` (a `RadioLuaHooks` with the
+      same device environments, the TV remote test and
+      `isKnownMediaLine`). Fire `OnInitRecordedMedia` inside
+      `bind_radio::with_scoped_media(media, ..)` with the
+      `RecordedMedia` Lua object, and `OnLoadRadioScripts` inside
+      `with_scoped_radio` when the radio is not installed yet. A
+      future `IsoRadio` / `IsoTelevision` binding returns
+      `LuaDeviceData(DeviceOwner::World(..))` from `getDeviceData`
+      (#205).
+
 ## World render pass
 - [x] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
       allocating every loaded chunk exhausts the GPU device.

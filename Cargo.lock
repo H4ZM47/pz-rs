@@ -2094,6 +2094,7 @@ dependencies = [
  "pz-kahlua",
  "pz-network",
  "pz-popman",
+ "pz-radio",
  "pz-render",
  "pz-sandbox",
  "pz-scripts",
