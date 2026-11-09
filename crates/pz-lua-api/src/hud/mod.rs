@@ -18,6 +18,7 @@ pub mod picking;
 pub mod progress_bar;
 pub mod radial_menu;
 pub mod radial_progress_bar;
+pub mod screen_iso;
 pub mod scroll_bar;
 pub mod speed_controls;
 pub mod text_draw;
@@ -232,6 +233,7 @@ fn speed_controls(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
 /// `bind_ui::register`).
 pub fn register(thread: &mut Thread) {
     tooltip::register(thread);
+    screen_iso::register(thread);
     let m = expose_class(thread, UIMANAGER, None);
     m.static_fn("init", |c| {
         init_ui(c.thread);
@@ -1010,6 +1012,37 @@ mod tests {
         assert_eq!(eval(&mut t, "getGameSpeed()").as_num(), Some(1.0));
         run(&mut t, "setGameSpeed(3)");
         assert_eq!(eval(&mut t, "getGameSpeed()").as_num(), Some(3.0));
+    }
+
+    struct ZoomCam;
+    impl host::HudCamera for ZoomCam {
+        fn zoom(&self, _p: usize) -> f32 {
+            2.0
+        }
+        fn camera_offset(&self, _p: usize) -> (f32, f32) {
+            (1000.0, 500.0)
+        }
+        fn fix_jiggly_square(&self, _p: usize) -> (f32, f32) {
+            (0.25, 0.0)
+        }
+    }
+
+    #[test]
+    fn screen_to_iso_and_back() {
+        install_textures(&[]);
+        install(HudHost {
+            camera: Box::new(ZoomCam),
+            ..HudHost::default()
+        });
+        let mut t = thread();
+        // Tile scale 2, zoom 2: pixel (100, 50) is (200, 100) + offsets
+        // (1000, 500) = (1200, 600); x = (1200 + 1200) / 128 = 18.75,
+        // y = (1200 - 1200) / -128 = 0, plus 3 per floor.
+        assert_eq!(eval(&mut t, "screenToIsoX(0, 100, 50, 0)").as_num(), Some(18.75));
+        assert_eq!(eval(&mut t, "screenToIsoY(0, 100, 50, 1)").as_num(), Some(3.0));
+        // isoToScreen adds fixJigglyModelsSquareX: (18.5 + 0.25, 0).
+        assert_eq!(eval(&mut t, "isoToScreenX(0, 18.5, 0, 0)").as_num(), Some(100.0));
+        assert_eq!(eval(&mut t, "isoToScreenY(0, 18.5, 0, 0)").as_num(), Some(50.0));
     }
 
     #[test]
