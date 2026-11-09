@@ -80,6 +80,7 @@ mod control;
 mod key_ring;
 pub(crate) mod known_poison;
 mod reading;
+mod safety;
 pub(crate) mod read_flags;
 #[cfg(test)]
 mod running_tests;
@@ -89,6 +90,8 @@ mod sneaking_tests;
 mod timed_action_phases_tests;
 #[cfg(test)]
 mod timed_actions_tests;
+#[cfg(test)]
+mod safety_tests;
 #[cfg(test)]
 mod definition_texture_tests;
 #[cfg(test)]
@@ -607,6 +610,7 @@ enum Handle {
     Xp,
     PerkInfo,
     WornItems,
+    Safety,
     Traits,
 }
 
@@ -1845,6 +1849,7 @@ fn register_character(
     known_poison::register(&b, sm, chars);
     reading::register(&b);
     read_flags::register(&b);
+    safety::register(thread);
     // getCharacterGender(): FEMALE without a descriptor, else the
     // descriptor's. isFemale(): true when that gender is FEMALE.
     b.method("getCharacterGender", |c| {
@@ -1956,6 +1961,7 @@ fn register_character(
         });
         Ok(c.push(v))
     });
+    b.method("getSafety", safety::get_safety);
     b.method("getMoodles", |c| {
         let chr = chr_of(c)?;
         let v = canonical((Handle::Moodles, Rc::as_ptr(&chr) as usize, 0), || {
