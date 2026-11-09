@@ -479,3 +479,29 @@ fn mod_data_is_one_live_table_that_container_names_and_save_read() {
     let saved = body.saved_mod_data().unwrap().unwrap();
     assert_eq!(saved.entries.len(), 1);
 }
+
+#[test]
+fn door_state_and_square_are_readable_from_lua() {
+    let _restore = Restore::new();
+    let mut t = thread();
+    let door = pz_world::objects::IsoDoor {
+        north: true,
+        locked: true,
+        ..Default::default()
+    };
+    let object = ObjectSlot::new(IsoObject::new(1, ObjectKind::Door(door), None)).ref_handle();
+    t.globals().set_str("door", object_value(&object).unwrap());
+    let v = run(
+        &mut t,
+        "return instanceof(door, 'IsoDoor'), door:IsOpen(), door:getNorth(), door:isLocked(), \
+         door:isLockedByKey(), door:getSquare()",
+    );
+    let b = |i: usize| matches!(v[i], Value::Bool(true));
+    assert_eq!((b(0), b(1), b(2), b(3), b(4)), (true, false, true, true, false));
+    // Not on a square yet.
+    assert!(v[5].is_nil());
+    if let ObjectKind::Door(d) = &mut object.borrow_mut().kind {
+        d.open = true;
+    }
+    assert!(matches!(run(&mut t, "return door:IsOpen()")[0], Value::Bool(true)));
+}

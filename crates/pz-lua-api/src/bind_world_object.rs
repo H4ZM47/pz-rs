@@ -260,6 +260,20 @@ pub(crate) fn register_classes(thread: &mut Thread) {
             .container_count();
         Ok(c.push(Value::from(count as f64)))
     });
+    // getSquare(): the `square` field, null off the map.
+    object.method("getSquare", |c| {
+        let object = receiver_object(c)?;
+        let xyz = object
+            .try_borrow()
+            .map_err(|_| borrowed("IsoObject body"))?
+            .square_slot()
+            .map(|sq| {
+                let sq = sq.borrow();
+                (sq.x, sq.y, sq.z)
+            });
+        Ok(c.push(xyz.map_or(Value::Nil, |(x, y, z)| crate::bind_world::square_value(x, y, z))))
+    });
+    register_door(thread);
     // getModData(): table, made on first use.
     object.method("getModData", |c| {
         let object = receiver_object(c)?;
@@ -364,6 +378,27 @@ fn containers(
             .then(|| Rc::new(crate::bind_item_container::LuaRef(square.clone())) as Rc<dyn Any>);
     });
     Ok((installed.main.clone(), installed.secondary.clone()))
+}
+
+const ISO_DOOR: &str = "zombie.iso.objects.IsoDoor";
+
+/// `IsoDoor`'s state getters: `IsOpen()` (`isOpen()`, the `open` field),
+/// `getNorth()`, `isLocked()`, `isLockedByKey()`.
+fn register_door(thread: &mut Thread) {
+    let door = crate::expose::expose_class(thread, ISO_DOOR, Some(ISO_OBJECT));
+    fn field(c: &pz_kahlua::NativeCall<'_>, f: fn(&pz_world::objects::IsoDoor) -> bool) -> LuaResult<bool> {
+        let object = receiver_object(c)?;
+        let body = object.try_borrow().map_err(|_| borrowed("IsoDoor body"))?;
+        match &body.kind {
+            pz_world::objects::ObjectKind::Door(d) => Ok(f(d)),
+            _ => Err(unsupported("IsoDoor method on another object kind")),
+        }
+    }
+    door.method("IsOpen", |c| Ok(c.push(field(c, |d| d.open)?)));
+    door.method("isOpen", |c| Ok(c.push(field(c, |d| d.open)?)));
+    door.method("getNorth", |c| Ok(c.push(field(c, |d| d.north)?)));
+    door.method("isLocked", |c| Ok(c.push(field(c, |d| d.locked)?)));
+    door.method("isLockedByKey", |c| Ok(c.push(field(c, |d| d.locked_by_key)?)));
 }
 
 fn receiver_object(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<IsoObjectRef> {
