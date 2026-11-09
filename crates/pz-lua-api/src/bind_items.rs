@@ -781,6 +781,11 @@ fn register_inventory_item(thread: &mut Thread) {
             .map_err(|error| error.to_lua_error())?;
         Ok(c.push(Value::Table(table)))
     });
+    b.method("isUnwanted", |c| {
+        let item = this(c)?;
+        let unwanted = crate::item_tooltip::chr::unwanted_by(c.thread, &item, &c.arg(1))?;
+        Ok(c.push(unwanted))
+    });
     b.method("hasModData", |c| {
         let item = this(c)?;
         let value = pz_inventory::moddata::has_mod_data_ref(&item)

@@ -90,6 +90,8 @@ mod timed_action_phases_tests;
 #[cfg(test)]
 mod timed_actions_tests;
 #[cfg(test)]
+mod unwanted_tests;
+#[cfg(test)]
 mod floor_bridge_tests;
 #[cfg(test)]
 mod class_identity_tests;
@@ -721,6 +723,19 @@ fn register_vision(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         Ok(c.push(v.map_or(Value::Nil, |v| pz_vehicles::lua::vehicle_value(&v))))
     });
     let p = expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS));
+    // isUnwanted(id): getModData().rawget("itemUnwanted:" + id) is
+    // Boolean.TRUE. A null id is a null key, so false.
+    p.method("isUnwanted", |c| {
+        let Some(id) = crate::expose::str_arg(c, 1) else {
+            return Ok(c.push(false));
+        };
+        let table = chr_of(c)?.borrow_mut().get_mod_data();
+        match table.rawget(&Value::str(&format!("itemUnwanted:{id}"))) {
+            Value::Nil => Ok(c.push(false)),
+            Value::Bool(b) => Ok(c.push(b)),
+            other => Err(crate::bind_java_util::class_cast(&other, "java.lang.Boolean")),
+        }
+    });
     p.method("IsRunning", running_query);
     // getIndex() and getPlayerNum() (which calls it): `playerIndex`.
     p.method("getIndex", |c| {

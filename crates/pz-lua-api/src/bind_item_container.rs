@@ -3073,6 +3073,17 @@ fn register_fields(b: &crate::expose::ClassBuilder) {
         let v = this(c)?.borrow().items.is_empty();
         Ok(c.push(v))
     });
+    // isEmptyOrUnwanted(player): true when there are no items or every
+    // item is unwanted by the player.
+    b.method("isEmptyOrUnwanted", |c| {
+        let player = c.arg(1);
+        for item in items(&this(c)?) {
+            if !crate::item_tooltip::chr::unwanted_by(c.thread, &item, &player)? {
+                return Ok(c.push(false));
+            }
+        }
+        Ok(c.push(true))
+    });
     b.method("isFreezer", |c| {
         let v = this(c)?.borrow().is_freezer();
         Ok(c.push(v))
