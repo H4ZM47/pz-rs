@@ -246,7 +246,19 @@ pub(crate) fn item_argument(value: &Value) -> LuaResult<pz_inventory::shared::It
 }
 
 pub(crate) fn register_classes(thread: &mut Thread) {
-    crate::expose::expose_class(thread, ISO_OBJECT, Some(GAME_ENTITY));
+    let object = crate::expose::expose_class(thread, ISO_OBJECT, Some(GAME_ENTITY));
+    // getContainerCount(): 1 for the main container if there is one, plus
+    // the number of secondary containers.
+    object.method("getContainerCount", |c| {
+        let object = crate::expose::this::<LuaWorldObject>(c)?;
+        let object = object.as_any().downcast_ref::<LuaWorldObject>().unwrap();
+        let count = object
+            .object
+            .try_borrow()
+            .map_err(|_| borrowed("IsoObject body"))?
+            .container_count();
+        Ok(c.push(Value::from(count as f64)))
+    });
     crate::expose::expose_class(thread, WORLD_INVENTORY_OBJECT, Some(ISO_OBJECT));
 }
 

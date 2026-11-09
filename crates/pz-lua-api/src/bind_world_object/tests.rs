@@ -360,3 +360,30 @@ fn ten_thousand_live_world_allocations_and_cache_hits_use_amortized_weak_pruning
     assert_eq!(CLASS_PRUNES.with(|count| count.get()), classes_after);
     assert_eq!(USERDATA_PRUNES.with(|count| count.get()), userdata_after);
 }
+
+#[test]
+fn container_count_counts_the_main_and_secondary_containers() {
+    let _restore = Restore::new();
+    let mut t = thread();
+    let plain = ObjectSlot::new(IsoObject::new(1, ObjectKind::Object, None)).ref_handle();
+    let mut fridge = IsoObject::new(2, ObjectKind::Object, None);
+    fridge.container = Some(pz_inventory::ItemContainer::new(Some("fridge")));
+    fridge
+        .secondary_containers
+        .push(pz_inventory::ItemContainer::new(Some("freezer")));
+    let fridge = ObjectSlot::new(fridge).ref_handle();
+    let mut only_secondary = IsoObject::new(3, ObjectKind::Object, None);
+    only_secondary
+        .secondary_containers
+        .push(pz_inventory::ItemContainer::new(Some("freezer")));
+    let only_secondary = ObjectSlot::new(only_secondary).ref_handle();
+    for (name, object) in [("plain", &plain), ("fridge", &fridge), ("secondary", &only_secondary)] {
+        t.globals().set_str(name, object_value(object).unwrap());
+    }
+    let values = run(
+        &mut t,
+        "return plain:getContainerCount(), fridge:getContainerCount(), secondary:getContainerCount()",
+    );
+    let counts: Vec<f64> = values.iter().map(|v| v.as_num().unwrap()).collect();
+    assert_eq!(counts, [0.0, 2.0, 1.0]);
+}
