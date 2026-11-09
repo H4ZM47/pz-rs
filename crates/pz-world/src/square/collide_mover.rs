@@ -372,7 +372,7 @@ impl<'a> CollideEnv<'a> {
                         || t.block_all_the_square
                         || t.can_pass_through
                             && o.sprite.is_some()
-                            && o.container.is_some()
+                            && o.has_main_container()
                             && self.has_prop(&o, "IsHigh");
                     if !skip && north == t.north && !t.is_corner {
                         return Some(o.id);

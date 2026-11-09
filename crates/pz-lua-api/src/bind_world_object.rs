@@ -10,6 +10,7 @@ use std::rc::{Rc, Weak};
 
 use pz_entity::runtime_load::RuntimeHostError;
 use pz_entity::{ComponentRef, EntityOwner, RuntimeError};
+use pz_inventory::shared::ContainerRef;
 use pz_kahlua::{LuaError, LuaObject, LuaResult, Thread, Value};
 use pz_world::{IsoObject, IsoObjectRef};
 
@@ -259,7 +260,137 @@ pub(crate) fn register_classes(thread: &mut Thread) {
             .container_count();
         Ok(c.push(Value::from(count as f64)))
     });
+    // getModData(): table, made on first use.
+    object.method("getModData", |c| {
+        let object = receiver_object(c)?;
+        let table = object
+            .try_borrow_mut()
+            .map_err(|_| borrowed("IsoObject body"))?
+            .install_runtime_mod_data()
+            .map_err(|e| LuaError::runtime(e.0))?;
+        Ok(c.push(Value::Table(table)))
+    });
+    // hasModData(): true when the object has a non-empty mod data table.
+    object.method("hasModData", |c| {
+        let object = receiver_object(c)?;
+        let has = object
+            .try_borrow()
+            .map_err(|_| borrowed("IsoObject body"))?
+            .has_mod_data()
+            .map_err(|e| LuaError::runtime(e.0))?;
+        Ok(c.push(Value::Bool(has)))
+    });
+    object.method("getContainer", |c| {
+        let (main, _) = containers(c)?;
+        Ok(c.push(opt_container(main.as_ref())))
+    });
+    object.method("getItemContainer", |c| {
+        let (main, _) = containers(c)?;
+        Ok(c.push(opt_container(main.as_ref())))
+    });
+    // getContainerByIndex(i): container at 0, then secondaryContainers;
+    // null out of range.
+    object.method("getContainerByIndex", |c| {
+        let index = crate::expose::int_arg(c, 1);
+        let (main, secondary) = containers(c)?;
+        let all: Vec<_> = main.iter().chain(secondary.iter()).collect();
+        let found = usize::try_from(index).ok().and_then(|i| all.get(i).copied());
+        Ok(c.push(opt_container(found)))
+    });
+    // getContainerByType(type): the first getContainerByIndex(i) whose
+    // getType().equals(type).
+    object.method("getContainerByType", |c| {
+        let kind = crate::expose::str_arg(c, 1);
+        let found = by_type(c, &[kind])?;
+        Ok(c.push(opt_container(found.as_ref())))
+    });
+    object.method("getContainerByEitherType", |c| {
+        let kinds = [crate::expose::str_arg(c, 1), crate::expose::str_arg(c, 2)];
+        let found = by_type(c, &kinds)?;
+        Ok(c.push(opt_container(found.as_ref())))
+    });
+    // getContainerIndex(c): 0 for the main container (also when both are
+    // absent). For a secondary container, its index, plus 1 when a main
+    // container exists. -1 when the object does not have it.
+    object.method("getContainerIndex", |c| {
+        let arg = c.arg(1);
+        let wanted = if arg.is_nil() {
+            None
+        } else {
+            Some(crate::bind_item_container::container_arg(c, 1)?)
+        };
+        let (main, secondary) = containers(c)?;
+        let same = |a: Option<&ContainerRef>, b: Option<&ContainerRef>| match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        };
+        let index = if same(wanted.as_ref(), main.as_ref()) {
+            0
+        } else {
+            secondary
+                .iter()
+                .position(|s| same(wanted.as_ref(), Some(s)))
+                .map_or(-1, |i| i as i32 + main.is_some() as i32)
+        };
+        Ok(c.push(Value::from(f64::from(index))))
+    });
     crate::expose::expose_class(thread, WORLD_INVENTORY_OBJECT, Some(ISO_OBJECT));
+}
+
+/// The receiver's live containers (`container`, `secondaryContainers`).
+/// On first use they are made from the loaded values. The object is their
+/// parent and its square is their source grid, as the `ItemContainer`
+/// constructor for a map object sets them.
+fn containers(
+    c: &mut pz_kahlua::NativeCall<'_>,
+) -> LuaResult<(Option<ContainerRef>, Vec<ContainerRef>)> {
+    let this = c.arg(0);
+    let object = receiver_object(c)?;
+    let square = {
+        let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
+        match body.square_slot() {
+            Some(square) => {
+                let square = square.try_borrow().map_err(|_| borrowed("IsoGridSquare"))?;
+                crate::bind_world::square_value(square.x, square.y, square.z)
+            }
+            None => Value::Nil,
+        }
+    };
+    let mut body = object.try_borrow_mut().map_err(|_| borrowed("IsoObject body"))?;
+    let installed = body.install_runtime_containers(|container| {
+        crate::bind_item_container::set_parent(container, this.clone());
+        container.borrow_mut().source_grid = (!square.is_nil())
+            .then(|| Rc::new(crate::bind_item_container::LuaRef(square.clone())) as Rc<dyn Any>);
+    });
+    Ok((installed.main.clone(), installed.secondary.clone()))
+}
+
+fn receiver_object(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<IsoObjectRef> {
+    let receiver = crate::expose::this::<LuaWorldObject>(c)?;
+    Ok(receiver
+        .as_any()
+        .downcast_ref::<LuaWorldObject>()
+        .unwrap()
+        .object
+        .clone())
+}
+
+fn opt_container(container: Option<&ContainerRef>) -> Value {
+    container.map_or(Value::Nil, crate::bind_item_container::container_value)
+}
+
+/// The first container whose type equals one of `kinds` (`String.equals`:
+/// a null argument matches nothing).
+fn by_type(
+    c: &mut pz_kahlua::NativeCall<'_>,
+    kinds: &[Option<Rc<str>>],
+) -> LuaResult<Option<ContainerRef>> {
+    let (main, secondary) = containers(c)?;
+    Ok(main.into_iter().chain(secondary).find(|container| {
+        let container = container.borrow();
+        kinds.iter().flatten().any(|kind| **kind == *container.kind)
+    }))
 }
 
 pub(crate) fn object_value(object: &IsoObjectRef) -> LuaResult<Value> {

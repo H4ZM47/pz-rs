@@ -387,3 +387,95 @@ fn container_count_counts_the_main_and_secondary_containers() {
     let counts: Vec<f64> = values.iter().map(|v| v.as_num().unwrap()).collect();
     assert_eq!(counts, [0.0, 2.0, 1.0]);
 }
+
+#[test]
+fn container_getters_share_one_live_container_with_the_object() {
+    let _restore = Restore::new();
+    let mut t = thread();
+    crate::bind_item_container::register(&mut t);
+    let mut fridge = IsoObject::new(2, ObjectKind::Object, None);
+    let mut main = pz_inventory::ItemContainer::new(Some("fridge"));
+    main.items.push(pz_inventory::SavedItem::Item(Box::new(InventoryItem::create(
+        Rc::new(ItemTemplate::new(ItemClass::Normal, "Base", "Milk")),
+        1,
+    ))));
+    fridge.container = Some(main);
+    fridge
+        .secondary_containers
+        .push(pz_inventory::ItemContainer::new(Some("freezer")));
+    let fridge = ObjectSlot::new(fridge).ref_handle();
+    let mut only_secondary = IsoObject::new(3, ObjectKind::Object, None);
+    only_secondary
+        .secondary_containers
+        .push(pz_inventory::ItemContainer::new(Some("freezer")));
+    let only_secondary = ObjectSlot::new(only_secondary).ref_handle();
+    t.globals().set_str("fridge", object_value(&fridge).unwrap());
+    t.globals().set_str("secondary", object_value(&only_secondary).unwrap());
+    let values = run(
+        &mut t,
+        r#"
+        local a, b = fridge:getContainerByIndex(0), fridge:getContainerByIndex(1)
+        a:setExplored(true)
+        return a:getType(), b:getType(),
+            fridge:getContainerByIndex(2) == nil and fridge:getContainerByIndex(-1) == nil,
+            fridge:getContainer() == a and fridge:getItemContainer() == a
+                and fridge:getContainerByIndex(0) == a,
+            fridge:getContainerByType("freezer") == b and fridge:getContainerByType("crate") == nil,
+            fridge:getContainerByEitherType("crate", "freezer") == b,
+            fridge:getContainerIndex(a), fridge:getContainerIndex(b), fridge:getContainerIndex(nil),
+            a:getParent() == fridge, a:getItems():size(), fridge:getContainerCount(),
+            secondary:getContainer() == nil, secondary:getContainerByIndex(0):getType(),
+            secondary:getContainerIndex(nil)
+        "#,
+    );
+    assert_eq!(values[0].as_str(), Some("fridge"));
+    assert_eq!(values[1].as_str(), Some("freezer"));
+    for i in [2, 3, 4, 5, 9, 12] {
+        assert!(matches!(values[i], Value::Bool(true)), "value {i}");
+    }
+    let nums: Vec<f64> = [6, 7, 8, 10, 11, 14].iter().map(|&i| values[i].as_num().unwrap()).collect();
+    assert_eq!(nums, [0.0, 1.0, -1.0, 1.0, 2.0, 0.0]);
+    assert_eq!(values[13].as_str(), Some("freezer"));
+    // The shared containers are the object's state: the save snapshot sees
+    // the Lua change, and the codec fields are empty.
+    let body = fridge.borrow();
+    assert!(body.container.is_none() && body.secondary_containers.is_empty());
+    assert_eq!(body.container_count(), 2);
+    assert_eq!(
+        body.container_types(),
+        [Some("fridge".to_owned()), Some("freezer".to_owned())]
+    );
+    let saved = body.saved_containers().unwrap();
+    assert!(saved[0].explored);
+    assert_eq!(saved[0].items.len(), 1);
+}
+
+#[test]
+fn mod_data_is_one_live_table_that_container_names_and_save_read() {
+    let _restore = Restore::new();
+    let mut t = thread();
+    crate::bind_item_container::register(&mut t);
+    let mut crate_ = IsoObject::new(4, ObjectKind::Object, None);
+    crate_.container = Some(pz_inventory::ItemContainer::new(Some("crate")));
+    let crate_ = ObjectSlot::new(crate_).ref_handle();
+    t.globals().set_str("crate", object_value(&crate_).unwrap());
+    let values = run(
+        &mut t,
+        r#"
+        local before = crate:hasModData()
+        local c = crate:getContainerByIndex(0)
+        local unnamed = c:getCustomName()
+        crate:getModData().crate_customContainerName = "Mine"
+        return before, unnamed, c:getCustomName(), crate:hasModData(),
+            crate:getModData() == crate:getModData()
+        "#,
+    );
+    assert!(matches!(values[0], Value::Bool(false)));
+    assert!(values[1].is_nil());
+    assert_eq!(values[2].as_str(), Some("Mine"));
+    assert!(matches!(values[3], Value::Bool(true)));
+    assert!(matches!(values[4], Value::Bool(true)));
+    let body = crate_.borrow();
+    let saved = body.saved_mod_data().unwrap().unwrap();
+    assert_eq!(saved.entries.len(), 1);
+}

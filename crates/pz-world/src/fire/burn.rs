@@ -977,13 +977,20 @@ fn burn_object(
             set_sprite(w, "floors_burnt_01_0");
         } else if matches!(obj.kind, ObjectKind::Radio(_) | ObjectKind::Television(_)) {
             return Ok(Outcome::RemoveTile(true));
-        } else if let Some(c) = &obj.container {
-            for it in &c.items {
-                let Some(it) = it.as_item() else { continue };
-                let fuel = (matches!(it.kind, pz_inventory::item::ItemKind::Food(_))
-                    && it.is_alcoholic())
+        } else if obj.has_main_container() {
+            let is_fuel = |it: &pz_inventory::InventoryItem| {
+                (matches!(it.kind, pz_inventory::item::ItemKind::Food(_)) && it.is_alcoholic())
                     || it.get_type() == "PetrolCan"
-                    || it.get_type() == "Bleach";
+                    || it.get_type() == "Bleach"
+            };
+            let fuels: Vec<bool> = match (&obj.runtime_containers, &obj.container) {
+                (Some(r), _) => r.main.iter().flat_map(|c| {
+                    c.borrow().items.iter().map(|it| is_fuel(&it.borrow())).collect::<Vec<_>>()
+                }).collect(),
+                (None, Some(c)) => c.items.iter().filter_map(|it| it.as_item()).map(is_fuel).collect(),
+                (None, None) => Vec::new(),
+            };
+            for fuel in fuels {
                 if !fuel {
                     continue;
                 }
@@ -1011,10 +1018,9 @@ fn burn_object(
             }
             let retired = {
                 let mut o = receiver.borrow_mut();
-                let primary = o.container.take();
-                let secondary = std::mem::take(&mut o.secondary_containers);
+                let containers = o.take_all_containers();
                 o.overlay_sprite = None;
-                (primary, secondary)
+                containers
             };
             drop(retired);
             replace_it = true;

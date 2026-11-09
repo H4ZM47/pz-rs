@@ -120,7 +120,7 @@ pub fn render_square(
         ro.id = o.id;
         ro.render_y_offset = o.render_y_offset;
         ro.tint = [o.tint_r, o.tint_g, o.tint_b];
-        ro.container_count = u32::from(o.container.is_some()) + o.secondary_containers.len() as u32;
+        ro.container_count = o.container_count() as u32;
         if !hidden_item {
             for attached in o.attached_anim_sprite.iter().flatten() {
                 w.sprites.sprites.get(attached.sprite).ok_or(
