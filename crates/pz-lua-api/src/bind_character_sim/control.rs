@@ -295,6 +295,27 @@ pub(super) fn register_player(b: &ClassBuilder) {
         chr_of(c)?.borrow_mut().vars.banned_attacking = v;
         Ok(0)
     });
+    // `isRandXp(interval, chance, perk)`: false until the perk's next check
+    // time has passed. Then the next check moves `interval` ms ahead, and
+    // the result is true when `ZombRand` over `1 / chance` values gives 0.
+    b.method("isRandXp", |c| {
+        let interval = int_arg(c, 1) as i64;
+        let chance = float_arg(c, 2);
+        let perk = crate::bind_skills::perk_arg(c, 3)?
+            .ok_or_else(|| LuaError::runtime("isRandXp: perk is null"))?;
+        let id = perk.borrow().id().to_string();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as i64);
+        let chr = chr_of(c)?;
+        let times = &mut chr.borrow_mut().player.next_rand_xp_check_times;
+        if now <= times.get(&id).copied().unwrap_or(0) {
+            return Ok(c.push(false));
+        }
+        times.insert(id, now + interval);
+        let v = crate::bind_misc::zomb_rand((1.0 / chance) as f64) == 0.0;
+        Ok(c.push(v))
+    });
 }
 
 #[cfg(test)]

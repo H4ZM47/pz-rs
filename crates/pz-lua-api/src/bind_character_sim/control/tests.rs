@@ -111,3 +111,15 @@ fn is_grappling_reads_the_grapple_state() {
     player.borrow().set_grappling_target(Some(&zombie.borrow()), Some("test"));
     run(&mut thread, "assert(player:isGrappling() == true)").unwrap();
 }
+
+/// `xpUpdate.onPlayerMove` rolls `player:isRandXp(1000, 0.05, perk)` on
+/// every step; a perk rolls at most once per interval.
+#[test]
+fn is_rand_xp_rolls_once_per_interval_per_perk() {
+    let (mut thread, _, _) = setup();
+    run(&mut thread, r#"
+        assert(player:isRandXp(100000, 1.0, Perks.Fitness) == true)
+        assert(player:isRandXp(100000, 1.0, Perks.Fitness) == false)
+        assert(player:isRandXp(100000, 1.0, Perks.Sprinting) == true)
+    "#).unwrap();
+}

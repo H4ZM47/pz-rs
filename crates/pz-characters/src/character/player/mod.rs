@@ -156,11 +156,15 @@ pub struct PlayerControl {
     pub lured_animals: Vec<i32>,
     /// `getAttachedAnimals()` (character ids of the animals on a leash).
     pub attached_animals: Vec<i32>,
+    /// `nextRandXpCheckTimes`: perk id to the wall-clock millisecond of its
+    /// next `isRandXp` roll.
+    pub next_rand_xp_check_times: std::collections::HashMap<String, i64>,
 }
 
 impl Default for PlayerControl {
     fn default() -> Self {
         PlayerControl {
+            next_rand_xp_check_times: std::collections::HashMap::new(),
             see_designation_zone: false,
             player_index: 0,
             input: CharacterInput::default(),
