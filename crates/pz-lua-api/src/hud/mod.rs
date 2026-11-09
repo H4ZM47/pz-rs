@@ -259,6 +259,14 @@ pub fn register(thread: &mut Thread) {
             .unwrap_or(0);
         Ok(c.push(Value::Num(speed as f64)))
     });
+    // `isGamePaused()`: `GameTime.isGamePaused()`; outside multiplayer,
+    // speed controls that are at speed 0.
+    crate::expose::global(thread, "isGamePaused", |c| {
+        let paused = with_ui(|m| m.speed_controls.clone())
+            .and_then(|e| e.ext::<SpeedControls>().map(|sc| sc.get_current_game_speed() == 0))
+            .unwrap_or(false);
+        Ok(c.push(Value::Bool(paused)))
+    });
     m.static_fn("setSpeedControls", |c| {
         let e = element_of(&c.arg(0));
         with_ui(|m| m.speed_controls = e);
@@ -1002,6 +1010,20 @@ mod tests {
         assert_eq!(eval(&mut t, "getGameSpeed()").as_num(), Some(1.0));
         run(&mut t, "setGameSpeed(3)");
         assert_eq!(eval(&mut t, "getGameSpeed()").as_num(), Some(3.0));
+    }
+
+    #[test]
+    fn is_game_paused_is_speed_zero() {
+        install_textures(&[]);
+        install(HudHost::default());
+        let mut t = thread();
+        // No speed controls: not paused.
+        with_ui(|m| m.speed_controls = None);
+        assert!(matches!(eval(&mut t, "isGamePaused()"), Value::Bool(false)));
+        init_ui(&mut t);
+        assert!(matches!(eval(&mut t, "isGamePaused()"), Value::Bool(false)));
+        run(&mut t, "setGameSpeed(0)");
+        assert!(matches!(eval(&mut t, "isGamePaused()"), Value::Bool(true)));
     }
 
     #[test]
