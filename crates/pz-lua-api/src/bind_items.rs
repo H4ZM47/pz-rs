@@ -1142,6 +1142,22 @@ fn register_inventory_item(thread: &mut Thread) {
         i.job_type = str_arg(c, 1).map(|s| s.to_string());
         Ok(Value::Nil)
     });
+    // `isFavouriteRecipeInput(player)`: false without a script item, else
+    // whether `player.isFavouriteRecipe(name)` for a name of
+    // `scriptItem.getUsedInRecipes(player)`. That list is empty until the
+    // craft recipes are linked to their inputs (not ported); a non-empty
+    // one needs `isRecipeActuallyKnown`, which is not ported either.
+    b.method("isFavouriteRecipeInput", |c| {
+        let r = this(c)?;
+        let script = crate::item_tooltip::script(&r.borrow());
+        let used = script.is_some_and(|s| s.borrow().is_used_in_recipes());
+        if !used {
+            return Ok(c.push(false));
+        }
+        Err(LuaError::runtime(
+            "TODO(IsoGameCharacter): isFavouriteRecipeInput needs getUsedInRecipes(character)",
+        ))
+    });
     with!(b, "setFavorite", |i, c| {
         i.favorite = bool_arg(c, 1);
         Ok(Value::Nil)
@@ -1895,6 +1911,17 @@ mod tests {
         // setItemHeat clamps to [0, 3].
         run(&mut thread, "item:setItemHeat(9)");
         assert_eq!(item.borrow().item_heat, 3.0);
+    }
+
+    #[test]
+    fn favourite_recipe_input_is_false_without_recipes() {
+        let mut thread = item_thread();
+        let item = make(ItemClass::Normal, "Apple", |_| {});
+        thread.globals().set_str("item", item_value(&item));
+        // No script item, or a script used in no recipe: false whatever
+        // the player is.
+        let r = run(&mut thread, "return item:isFavouriteRecipeInput(nil), item:isFavouriteRecipeInput({})");
+        assert!(matches!((&r[0], &r[1]), (Value::Bool(false), Value::Bool(false))));
     }
 
     /// A Lua thread with the item bindings (and `Radio.getDeviceData`).
