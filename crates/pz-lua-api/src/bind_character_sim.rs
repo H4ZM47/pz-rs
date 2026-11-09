@@ -90,6 +90,8 @@ mod timed_action_phases_tests;
 #[cfg(test)]
 mod timed_actions_tests;
 #[cfg(test)]
+mod gender_tests;
+#[cfg(test)]
 mod unwanted_tests;
 #[cfg(test)]
 mod floor_bridge_tests;
@@ -1156,6 +1158,14 @@ lua_object!(XpObject, XP_CLASS);
 lua_object!(PerkInfoObject, PERK_INFO_CLASS);
 lua_object!(XpMultiplierObject, XP_MULTIPLIER_CLASS);
 
+/// `IsoGameCharacter.getCharacterGender()`.
+fn character_gender(chr: &LuaGameCharacterRef) -> pz_characters::CharacterGender {
+    match &chr.borrow().descriptor {
+        None => pz_characters::CharacterGender::Female,
+        Some(d) => d.borrow().character_gender,
+    }
+}
+
 pub(crate) fn chr_of(c: &NativeCall<'_>) -> LuaResult<LuaGameCharacterRef> {
     with_this::<CharacterObject, _>(c, |o| o.0.clone())
 }
@@ -1830,6 +1840,16 @@ fn register_character(
     known_poison::register(&b, sm, chars);
     reading::register(&b);
     read_flags::register(&b);
+    // getCharacterGender(): FEMALE without a descriptor, else the
+    // descriptor's. isFemale(): true when that gender is FEMALE.
+    b.method("getCharacterGender", |c| {
+        let gender = character_gender(&chr_of(c)?);
+        Ok(c.push(crate::bind_characters::gender_value(gender)))
+    });
+    b.method("isFemale", |c| {
+        let gender = character_gender(&chr_of(c)?);
+        Ok(c.push(gender == pz_characters::CharacterGender::Female))
+    });
     b.method("createKeyRing", key_ring::create_key_ring);
     b.method("getModData", |c| {
         let table = chr_of(c)?.borrow_mut().get_mod_data();

@@ -502,7 +502,7 @@ thread_local! {
     ];
 }
 
-fn gender_value(g: CharacterGender) -> Value {
+pub(crate) fn gender_value(g: CharacterGender) -> Value {
     GENDERS.with(|v| v[g as usize].clone())
 }
 
