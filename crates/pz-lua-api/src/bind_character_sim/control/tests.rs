@@ -94,3 +94,10 @@ fn player_flags_and_input_component() {
     assert!(p.player.input.ignore_inputs_for_direction && !p.player.input.allow_run);
     assert!(zombie.borrow().player.input.allow_run);
 }
+
+/// `Fishing.Handler.onEquipPrimary` asks `player:isLocal()` on every equip.
+#[test]
+fn every_character_is_local_in_single_player() {
+    let (mut thread, _, _) = setup();
+    run(&mut thread, "assert(player:isLocal() == true) assert(zombie:isLocal() == true)").unwrap();
+}

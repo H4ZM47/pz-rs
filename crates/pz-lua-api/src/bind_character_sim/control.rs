@@ -104,6 +104,10 @@ pub(super) fn register_globals(thread: &mut Thread) {
 
 /// The methods on `IsoGameCharacter` (and so every character class).
 pub(super) fn register(b: &ClassBuilder) {
+    // `isLocal()`: the `NetworkComponent`'s `isLocal`, default true. It is
+    // false only for a remote character on a client or a server.
+    // TODO(port): multiplayer.
+    b.method("isLocal", |c| Ok(c.push(true)));
     b.method("isAlive", |c| {
         let v = !chr_of(c)?.borrow().is_dead();
         Ok(c.push(v))
