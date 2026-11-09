@@ -101,3 +101,13 @@ fn every_character_is_local_in_single_player() {
     let (mut thread, _, _) = setup();
     run(&mut thread, "assert(player:isLocal() == true) assert(zombie:isLocal() == true)").unwrap();
 }
+
+/// `ISGrabCorpseAction.OnContextKey` asks `playerObj:isGrappling()` on
+/// every press of the interact key.
+#[test]
+fn is_grappling_reads_the_grapple_state() {
+    let (mut thread, player, zombie) = setup();
+    run(&mut thread, "assert(player:isGrappling() == false)").unwrap();
+    player.borrow().set_grappling_target(Some(&zombie.borrow()), Some("test"));
+    run(&mut thread, "assert(player:isGrappling() == true)").unwrap();
+}

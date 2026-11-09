@@ -108,6 +108,12 @@ pub(super) fn register(b: &ClassBuilder) {
     // false only for a remote character on a client or a server.
     // TODO(port): multiplayer.
     b.method("isLocal", |c| Ok(c.push(true)));
+    // `isGrappling()`: `IGrappleableWrapper` asks the wrapped
+    // `BaseGrappleable` for its `isGrappling` field.
+    b.method("isGrappling", |c| {
+        let v = chr_of(c)?.borrow().is_grappling();
+        Ok(c.push(v))
+    });
     b.method("isAlive", |c| {
         let v = !chr_of(c)?.borrow().is_dead();
         Ok(c.push(v))
