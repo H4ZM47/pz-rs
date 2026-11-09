@@ -412,10 +412,6 @@ impl UIElement {
         sprite(|s| s.render4(tx(tex), pts, rgba(r, g, b, a)));
     }
 
-    /// Legacy binding entry until `DrawItemIcon` supplies the resolved
-    /// item inputs to [`Self::draw_inventory_item_icon`].
-    pub fn draw_item_icon(&self) {}
-
     /// `DrawItemIcon(item, x, y, alpha, width, height)` after resolving the
     /// native item's textures, tint and fluid reads. Texture descriptors
     /// must reflect the current shared handles, including offset changes.

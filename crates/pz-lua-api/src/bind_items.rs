@@ -1662,6 +1662,8 @@ fn register_drainable(thread: &mut Thread) {
         .map(Value::from)
         .unwrap_or_default());
     get!(b, "getWeightEmpty", |i| f(i.template.weight_empty));
+    // `DrainableComboItem.heat`, set to 1 by its constructors.
+    get!(b, "getHeat", |i| i.drainable_heat.map(f).unwrap_or_default());
     get!(b, "getOnEat", |i| opt_str(i.get_on_eat()));
     get!(b, "isEmptyUses", |i| Value::from(
         i.get_current_uses_float() <= 0.0
@@ -1845,6 +1847,10 @@ pub fn register(thread: &mut Thread) {
 #[cfg(test)]
 #[path = "bind_items/moddata_tests.rs"]
 mod moddata_tests;
+
+#[cfg(test)]
+#[path = "bind_items/pane_row_tests.rs"]
+mod pane_row_tests;
 
 #[cfg(test)]
 mod tests {
