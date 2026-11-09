@@ -90,6 +90,8 @@ mod timed_action_phases_tests;
 #[cfg(test)]
 mod timed_actions_tests;
 #[cfg(test)]
+mod definition_texture_tests;
+#[cfg(test)]
 mod traits_tests;
 #[cfg(test)]
 mod gender_tests;

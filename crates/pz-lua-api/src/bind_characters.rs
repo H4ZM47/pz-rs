@@ -562,6 +562,18 @@ fn tdef(c: &NativeCall<'_>) -> LuaResult<CharacterTraitDefinitionRef> {
 
 fn register_trait_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let b = expose_class(thread, TRAIT_DEFINITION_CLASS, None);
+    // getTexture(): the constructor's Texture.getSharedTexture(textureName),
+    // else media/ui/Traits/trait_generic.png. Resolved on each call; the
+    // texture cache gives the same object.
+    b.method("getTexture", |c| {
+        let name = tdef(c)?.borrow().texture_name.clone();
+        let texture = match pz_render::get_shared_texture_ref(&name).map_err(crate::bind_render::texture_error)? {
+            Some(texture) => Some(texture),
+            None => pz_render::get_shared_texture_ref("media/ui/Traits/trait_generic.png")
+                .map_err(crate::bind_render::texture_error)?,
+        };
+        Ok(c.push(crate::bind_render::texture_value_ref(texture.as_ref())))
+    });
     let s = sm.clone();
     b.static_fn("getTraits", move |c| {
         let list = defs::character_trait_definitions(&s).iter().map(|d| trait_def_value(Some(d))).collect();
@@ -738,6 +750,16 @@ fn pdef(c: &NativeCall<'_>) -> LuaResult<CharacterProfessionDefinitionRef> {
 
 fn register_profession_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let b = expose_class(thread, PROFESSION_DEFINITION_CLASS, None);
+    // getTexture(): the constructor's Texture.trygetTexture(iconPathName)
+    // for a non-empty path, else null. Resolved on each call.
+    b.method("getTexture", |c| {
+        let path = pdef(c)?.borrow().icon_path_name.clone().filter(|p| !p.is_empty());
+        let texture = match path {
+            Some(path) => pz_render::try_get_texture_ref(&path).map_err(crate::bind_render::texture_error)?,
+            None => None,
+        };
+        Ok(c.push(crate::bind_render::texture_value_ref(texture.as_ref())))
+    });
     let s = sm.clone();
     b.static_fn("getProfessions", move |c| {
         let list = defs::character_profession_definitions(&s).iter().map(|d| profession_def_value(Some(d))).collect();
