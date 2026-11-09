@@ -291,7 +291,12 @@ fn profession_def_arg(
 }
 
 /// A `CharacterTraits`.
-pub struct CharacterTraitsObject(pub RefCell<CharacterTraits>);
+pub enum CharacterTraitsObject {
+    /// A standalone set from the `CharacterTraits` constructor.
+    Owned(RefCell<CharacterTraits>),
+    /// `IsoGameCharacter.getCharacterTraits()`: the character's own field.
+    Of(crate::bind_character_sim::LuaGameCharacterRef),
+}
 
 impl LuaObject for CharacterTraitsObject {
     fn class_name(&self) -> &str {
@@ -849,7 +854,17 @@ fn register_profession_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
 }
 
 fn traits_with<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut CharacterTraits) -> R) -> LuaResult<R> {
-    with_this::<CharacterTraitsObject, _>(c, |o| f(&mut o.0.borrow_mut()))
+    let o = crate::expose::this::<CharacterTraitsObject>(c)?;
+    match o.as_any().downcast_ref::<CharacterTraitsObject>().unwrap() {
+        CharacterTraitsObject::Owned(t) => {
+            let mut t = t.try_borrow_mut().map_err(|_| LuaError::runtime("CharacterTraits is in use"))?;
+            Ok(f(&mut t))
+        }
+        CharacterTraitsObject::Of(chr) => {
+            let mut chr = chr.try_borrow_mut().map_err(|_| LuaError::runtime("IsoGameCharacter is in use"))?;
+            Ok(f(&mut chr.character_traits))
+        }
+    }
 }
 
 fn register_character_traits(thread: &mut Thread, sm: &Rc<ScriptManager>) {
@@ -858,7 +873,7 @@ fn register_character_traits(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     b.ctor(move |c| {
         let t = CharacterTraits::new(&s);
         Ok(
-            c.push(Value::Object(Rc::new(CharacterTraitsObject(RefCell::new(
+            c.push(Value::Object(Rc::new(CharacterTraitsObject::Owned(RefCell::new(
                 t,
             ))))),
         )

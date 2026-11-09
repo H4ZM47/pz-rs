@@ -90,6 +90,8 @@ mod timed_action_phases_tests;
 #[cfg(test)]
 mod timed_actions_tests;
 #[cfg(test)]
+mod traits_tests;
+#[cfg(test)]
 mod gender_tests;
 #[cfg(test)]
 mod unwanted_tests;
@@ -603,6 +605,7 @@ enum Handle {
     Xp,
     PerkInfo,
     WornItems,
+    Traits,
 }
 
 /// One Lua object per (kind, owner, member), so Lua `==` is identity.
@@ -1940,6 +1943,14 @@ fn register_character(
         let chr = chr_of(c)?;
         let v = canonical((Handle::Stats, Rc::as_ptr(&chr) as usize, 0), || {
             Value::Object(Rc::new(StatsObject::Of(chr.clone())))
+        });
+        Ok(c.push(v))
+    });
+    // getCharacterTraits(): the characterTraits field (one Lua object).
+    b.method("getCharacterTraits", |c| {
+        let chr = chr_of(c)?;
+        let v = canonical((Handle::Traits, Rc::as_ptr(&chr) as usize, 0), || {
+            Value::Object(Rc::new(crate::bind_characters::CharacterTraitsObject::Of(chr.clone())))
         });
         Ok(c.push(v))
     });
