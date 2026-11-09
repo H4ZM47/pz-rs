@@ -1125,6 +1125,23 @@ fn register_inventory_item(thread: &mut Thread) {
         i.set_activated(bool_arg(c, 1));
         Ok(Value::Nil)
     });
+    // `itemHeat` (1 is room temperature), `getInvHeat()` = 1 - itemHeat.
+    get!(b, "getItemHeat", |i| f(i.get_item_heat()));
+    get!(b, "getInvHeat", |i| f(1.0 - i.get_item_heat()));
+    with!(b, "setItemHeat", |i, c| {
+        i.set_item_heat(num_arg(c, 1) as f32);
+        Ok(Value::Nil)
+    });
+    get!(b, "getJobDelta", |i| f(i.job_delta));
+    get!(b, "getJobType", |i| opt_str(i.job_type.as_deref()));
+    with!(b, "setJobDelta", |i, c| {
+        i.job_delta = num_arg(c, 1) as f32;
+        Ok(Value::Nil)
+    });
+    with!(b, "setJobType", |i, c| {
+        i.job_type = str_arg(c, 1).map(|s| s.to_string());
+        Ok(Value::Nil)
+    });
     with!(b, "setFavorite", |i, c| {
         i.favorite = bool_arg(c, 1);
         Ok(Value::Nil)
@@ -1856,6 +1873,28 @@ mod tests {
         assert!(matches!(r[5], Value::Bool(true)));
         assert!(matches!(r[6], Value::Bool(true)));
         assert_eq!(item.borrow().condition, 0);
+    }
+
+    #[test]
+    fn item_heat_and_job_progress_for_the_inventory_pane() {
+        let mut thread = item_thread();
+        let item = make(ItemClass::Normal, "Apple", |_| {});
+        thread.globals().set_str("item", item_value(&item));
+        // ISInventoryPane:renderdetails reads these for every row.
+        let r = run(
+            &mut thread,
+            "local a, b, c, d = item:getItemHeat(), item:getInvHeat(), item:getJobDelta(), item:getJobType()\n\
+             item:setItemHeat(1.5) item:setJobDelta(0.25) item:setJobType('Eating')\n\
+             return a, b, c, d, item:getItemHeat(), item:getInvHeat(), item:getJobDelta(), item:getJobType()",
+        );
+        let n = |v: &Value| v.as_num().unwrap();
+        assert_eq!((n(&r[0]), n(&r[1]), n(&r[2])), (1.0, 0.0, 0.0));
+        assert!(r[3].is_nil());
+        assert_eq!((n(&r[4]), n(&r[5]), n(&r[6])), (1.5, -0.5, 0.25));
+        assert_eq!(pz_kahlua::exec::java_value_of(&r[7]), "Eating");
+        // setItemHeat clamps to [0, 3].
+        run(&mut thread, "item:setItemHeat(9)");
+        assert_eq!(item.borrow().item_heat, 3.0);
     }
 
     /// A Lua thread with the item bindings (and `Radio.getDeviceData`).
