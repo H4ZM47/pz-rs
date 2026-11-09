@@ -83,6 +83,8 @@ mod reading;
 mod safety;
 pub(crate) mod read_flags;
 #[cfg(test)]
+mod get_players_tests;
+#[cfg(test)]
 mod running_tests;
 #[cfg(test)]
 mod sneaking_tests;
@@ -736,6 +738,14 @@ fn register_vision(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         Ok(c.push(v.map_or(Value::Nil, |v| pz_vehicles::lua::vehicle_value(&v))))
     });
     let p = expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS));
+    // getPlayers(): a new list with all four player slots, empty ones
+    // included.
+    p.static_fn("getPlayers", |c| {
+        let slots = (0..crate::bind_players::MAX_PLAYERS)
+            .map(|i| crate::bind_players::player(i).map_or(Value::Nil, |p| character_value(&p)))
+            .collect();
+        Ok(c.push(crate::bind_java_util::list_value(slots)))
+    });
     // isUnwanted(id): getModData().rawget("itemUnwanted:" + id) is
     // Boolean.TRUE. A null id is a null key, so false.
     p.method("isUnwanted", |c| {
