@@ -91,6 +91,8 @@ mod timed_action_phases_tests;
 #[cfg(test)]
 mod timed_actions_tests;
 #[cfg(test)]
+mod designation_zone_tests;
+#[cfg(test)]
 mod safety_tests;
 #[cfg(test)]
 mod definition_texture_tests;
@@ -760,6 +762,17 @@ fn register_vision(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     p.method("getJoypadBind", |c| {
         let v = chr_of(c)?.borrow().player.input.joypad_bind;
         Ok(c.push(v))
+    });
+    // isSeeDesignationZone() / setSeeDesignationZone(b): the
+    // seeDesignationZone field.
+    p.method("isSeeDesignationZone", |c| {
+        let v = chr_of(c)?.borrow().player.see_designation_zone;
+        Ok(c.push(v))
+    });
+    p.method("setSeeDesignationZone", |c| {
+        let v = bool_arg(c, 1);
+        chr_of(c)?.borrow_mut().player.see_designation_zone = v;
+        Ok(0)
     });
     p.method("isLocalPlayer", |c| {
         let ctx = current_sim_context();

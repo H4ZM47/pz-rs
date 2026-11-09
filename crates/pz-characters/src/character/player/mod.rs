@@ -30,6 +30,9 @@ pub use vision::PlayerRenderInputs;
 pub struct PlayerControl {
     /// IsoPlayer.isFarming; maintained by Lua farming/timed actions.
     pub is_farming: bool,
+    /// `seeDesignationZone`: the designation zone panel is open. Read by
+    /// the area highlights.
+    pub see_designation_zone: bool,
     /// `playerIndex`.
     pub player_index: i32,
     /// `CharacterInputComponent`.
@@ -158,6 +161,7 @@ pub struct PlayerControl {
 impl Default for PlayerControl {
     fn default() -> Self {
         PlayerControl {
+            see_designation_zone: false,
             player_index: 0,
             input: CharacterInput::default(),
             aiming_position: (0.0, 0.0),
