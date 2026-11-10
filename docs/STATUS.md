@@ -62,7 +62,7 @@ Numbering follows [WORKSTREAMS.md](WORKSTREAMS.md).
 | 1 | Kahlua compiler, VM, stdlib | `pz-kahlua` | **Largely done.** All 1,395 shipped Lua files compile to bytecode byte-identical to the original compiler; VM, coroutines and the standard libraries are ported. Ongoing work is GC/ownership behaviour at host boundaries. |
 | 2 | Lua API bindings | `pz-lua-api` | **In progress; the largest open area.** The biggest crate (~120k lines) and still the usual place a session stops. Example of scale: 1 of 58 `ItemCodeOnCreate` callbacks is implemented. |
 | 3 | File system and mods | `pz-fs` | **Library done.** Mod loading at boot is not wired. |
-| 4 | Textures, packs, draw list | `pz-render`, `pz-gpu` | **Done for UI and chunk rendering.** GPU readbacks run in CI on four platforms. |
+| 4 | Textures, packs, draw list | `pz-render`, `pz-gpu` | **Done for UI and chunk rendering.** GPU readback tests are part of the four-platform CI run (they may skip where a runner has no suitable graphics adapter). |
 | 5 | Fonts and translations | `pz-text` | **Done.** |
 | 6 | UI layer | `pz-ui` | **Working** (main menu and HUD run); HUD inputs partly wired. |
 | 7 | Game loop, Core, game states | `pz-engine`, `pz-client` | **In progress; the integration bottleneck.** State machine, loading and in-game states exist; most open checklist items land here. |
@@ -93,8 +93,9 @@ section to search there for exact hook names and call order.
 - [ ] `PerkFactory::init` and `BodyLocations.lua` before Lua loads.
 - [ ] Character simulation context, world sounds and states world installed
       at boot.
-- [ ] `ScriptManager` loading in the windowed boot path (currently the
-      client's own path).
+- [ ] `ScriptManager` loading in the windowed engine boot (per the
+      checklist, only the client's `--png`/`--headless-frames` paths load
+      scripts).
 - [ ] HUD hosts for local/current player.
 
 ### 3. World simulation
