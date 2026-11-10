@@ -113,6 +113,9 @@ cargo run -p pz-client -- --new-game NAME --headless-frames 120   # no window
 
 ## Rules for contributions
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, how to find work and what a
+pull request needs. The two hard rules:
+
 * Never commit original game material: no decompiled source, Lua scripts,
   assets, extracted data, fixtures or golden files generated from the game.
   Keep such material under the git-ignored `local/` folder.
