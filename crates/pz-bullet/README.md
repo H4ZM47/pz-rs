@@ -9,8 +9,8 @@ without native code.
 | Module | Origin | License |
 | --- | --- | --- |
 | `bt` | A Rust translation of [Bullet Physics](https://github.com/bulletphysics/bullet3) **2.82**, double precision, scalar code paths. It covers only the parts the game reaches (listed below). | zlib (`LICENSE-ZLIB`) |
-| `pz` | The game's glue (`PZBullet.cpp`): `WorldSimulation`, the chunk maps and their static-body pools, server cells, `PZVehicle`, `PZVehicleScript`, physics objects, constraints, the collision/tick hooks, ragdolls (`Skeleton`, `SkeletonPose`, `RagdollBuilder`, `Ragdoll`, `PZRagdoll`, `PZRagdollScript`) and ballistics (`PZBallistics`, `PZBallisticsTarget`). It is reconstructed from the shipped library. | original code |
-| `api`, `api_ragdoll`, `api_ballistics` | `PzBullet`, with one method per `Bullet` native. Each method is documented with the native's name, keeps its argument order, and uses the same float-array layouts and `ToBullet` byte buffer. | original code |
+| `pz` | The game's glue (`PZBullet.cpp`): `WorldSimulation`, the chunk maps and their static-body pools, server cells, `PZVehicle`, `PZVehicleScript`, physics objects, constraints, the collision/tick hooks, ragdolls (`Skeleton`, `SkeletonPose`, `RagdollBuilder`, `Ragdoll`, `PZRagdoll`, `PZRagdollScript`) and ballistics (`PZBallistics`, `PZBallisticsTarget`). It is reconstructed from the shipped library. | original code, [MIT](../../LICENSE) |
+| `api`, `api_ragdoll`, `api_ballistics` | `PzBullet`, with one method per `Bullet` native. Each method is documented with the native's name, keeps its argument order, and uses the same float-array layouts and `ToBullet` byte buffer. | original code, [MIT](../../LICENSE) |
 
 Each ported Bullet file keeps Bullet's copyright notice and is marked as
 altered.

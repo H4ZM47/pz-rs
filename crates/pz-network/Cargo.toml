@@ -2,6 +2,7 @@
 name = "pz-network"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 pz-sqlite.workspace = true

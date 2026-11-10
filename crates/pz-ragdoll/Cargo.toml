@@ -2,6 +2,7 @@
 name = "pz-ragdoll"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 description = "The Java side of Project Zomboid's ragdolls: RagdollScript, RagdollBuilder and RagdollController driving pz-bullet and pz-anim"
 

@@ -2,6 +2,7 @@
 name = "pz-lua-api"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 pz-joml.workspace = true

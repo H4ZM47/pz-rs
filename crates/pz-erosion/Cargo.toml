@@ -2,6 +2,7 @@
 name = "pz-erosion"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 pz-entity.workspace = true

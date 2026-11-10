@@ -16,7 +16,7 @@ Clipper 1.
 | `clipper` | Port of Angus Johnson's [Clipper](https://sourceforge.net/projects/polyclipping/) **6.4.2** (C++ edition, `ClipperLib`): `Clipper`, `ClipperOffset`, `PolyTree`, helpers | Boost Software License 1.0 (`LICENSE-BOOST`) |
 | `earcut` | Port of [mapbox/earcut.hpp](https://github.com/mapbox/earcut.hpp) at commit `a57e4ce` (earcut 2.2.1 parity), as `Earcut<uint32_t>` over `IntPoint` rings | ISC (`LICENSE-ISC`) |
 | `cxxsort` | Port of libc++ `std::sort` (introsort, unchanged up to libc++ 21.1.6): reproduces the tie order of the unstable sorts Clipper and earcut use | Apache-2.0 WITH LLVM-exception (`LICENSE-LLVM`) |
-| `pz` | The game's `PZClipper` wrapper, reconstructed from the binary's behaviour | original code |
+| `pz` | The game's `PZClipper` wrapper, reconstructed from the binary's behaviour | original code, [MIT](../../LICENSE) |
 
 Ported code keeps its upstream copyright notice in each file header.
 

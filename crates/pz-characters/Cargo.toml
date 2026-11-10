@@ -2,6 +2,7 @@
 name = "pz-characters"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 pz-core.workspace = true

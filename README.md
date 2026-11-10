@@ -3,7 +3,7 @@
 A from-scratch Rust reimplementation of the Project Zomboid (Build 42) game
 engine, aiming for 1:1 behaviour with the original on macOS, Windows and Linux.
 
-This repository contains **only original code**. It ships no game files:
+This repository ships no game files:
 you need your own installed copy of Project Zomboid, whose `media/` folder
 (Lua scripts, textures, maps, sounds, translations) the engine reads at
 runtime. The Lua engine (Kahlua) and Lua-facing API are being ported to Rust
@@ -44,3 +44,24 @@ workstream status.
   assets, extracted data, fixtures or golden files generated from the game.
   Keep such material under the git-ignored `local/` folder.
 * 100% Rust at runtime: no JVM, no Java bridge, no C Lua.
+
+## License
+
+Original pz-rs code and documentation are licensed under the [MIT License](LICENSE),
+except where a file or component states otherwise.
+
+Bundled third-party code retains its existing licenses and copyright notices:
+
+* [`pz-bullet`](crates/pz-bullet/README.md) includes Bullet Physics code under
+  the [zlib license](crates/pz-bullet/LICENSE-ZLIB), with additional credits
+  preserved in the source files.
+* [`pz-clipper`](crates/pz-clipper/README.md) and
+  [`pz-clipper6`](crates/pz-clipper6/README.md) include Clipper code under the
+  Boost Software License 1.0, earcut under ISC, and libc++ sorting code under
+  Apache-2.0 with the LLVM exception. Their license files and source notices
+  remain applicable.
+* External dependencies remain under their respective licenses.
+
+The MIT license applies only to rights held by pz-rs contributors. It does not
+grant rights to Project Zomboid's code, scripts, assets, data, or trademarks.
+You must provide your own installed copy of the game.

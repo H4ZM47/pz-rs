@@ -2,6 +2,7 @@
 name = "pz-world"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [features]
 # Hand-authored test helpers (e.g. `sprite::types::test_tables`) for other crates' tests.

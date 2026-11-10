@@ -12,7 +12,7 @@ No native code at runtime.
 | `core`, `engine`, `offset` | Port of Angus Johnson's [Clipper2](https://github.com/AngusJohnson/Clipper2) **1.5.4** (tag `Clipper2_1.5.4`, commit `ef88ee9`): `Clipper64` boolean ops, `PolyTree64`, `ClipperOffset` | Boost Software License 1.0 (`LICENSE-BOOST`) |
 | `earcut` | Port of [mapbox/earcut.hpp](https://github.com/mapbox/earcut.hpp) at commit `a57e4ce` (2019-09-19, "parity with earcut v2.2.1") | ISC (`LICENSE-ISC`) |
 | `cxxsort` | Port of libc++ 19 `std::sort` (introsort): reproduces the tie order of the unstable sorts Clipper2 and earcut use | Apache-2.0 WITH LLVM-exception (`LICENSE-LLVM`) |
-| `pz` | The game's JNI glue, reconstructed from the binary's behaviour | original code |
+| `pz` | The game's JNI glue, reconstructed from the binary's behaviour | original code, [MIT](../../LICENSE) |
 
 Ported code keeps its upstream copyright notice in each file header.
 

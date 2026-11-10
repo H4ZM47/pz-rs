@@ -2,6 +2,7 @@
 name = "pz-pathfind"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Port of Project Zomboid's native pathfinder (libPZPathFind, the C++ counterpart of zombie.pathfind)"
 
 [dependencies]
