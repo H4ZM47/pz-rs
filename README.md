@@ -33,6 +33,8 @@ to retain game and mod behavior. Full compatibility is still in progress.
 | `pz-clipper6` | `PZClipper` + Clipper 6.4.2 + earcut inside the native pathfinder (`libPZPathFind`) |
 | `pz-client` | desktop binary |
 
+Start with [docs/STATUS.md](docs/STATUS.md) for a summary of what the project
+replaces, what is done and a checklist of what remains.
 See [docs/WORKSTREAMS.md](docs/WORKSTREAMS.md) for how the work is split and
 [docs/ENGINE-WIRING.md](docs/ENGINE-WIRING.md) for current integration
 progress and known gaps. [PROGRESS.md](PROGRESS.md) preserves the earlier
