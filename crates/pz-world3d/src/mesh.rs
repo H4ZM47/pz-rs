@@ -121,6 +121,33 @@ fn clip(poly: &[Vtx], val: impl Fn(&Vtx) -> f32) -> Vec<Vtx> {
     out
 }
 
+/// How far (frame pixels at `TILE_SCALE` 2, scaled with `TILE_SCALE` and the
+/// instance scale) floor and wall UVs are pulled toward the face centre.
+/// Sprite edges are anti-aliased / partly transparent, so sampling exactly on
+/// the quad edge lets the clear colour bleed through as thin seams; the
+/// inset makes edges sample interior opaque texels. Geometry is unchanged.
+const EDGE_INSET: f32 = 3.0;
+
+/// Moves each vertex's frame fraction toward the quad's centre by the inset
+/// (capped at the distance to the centre).
+fn inset_fracs(tex: &Texture, verts: &mut [Vtx]) {
+    let s = frame_scale(tex);
+    let (w, h) = (tex.width as f32 * s, tex.height as f32 * s);
+    let d = EDGE_INSET * TILE_SCALE as f32 / 2.0 * s;
+    let n = verts.len() as f32;
+    let cx = verts.iter().map(|v| v.f[0]).sum::<f32>() / n;
+    let cy = verts.iter().map(|v| v.f[1]).sum::<f32>() / n;
+    for v in verts.iter_mut() {
+        let (dx, dy) = ((cx - v.f[0]) * w, (cy - v.f[1]) * h);
+        let len = dx.hypot(dy);
+        if len > 1e-6 {
+            let k = d.min(len) / len;
+            v.f[0] += dx * k / w;
+            v.f[1] += dy * k / h;
+        }
+    }
+}
+
 /// Where a face sits: its square and the model-space origin.
 struct Ctx<'a> {
     tex: &'a Texture,
@@ -132,7 +159,9 @@ struct Ctx<'a> {
 
 /// Emits the quad `p` (world corners, in `(s,t)` order `(0,0) (1,0) (1,1)
 /// (0,1)`), textured from the sprite and clipped to the texture rectangle.
-fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4]) {
+/// With `inset`, the sampled region is pulled in from the quad edges (see
+/// [`EDGE_INSET`]).
+fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4], inset: bool) {
     let (tex, sprite, obj) = (c.tex, c.sprite, c.obj);
     if tex.width == 0 || tex.height == 0 || !tex.ready {
         return;
@@ -141,7 +170,7 @@ fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4]
         return;
     }
     let st = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
-    let verts: Vec<Vtx> = (0..4)
+    let mut verts: Vec<Vtx> = (0..4)
         .map(|i| {
             let d = [
                 p[i][0] - c.sq_pos[0],
@@ -155,6 +184,9 @@ fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4]
             }
         })
         .collect();
+    if inset {
+        inset_fracs(tex, &mut verts);
+    }
     let eps = 1e-3;
     if verts
         .iter()
@@ -282,7 +314,7 @@ pub fn square_faces(sq: &RenderSquare, origin: [f32; 3], out: &mut Vec<Face>) {
                 [x + 1.0, y, z + 1.0],
                 [x, y, z + 1.0],
             ];
-            push_face(out, &c, p, lit([v[0], v[1], v[5], v[4]]));
+            push_face(out, &c, p, lit([v[0], v[1], v[5], v[4]]), true);
         };
         let west = |out: &mut Vec<Face>| {
             let p = [
@@ -291,7 +323,7 @@ pub fn square_faces(sq: &RenderSquare, origin: [f32; 3], out: &mut Vec<Face>) {
                 [x, y + 1.0, z + 1.0],
                 [x, y, z + 1.0],
             ];
-            push_face(out, &c, p, lit([v[0], v[3], v[7], v[4]]));
+            push_face(out, &c, p, lit([v[0], v[3], v[7], v[4]]), true);
         };
         match classify(sprite) {
             Kind::Floor => {
@@ -301,7 +333,7 @@ pub fn square_faces(sq: &RenderSquare, origin: [f32; 3], out: &mut Vec<Face>) {
                     [x + 1.0, y + 1.0, z],
                     [x, y + 1.0, z],
                 ];
-                push_face(out, &c, p, lit([v[0], v[1], v[2], v[3]]));
+                push_face(out, &c, p, lit([v[0], v[1], v[2], v[3]]), true);
             }
             Kind::WallN => north(out),
             Kind::WallW => west(out),
@@ -330,7 +362,7 @@ pub fn square_faces(sq: &RenderSquare, origin: [f32; 3], out: &mut Vec<Face>) {
                 let (dz0, dz1) = (dz_of(fy1), dz_of(fy0));
                 let pt = |t: f32, dz: f32| [x + t, y + 1.0 - t, z + dz];
                 let p = [pt(t0, dz0), pt(t1, dz0), pt(t1, dz1), pt(t0, dz1)];
-                push_face(out, &c, p, lit([light; 4]));
+                push_face(out, &c, p, lit([light; 4]), false);
             }
         }
     }
@@ -387,6 +419,22 @@ mod tests {
 
     const O: [f32; 3] = [10.0, 20.0, 0.0];
 
+    /// Frame-pixel inset used for floors/walls on the 128x256 test frame.
+    const D: f32 = EDGE_INSET * TILE_SCALE as f32 / 2.0;
+
+    /// `p` moved toward the centroid of `quad` by `D` pixels: the expected
+    /// UV (in frame pixels) of a floor/wall corner after the edge inset.
+    fn inset(p: [f32; 2], quad: [[f32; 2]; 4]) -> [f32; 2] {
+        let c = [0, 1].map(|i| quad.iter().map(|q| q[i]).sum::<f32>() / 4.0);
+        let (dx, dy) = (c[0] - p[0], c[1] - p[1]);
+        let len = dx.hypot(dy);
+        [p[0] + dx / len * D, p[1] + dy / len * D]
+    }
+
+    fn inset_all(quad: [[f32; 2]; 4]) -> [[f32; 2]; 4] {
+        quad.map(|p| inset(p, quad))
+    }
+
     #[test]
     fn uv_of_matches_render_inst_pixels() {
         let (sq, s) = sq_with(full(), |_| {});
@@ -406,10 +454,17 @@ mod tests {
         square_faces(&sq, O, &mut out);
         assert_eq!(out.len(), 1);
         let f = &out[0];
-        close(px(f.uv[0]), [64.0, 192.0]);
-        close(px(f.uv[1]), [128.0, 224.0]);
-        close(px(f.uv[2]), [64.0, 256.0]);
-        close(px(f.uv[3]), [0.0, 224.0]);
+        // UVs are pulled toward the centre by the edge inset (geometry is not).
+        let e = inset_all([[64.0, 192.0], [128.0, 224.0], [64.0, 256.0], [0.0, 224.0]]);
+        for (uv, e) in f.uv.iter().zip(e) {
+            close(px(*uv), e);
+        }
+        // Strictly inside the diamond, by exactly the inset along the
+        // corner-to-centre line; the centre itself is unchanged.
+        close(px(f.uv[0]), [64.0, 192.0 + D]);
+        close(px(f.uv[1]), [128.0 - D, 224.0]);
+        let ctr = [0, 1].map(|a| f.uv.iter().map(|u| px(*u)[a]).sum::<f32>() / 4.0);
+        close(ctr, [64.0, 224.0]);
         assert_eq!(f.color, [1, 2, 3, 4]);
         assert_eq!(f.pos[0], [0.0, 0.0, 0.0]);
         assert_eq!(f.pos[1], [-1.0, 0.0, 0.0]);
@@ -428,10 +483,11 @@ mod tests {
         assert_eq!(f.pos[1], [-1.0, 0.0, 0.0]);
         assert_eq!(f.pos[2], [-1.0, crate::LEVEL_HEIGHT, 0.0]);
         assert_eq!(f.pos[3], [0.0, crate::LEVEL_HEIGHT, 0.0]);
-        close(px(f.uv[0]), [64.0, 192.0]);
-        close(px(f.uv[1]), [128.0, 224.0]);
-        close(px(f.uv[2]), [128.0, 32.0]);
-        close(px(f.uv[3]), [64.0, 0.0]);
+        // Edge-inset UVs (positions above are unchanged).
+        let e = inset_all([[64.0, 192.0], [128.0, 224.0], [128.0, 32.0], [64.0, 0.0]]);
+        for (uv, e) in f.uv.iter().zip(e) {
+            close(px(*uv), e);
+        }
         assert_eq!(f.color, [1, 2, 6, 5]);
     }
 
@@ -445,10 +501,11 @@ mod tests {
         let f = &out[0];
         assert_eq!(f.pos[1], [0.0, 0.0, -1.0]);
         assert_eq!(f.pos[3], [0.0, crate::LEVEL_HEIGHT, 0.0]);
-        close(px(f.uv[0]), [64.0, 192.0]);
-        close(px(f.uv[1]), [0.0, 224.0]);
-        close(px(f.uv[2]), [0.0, 32.0]);
-        close(px(f.uv[3]), [64.0, 0.0]);
+        // Edge-inset UVs (positions above are unchanged).
+        let e = inset_all([[64.0, 192.0], [0.0, 224.0], [0.0, 32.0], [64.0, 0.0]]);
+        for (uv, e) in f.uv.iter().zip(e) {
+            close(px(*uv), e);
+        }
         assert_eq!(f.color, [1, 4, 8, 5]);
     }
 

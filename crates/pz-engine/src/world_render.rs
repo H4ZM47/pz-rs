@@ -180,7 +180,7 @@ impl WorldRender {
         self.view3d_held = (o, middle);
         if o && !o_held && !typing {
             if shift {
-                self.view3d.swap_person();
+                self.view3d.swap_person((facing.0 as f32, facing.1 as f32));
             } else {
                 self.view3d.toggle_first_person((facing.0 as f32, facing.1 as f32));
             }
@@ -198,6 +198,80 @@ impl WorldRender {
             self.view3d.apply_mouse(dx, dy);
         }
         pz_player_input::set_view_yaw(0, on.then_some(self.view3d.yaw));
+    }
+
+    /// Port extension: the 3D view's faces within [`VIEW3D_CHUNK_RADIUS`]
+    /// chunks of the camera character, in model space around it. Floors
+    /// above the camera are seen from below, so they take the light of the
+    /// square under them (their own is the light on their upper side).
+    fn view3d_faces(&self, v: &RenderView) -> Vec<pz_world3d::mesh::Face> {
+        let origin = [v.x, v.y, v.z];
+        let mut faces = Vec::new();
+        let (pwx, pwy) = (
+            pz_render::iso::fastfloor(v.x / 8.0),
+            pz_render::iso::fastfloor(v.y / 8.0),
+        );
+        let eye_level = pz_render::iso::fastfloor(v.z);
+        for wx in pwx - VIEW3D_CHUNK_RADIUS..=pwx + VIEW3D_CHUNK_RADIUS {
+            for wy in pwy - VIEW3D_CHUNK_RADIUS..=pwy + VIEW3D_CHUNK_RADIUS {
+                let Some((lo, hi)) = self.world.chunk_levels(wx, wy) else {
+                    continue;
+                };
+                for z in lo..=hi {
+                    for sq in self.world.level_squares(wx, wy, z).iter().flatten() {
+                        let start = faces.len();
+                        pz_world3d::mesh::square_faces(sq, origin, &mut faces);
+                        self.view3d_relight(v, eye_level, sq, &mut faces[start..]);
+                    }
+                }
+            }
+        }
+        faces
+    }
+
+    /// Port extension: the sprites' lights are for the faces the
+    /// isometric camera sees. A floor above the camera is seen from below,
+    /// so it takes the light of the square under it. A north or west wall
+    /// seen from its north or west side takes the light of the square on
+    /// that side (its own square's light is the other side's, often the
+    /// dark outdoors).
+    fn view3d_relight(
+        &self,
+        v: &RenderView,
+        eye_level: i32,
+        sq: &pz_iso_render::RenderSquare,
+        faces: &mut [pz_world3d::mesh::Face],
+    ) {
+        let lights = |x: i32, y: i32, z: i32| self.world.square(x, y, z).map(|s| s.vert_lights);
+        let below = (sq.z > eye_level).then(|| lights(sq.x, sq.y, sq.z - 1)).flatten();
+        let north = (v.y < sq.y as f32).then(|| lights(sq.x, sq.y - 1, sq.z)).flatten();
+        let west = (v.x < sq.x as f32).then(|| lights(sq.x - 1, sq.y, sq.z)).flatten();
+        let plane = |f: &pz_world3d::mesh::Face, axis: usize| {
+            let a = f.pos[0][axis];
+            f.pos.iter().all(|p| (p[axis] - a).abs() < 1.0e-4)
+        };
+        // Model space: x = -(wx - ox), y = up, z = -(wy - oy).
+        let north_z = -(sq.y as f32 - v.y);
+        let west_x = -(sq.x as f32 - v.x);
+        for f in faces {
+            if plane(f, 1) {
+                if let Some(l) = below {
+                    f.color = [l[0], l[1], l[2], l[3]];
+                }
+            } else if plane(f, 2) && (f.pos[0][2] - north_z).abs() < 1.0e-3 {
+                // Bottom (x, y), (x + 1, y), then the tops: the north
+                // square's south corners.
+                if let Some(l) = north {
+                    f.color = [l[3], l[2], l[2], l[3]];
+                }
+            } else if plane(f, 0) && (f.pos[0][0] - west_x).abs() < 1.0e-3 {
+                // Bottom (x, y), (x, y + 1), then the tops: the west
+                // square's east corners.
+                if let Some(l) = west {
+                    f.color = [l[1], l[2], l[2], l[1]];
+                }
+            }
+        }
     }
 
     /// The same actual chunk cache invalidation used by RenderInvalidation,
@@ -365,8 +439,13 @@ impl WorldRender {
             }
         }
         // Port extension: the 3D camera, for player 0 with the view on.
+        let faces = if p == 0 && self.view3d.is_3d() {
+            self.view3d_faces(v)
+        } else {
+            Vec::new()
+        };
         let cam3 = if p == 0 {
-            self.view3d.camera([v.x, v.y, v.z], [v.x, v.y, v.z])
+            self.view3d.camera_with([v.x, v.y, v.z], [v.x, v.y, v.z], &faces)
         } else {
             None
         };
@@ -463,24 +542,6 @@ impl WorldRender {
         // Port extension: the 3D view (pz-world3d) replaces the isometric
         // frame for player 0 when it is on.
         if let Some(c3) = &cam3 {
-            let origin = [v.x, v.y, v.z];
-            let mut faces = Vec::new();
-            let (pwx, pwy) = (
-                pz_render::iso::fastfloor(v.x / 8.0),
-                pz_render::iso::fastfloor(v.y / 8.0),
-            );
-            for wx in pwx - VIEW3D_CHUNK_RADIUS..=pwx + VIEW3D_CHUNK_RADIUS {
-                for wy in pwy - VIEW3D_CHUNK_RADIUS..=pwy + VIEW3D_CHUNK_RADIUS {
-                    let Some((lo, hi)) = self.world.chunk_levels(wx, wy) else {
-                        continue;
-                    };
-                    for z in lo..=hi {
-                        for sq in self.world.level_squares(wx, wy, z).iter().flatten() {
-                            pz_world3d::mesh::square_faces(sq, origin, &mut faces);
-                        }
-                    }
-                }
-            }
             let models: Vec<DrawCmd> = objects
                 .players
                 .iter()

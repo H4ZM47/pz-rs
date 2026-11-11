@@ -9,7 +9,7 @@ original isometric one.
 | Input | Action |
 |---|---|
 | O | First person on or off |
-| Shift+O | Swap first and third person |
+| Shift+O | Third person (from isometric), or swap first and third person |
 | Mouse | Look (the cursor is captured) |
 | Middle mouse | Free the cursor for the UI, press again to capture it |
 | WASD | Move relative to where you look |

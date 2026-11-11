@@ -1,4 +1,5 @@
 use crate::camera::{forward_world, right_world, Camera3D};
+use crate::mesh::Face;
 use crate::ViewMode;
 use std::f32::consts::{PI, TAU};
 
@@ -38,13 +39,17 @@ impl ViewState {
         }
     }
 
-    /// Shift+O: switch between first and third person. No-op in Iso.
-    pub fn swap_person(&mut self) {
-        self.mode = match self.mode {
-            ViewMode::FirstPerson => ViewMode::ThirdPerson,
-            ViewMode::ThirdPerson => ViewMode::FirstPerson,
-            ViewMode::Iso => ViewMode::Iso,
-        };
+    /// Shift+O: Iso enters third person facing `facing_world`; otherwise switches between first and third person.
+    pub fn swap_person(&mut self, facing_world: (f32, f32)) {
+        match self.mode {
+            ViewMode::Iso => {
+                self.mode = ViewMode::ThirdPerson;
+                self.yaw = facing_world.1.atan2(facing_world.0);
+                self.pitch = 0.0;
+            }
+            ViewMode::FirstPerson => self.mode = ViewMode::ThirdPerson,
+            ViewMode::ThirdPerson => self.mode = ViewMode::FirstPerson,
+        }
     }
 
     /// Mouse look. Right turns toward +yaw, down looks down. No-op in Iso.
@@ -91,6 +96,25 @@ impl ViewState {
             )),
         }
     }
+
+    /// Like [`camera`](Self::camera), but the third-person eye is kept out of `faces` (walls).
+    pub fn camera_with(
+        &self,
+        feet_world: [f32; 3],
+        origin_world: [f32; 3],
+        faces: &[Face],
+    ) -> Option<Camera3D> {
+        match self.mode {
+            ViewMode::ThirdPerson => Some(Camera3D::third_person_clamped(
+                feet_world,
+                origin_world,
+                self.yaw,
+                self.pitch,
+                faces,
+            )),
+            _ => self.camera(feet_world, origin_world),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -122,21 +146,33 @@ mod tests {
         assert!(close(v.yaw, -FRAC_PI_2));
         assert_eq!(v.pitch, 0.0);
         assert!(v.is_3d());
-        v.swap_person();
+        v.swap_person((0.0, -1.0));
         v.toggle_first_person((1.0, 0.0));
         assert_eq!(v.mode, ViewMode::Iso);
         assert!(!v.is_3d());
     }
 
     #[test]
-    fn swap_person_toggles_3d_modes_only() {
-        let mut v = ViewState::default();
-        v.swap_person();
-        assert_eq!(v.mode, ViewMode::Iso);
-        v.toggle_first_person((1.0, 0.0));
-        v.swap_person();
+    fn swap_person_from_iso_enters_third_person_facing() {
+        let mut v = ViewState {
+            pitch: 0.3,
+            ..Default::default()
+        };
+        v.swap_person((0.0, -1.0));
         assert_eq!(v.mode, ViewMode::ThirdPerson);
-        v.swap_person();
+        assert!(close(v.yaw, -FRAC_PI_2));
+        assert_eq!(v.pitch, 0.0);
+    }
+
+    #[test]
+    fn swap_person_toggles_between_3d_modes() {
+        let mut v = ViewState::default();
+        v.toggle_first_person((1.0, 0.0));
+        v.swap_person((0.0, -1.0));
+        assert_eq!(v.mode, ViewMode::ThirdPerson);
+        // Facing is kept when switching between first and third person.
+        assert!(close(v.yaw, 0.0));
+        v.swap_person((0.0, -1.0));
         assert_eq!(v.mode, ViewMode::FirstPerson);
     }
 
@@ -228,7 +264,7 @@ mod tests {
         let fp = v.camera([0.0; 3], [0.0; 3]).unwrap();
         assert!(close(fp.eye[1], EYE_HEIGHT));
         assert!(close(fp.yaw, -FRAC_PI_2));
-        v.swap_person();
+        v.swap_person((0.0, -1.0));
         let tp = v.camera([0.0; 3], [0.0; 3]).unwrap();
         // Facing north, third person sits 3 units south (model +z is north, so -z).
         assert!(close(tp.eye[2], fp.eye[2] - 3.0));

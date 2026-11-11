@@ -1,3 +1,4 @@
+use crate::mesh::Face;
 use crate::{to_model, Mat4};
 
 /// Eye height above the feet in model units (tunable).
@@ -43,6 +44,80 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
 fn normalize(v: [f32; 3]) -> [f32; 3] {
     let l = dot(v, v).sqrt();
     [v[0] / l, v[1] / l, v[2] / l]
+}
+
+fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn add_scaled(a: [f32; 3], d: [f32; 3], t: f32) -> [f32; 3] {
+    [a[0] + d[0] * t, a[1] + d[1] * t, a[2] + d[2] * t]
+}
+
+/// Möller–Trumbore ray/triangle test, both sides. Returns the ray parameter `t` (> 0).
+fn ray_triangle(o: [f32; 3], d: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Option<f32> {
+    let e1 = sub(b, a);
+    let e2 = sub(c, a);
+    let p = cross(d, e2);
+    let det = dot(e1, p);
+    if det.abs() < 1e-8 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let s = sub(o, a);
+    let u = dot(s, p) * inv;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = cross(s, e1);
+    let v = dot(d, q) * inv;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = dot(e2, q) * inv;
+    (t > 1e-6).then_some(t)
+}
+
+/// Gap kept between the eye and the nearest face, in model units.
+const WALL_MARGIN: f32 = 0.2;
+/// The eye never comes closer than this to the pivot, in model units.
+const MIN_EYE_DIST: f32 = 0.3;
+/// The segment starts this far from the pivot, to avoid self-hits.
+const PIVOT_OFFSET: f32 = 0.05;
+
+/// Pulls a third-person eye in toward `pivot` (the first-person eye) so the segment pivot->eye does not pass through any face, leaving a 0.2 unit margin; never closer than 0.3 units to the pivot.
+pub fn clamp_eye(pivot: [f32; 3], eye: [f32; 3], faces: &[Face]) -> [f32; 3] {
+    let delta = sub(eye, pivot);
+    let len = dot(delta, delta).sqrt();
+    if len < 1e-6 {
+        return eye;
+    }
+    let dir = [delta[0] / len, delta[1] / len, delta[2] / len];
+    // Ray parameter limit, measured from the offset start point.
+    let max_t = len - PIVOT_OFFSET;
+    if max_t <= 0.0 {
+        return eye;
+    }
+    let origin = add_scaled(pivot, dir, PIVOT_OFFSET);
+    let mut nearest: Option<f32> = None;
+    for face in faces {
+        let p = face.pos;
+        for [i, j, k] in [[0, 1, 2], [0, 2, 3]] {
+            if let Some(t) = ray_triangle(origin, dir, p[i], p[j], p[k]) {
+                if t <= max_t && nearest.map_or(true, |n| t < n) {
+                    nearest = Some(t);
+                }
+            }
+        }
+    }
+    match nearest {
+        None => eye,
+        Some(t) => {
+            let hit_dist = PIVOT_OFFSET + t;
+            let dist = (hit_dist - WALL_MARGIN).max(MIN_EYE_DIST).min(len);
+            add_scaled(pivot, dir, dist)
+        }
+    }
 }
 
 impl Camera3D {
@@ -115,6 +190,20 @@ impl Camera3D {
         let (fx, fy) = forward_world(yaw);
         // Behind means against the horizontal look direction; model x and z flip.
         c.eye = [c.eye[0] + 3.0 * fx, c.eye[1] + 0.6, c.eye[2] + 3.0 * fy];
+        c
+    }
+
+    /// Third-person camera whose eye is pulled in by [`clamp_eye`] so walls do not block the view.
+    pub fn third_person_clamped(
+        feet_world: [f32; 3],
+        origin_world: [f32; 3],
+        yaw: f32,
+        pitch: f32,
+        faces: &[Face],
+    ) -> Camera3D {
+        let pivot = Camera3D::first_person(feet_world, origin_world, yaw, pitch).eye;
+        let mut c = Camera3D::third_person(feet_world, origin_world, yaw, pitch);
+        c.eye = clamp_eye(pivot, c.eye, faces);
         c
     }
 }
@@ -205,5 +294,61 @@ mod tests {
         assert!((tp.eye[2] - (fp.eye[2] - 3.0)).abs() < 1e-5);
         assert!((tp.eye[1] - (fp.eye[1] + 0.6)).abs() < 1e-5);
         assert!((tp.eye[0] - fp.eye[0]).abs() < 1e-5);
+    }
+
+    fn quad_at_z(z: f32) -> Face {
+        Face {
+            texture: pz_render::TextureManager::default().white(),
+            pos: [
+                [-1.0, -1.0, z],
+                [1.0, -1.0, z],
+                [1.0, 1.0, z],
+                [-1.0, 1.0, z],
+            ],
+            uv: [[0.0; 2]; 4],
+            color: [0xFFFF_FFFF; 4],
+        }
+    }
+
+    #[test]
+    fn clamp_eye_pulls_in_before_wall() {
+        let pivot = [0.0, 0.0, 0.0];
+        let eye = [0.0, 0.0, -5.0];
+        // Wall at distance 3 along the segment.
+        let clamped = clamp_eye(pivot, eye, &[quad_at_z(-3.0)]);
+        let d = dot(sub(clamped, pivot), sub(clamped, pivot)).sqrt();
+        assert!(d < 3.0 && d > 3.0 - 0.3, "distance {d}");
+        // Still on the same ray.
+        assert!(clamped[0].abs() < 1e-6 && clamped[1].abs() < 1e-6);
+    }
+
+    #[test]
+    fn clamp_eye_without_faces_is_unchanged() {
+        let eye = [0.5, 1.0, -5.0];
+        assert_eq!(clamp_eye([0.0; 3], eye, &[]), eye);
+    }
+
+    #[test]
+    fn clamp_eye_ignores_face_behind_pivot() {
+        let eye = [0.0, 0.0, -5.0];
+        let behind = [quad_at_z(2.0)];
+        assert_eq!(clamp_eye([0.0; 3], eye, &behind), eye);
+    }
+
+    #[test]
+    fn clamp_eye_never_closer_than_min() {
+        let pivot = [0.0, 0.0, 0.0];
+        let eye = [0.0, 0.0, -5.0];
+        // Wall at 0.4: the margin would put the eye at 0.2, so it stops at 0.3.
+        let clamped = clamp_eye(pivot, eye, &[quad_at_z(-0.4)]);
+        let d = dot(sub(clamped, pivot), sub(clamped, pivot)).sqrt();
+        assert!((d - 0.3).abs() < 1e-5, "distance {d}");
+    }
+
+    #[test]
+    fn third_person_clamped_without_faces_matches_third_person() {
+        let a = Camera3D::third_person([0.0; 3], [0.0; 3], -FRAC_PI_2, 0.0);
+        let b = Camera3D::third_person_clamped([0.0; 3], [0.0; 3], -FRAC_PI_2, 0.0, &[]);
+        assert_eq!(a, b);
     }
 }
