@@ -91,7 +91,10 @@ fn floor_below_wall_ahead_sky_above() {
         models: &[],
         screen: ScreenParams::default(),
     };
-    let dl = DrawList { cmds: scene_frame(&scene), ..Default::default() };
+    let dl = DrawList {
+        cmds: scene_frame(&scene),
+        ..Default::default()
+    };
     g.render_frame(
         &[(
             FrameParams {

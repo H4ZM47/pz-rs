@@ -287,6 +287,24 @@ fn is_floor(sprite: &SpriteInfo, obj: &RenderObject) -> bool {
 }
 
 fn classify(sprite: &SpriteInfo, obj: &RenderObject) -> Kind {
+    match classify_closed(sprite, obj) {
+        // An open hinged door keeps its closed door's flags and tile type
+        // (`set_open_door_properties`), but its leaf is drawn swung onto
+        // the square's other edge. Garage doors open upward and stay.
+        k if matches!(obj.kind, pz_iso_render::ObjectKind::Door { open: true })
+            && !sprite.flags.garage_door =>
+        {
+            match k {
+                Kind::WallN => Kind::WallW,
+                Kind::WallW => Kind::WallN,
+                k => k,
+            }
+        }
+        k => k,
+    }
+}
+
+fn classify_closed(sprite: &SpriteInfo, obj: &RenderObject) -> Kind {
     let f = &sprite.flags;
     let t = sprite.tile_type;
     if is_floor(sprite, obj) {
@@ -525,6 +543,21 @@ mod tests {
             close(px(*uv), e);
         }
         assert_eq!(f.color, [1, 2, 6, 5]);
+    }
+
+    #[test]
+    fn open_door_swings_to_the_other_edge() {
+        let (mut sq, _) = sq_with(full(), |s| s.flags.door_n = true);
+        sq.objects[0].kind = pz_iso_render::ObjectKind::Door { open: true };
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert_eq!(out.len(), 1);
+        // The west plane (model x constant), not the north one.
+        assert_eq!(out[0].pos[1], [0.0, 0.0, -1.0]);
+        sq.objects[0].kind = pz_iso_render::ObjectKind::Door { open: false };
+        out.clear();
+        square_faces(&sq, O, &mut out);
+        assert_eq!(out[0].pos[1], [-1.0, 0.0, 0.0]);
     }
 
     #[test]
