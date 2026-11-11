@@ -33,7 +33,7 @@ fn finish(local: vec4<f32>, normal: vec3<f32>, uv: vec2<f32>) -> VsOut {
     var o = m.mvp * p;
     // HighResDepthMultiplier is 0 outside high-res chunk textures, so the
     // origin term drops out.
-    var clip = (o.z + 1.0) / 2.0;
+    var clip = (o.z / o.w + 1.0) / 2.0;
     clip = clip + m.params.x - 0.5;
     var out: VsOut;
     // GL window depth `clip`; wgpu takes clip-space z in 0..w.

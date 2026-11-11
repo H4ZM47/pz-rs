@@ -157,6 +157,11 @@ pub trait PlayerInput {
     fn iso_to_screen(&self, _player_index: i32, _x: f32, _y: f32, _z: f32) -> (f32, f32) {
         (0.0, 0.0)
     }
+    /// The first-person view yaw of the player (world angle, 0 faces +x,
+    /// increasing toward +y); `None` is the isometric view.
+    fn view_yaw(&self, _player_index: usize) -> Option<f32> {
+        None
+    }
     /// `System.currentTimeMillis()` for `TimedInputHandler` clicks.
     fn current_time_ms(&self) -> i64 {
         0

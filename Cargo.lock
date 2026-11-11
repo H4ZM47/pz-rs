@@ -1978,6 +1978,7 @@ dependencies = [
  "pz-world-render",
  "pz-world-sound",
  "pz-world-states",
+ "pz-world3d",
  "pz-worldgen",
  "winit",
 ]
@@ -2362,6 +2363,15 @@ dependencies = [
  "pz-vehicles",
  "pz-world",
  "pz-world-popman",
+]
+
+[[package]]
+name = "pz-world3d"
+version = "0.1.0"
+dependencies = [
+ "pz-gpu",
+ "pz-iso-render",
+ "pz-render",
 ]
 
 [[package]]

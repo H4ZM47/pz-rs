@@ -29,6 +29,7 @@ mod model;
 mod outline;
 mod vehicle;
 mod vispoly;
+mod world3d;
 mod state;
 mod thumbnail;
 
@@ -261,6 +262,8 @@ struct PassDesc {
     mipmaps: bool,
     /// Chunk passes: clear colour to 0 and depth to 1 first.
     clear: bool,
+    /// A `Scene3DBegin` pass: clears depth, and the colour if given.
+    scene: Option<Option<[f32; 4]>>,
     batches: std::ops::Range<usize>,
 }
 
@@ -279,6 +282,8 @@ struct Batch {
     outline: Option<outline::Op>,
     /// A vision-cone draw (`VisibilityPolygon2`).
     vision: Option<vispoly::Op>,
+    /// A 3D scene draw: view-projection uniform and target kind; `indices` are vertices of the scene vertex list.
+    world3d: Option<(u32, TargetKind)>,
     stencil_ref: u32,
     scissor: Option<[u32; 4]>,
     globals: u32,
@@ -335,6 +340,7 @@ pub struct Gpu {
     outlines: outline::OutlinePipelines,
     /// `VisibilityPolygon2`'s blur textures and shaders.
     vision: vispoly::VisPipelines,
+    world3d: world3d::World3dPipelines,
     /// Each uploaded texture's sampler state.
     filters: HashMap<u32, Filter>,
     /// glGenerateMipmap's downsampling pipeline and its source layout.
@@ -508,6 +514,7 @@ impl Gpu {
         let vehicles = vehicle::VehiclePipelines::new(&device);
         let outlines = outline::OutlinePipelines::new(&device, &models.uniform_layout, &texture_layout, &globals_layout);
         let vision = vispoly::VisPipelines::new(&device, &texture_layout, &chunk_depth_layout);
+        let world3d = world3d::World3dPipelines::new(&device, &texture_layout);
         let mip_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mip source"),
             entries: &[
@@ -589,6 +596,7 @@ impl Gpu {
             vehicles,
             outlines,
             vision,
+            world3d,
             filters: HashMap::new(),
             mip_pipeline,
             mip_layout,
@@ -823,12 +831,16 @@ impl Gpu {
                 self.ensure_vehicle_textures(ids);
                 continue;
             }
+            if let Some((_, kind)) = f.batches[i].world3d {
+                self.world3d.ensure(&self.device, self.format, kind);
+                continue;
+            }
             match f.batches[i].model {
                 Some((key, _, _)) => self.models.ensure(&self.device, self.format, key),
                 None => self.ensure_pipeline(f.batches[i].key),
             }
         }
-        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, vehicle_uniforms, outline_uniforms, sky, mut vis_vertices, vis_uniforms, .. } = f;
+        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, vehicle_uniforms, outline_uniforms, sky, mut vis_vertices, vis_uniforms, mut w3d_vertices, w3d_uniforms, .. } = f;
         let mut visbytes = vec![0u8; vis_uniforms.len().max(1) * vispoly::STRIDE as usize];
         for (i, u) in vis_uniforms.iter().enumerate() {
             let at = i * vispoly::STRIDE as usize;
@@ -889,6 +901,21 @@ impl Gpu {
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &mbuf, offset: 0, size: wgpu::BufferSize::new(std::mem::size_of::<model::ModelUniforms>() as u64) }),
             }],
         });
+        let mut w3bytes = vec![0u8; w3d_uniforms.len().max(1) * world3d::STRIDE as usize];
+        for (i, u) in w3d_uniforms.iter().enumerate() {
+            let at = i * world3d::STRIDE as usize;
+            w3bytes[at..at + 64].copy_from_slice(bytemuck::bytes_of(u));
+        }
+        let w3buf = self.buffer(&w3bytes, wgpu::BufferUsages::UNIFORM);
+        let w3bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("world3d"),
+            layout: &self.world3d.uniform_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &w3buf, offset: 0, size: wgpu::BufferSize::new(64) }) }],
+        });
+        if w3d_vertices.is_empty() {
+            w3d_vertices.push(world3d::World3dVertex::zeroed());
+        }
+        let w3vbuf = self.buffer(bytemuck::cast_slice(&w3d_vertices), wgpu::BufferUsages::VERTEX);
         if vertices.is_empty() {
             vertices.push(Vertex::zeroed());
         }
@@ -924,7 +951,7 @@ impl Gpu {
         // when that pass is empty.
         let mut passes = passes;
         if !passes.iter().any(|p| p.target == PassTarget::Main) {
-            passes.push(PassDesc { target: PassTarget::Main, clear: false, mipmaps: false, batches: 0..0 });
+            passes.push(PassDesc { target: PassTarget::Main, clear: false, mipmaps: false, scene: None, batches: 0..0 });
         }
         let mut main_cleared = false;
         for pass_desc in &passes {
@@ -1048,6 +1075,17 @@ impl Gpu {
                     (&o.color, &o.depth_stencil, wgpu::LoadOp::Load, Some(keep), Some(keep_s), o.width, o.height)
                 }
             };
+            // `Scene3DBegin`: clear the depth buffer, and the colour if asked.
+            let (load, depth_ops) = match pass_desc.scene {
+                Some(c) => (
+                    match c {
+                        Some(c) => wgpu::LoadOp::Clear(wgpu::Color { r: f64::from(c[0]), g: f64::from(c[1]), b: f64::from(c[2]), a: f64::from(c[3]) }),
+                        None => load,
+                    },
+                    Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                ),
+                None => (load, depth_ops),
+            };
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("sprites"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1113,6 +1151,19 @@ impl Gpu {
                     pass.set_bind_group(1, &t.binds[outline::THICK_V as usize], &[]);
                     pass.set_bind_group(2, &t.binds[outline::MASK as usize], &[]);
                     pass.draw(0..3, 0..1);
+                    continue;
+                }
+                if let Some((u, kind)) = b.world3d {
+                    let Some(p) = self.world3d.pipelines.get(&kind) else { continue };
+                    let tex = b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white);
+                    set_viewport(&mut pass, b, tw, th, pass_desc.target != PassTarget::Main);
+                    pass.set_scissor_rect(sx, sy, sw, sh);
+                    pass.set_pipeline(p);
+                    pass.set_bind_group(0, &w3bind, &[u * world3d::STRIDE as u32]);
+                    pass.set_bind_group(1, tex, &[]);
+                    pass.set_vertex_buffer(0, w3vbuf.slice(..));
+                    pass.draw(b.indices.clone(), 0..1);
+                    pass.set_vertex_buffer(0, vbuf.slice(..));
                     continue;
                 }
                 if let Some((key, mesh, u, ids)) = b.vehicle {
@@ -1307,7 +1358,7 @@ impl Gpu {
                 // StartFrameFlipY: glViewport(0, 0, w, h).
                 f.origin = (0, 0);
                 f.target = PassTarget::Chunk(*id);
-                f.passes.push(PassDesc { target: f.target, clear: *clear, mipmaps: false, batches: f.batches.len()..f.batches.len() });
+                f.passes.push(PassDesc { target: f.target, clear: *clear, mipmaps: false, scene: None, batches: f.batches.len()..f.batches.len() });
             }
             DrawCmd::ChunkEnd => {
                 // FBORenderChunk.endRenderThread: glGenerateMipmap.
@@ -1355,7 +1406,7 @@ impl Gpu {
                     f.fx_return = f.target;
                 }
                 f.target = PassTarget::WeatherFx(i);
-                f.passes.push(PassDesc { target: f.target, clear: true, mipmaps: false, batches: f.batches.len()..f.batches.len() });
+                f.passes.push(PassDesc { target: f.target, clear: true, mipmaps: false, scene: None, batches: f.batches.len()..f.batches.len() });
             }
             DrawCmd::WeatherFxEnd => f.target = f.fx_return,
             DrawCmd::FogCircle { sprite, width, height } => {
@@ -1436,7 +1487,7 @@ impl Gpu {
                 f.vis_uniforms.push(vispoly::Uniforms { mvp, a: [0.0; 4], b: [0.0; 4], c: [0.0; 4], d: [0.0; 4] });
                 let uniform = (f.vis_uniforms.len() - 1) as u32;
                 let at = f.batches.len();
-                f.passes.push(PassDesc { target: PassTarget::VisBlur, clear: true, mipmaps: false, batches: at..at });
+                f.passes.push(PassDesc { target: PassTarget::VisBlur, clear: true, mipmaps: false, scene: None, batches: at..at });
                 f.push_vision(vispoly::Op::Polygon { start, end, uniform }, &self.state);
                 f.target = back;
                 // renderToScreen over the player's screen rectangle.
@@ -1531,7 +1582,7 @@ impl Gpu {
                     wind: v3(u.wind),
                 });
                 let at = f.batches.len();
-                f.passes.push(PassDesc { target: PassTarget::Sky(id, f.sky.len() - 1), clear: true, mipmaps: false, batches: at..at });
+                f.passes.push(PassDesc { target: PassTarget::Sky(id, f.sky.len() - 1), clear: true, mipmaps: false, scene: None, batches: at..at });
             }
             DrawCmd::VehicleModel(d) => {
                 if !self.vehicles.meshes.contains_key(&d.base.mesh.id) {
@@ -1560,7 +1611,7 @@ impl Gpu {
                 }
                 f.target = PassTarget::Outline(outline::MASK);
                 let at = f.batches.len();
-                f.passes.push(PassDesc { target: f.target, clear: *clear, mipmaps: false, batches: at..at });
+                f.passes.push(PassDesc { target: f.target, clear: *clear, mipmaps: false, scene: None, batches: at..at });
             }
             DrawCmd::OutlineEnd => f.target = f.outline_return,
             DrawCmd::OutlineModel { draw, color } => {
@@ -1607,7 +1658,7 @@ impl Gpu {
                 for (i, vertical) in [(outline::THICK_H, false), (outline::THICK_V, true)] {
                     f.target = PassTarget::Outline(i);
                     let at = f.batches.len();
-                    f.passes.push(PassDesc { target: f.target, clear: true, mipmaps: false, batches: at..at });
+                    f.passes.push(PassDesc { target: f.target, clear: true, mipmaps: false, scene: None, batches: at..at });
                     f.push_outline(outline::Op::Thicken { vertical, uniform }, &self.state);
                 }
                 f.target = back;
@@ -1691,6 +1742,24 @@ impl Gpu {
                 let v: [Vertex; 4] = std::array::from_fn(|i| Vertex { pos: [pos[i][0], pos[i][1]], uv: uv[i], color: 0, uv1: [color[0], color[1]], uv2: [color[2], color[3]], depth: [pos[i][2], 0.0] });
                 let key = self.key(f, Program::ProjectedF32);
                 f.push(key, Some(id), if *nearest { Tex2::Nearest } else { Tex2::None }, &self.state, g, v);
+            }
+            DrawCmd::Scene3DBegin { view_proj, clear } => {
+                let mut m = *view_proj;
+                if f.target != PassTarget::Main {
+                    for col in &mut m {
+                        col[1] = -col[1];
+                    }
+                }
+                f.w3d_uniforms.push(m);
+                f.scene3d = Some((f.w3d_uniforms.len() - 1) as u32);
+                let at = f.batches.len();
+                f.passes.push(PassDesc { target: f.target, clear: false, mipmaps: false, scene: Some(*clear), batches: at..at });
+            }
+            DrawCmd::Scene3DEnd => f.scene3d = None,
+            DrawCmd::Quad3D { texture, pos, uv, color } => {
+                let Some(u) = f.scene3d else { return };
+                let v: [world3d::World3dVertex; 4] = std::array::from_fn(|i| world3d::World3dVertex { pos: pos[i], uv: uv[i], color: color[i] });
+                f.push_quad3d(u, texture.id, v, &self.state);
             }
             DrawCmd::VboRun(run) => self.record_vbo_run(f, run),
             DrawCmd::PushAttrib => self.state_stack.push(self.state.clone()),
@@ -2212,6 +2281,10 @@ struct FrameBuilder {
     /// `VisibilityPolygon2`'s polygon vertices and uniform blocks.
     vis_vertices: Vec<[f32; 5]>,
     vis_uniforms: Vec<vispoly::Uniforms>,
+    /// `Scene3DBegin` view-projections, the open scene's index and the scene quads' vertices.
+    w3d_uniforms: Vec<[[f32; 4]; 4]>,
+    scene3d: Option<u32>,
+    w3d_vertices: Vec<world3d::World3dVertex>,
 }
 
 impl Default for FrameBuilder {
@@ -2239,6 +2312,9 @@ impl Default for FrameBuilder {
             outline_uniforms: Vec::new(),
             vis_vertices: Vec::new(),
             vis_uniforms: Vec::new(),
+            w3d_uniforms: Vec::new(),
+            scene3d: None,
+            w3d_vertices: Vec::new(),
         }
     }
 }
@@ -2273,7 +2349,7 @@ impl FrameBuilder {
     fn push_vehicle(&mut self, key: vehicle::VehicleKey, mesh: u64, uniform: u32, textures: [u32; 10], st: &GlState) {
         if self.passes.last().is_none_or(|p| p.target != self.target) {
             let at = self.batches.len();
-            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
+            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, scene: None, batches: at..at });
         }
         let at = self.indices.len() as u32;
         self.batches.push(Batch {
@@ -2285,6 +2361,7 @@ impl FrameBuilder {
             vehicle: Some((key, mesh, uniform, textures)),
             outline: None,
             vision: None,
+            world3d: None,
             stencil_ref: st.stencil_ref,
             scissor: st.scissor_box(),
             globals: 0,
@@ -2310,7 +2387,7 @@ impl FrameBuilder {
     fn push_outline(&mut self, op: outline::Op, st: &GlState) {
         if self.passes.last().is_none_or(|p| p.target != self.target) {
             let at = self.batches.len();
-            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
+            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, scene: None, batches: at..at });
         }
         let at = self.indices.len() as u32;
         self.batches.push(Batch {
@@ -2322,6 +2399,7 @@ impl FrameBuilder {
             vehicle: None,
             outline: Some(op),
             vision: None,
+            world3d: None,
             stencil_ref: st.stencil_ref,
             scissor: st.scissor_box(),
             globals: 0,
@@ -2336,7 +2414,7 @@ impl FrameBuilder {
     fn push_vision(&mut self, op: vispoly::Op, st: &GlState) {
         if self.passes.last().is_none_or(|p| p.target != self.target) {
             let at = self.batches.len();
-            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
+            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, scene: None, batches: at..at });
         }
         let at = self.indices.len() as u32;
         self.batches.push(Batch {
@@ -2348,6 +2426,7 @@ impl FrameBuilder {
             vehicle: None,
             outline: None,
             vision: Some(op),
+            world3d: None,
             stencil_ref: st.stencil_ref,
             scissor: st.scissor_box(),
             globals: 0,
@@ -2358,11 +2437,48 @@ impl FrameBuilder {
         self.passes.last_mut().expect("pass").batches.end = self.batches.len();
     }
 
+    /// A 3D scene quad, batched with the previous one on the same texture and scene.
+    fn push_quad3d(&mut self, uniform: u32, texture: Option<u32>, verts: [world3d::World3dVertex; 4], st: &GlState) {
+        if self.passes.last().is_none_or(|p| p.target != self.target) {
+            let at = self.batches.len();
+            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, scene: None, batches: at..at });
+        }
+        let start = self.w3d_vertices.len() as u32;
+        self.w3d_vertices.extend_from_slice(&world3d::fan(verts));
+        let end = self.w3d_vertices.len() as u32;
+        let kind = self.target.kind();
+        let (scissor, viewport, origin) = (st.scissor_box(), self.viewport, self.origin);
+        let pass = self.passes.last_mut().expect("pass");
+        match self.batches.last_mut() {
+            Some(b) if pass.batches.end > pass.batches.start && b.world3d == Some((uniform, kind)) && b.texture == texture && b.scissor == scissor && b.viewport == viewport && b.origin == origin && b.indices.end == start => b.indices.end = end,
+            _ => {
+                self.batches.push(Batch {
+                    key: st.pipe_key(),
+                    texture,
+                    tex2: Tex2::None,
+                    tex3: None,
+                    model: None,
+                    vehicle: None,
+                    outline: None,
+                    vision: None,
+                    world3d: Some((uniform, kind)),
+                    stencil_ref: st.stencil_ref,
+                    scissor,
+                    globals: 0,
+                    viewport,
+                    origin,
+                    indices: start..end,
+                });
+                pass.batches.end = self.batches.len();
+            }
+        }
+    }
+
     /// A model draw as its own batch.
     fn push_model(&mut self, key: model::ModelKey, mesh: u64, uniform: u32, texture: Option<u32>, st: &GlState) {
         if self.passes.last().is_none_or(|p| p.target != self.target) {
             let at = self.batches.len();
-            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
+            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, scene: None, batches: at..at });
         }
         let at = self.indices.len() as u32;
         self.batches.push(Batch {
@@ -2374,6 +2490,7 @@ impl FrameBuilder {
             vehicle: None,
             outline: None,
             vision: None,
+            world3d: None,
             stencil_ref: st.stencil_ref,
             scissor: st.scissor_box(),
             globals: 0,
@@ -2403,7 +2520,7 @@ impl FrameBuilder {
     fn push_indexed(&mut self, key: PipeKey, texture: Option<u32>, tex2: Tex2, st: &GlState, globals: u32, verts: &[Vertex], idx: &[u32]) {
         if self.passes.last().is_none_or(|p| p.target != self.target) {
             let at = self.batches.len();
-            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
+            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, scene: None, batches: at..at });
         }
         let (stencil_ref, scissor) = (st.stencil_ref, st.scissor_box());
         let viewport = self.viewport;
@@ -2425,6 +2542,7 @@ impl FrameBuilder {
                     && b.model.is_none()
                     && b.outline.is_none()
                     && b.vision.is_none()
+                    && b.world3d.is_none()
                     && b.stencil_ref == stencil_ref
                     && b.scissor == scissor
                     && b.globals == globals
@@ -2435,7 +2553,7 @@ impl FrameBuilder {
                 b.indices.end = end
             }
             _ => {
-                self.batches.push(Batch { model: None, vehicle: None, outline: None, vision: None, key, texture, tex2, tex3, stencil_ref, scissor, globals, viewport, origin, indices: start..end });
+                self.batches.push(Batch { model: None, vehicle: None, outline: None, vision: None, world3d: None, key, texture, tex2, tex3, stencil_ref, scissor, globals, viewport, origin, indices: start..end });
                 pass.batches.end = self.batches.len();
             }
         }
@@ -2533,3 +2651,6 @@ mod sampled_sprite_tests;
 #[cfg(test)]
 #[path = "screen_tests.rs"]
 mod screen_tests;
+
+#[cfg(test)]
+mod world3d_tests;
