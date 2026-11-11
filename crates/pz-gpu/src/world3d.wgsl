@@ -1,5 +1,9 @@
 // Perspective 3D scene quads (first-person view): position, uv and an
 // ABGR vertex colour multiplied with the texel.
+//
+// Sprites are magnified with a dedicated nearest sampler (group 2) so that
+// transparent texels' colour never bleeds into edges. Coverage is an alpha
+// test: texels below 0.5 alpha are discarded and the rest are opaque.
 
 struct Scene {
     view_proj: mat4x4<f32>,
@@ -7,7 +11,7 @@ struct Scene {
 
 @group(0) @binding(0) var<uniform> scene: Scene;
 @group(1) @binding(0) var tex: texture_2d<f32>;
-@group(1) @binding(1) var tex_sampler: sampler;
+@group(2) @binding(0) var tex_sampler: sampler;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -28,9 +32,11 @@ fn vs_main(@location(0) pos: vec3<f32>, @location(1) uv: vec2<f32>, @location(2)
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let t = textureSample(tex, tex_sampler, in.uv) * in.color;
-    if (t.a < 0.01) {
+    // The test is on the texel's own alpha: the vertex colour is light.
+    let texel = textureSample(tex, tex_sampler, in.uv);
+    let t = vec4<f32>(texel.rgb * in.color.rgb, texel.a);
+    if (t.a < 0.5) {
         discard;
     }
-    return t;
+    return vec4<f32>(t.rgb, 1.0);
 }

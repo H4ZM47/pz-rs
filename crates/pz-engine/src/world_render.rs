@@ -40,6 +40,11 @@ const MAX_PLAYERS: usize = 4;
 /// Port extension: how many chunks around the player the 3D view draws
 /// (6 = 13 x 13 chunks, about 50 squares each way).
 const VIEW3D_CHUNK_RADIUS: i32 = 6;
+/// Port extension: in third person, walls whose centre is closer than this
+/// (model units) to the camera are not drawn.
+const VIEW3D_NEAR_WALL: f32 = 0.9;
+/// Port extension: the lift between stacked flat faces on one square.
+const VIEW3D_FLOOR_LAYER_LIFT: f32 = 0.004;
 /// LWJGL key codes the 3D view reads.
 const KEY_O: usize = 24;
 const KEY_LSHIFT: usize = 42;
@@ -222,6 +227,19 @@ impl WorldRender {
                         let start = faces.len();
                         pz_world3d::mesh::square_faces(sq, origin, &mut faces);
                         self.view3d_relight(v, eye_level, sq, &mut faces[start..]);
+                        // Rugs and other floor-layer sprites lie on the
+                        // floor: lift each later flat face a little so it
+                        // does not z-fight the one under it.
+                        let mut layer = 0.0;
+                        for f in &mut faces[start..] {
+                            let y = f.pos[0][1];
+                            if f.pos.iter().all(|p| (p[1] - y).abs() < 1.0e-4) {
+                                for p in &mut f.pos {
+                                    p[1] += layer;
+                                }
+                                layer += VIEW3D_FLOOR_LAYER_LIFT;
+                            }
+                        }
                     }
                 }
             }
@@ -449,6 +467,16 @@ impl WorldRender {
         } else {
             None
         };
+        // Third person: walls right at the camera would fill the frame.
+        let mut faces = faces;
+        if let (Some(c3), pz_world3d::ViewMode::ThirdPerson) = (&cam3, self.view3d.mode) {
+            faces.retain(|f| {
+                let vertical = (f.pos[0][1] - f.pos[2][1]).abs() > 1.0e-4;
+                let cx = f.pos.iter().map(|p| p[0]).sum::<f32>() / 4.0;
+                let cz = f.pos.iter().map(|p| p[2]).sum::<f32>() / 4.0;
+                !(vertical && (cx - c3.eye[0]).hypot(cz - c3.eye[2]) < VIEW3D_NEAR_WALL)
+            });
+        }
         let first_person = p == 0 && self.view3d.mode == pz_world3d::ViewMode::FirstPerson;
         let aspect = v.width as f32 / v.height.max(1) as f32;
         // TODO(port): corpses, world items, the water and sky surfaces

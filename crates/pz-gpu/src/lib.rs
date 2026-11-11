@@ -1161,6 +1161,7 @@ impl Gpu {
                     pass.set_pipeline(p);
                     pass.set_bind_group(0, &w3bind, &[u * world3d::STRIDE as u32]);
                     pass.set_bind_group(1, tex, &[]);
+                    pass.set_bind_group(2, &self.world3d.sampler_bind, &[]);
                     pass.set_vertex_buffer(0, w3vbuf.slice(..));
                     pass.draw(b.indices.clone(), 0..1);
                     pass.set_vertex_buffer(0, vbuf.slice(..));

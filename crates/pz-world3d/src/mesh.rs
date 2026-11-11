@@ -6,8 +6,8 @@
 //! sprite's pixel frame (see [`uv_of`]) reproduces the sprite, including
 //! its transparent pixels.
 //!
-//! Faces whose projection leaves the (trimmed) texture rectangle are
-//! clipped to it so they never sample neighbouring atlas content.
+//! Floors and walls keep their full geometry with UVs clamped into the
+//! (trimmed) texture; cards are clipped to the texture rectangle.
 
 use pz_iso_render::{RenderObject, RenderSquare, SpriteInfo, TileType};
 use pz_render::iso::{x_to_screen, y_to_screen, TILE_SCALE};
@@ -158,10 +158,11 @@ struct Ctx<'a> {
 }
 
 /// Emits the quad `p` (world corners, in `(s,t)` order `(0,0) (1,0) (1,1)
-/// (0,1)`), textured from the sprite and clipped to the texture rectangle.
-/// With `inset`, the sampled region is pulled in from the quad edges (see
-/// [`EDGE_INSET`]).
-fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4], inset: bool) {
+/// (0,1)`), textured from the sprite. With `fill` (floors and walls) the
+/// sampled region is pulled in from the quad edges (see [`EDGE_INSET`]) and
+/// UVs are clamped into the texture; otherwise the face is clipped to the
+/// texture rectangle.
+fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4], fill: bool) {
     let (tex, sprite, obj) = (c.tex, c.sprite, c.obj);
     if tex.width == 0 || tex.height == 0 || !tex.ready {
         return;
@@ -184,8 +185,29 @@ fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4]
             }
         })
         .collect();
-    if inset {
+    if fill {
         inset_fracs(tex, &mut verts);
+    }
+    if fill {
+        // Floors and walls keep their full geometry; UVs are clamped into
+        // the texture rectangle, half a texel in, so a trimmed texture never
+        // leaves gaps and filtering never reads neighbouring atlas texels.
+        let (hx, hy) = (0.5 / tex.width as f32, 0.5 / tex.height as f32);
+        let pos = [0, 1, 2, 3].map(|i| to_model(p[i], c.origin));
+        let uv = [0, 1, 2, 3].map(|i| {
+            let f = [
+                verts[i].f[0].clamp(hx, 1.0 - hx),
+                verts[i].f[1].clamp(hy, 1.0 - hy),
+            ];
+            uv_from_frac(tex, obj, f)
+        });
+        out.push(Face {
+            texture: tex.clone(),
+            pos,
+            uv,
+            color,
+        });
+        return;
     }
     let eps = 1e-3;
     if verts
@@ -250,10 +272,24 @@ enum Kind {
     Card,
 }
 
-fn classify(sprite: &SpriteInfo) -> Kind {
+/// Whether the iso renderer draws the object with `render_floor`: the Floor
+/// and TranslucentFloor layers of `cell::object_layer` (cell.rs:62-83), i.e.
+/// `solidfloor` or `render_layer == 1` (not sloped, not fire) and
+/// `transparent_floor`; the floor-like sprite flags are kept too.
+fn is_floor(sprite: &SpriteInfo, obj: &RenderObject) -> bool {
+    let f = &sprite.flags;
+    if f.floor_overlay || f.diamond_floor || f.water || f.transparent_floor {
+        return true;
+    }
+    (f.solidfloor || sprite.render_layer == 1)
+        && !sprite.sloped
+        && obj.kind != pz_iso_render::ObjectKind::Fire
+}
+
+fn classify(sprite: &SpriteInfo, obj: &RenderObject) -> Kind {
     let f = &sprite.flags;
     let t = sprite.tile_type;
-    if f.solidfloor || f.floor_overlay || f.diamond_floor || f.water {
+    if is_floor(sprite, obj) {
         Kind::Floor
     } else if f.wall_nw {
         Kind::WallNW
@@ -325,7 +361,7 @@ pub fn square_faces(sq: &RenderSquare, origin: [f32; 3], out: &mut Vec<Face>) {
             ];
             push_face(out, &c, p, lit([v[0], v[3], v[7], v[4]]), true);
         };
-        match classify(sprite) {
+        match classify(sprite, obj) {
             Kind::Floor => {
                 let p = [
                     [x, y, z],
@@ -553,32 +589,63 @@ mod tests {
     }
 
     #[test]
-    fn trimmed_wall_is_clipped_to_texture() {
+    fn trimmed_wall_keeps_geometry_and_clamps_uvs() {
         let mut t = tex(128, 64, 0.0, 192.0, (128, 256));
         t.y_start = 0.5;
         t.y_end = 0.75;
         let (sq, _) = sq_with(t, |s| s.flags.wall_n = true);
         let mut out = Vec::new();
         square_faces(&sq, O, &mut out);
-        assert!(!out.is_empty());
-        for f in &out {
-            for uv in f.uv {
-                assert!(
-                    uv[0] >= -1e-4
-                        && uv[0] <= 1.0 + 1e-4
-                        && uv[1] >= 0.5 - 1e-4
-                        && uv[1] <= 0.75 + 1e-4,
-                    "{uv:?}"
-                );
-            }
-            for p in f.pos {
-                // Only the bottom of the wall (up to 64px = 1/3 level) shows.
-                assert!(
-                    p[1] >= -1e-4 && p[1] <= crate::LEVEL_HEIGHT / 3.0 + 1e-3,
-                    "{p:?}"
-                );
-            }
+        assert_eq!(out.len(), 1);
+        let f = &out[0];
+        // Full wall height is kept.
+        assert_eq!(f.pos[2], [-1.0, crate::LEVEL_HEIGHT, 0.0]);
+        assert_eq!(f.pos[3], [0.0, crate::LEVEL_HEIGHT, 0.0]);
+        let (hx, hy) = (0.5 / 128.0, 0.5 / 64.0 * 0.25);
+        for uv in f.uv {
+            assert!(
+                uv[0] >= hx - 1e-6
+                    && uv[0] <= 1.0 - hx + 1e-6
+                    && uv[1] >= 0.5 + hy - 1e-6
+                    && uv[1] <= 0.75 - hy + 1e-6,
+                "{uv:?}"
+            );
         }
+    }
+
+    #[test]
+    fn trimmed_floor_keeps_geometry_and_clamps_uvs() {
+        let mut t = tex(128, 32, 0.0, 192.0, (128, 256));
+        t.y_start = 0.0;
+        t.y_end = 0.5;
+        let (sq, _) = sq_with(t, |s| s.flags.solidfloor = true);
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert_eq!(out.len(), 1);
+        let f = &out[0];
+        assert_eq!(f.pos[2], [-1.0, 0.0, -1.0]);
+        let hy = 0.5 / 32.0 * 0.5;
+        for uv in f.uv {
+            assert!(uv[1] >= hy - 1e-6 && uv[1] <= 0.5 - hy + 1e-6, "{uv:?}");
+        }
+    }
+
+    #[test]
+    fn render_layer_one_object_is_horizontal() {
+        let (sq, _) = sq_with(full(), |s| s.render_layer = 1);
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].pos.iter().all(|p| p[1] == 0.0));
+        assert_eq!(out[0].pos[2], [-1.0, 0.0, -1.0]);
+        // Sloped objects are not drawn as floors.
+        let (sq, _) = sq_with(full(), |s| {
+            s.render_layer = 1;
+            s.sloped = true;
+        });
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(out[0].pos.iter().any(|p| p[1] != 0.0));
     }
 
     #[test]

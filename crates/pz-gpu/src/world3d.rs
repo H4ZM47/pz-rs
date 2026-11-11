@@ -27,6 +27,8 @@ pub struct World3dPipelines {
     module: wgpu::ShaderModule,
     pub uniform_layout: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
+    /// Nearest-magnification sampler, bound at group 2 for every quad.
+    pub sampler_bind: wgpu::BindGroup,
     pub pipelines: HashMap<TargetKind, wgpu::RenderPipeline>,
 }
 
@@ -42,8 +44,30 @@ impl World3dPipelines {
                 count: None,
             }],
         });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("world3d"), bind_group_layouts: &[Some(&uniform_layout), Some(texture_layout)], immediate_size: 0 });
-        World3dPipelines { module, uniform_layout, layout, pipelines: HashMap::new() }
+        let sampler_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("world3d sampler"),
+            entries: &[wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None }],
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("world3d nearest"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let sampler_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("world3d sampler"),
+            layout: &sampler_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&sampler) }],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("world3d"),
+            bind_group_layouts: &[Some(&uniform_layout), Some(texture_layout), Some(&sampler_layout)],
+            immediate_size: 0,
+        });
+        World3dPipelines { module, uniform_layout, layout, sampler_bind, pipelines: HashMap::new() }
     }
 
     pub fn ensure(&mut self, device: &wgpu::Device, main_format: wgpu::TextureFormat, target: TargetKind) {
@@ -55,7 +79,6 @@ impl World3dPipelines {
             TargetKind::Offscreen => (state::OFFSCREEN_COLOR_FORMAT, state::DEPTH_STENCIL_FORMAT),
             TargetKind::Chunk => (state::CHUNK_COLOR_FORMAT, state::CHUNK_DEPTH_FORMAT),
         };
-        let comp = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add };
         let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("world3d"),
             layout: Some(&self.layout),
@@ -82,7 +105,7 @@ impl World3dPipelines {
                 module: &self.module,
                 entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState { color: comp, alpha: comp }), write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
             }),
             multiview_mask: None,
             cache: None,

@@ -91,3 +91,31 @@ fn transparent_texels_are_discarded() {
     let p = g.read_pixels();
     assert_eq!(px(&p, 16, 8, 8), [0, 255, 0, 255]);
 }
+
+#[test]
+fn texel_below_half_alpha_is_discarded() {
+    let Some(mut g) = gpu(16, 16) else { return };
+    let mut tm = TextureManager::new();
+    let white = tm.white();
+    // Alpha 76/255 = 0.30.
+    let faint = tm.texture_from_pixels("faint3d", 1, 1, vec![255, 255, 255, 76], 0);
+    let mut dl = DrawList::default();
+    dl.cmds.extend([begin(), quad(-3.0, 0.9, &white, GREEN), quad(-1.5, 0.5, &faint, RED), DrawCmd::Scene3DEnd]);
+    g.render_frame(&[(params(), &dl)], &mut tm);
+    let p = g.read_pixels();
+    assert_eq!(px(&p, 16, 8, 8), [0, 255, 0, 255]);
+}
+
+#[test]
+fn texel_above_half_alpha_draws_opaque() {
+    let Some(mut g) = gpu(16, 16) else { return };
+    let mut tm = TextureManager::new();
+    let white = tm.white();
+    // Alpha 179/255 = 0.70; colour comes out opaque, not blended with the far quad.
+    let solid = tm.texture_from_pixels("solid3d", 1, 1, vec![255, 255, 255, 179], 0);
+    let mut dl = DrawList::default();
+    dl.cmds.extend([begin(), quad(-3.0, 0.9, &white, GREEN), quad(-1.5, 0.5, &solid, RED), DrawCmd::Scene3DEnd]);
+    g.render_frame(&[(params(), &dl)], &mut tm);
+    let p = g.read_pixels();
+    assert_eq!(px(&p, 16, 8, 8), [255, 0, 0, 255]);
+}
