@@ -1181,26 +1181,55 @@ impl IsoWorld {
 
     /// `new WorldGenChunk(seed)`, the biome map and the map's `WorldGen`
     /// zones (`IsoChunk.LoadBrandNew`'s world generation).
-    /// `Basements.beforeLoadMetaGrid()` for a world without
-    /// `map_basements.bin`: the definitions `basements.lua` and the
-    /// `Basement` zones registered on `OnLoadMapZones`, their `.pzby`
-    /// headers, the placements (seeded by the world-generation seed) and
-    /// their buildings in the lot headers and the meta grid.
+    /// `Basements.beforeLoadMetaGrid()`: the definitions `basements.lua`
+    /// and the `Basement` zones registered on `OnLoadMapZones`. A world with
+    /// `map_basements.bin` takes its placements and buildings from it;
+    /// otherwise the definitions' `.pzby` headers are loaded, the
+    /// placements calculated (seeded by the world-generation seed), their
+    /// buildings created and the file written (unless saving is off). Either
+    /// way the buildings then go to the lot headers and the meta grid.
     fn before_load_meta_grid(&mut self) {
-        // TODO(port): `loadSavefile()` / `writeSavefile()`
-        // (`map_basements.bin`): a loaded world recomputes the placements.
         let mut b =
             pz_worldgen::basements::Basements::new(Rc::new(pz_fs::GameFs::new(&self.game_dir)));
         b.per_map = pz_lua_api::bind_basements::take_per_map();
-        b.load_headers(&mut self.rand);
-        let seed = self.world_gen_params.borrow().seed();
-        let rand = &mut self.rand;
-        with_world(|w| {
-            if let Some(meta) = w.meta_grid.as_mut() {
-                b.calculate_placements(meta, seed);
-                b.meta_buildings = b.add_buildings_to_meta_grid(meta, rand);
+        let file = self.file_in_save(pz_worldgen::basements::SAVEFILE_NAME);
+        let loaded = match b.load_savefile(&file) {
+            Ok(l) => l,
+            Err(e) => {
+                // `ExceptionLogger.logException`; the world recomputes.
+                self.log_error(format!("Basements.loadSavefile: {e}"));
+                b.placements.clear();
+                b.buildings.clear();
+                false
             }
-        });
+        };
+        let rand = &mut self.rand;
+        if loaded {
+            with_world(|w| {
+                if let Some(meta) = w.meta_grid.as_mut() {
+                    b.meta_buildings = b.add_building_defs_to_meta_grid(meta, rand);
+                }
+            });
+        } else {
+            b.load_headers(rand);
+            let seed = self.world_gen_params.borrow().seed();
+            let no_save = pz_lua_api::bind_core::shared_core().borrow().is_no_save();
+            let mut write_err = None;
+            with_world(|w| {
+                if let Some(meta) = w.meta_grid.as_mut() {
+                    b.calculate_placements(meta, seed);
+                    b.create_building_defs(meta);
+                    // `writeSavefile()`.
+                    if !no_save {
+                        write_err = b.write_savefile(&file).err();
+                    }
+                    b.meta_buildings = b.add_building_defs_to_meta_grid(meta, rand);
+                }
+            });
+            if let Some(e) = write_err {
+                self.log_error(format!("Basements.writeSavefile: {e}"));
+            }
+        }
         for e in std::mem::take(&mut b.errors) {
             self.log_error(format!("Basements: {e}"));
         }
