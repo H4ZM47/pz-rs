@@ -348,9 +348,26 @@ fn is_floor(sprite: &SpriteInfo, obj: &RenderObject) -> bool {
     if f.floor_overlay || f.diamond_floor || f.water || f.transparent_floor {
         return true;
     }
-    (f.solidfloor || sprite.render_layer == 1)
+    if (f.solidfloor || sprite.render_layer == 1)
         && !sprite.sloped
         && obj.kind != pz_iso_render::ObjectKind::Fire
+    {
+        return true;
+    }
+    // Port extension: rugs carry only `attachedFloor`. One whose pixels all
+    // lie within the floor diamond's rows is drawn flat on the floor (as a
+    // card it would be a sliver a sixth of a level tall).
+    sprite.attached_floor && !sprite.sloped && lies_in_floor_diamond(sprite, obj)
+}
+
+/// Whether the sprite's trimmed texture starts at or below the top row of
+/// the square's floor diamond (allowing a pixel of slack).
+fn lies_in_floor_diamond(sprite: &SpriteInfo, obj: &RenderObject) -> bool {
+    let Some(tex) = sprite.texture.as_ref() else {
+        return false;
+    };
+    let top = off_y(obj) - sprite.soff_y as f32;
+    tex.offset_y * frame_scale(tex) >= top - 1.0
 }
 
 /// Whether the sprite is drawn on a north or west wall plane.
@@ -871,6 +888,33 @@ mod tests {
                 assert!(p[0] + p[2] > -1.0 - 1e-4, "{p:?}");
             }
         }
+    }
+
+    #[test]
+    fn attached_floor_rug_lies_flat() {
+        // A rug piece: only `attachedFloor`, pixels in the diamond rows.
+        let mut t = tex(100, 53, 26.0, 203.0, (128, 256));
+        t.y_start = 0.0;
+        t.y_end = 1.0;
+        let (mut sq, _) = sq_with(t, |s| s.attached_floor = true);
+        sq.objects[0].offset_y = 192.0;
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(!out.is_empty());
+        for f in &out {
+            for p in f.pos {
+                assert!(p[1].abs() < 1e-5, "{p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn attached_floor_sprite_reaching_above_the_floor_stays_a_card() {
+        let (mut sq, _) = sq_with(full(), |s| s.attached_floor = true);
+        sq.objects[0].offset_y = 192.0;
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(out.iter().flat_map(|f| f.pos).any(|p| p[1] > 0.1));
     }
 
     #[test]
