@@ -6,13 +6,19 @@
 //! - The packet type table every game message is framed with
 //!   (`zombie.network.PacketTypes`) and the role capabilities it checks
 //!   (`zombie.characters.Capability`).
-//! - [`raknet`]: a pure-Rust RakNet transport replacing the native library.
+//! - [`raknet`]: a pure-Rust RakNet transport replacing the native library,
+//!   and [`client`], a client connection over a UDP socket.
+//! - [`buffer`] and [`packets`]: game packet bodies in the original's byte
+//!   layout.
 
 pub mod account_db;
+pub mod buffer;
 pub mod capability;
+pub mod client;
 pub mod crypt;
 pub mod datetime;
 pub mod packet_types;
+pub mod packets;
 pub mod raknet;
 pub mod server;
 
