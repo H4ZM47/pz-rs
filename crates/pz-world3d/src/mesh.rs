@@ -272,6 +272,9 @@ enum Kind {
     WallNW,
     /// A stair piece: a ramp rising toward the north or west edge.
     Stairs(StairPart),
+    /// A roof piece: a plane over the square with these corner heights
+    /// (levels; NW, NE, SE, SW), fitted from the sprite's depth map.
+    Roof([f32; 4]),
     Card,
 }
 
@@ -325,6 +328,24 @@ fn is_floor(sprite: &SpriteInfo, obj: &RenderObject) -> bool {
         && obj.kind != pz_iso_render::ObjectKind::Fire
 }
 
+/// Whether the sprite is drawn on a north or west wall plane.
+fn is_wall(sprite: &SpriteInfo) -> bool {
+    let f = &sprite.flags;
+    f.wall_nw
+        || f.wall_n
+        || f.wall_w
+        || f.door_wall_n
+        || f.door_wall_w
+        || f.window_n
+        || f.window_w
+        || f.door_n
+        || f.door_w
+        || matches!(
+            sprite.tile_type,
+            TileType::DoorFrN | TileType::DoorN | TileType::DoorFrW | TileType::DoorW
+        )
+}
+
 fn classify(sprite: &SpriteInfo, obj: &RenderObject) -> Kind {
     match classify_closed(sprite, obj) {
         // An open hinged door keeps its closed door's flags and tile type
@@ -350,6 +371,8 @@ fn classify_closed(sprite: &SpriteInfo, obj: &RenderObject) -> Kind {
         Kind::Stairs(part)
     } else if is_floor(sprite, obj) {
         Kind::Floor
+    } else if let (Some(h), false) = (sprite.roof_plane, is_wall(sprite)) {
+        Kind::Roof(h)
     } else if f.wall_nw {
         Kind::WallNW
     } else if f.wall_n
@@ -435,6 +458,15 @@ pub fn square_faces(sq: &RenderSquare, origin: [f32; 3], out: &mut Vec<Face>) {
             Kind::WallNW => {
                 north(out);
                 west(out);
+            }
+            Kind::Roof(h) => {
+                let p = [
+                    [x, y, z + h[0]],
+                    [x + 1.0, y, z + h[1]],
+                    [x + 1.0, y + 1.0, z + h[2]],
+                    [x, y + 1.0, z + h[3]],
+                ];
+                push_face(out, &c, p, lit([v[0], v[1], v[2], v[3]]), false);
             }
             Kind::Stairs(part) => {
                 let p = stair_quad(x, y, z, part);
@@ -627,6 +659,36 @@ mod tests {
                 assert!((p[1] - expect).abs() < 1e-4, "{p:?}");
             }
         }
+    }
+
+    #[test]
+    fn roof_follows_its_fitted_plane() {
+        // Rising from 0 at the east edge to 1/3 at the west edge.
+        let h = [1.0 / 3.0, 0.0, 0.0, 1.0 / 3.0];
+        let (sq, _) = sq_with(full(), |s| s.roof_plane = Some(h));
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(!out.is_empty());
+        let third = crate::LEVEL_HEIGHT / 3.0;
+        for f in &out {
+            for p in f.pos {
+                // Model x = -(world x - origin x): west edge 0, east edge -1.
+                let expect = third * (1.0 + p[0]);
+                assert!((p[1] - expect).abs() < 1e-4, "{p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn wall_flags_win_over_a_roof_plane() {
+        let (sq, _) = sq_with(full(), |s| {
+            s.flags.wall_n = true;
+            s.roof_plane = Some([0.0; 4]);
+        });
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].pos[2][1], crate::LEVEL_HEIGHT);
     }
 
     #[test]
