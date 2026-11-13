@@ -587,7 +587,7 @@ impl InputScript {
 /// `item.isUsedInBuildRecipes = true` for a buildable recipe. A recipe
 /// always has its name by the time its inputs resolve.
 fn mark_used_in_recipe(item: &ScriptRef, recipe_name: Option<&str>, buildable: bool) {
-    let Some(item) = item.downcast::<crate::objects::items::item::Item>() else {
+    let Some(item) = item.downcast::<crate::objects::items::Item>() else {
         return;
     };
     let mut item = item.borrow_mut();
