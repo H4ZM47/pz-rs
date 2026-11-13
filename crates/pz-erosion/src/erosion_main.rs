@@ -634,6 +634,9 @@ pub struct ErosionChunkHook<'a> {
     pub main: &'a mut ErosionMain,
     /// Barricades and thumpables for the window queries.
     pub hooks: &'a dyn pz_world::square::SquareHooks,
+    /// Read barricades and thumpables from the squares' live objects
+    /// instead of `hooks` (see [`WorldView::cell_objects`]).
+    pub cell_objects: bool,
     /// `WorldDictionary.instance`, to resolve object names saved as ids.
     pub dictionary: Option<&'a pz_inventory::dictionary::WorldDictionary>,
     /// `Rand`, for squares loaded without their `RandLocation`.
@@ -653,6 +656,7 @@ impl pz_world::save::chunk_file::ChunkLoadHook for ErosionChunkHook<'_> {
         let world = WorldView {
             outside: ctx.neighbours,
             hooks: self.hooks,
+            cell_objects: self.cell_objects,
             dictionary: self.dictionary,
         };
         self.main.load_grid_square(

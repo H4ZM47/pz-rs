@@ -464,6 +464,7 @@ fn world_chunk_load_runs_erosion() {
     let mut hook = ErosionChunkHook {
         main: &mut main,
         hooks: &pz_world::square::NoSquareHooks,
+        cell_objects: false,
         dictionary: None,
         rand: &mut rand,
         logs_per_size: None,

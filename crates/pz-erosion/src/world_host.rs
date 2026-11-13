@@ -31,6 +31,12 @@ pub struct WorldView<'a> {
     /// it are always read from the chunk itself.
     pub outside: &'a dyn GetSquare,
     pub hooks: &'a dyn SquareHooks,
+    /// Answer the object queries from the live objects of the squares
+    /// themselves (`pz_world::ObjectHooks` over the chunk and
+    /// [`WorldView::outside`]) instead of [`WorldView::hooks`]: the
+    /// original's `IsoGridSquare` reads its `IsoThumpable` / `IsoBarricade`
+    /// objects directly.
+    pub cell_objects: bool,
     /// `WorldDictionary`, for object names saved as dictionary ids.
     pub dictionary: Option<&'a WorldDictionary>,
 }
@@ -50,6 +56,7 @@ impl WorldView<'_> {
     pub const CHUNK_ONLY: WorldView<'static> = WorldView {
         outside: &NoSquares,
         hooks: &NoSquareHooks,
+        cell_objects: false,
         dictionary: None,
     };
 }
@@ -211,10 +218,15 @@ impl ErosionHost for ChunkHost<'_> {
         let g = self.squares();
         let other = self.any_square(other);
         let other = other.as_ref().map(|s| s.borrow());
-        self.any_square(sq).is_some_and(|s| {
-            s.borrow()
-                .is_window_blocked_to(other.as_deref(), &g, self.world.hooks)
-        })
+        let objects;
+        let hooks: &dyn SquareHooks = if self.world.cell_objects {
+            objects = pz_world::ObjectHooks::new(&g, self.sprites);
+            &objects
+        } else {
+            self.world.hooks
+        };
+        self.any_square(sq)
+            .is_some_and(|s| s.borrow().is_window_blocked_to(other.as_deref(), &g, hooks))
     }
 
     fn window_to(&self, sq: Sq, other: Sq) -> Option<ObjId> {
