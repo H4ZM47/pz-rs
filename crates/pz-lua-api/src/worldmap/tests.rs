@@ -338,3 +338,42 @@ fn first_pyramid_creation_reads_actual_core_and_propagates_borrow_failure() {
     );
     drop(held);
 }
+
+#[test]
+fn visited_instance_needs_meta_grid_then_loads_updates_and_saves() {
+    use pz_worldmap::visited::BIT_VISITED;
+    let root = std::env::temp_dir().join(format!("pz-worldmap-visited-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut fs = pz_fs::GameFs::new(&root);
+    fs.set_cache_dir(root.join("cache"));
+    install_fs(Rc::new(std::cell::RefCell::new(fs)));
+    let core = crate::bind_core::shared_core();
+    {
+        let mut c = core.borrow_mut();
+        c.game_mode = "Sandbox".into();
+        c.game_save_world = "visited-test".into();
+        c.set_no_save(false);
+    }
+    let file = root.join("cache/Saves/Sandbox/visited-test/map_visited.bin");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    visited::reset();
+    crate::bind_world::set_meta_grid(None);
+    assert!(visited::with_instance(|_| ()).is_err());
+    assert!(!visited::has_instance());
+    crate::bind_world::set_meta_grid(Some(pz_world::IsoMetaGrid::with_bounds(0, 0, 1, 1)));
+    // getInstance loads (no file yet) and saves the whole file.
+    visited::with_instance(|v| assert_eq!(v.get_flags(1, 1), 0)).unwrap();
+    assert!(file.exists());
+    // A player at (100, 100) marks units (2..=3, 2..=3) visited and known.
+    visited::with_instance(|v| v.update(&[Some((100.0, 100.0))])).unwrap();
+    visited::save_all();
+    visited::reset();
+    visited::with_instance(|v| {
+        assert_eq!(v.get_flags(3, 3) & BIT_VISITED, BIT_VISITED);
+        assert_eq!(v.get_flags(0, 0), 0);
+    })
+    .unwrap();
+    visited::reset();
+    crate::bind_world::set_meta_grid(None);
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -353,7 +353,8 @@ impl GameState for GameLoadingState {
 
     fn enter(&mut self, cx: &mut StateCx<'_>) {
         self.load_quick_tip_list();
-        // TODO(port): `WorldMapImages.Reset()`, `WorldMapVisited.Reset()`.
+        // TODO(port): `WorldMapImages.Reset()`.
+        pz_lua_api::worldmap::visited::reset();
         pz_lua_api::bind_video::release_all_video_textures();
         // TODO(port): `GameWindow.loadedAsClient` / `okToSaveOnExit = false`.
         self.showed_ui = false;

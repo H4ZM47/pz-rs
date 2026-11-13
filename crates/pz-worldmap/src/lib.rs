@@ -14,6 +14,7 @@ pub mod renderer;
 pub mod style;
 pub mod triangulate;
 pub mod vbo;
+pub mod visited;
 pub mod world_map;
 pub mod xml;
 
