@@ -6,12 +6,14 @@
 //! - The packet type table every game message is framed with
 //!   (`zombie.network.PacketTypes`) and the role capabilities it checks
 //!   (`zombie.characters.Capability`).
+//! - [`raknet`]: a pure-Rust RakNet transport replacing the native library.
 
 pub mod account_db;
 pub mod capability;
 pub mod crypt;
 pub mod datetime;
 pub mod packet_types;
+pub mod raknet;
 pub mod server;
 
 pub use account_db::AccountDb;
