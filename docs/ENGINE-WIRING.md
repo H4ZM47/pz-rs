@@ -615,7 +615,10 @@ all installed assets, render paths or foreign platforms.
       factory components (`FluidContainer`); wired in
       `pz_engine::boot::load_scripts`. A character simulation's own
       `ItemLuaEnv` must return them from `entity()` (#143).
-- [ ] Real `MapGroupsHost` via `bind_map_groups::install_host` (#17/#24).
+- [x] Real `MapGroupsHost`: `LuaManager::init` installs
+      `bind_map_groups::GameFsHost` (GameFs maps and mod dirs, `ActiveMods`
+      values, the `currentGame` list, Translator). `bind_mods::read_default`
+      runs `checkMissingMaps` (#17/#24).
 - [x] Gamepads: `Gamepads::new(game_dir, cache_dir, c)` (#32).
 - [x] Sound: build `pz_audio::studio::Studio` from
       `SetupHeaders::from_game_dir`, load the strings, Sound, SoundMP and
