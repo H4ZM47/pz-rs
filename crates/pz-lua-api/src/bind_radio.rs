@@ -2,8 +2,9 @@
 //! `getRadioAPI()`, `ZomboidRadio`, `RadioAPI`, `RecordedMedia`,
 //! `MediaData`, `MediaData.MediaLineData`, `DevicePresets` and
 //! `PresetEntry`, plus the `DeviceData` methods that run the device
-//! simulation (`pz_inventory::device_sim`) on top of bind_vehicles'
-//! `DeviceData` getters and setters.
+//! simulation (`pz_inventory::device_sim`) and its plain getters and
+//! setters. A `DeviceData` belongs to a vehicle part, a radio item or a
+//! world object ([`DeviceOwner`]).
 //!
 //! The engine installs the world's radio ([`install_radio`], with
 //! [`radio_api_created`] once `ZomboidRadio.Init` made the `RadioAPI`),
@@ -13,8 +14,10 @@
 //! `OnInitRecordedMedia` events run, the radio or media being loaded is
 //! lent to Lua with [`with_scoped_radio`] / [`with_scoped_media`].
 
-use crate::bind_vehicles::{DeviceOwner, LuaDeviceData, DEVICE_DATA_CLASS};
 use crate::expose::{bool_arg, expose_class, int_arg, num_arg, str_arg, with_this};
+use pz_inventory::item::ItemKind;
+use pz_vehicles::items::ItemRef;
+use pz_vehicles::part::PartRef;
 use pz_inventory::device::{
     DeviceData, DevicePresetsRef, PresetEntry, PresetEntryRef, PresetListRef,
 };
@@ -36,6 +39,52 @@ pub const MEDIA_DATA_CLASS: &str = "zombie.radio.media.MediaData";
 pub const MEDIA_LINE_CLASS: &str = "zombie.radio.media.MediaData$MediaLineData";
 pub const DEVICE_PRESETS_CLASS: &str = "zombie.radio.devices.DevicePresets";
 pub const PRESET_ENTRY_CLASS: &str = "zombie.radio.devices.PresetEntry";
+pub const DEVICE_DATA_CLASS: &str = "zombie.radio.devices.DeviceData";
+
+/// Where a `DeviceData` lives.
+#[derive(Clone)]
+pub enum DeviceOwner {
+    Part(PartRef),
+    Item(ItemRef),
+    /// A world object (`IsoRadio` / `IsoTelevision`), reached through the
+    /// engine's accessor.
+    World(Rc<dyn WorldDevice>),
+}
+
+/// `DeviceData` of a vehicle part (radio), a radio item or a world object.
+pub struct LuaDeviceData(pub DeviceOwner);
+
+impl LuaObject for LuaDeviceData {
+    fn class_name(&self) -> &str {
+        DEVICE_DATA_CLASS
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl LuaDeviceData {
+    pub fn with<R>(&self, f: impl FnOnce(&mut DeviceData) -> R) -> Option<R> {
+        match &self.0 {
+            DeviceOwner::Part(p) => p.st_mut().device_data.as_mut().map(f),
+            DeviceOwner::Item(i) => match &mut i.borrow_mut().kind {
+                ItemKind::Radio(_, d) => Some(f(d)),
+                _ => None,
+            },
+            DeviceOwner::World(w) => {
+                let mut f = Some(f);
+                let mut out = None;
+                w.with_device(&mut |d| {
+                    if let Some(f) = f.take() {
+                        out = Some(f(d));
+                    }
+                });
+                out
+            }
+        }
+    }
+}
+
 
 /// A world object's `DeviceData` (`IsoRadio` / `IsoTelevision`).
 pub trait WorldDevice {
@@ -1059,6 +1108,110 @@ fn remove_from_container(
     Ok(true)
 }
 
+/// The plain `DeviceData` getters and setters. Methods that run the device
+/// simulation are registered afterwards by [`register_device_data`].
+fn register_device_fields(thread: &mut Thread) {
+    let b = expose_class(thread, DEVICE_DATA_CLASS, None);
+    macro_rules! dget {
+        ($name:literal, |$d:ident| $body:expr) => {
+            b.method($name, |c| {
+                let r = with_this::<LuaDeviceData, _>(c, |dd| dd.with(|$d| -> Value { $body }))?;
+                Ok(c.push(r.unwrap_or_default()))
+            });
+        };
+    }
+    macro_rules! dset {
+        ($name:literal, |$d:ident, $c:ident| $body:expr) => {
+            b.method($name, |$c| {
+                let owner = with_this::<LuaDeviceData, _>($c, |dd| dd.0.clone())?;
+                let a = $c.arg(1);
+                let dd = LuaDeviceData(owner);
+                dd.with(|$d| {
+                    let $c = &a;
+                    $body
+                });
+                Ok(0)
+            });
+        };
+    }
+    dget!("getDeviceName", |d| Value::str(&d.device_name));
+    dget!("getIsTwoWay", |d| Value::Bool(d.two_way));
+    dget!("getTransmitRange", |d| Value::Num(d.transmit_range as f64));
+    dget!("getMicRange", |d| Value::Num(d.mic_range as f64));
+    dget!("getBaseVolumeRange", |d| Value::Num(d.base_volume_range as f64));
+    dget!("getIsTelevision", |d| Value::Bool(d.is_television));
+    dget!("getMinChannelRange", |d| Value::Num(
+        d.min_channel_range as f64
+    ));
+    dget!("getMaxChannelRange", |d| Value::Num(
+        d.max_channel_range as f64
+    ));
+    dget!("getIsHighTier", |d| Value::Bool(d.is_high_tier));
+    dget!("getUseDelta", |d| Value::Num(d.use_delta as f64));
+    dget!("getIsTurnedOn", |d| Value::Bool(d.is_turned_on));
+    dget!("getChannel", |d| Value::Num(d.channel as f64));
+    dget!("getIsPortable", |d| Value::Bool(d.is_portable));
+    dget!("getIsBatteryPowered", |d| Value::Bool(d.is_battery_powered));
+    dset!("setDeviceName", |d, a| d.device_name = match a {
+        Value::Str(s) => s.to_string(),
+        _ => String::new(),
+    });
+    dset!("setIsTwoWay", |d, a| d.two_way =
+        matches!(a, Value::Bool(true)));
+    dset!("setTransmitRange", |d, a| {
+        let r = pz_kahlua::exec::raw_tonumber(a).unwrap_or(0.0) as i32;
+        d.transmit_range = if r > 0 { r } else { 0 };
+    });
+    dset!("setBaseVolumeRange", |d, a| d.base_volume_range =
+        pz_kahlua::exec::raw_tonumber(a).unwrap_or(0.0) as f32);
+    dset!("setIsPortable", |d, a| d.is_portable =
+        matches!(a, Value::Bool(true)));
+    dset!("setIsTelevision", |d, a| d.is_television =
+        matches!(a, Value::Bool(true)));
+    dset!("setMinChannelRange", |d, a| {
+        let i = pz_kahlua::exec::raw_tonumber(a).unwrap_or(0.0) as i32;
+        d.min_channel_range = if (200..=1_000_000).contains(&i) {
+            i
+        } else {
+            200
+        };
+    });
+    dset!("setMaxChannelRange", |d, a| {
+        let i = pz_kahlua::exec::raw_tonumber(a).unwrap_or(0.0) as i32;
+        d.max_channel_range = if (200..=1_000_000).contains(&i) {
+            i
+        } else {
+            1_000_000
+        };
+    });
+    dset!("setIsBatteryPowered", |d, a| d.is_battery_powered =
+        matches!(a, Value::Bool(true)));
+    dset!("setIsHighTier", |d, a| d.is_high_tier =
+        matches!(a, Value::Bool(true)));
+    dset!("setUseDelta", |d, a| d.use_delta =
+        pz_kahlua::exec::raw_tonumber(a).unwrap_or(0.0) as f32 / 60.0);
+    dset!("setMediaType", |d, a| d.media_type =
+        pz_kahlua::exec::raw_tonumber(a).unwrap_or(0.0) as i8);
+    // The channel lists come from `ZomboidRadio` through the item factory.
+    dset!("generatePresets", |d, _a| {
+        let items = pz_vehicles::env::items();
+        d.generate_presets(items.channel_lists(), &mut pz_vehicles::rand::next);
+    });
+    dset!("addEmergencyChannel", |d, _a| {
+        if d.is_television {
+            return;
+        }
+        let items = pz_vehicles::env::items();
+        if let Some(list) = items.channel_lists().channel_list("Emergency") {
+            for (k, v) in list {
+                d.presets.add_preset(&v, k);
+            }
+        }
+    });
+    dset!("setRandomChannel", |d, _a| d
+        .set_random_channel(&mut pz_vehicles::rand::next));
+}
+
 fn register_device_data(thread: &mut Thread) {
     let b = expose_class(thread, DEVICE_DATA_CLASS, None);
     macro_rules! dget {
@@ -1415,14 +1568,14 @@ impl pz_inventory::device::ChannelLists for EnvLists<'_> {
     }
 }
 
-/// Registers the radio classes (after bind_vehicles, whose `DeviceData`
-/// methods this extends and partly replaces).
+/// Registers the radio classes and `DeviceData`.
 pub fn register(thread: &mut Thread) {
     register_globals(thread);
     register_radio_api(thread);
     register_zomboid_radio(thread);
     register_media(thread);
     register_presets(thread);
+    register_device_fields(thread);
     register_device_data(thread);
 }
 
