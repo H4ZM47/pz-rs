@@ -35,6 +35,9 @@ pub enum GameTimeEvent {
     RadioUpdateScripts { hour: i32, minutes: i32 },
     /// `GameServer.syncClock()`.
     SyncClock,
+    /// `ErosionMain.EveryTenMinutes()` (`mainTimer`), not on clients. It
+    /// comes before that tick's `Lua("EveryTenMinutes")`.
+    ErosionEveryTenMinutes,
     /// `LuaEventManager.triggerEvent(name)` (`EveryHours`, `EveryDays`,
     /// `EveryTenMinutes`, `EveryOneMinute`).
     Lua(&'static str),
@@ -599,10 +602,12 @@ impl GameTime {
         }
         let now = self.minutes();
         if now / 10 != self.minutes_mod {
-            // `ErosionMain.EveryTenMinutes()`: the erosion season follows the
-            // date (TODO(erosion): the rest of `mainTimer`).
+            // `ErosionMain.EveryTenMinutes()`: the climate's copy of the
+            // erosion season follows the date here; the engine runs the
+            // erosion system's `mainTimer` on the event.
             if !ctx.is_client() {
                 self.climate.erosion_every_ten_minutes(self.day, self.month, self.year);
+                ctx.game_time_event(GameTimeEvent::ErosionEveryTenMinutes);
             }
             self.climate.update_every_ten_mins();
             ctx.game_time_event(GameTimeEvent::Lua("EveryTenMinutes"));
@@ -617,5 +622,56 @@ impl GameTime {
             ctx.game_time_event(GameTimeEvent::SyncClock);
             self.last_clock_sync = ms;
         }
+    }
+}
+
+#[cfg(test)]
+mod erosion_tick_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Rec {
+        client: bool,
+        events: Vec<GameTimeEvent>,
+    }
+    impl ClimateContext for Rec {
+        fn is_client(&self) -> bool {
+            self.client
+        }
+    }
+    impl GameTimeContext for Rec {
+        fn game_time_event(&mut self, e: GameTimeEvent) {
+            self.events.push(e);
+        }
+    }
+
+    fn tick(client: bool) -> Vec<GameTimeEvent> {
+        let mut gt = GameTime::default();
+        // A ten-minute mark the clock has not reported yet.
+        gt.minutes_mod = -1;
+        let mut ctx = Rec { client, ..Default::default() };
+        gt.update(&mut ctx);
+        ctx.events
+    }
+
+    #[test]
+    fn erosion_timer_precedes_lua_ten_minutes() {
+        let ev = tick(false);
+        let erosion = ev
+            .iter()
+            .position(|e| matches!(e, GameTimeEvent::ErosionEveryTenMinutes))
+            .expect("erosion tick");
+        let lua = ev
+            .iter()
+            .position(|e| matches!(e, GameTimeEvent::Lua("EveryTenMinutes")))
+            .expect("Lua tick");
+        assert!(erosion < lua);
+    }
+
+    #[test]
+    fn clients_skip_the_erosion_timer() {
+        let ev = tick(true);
+        assert!(!ev.iter().any(|e| matches!(e, GameTimeEvent::ErosionEveryTenMinutes)));
+        assert!(ev.iter().any(|e| matches!(e, GameTimeEvent::Lua("EveryTenMinutes"))));
     }
 }

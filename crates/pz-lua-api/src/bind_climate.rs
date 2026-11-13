@@ -310,8 +310,10 @@ pub fn fire_events(thread: &mut Thread, ctx: LuaClimateContext) {
         sink(thread, name, &args);
     }
     for e in ctx.clock_events {
-        if let GameTimeEvent::Lua(name) = e {
-            sink(thread, name, &[]);
+        match e {
+            GameTimeEvent::Lua(name) => sink(thread, name, &[]),
+            GameTimeEvent::ErosionEveryTenMinutes => crate::bind_erosion::every_ten_minutes(),
+            _ => {}
         }
     }
 }
