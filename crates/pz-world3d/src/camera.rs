@@ -172,6 +172,37 @@ fn span(p: &[[f32; 3]; 4], k: usize) -> (f32, f32) {
     (lo, hi)
 }
 
+/// Whether the face's texture has a pixel at point `x` (on triangle `tri`
+/// of the face): the shaders discard empty texels, so the crosshair sees
+/// through them. A texture without a mask counts as covered.
+fn covered(face: &Face, tri: [usize; 3], x: [f32; 3]) -> bool {
+    let tex = &face.texture;
+    let Some(mask) = tex.mask.as_ref() else {
+        return true;
+    };
+    let [a, b, c] = tri.map(|i| face.pos[i]);
+    let (v0, v1, v2) = (sub(b, a), sub(c, a), sub(x, a));
+    let (d00, d01, d11) = (dot(v0, v0), dot(v0, v1), dot(v1, v1));
+    let (d20, d21) = (dot(v2, v0), dot(v2, v1));
+    let den = d00 * d11 - d01 * d01;
+    if den.abs() < 1e-12 {
+        return true;
+    }
+    let wb = (d11 * d20 - d01 * d21) / den;
+    let wc = (d00 * d21 - d01 * d20) / den;
+    let wa = 1.0 - wb - wc;
+    let [ua, ub, uc] = tri.map(|i| face.uv[i]);
+    let u = wa * ua[0] + wb * ub[0] + wc * uc[0];
+    let v = wa * ua[1] + wb * ub[1] + wc * uc[1];
+    let (du, dv) = (tex.x_end - tex.x_start, tex.y_end - tex.y_start);
+    if du.abs() < 1e-9 || dv.abs() < 1e-9 {
+        return true;
+    }
+    let px = ((u - tex.x_start) / du * mask.width as f32).floor() as i32;
+    let py = ((v - tex.y_start) / dv * mask.height as f32).floor() as i32;
+    mask.get(px.clamp(0, mask.width - 1), py.clamp(0, mask.height - 1))
+}
+
 impl Camera3D {
     /// Unit look direction in model space, including pitch.
     pub fn forward_model(&self) -> [f32; 3] {
@@ -234,7 +265,11 @@ impl Camera3D {
             let p = face.pos;
             for [i, j, k] in [[0, 1, 2], [0, 2, 3]] {
                 if let Some(t) = ray_triangle(o, d, p[i], p[j], p[k]) {
-                    if t >= self.near && t <= self.far && best.map_or(true, |b| t < b) {
+                    if t >= self.near
+                        && t <= self.far
+                        && best.map_or(true, |b| t < b)
+                        && covered(face, [i, j, k], add_scaled(o, d, t))
+                    {
                         best = Some(t);
                     }
                 }
@@ -426,6 +461,33 @@ mod tests {
         assert!((hit[2] - 2.0).abs() < 1e-5, "{hit:?}");
         // Nothing behind the eye is picked.
         assert!(c.pick(1.5, 0.0, 0.0, &[quad_at_z(-2.0)]).is_none());
+    }
+
+    #[test]
+    fn pick_sees_through_empty_texels() {
+        use pz_render::image::{BooleanGrid, Mask};
+        let c = Camera3D {
+            eye: [0.0, 0.0, 0.0],
+            ..north_cam()
+        };
+        // A 2x2 mask with no pixels: the near wall is see-through.
+        let mut near = quad_at_z(2.0);
+        let mut t = near.texture.clone();
+        t.x_start = 0.0;
+        t.x_end = 1.0;
+        t.y_start = 0.0;
+        t.y_end = 1.0;
+        t.mask = Some(std::rc::Rc::new(Mask::copy_of(&BooleanGrid::new(2, 2), 2, 2)));
+        near.texture = t;
+        near.uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let hit = c.pick(1.5, 0.0, 0.0, &[near.clone(), quad_at_z(4.0)]).unwrap();
+        assert!((hit[2] - 4.0).abs() < 1e-5, "{hit:?}");
+        // Filled, it is hit.
+        let mut g = BooleanGrid::new(2, 2);
+        g.fill();
+        near.texture.mask = Some(std::rc::Rc::new(Mask::copy_of(&g, 2, 2)));
+        let hit = c.pick(1.5, 0.0, 0.0, &[near, quad_at_z(4.0)]).unwrap();
+        assert!((hit[2] - 2.0).abs() < 1e-5, "{hit:?}");
     }
 
     #[test]

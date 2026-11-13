@@ -406,9 +406,11 @@ fn mouse_update(seconds: f32) {
     let (mut cx, mut cy, wheel, buttons) = with_input(|i| (i.cursor_x, i.cursor_y, i.take_wheel(), i.buttons_down));
     // Port extension: while the 3D view's mouse-look holds the cursor, the
     // mouse is where the view's crosshair meets the world, in isometric
-    // screen pixels, so world picking and context menus act on it. (The
-    // UI cannot be used then; freeing the cursor clears the override.)
-    if let Some((wx, wy)) = pz_input::world_mouse() {
+    // screen pixels, so world picking and context menus act on it. UI
+    // elements do not take clicks then (`MouseState::world_only`), so no
+    // panel under that point swallows them; freeing the cursor clears it.
+    let world_mouse = pz_input::world_mouse();
+    if let Some((wx, wy)) = world_mouse {
         cx = f64::from(wx);
         cy = f64::from(wy) + 1.0;
     }
@@ -446,6 +448,7 @@ fn mouse_update(seconds: f32) {
     });
     let right_delay = mouse_is_right_delay();
     with_ui(|u| {
+        u.mouse.world_only = world_mouse.is_some();
         u.mouse.x = x;
         u.mouse.y = y;
         u.mouse.world_x = (x as f32 * zoom) as i32;
