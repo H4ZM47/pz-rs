@@ -455,7 +455,7 @@ fn resolved_inputs_record_used_in_recipes() {
     sm.post_world_dictionary_init();
     let item = |name: &str| {
         sm.get_script(crate::script_type::ScriptType::Item, name)
-            .and_then(|s| s.downcast::<crate::objects::items::item::Item>())
+            .and_then(|s| s.downcast::<crate::objects::items::Item>())
             .unwrap()
     };
     let (a, b, c) = (item("Base.A"), item("Base.B"), item("Base.C"));
