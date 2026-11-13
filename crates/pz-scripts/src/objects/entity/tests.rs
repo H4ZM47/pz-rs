@@ -441,3 +441,29 @@ fn item_config_selector_buckets() {
 fn test_perks() -> Vec<String> {
     ["Axe", "Cooking", "Fitness", "Woodwork"].map(String::from).to_vec()
 }
+
+/// Resolving a recipe's inputs appends the recipe to each listed item's
+/// `usedInRecipes` (an item listed twice gets it twice), and marks items of
+/// buildable recipes `isUsedInBuildRecipes`.
+#[test]
+fn resolved_inputs_record_used_in_recipes() {
+    let (sm, _m) = manager(
+        "item A { Type = Normal, } item B { Type = Normal, } item C { Type = Normal, } \
+         craftRecipe Make { inputs { item 1 [Base.A], item 1 [Base.A;Base.B], } outputs { item 1 Base.C, } } \
+         craftRecipe Build { Tags = EntityRecipe, inputs { item 1 [Base.B], } outputs { item 1 Base.C, } }",
+    );
+    sm.post_world_dictionary_init();
+    let item = |name: &str| {
+        sm.get_script(crate::script_type::ScriptType::Item, name)
+            .and_then(|s| s.downcast::<crate::objects::items::item::Item>())
+            .unwrap()
+    };
+    let (a, b, c) = (item("Base.A"), item("Base.B"), item("Base.C"));
+    assert_eq!(a.borrow().used_in_recipes(), ["Make", "Make"]);
+    let mut b_recipes = b.borrow().used_in_recipes().to_vec();
+    b_recipes.sort();
+    assert_eq!(b_recipes, ["Build", "Make"]);
+    assert!(c.borrow().used_in_recipes().is_empty());
+    assert!(!a.borrow().is_used_in_build_recipes);
+    assert!(b.borrow().is_used_in_build_recipes);
+}

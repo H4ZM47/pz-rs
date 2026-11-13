@@ -933,8 +933,9 @@ impl CraftRecipe {
         let linked =
             |t: ResourceType| [create, consume].iter().flatten().any(|&i| self.io_lines[i].resource_type() == t);
         let filtered = linked(ResourceType::Fluid) || linked(ResourceType::Energy);
+        let buildable = self.is_buildable_recipe();
         let input = self.input_mut(index);
-        input.resolve_items(sm, recipe_name.as_deref(), filtered)?;
+        input.resolve_items(sm, recipe_name.as_deref(), buildable, filtered)?;
         // TODO(Fluid): fluids and categories go into the sealed fluid filter;
         // the original throws for unknown fluids. TODO(Energy): likewise for energies.
         input.fluid_filter_sealed = true;

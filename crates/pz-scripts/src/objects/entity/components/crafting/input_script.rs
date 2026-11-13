@@ -540,15 +540,18 @@ impl InputScript {
     }
 
     /// The item side of `OnPostWorldDictionaryInit`: resolves the listed
-    /// items and tags. TODO(Item): the any-item caches filtered by fluid
-    /// container / drainable, `getUsedInRecipes` and `isUsedInBuildRecipes`.
-    /// TODO(ItemTags): items for each tag (the original throws "Tag has no
-    /// items" for an empty tag).
+    /// items and tags. Every listed item that exists gets the recipe's name
+    /// appended to its `usedInRecipes` (once per listing, duplicates kept),
+    /// and `isUsedInBuildRecipes` when the recipe is buildable.
+    /// TODO(Item): the any-item caches filtered by fluid container / drainable.
+    /// TODO(ItemTags): items for each tag, with the same `usedInRecipes`
+    /// update (the original throws "Tag has no items" for an empty tag).
     /// `linked_filtered`: the `+`/`-` line is a fluid or energy line.
     pub(crate) fn resolve_items(
         &mut self,
         sm: &ScriptManager,
         recipe_name: Option<&str>,
+        buildable: bool,
         linked_filtered: bool,
     ) -> ScriptResult {
         if self.accepts_any_item {
@@ -565,8 +568,9 @@ impl InputScript {
                 Some(item) => {
                     if !self.items.contains(&s) {
                         self.items.push(s.clone());
-                        self.item_script_cache.push(item);
+                        self.item_script_cache.push(item.clone());
                     }
+                    mark_used_in_recipe(&item, recipe_name, buildable);
                 }
                 None if sm.debug => log_error(
                     sm,
@@ -576,6 +580,22 @@ impl InputScript {
             }
         }
         Ok(())
+    }
+}
+
+/// `item.getUsedInRecipes().add(recipe.getName())`, then
+/// `item.isUsedInBuildRecipes = true` for a buildable recipe. A recipe
+/// always has its name by the time its inputs resolve.
+fn mark_used_in_recipe(item: &ScriptRef, recipe_name: Option<&str>, buildable: bool) {
+    let Some(item) = item.downcast::<crate::objects::items::item::Item>() else {
+        return;
+    };
+    let mut item = item.borrow_mut();
+    if let Some(name) = recipe_name {
+        item.used_in_recipes.push(name.to_string());
+    }
+    if buildable {
+        item.is_used_in_build_recipes = true;
     }
 }
 
