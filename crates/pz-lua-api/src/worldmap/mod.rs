@@ -123,6 +123,19 @@ thread_local! {
     static FS: std::cell::RefCell<Option<Rc<std::cell::RefCell<pz_fs::GameFs>>>> = const { std::cell::RefCell::new(None) };
 }
 
+/// `WorldMapImages.startFrame()`, which `SpriteRenderer` calls before
+/// building the frame that holds the UI's map draws: clears each pyramid's
+/// required-this-frame marks and its per-frame load budget.
+pub fn start_frame() {
+    pz_worldmap::pyramid::start_frame();
+}
+
+/// `WorldMapImages.endFrame()`, after that frame: cancels the tile loads no
+/// map drew this frame.
+pub fn end_frame() {
+    pz_worldmap::pyramid::end_frame();
+}
+
 /// Install the file system the map resolves `media/...` names with.
 pub fn install_fs(fs: Rc<std::cell::RefCell<pz_fs::GameFs>>) {
     FS.with(|f| *f.borrow_mut() = Some(fs));

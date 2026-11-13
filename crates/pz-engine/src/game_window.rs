@@ -417,7 +417,11 @@ impl App {
                 error: &mut self.error,
                 retired_models: &mut self.retired_models,
             };
+            // SpriteRenderer brackets the frame holding the UI's map draws
+            // with WorldMapImages.startFrame/endFrame.
+            pz_lua_api::worldmap::start_frame();
             self.states.render(&mut cx, &mut dl);
+            pz_lua_api::worldmap::end_frame();
         }
         if self.error.is_some() {
             drop(collection_deferral);

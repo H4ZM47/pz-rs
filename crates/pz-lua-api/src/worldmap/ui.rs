@@ -317,9 +317,9 @@ impl UIWorldMap {
     /// `renderer.render(this)`: the drawer's frame, queued like
     /// `SpriteRenderer.drawGeneric`.
     fn draw_map(&self) {
-        // WorldMapImages.startFrame/endFrame bracket the frame in
-        // SpriteRenderer; here they bracket each map's draw.
-        pz_worldmap::pyramid::start_frame();
+        // WorldMapImages.startFrame/endFrame bracket the whole frame
+        // (`super::start_frame`/`end_frame`), so every map drawn this frame
+        // shares each pyramid's required tiles and five-tile load budget.
         let draw = {
             let s = self.st.borrow();
             if !s.renderer.has_map() {
@@ -337,7 +337,6 @@ impl UIWorldMap {
             })
         };
         super::present::submit(&draw);
-        pz_worldmap::pyramid::end_frame();
     }
 
     /// `HitTest`: the outline of the last data feature under the mouse.
