@@ -2968,8 +2968,17 @@ impl DebugLog {
             return;
         }
         let line = self.format_console_line(t, sev, "", text);
-        self.sink.console(stream, &line);
+        self.console_out(stream, &line);
         self.echo_to_log_files(t, sev, "", text);
+    }
+
+    /// A console write: the sink, then `DebugLog.OutputStreamWrapper.write`'s
+    /// mirror (both `stdOut` and `stdErr` are wrapped).
+    fn console_out(&mut self, stream: StdStream, text: &str) {
+        self.sink.console(stream, text);
+        if let Some(mirror) = CONSOLE_MIRROR.with(|m| m.get()) {
+            mirror(text.as_bytes());
+        }
     }
 
     /// `writeln(out, severity, format, params)`.
@@ -2986,7 +2995,7 @@ impl DebugLog {
         }
         let s = formatted_output_str(format, params)?;
         let line = self.format_console_line(t, sev, "", &s);
-        self.sink.console(stream, &format!("{line}\n"));
+        self.console_out(stream, &format!("{line}\n"));
         self.echo_to_log_files(t, sev, "", &s);
         Ok(())
     }
@@ -3015,7 +3024,7 @@ impl DebugLog {
         }
         let s = formatted_output_str(format, params)?;
         let line = self.format_console_line(t, sev, &affix, &s);
-        self.sink.console(stream, &format!("{line}\n"));
+        self.console_out(stream, &format!("{line}\n"));
         self.echo_to_log_files(t, sev, &affix, &s);
         Ok(())
     }
@@ -3374,13 +3383,13 @@ impl DebugLog {
             } else {
                 java_format(f, params)?
             };
-            self.sink.console(stream, &format!("{m}\n"));
+            self.console_out(stream, &format!("{m}\n"));
             self.echo_to_log_files(Some(t), sev, "", &m);
         }
         // Java index 0/1 are DebugLogStream/DebugType.printStackTrace and
         // the start is depthStart + 1.
         let st = stack_trace_string(frames, "\t", depth_start + 1 - 2, depth_count);
-        self.sink.console(stream, &format!("{st}\n"));
+        self.console_out(stream, &format!("{st}\n"));
         self.echo_to_log_files(Some(t), sev, "", &st);
         Ok(())
     }
@@ -3999,7 +4008,7 @@ impl DebugLog {
             }
         };
         let text = format!("{stamp} {source}\n{}: {}{thrown}\n", level.name(), msg.unwrap_or("null"));
-        self.sink.console(StdStream::Err, &text);
+        self.console_out(StdStream::Err, &text);
     }
 }
 
@@ -4023,6 +4032,18 @@ pub fn game_window_logger(level: JulLevel, source: Option<&StackElement>, msg: O
 // ===========================================================================
 // Thread-local instances
 // ===========================================================================
+
+thread_local! {
+    /// `DebugLog.OutputStreamWrapper`'s extra write target (the UI debug
+    /// console's `addOutput`, installed by the HUD).
+    static CONSOLE_MIRROR: Cell<Option<fn(&[u8])>> = const { Cell::new(None) };
+}
+
+/// Install (or remove) the function that receives every console write,
+/// after the sink (`DebugLog.OutputStreamWrapper.write`).
+pub fn set_console_mirror(mirror: Option<fn(&[u8])>) {
+    CONSOLE_MIRROR.with(|m| m.set(mirror));
+}
 
 thread_local! {
     static GLOBAL: RefCell<DebugLog> = RefCell::new(DebugLog::new());
@@ -4081,6 +4102,31 @@ mod tests {
         sink.clear();
         d.jul_log("zombie.GameWindow", JulLevel::Fine, None, Some("x"), None);
         assert!(sink.log().console.is_empty());
+    }
+
+    thread_local! {
+        static MIRRORED: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn record_mirror(b: &[u8]) {
+        MIRRORED.with(|m| m.borrow_mut().extend_from_slice(b));
+    }
+
+    #[test]
+    fn console_mirror_sees_every_console_write() {
+        let (mut d, sink, _) = logger();
+        d.set_severity(DebugType::General, LogSeverity::General);
+        set_console_mirror(Some(record_mirror));
+        d.println(DebugType::General, "hello");
+        d.log_exception(&LogThrowable::new("java.io.IOException: bad"), None, None, DebugType::General, LogSeverity::Error);
+        set_console_mirror(None);
+        d.println(DebugType::General, "after");
+        let mirrored = MIRRORED.with(|m| String::from_utf8(m.borrow().clone()).unwrap());
+        let console = sink.log().all_console();
+        assert!(console.ends_with("after\n"), "{console}");
+        assert!(mirrored.contains("hello\n") && mirrored.contains("java.io.IOException: bad"));
+        assert!(!mirrored.contains("after"));
+        assert!(console.starts_with(&mirrored));
     }
 
     fn logger() -> (DebugLog, MemorySink, Rc<FixedClock>) {
