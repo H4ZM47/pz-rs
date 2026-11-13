@@ -10,6 +10,10 @@
 //! `UdpConnection.endPacket` (priority, reliability, ordering channel), the
 //! capability a connection needs before the server handles it, and which
 //! sides handle it at all (`PacketSetting.HandlingType`).
+//!
+//! The table matches game build 42.22 (303 types). Ids shift whenever the
+//! original adds or removes a type, so a client and server only interoperate
+//! with the same build.
 
 use crate::capability::Capability;
 
@@ -113,12 +117,12 @@ impl PacketReliability {
     }
 }
 
-/// `zombie.network.anticheats.AntiCheat` constants, in declaration order.
+/// `zombie.network.anticheats.AntiCheat` constants of build 42.22, in
+/// declaration order.
 /// Only the names live here; the checks themselves belong to the server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AntiCheat {
     Safety,
-    HitDamage,
     HitVehicle,
     HitLongDistance,
     HitShortDistance,
@@ -129,8 +133,8 @@ pub enum AntiCheat {
     XPUpdate,
     ChecksumUpdate,
     Target,
-    Player,
     PlayerUpdate,
+    VehicleEnter,
     Power,
     Capability,
     SafeHouseOwner,
@@ -304,7 +308,7 @@ packet_types! {
     GoogleAuthKey: Immediate, Reliable, 0, None, 7, false, [];
     GoogleAuth: Immediate, Reliable, 0, None, 1, false, [];
     GoogleAuthRequest: Immediate, Reliable, 0, None, 4, false, [];
-    PlayerUpdateReliable: High, ReliableOrdered, 5, LoginOnServer, 3, false, [AntiCheat::Power, AntiCheat::Speed, AntiCheat::NoClip, AntiCheat::Player];
+    PlayerUpdateReliable: High, ReliableOrdered, 5, LoginOnServer, 3, false, [AntiCheat::Power, AntiCheat::Speed, AntiCheat::NoClip];
     PlayerUpdateUnreliable: Medium, UnreliableSequenced, 5, LoginOnServer, 3, false, [AntiCheat::Power, AntiCheat::Speed, AntiCheat::NoClip];
     PlayerDataRequest: High, Reliable, 0, LoginOnServer, 1, false, [];
     HumanVisual: High, Reliable, 0, LoginOnServer, 3, false, [];
@@ -327,6 +331,8 @@ packet_types! {
     PlayerDropHeldItems: High, ReliableOrdered, 1, LoginOnServer, 1, false, [];
     ClothingWetness: High, Reliable, 0, LoginOnServer, 2, false, [];
     RequestMedicalCheck: High, Reliable, 0, LoginOnServer, 3, false, [];
+    AcceptMedicalCheck: High, Reliable, 0, LoginOnServer, 3, false, [];
+    RejectMedicalCheck: High, Reliable, 0, LoginOnServer, 1, false, [];
     HiddenAuthors: High, ReliableOrdered, 0, LoginOnServer, 3, false, [];
     ServerMap: Immediate, ReliableOrdered, 4, LoginOnServer, 6, false, [];
     SentChunk: Immediate, Reliable, 4, LoginOnServer, 0, false, [];
@@ -360,8 +366,8 @@ packet_types! {
     VehicleRequest: High, Reliable, 0, LoginOnServer, 1, false, [];
     VehicleFullUpdate: High, ReliableOrdered, 0, LoginOnServer, 2, false, [];
     VehicleUpdate: High, ReliableOrdered, 0, LoginOnServer, 2, false, [];
-    VehiclePhysicsReliable: High, ReliableOrdered, 8, LoginOnServer, 3, false, [AntiCheat::Speed];
-    VehiclePhysicsUnreliable: Medium, UnreliableSequenced, 8, LoginOnServer, 3, false, [AntiCheat::Speed];
+    VehiclePhysicsReliable: High, Reliable, 8, LoginOnServer, 3, false, [AntiCheat::Speed];
+    VehiclePhysicsUnreliable: Medium, Unreliable, 8, LoginOnServer, 3, false, [AntiCheat::Speed];
     VehicleTowingAttach: High, ReliableOrdered, 0, LoginOnServer, 2, false, [];
     VehicleTowingDetach: High, ReliableOrdered, 0, LoginOnServer, 2, false, [];
     VehicleTowingState: High, Reliable, 0, LoginOnServer, 2, false, [];
@@ -370,7 +376,7 @@ packet_types! {
     VehiclePassengerPosition: High, Reliable, 0, LoginOnServer, 3, false, [];
     VehiclePassengerRequest: High, Reliable, 0, LoginOnServer, 1, false, [];
     VehiclePassengerResponse: High, Reliable, 0, LoginOnServer, 2, false, [];
-    VehicleEnter: High, ReliableOrdered, 0, LoginOnServer, 3, false, [];
+    VehicleEnter: High, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::VehicleEnter];
     VehicleExit: High, ReliableOrdered, 0, LoginOnServer, 3, false, [];
     VehicleSwitchSeat: High, ReliableOrdered, 0, LoginOnServer, 3, false, [];
     VehicleSoundAddVehicle: Medium, Reliable, 8, LoginOnServer, 6, false, [];
@@ -415,7 +421,7 @@ packet_types! {
     BuildAction: High, ReliableOrdered, 1, LoginOnServer, 3, false, [];
     FishingAction: High, ReliableOrdered, 1, LoginOnServer, 3, false, [];
     AddInventoryItemToContainer: High, ReliableOrdered, 1, LoginOnServer, 2, false, [];
-    RemoveInventoryItemFromContainer: High, ReliableOrdered, 1, LoginOnServer, 3, false, [];
+    RemoveInventoryItemFromContainer: High, ReliableOrdered, 1, EditItem, 3, false, [];
     ReplaceInventoryItemInContainer: High, ReliableOrdered, 1, LoginOnServer, 2, false, [];
     SyncItemDelete: High, ReliableOrdered, 1, EditItem, 3, false, [];
     AddItemToMap: High, ReliableOrdered, 1, LoginOnServer, 2, false, [];
@@ -427,7 +433,7 @@ packet_types! {
     RemoveContestedItemsFromInventory: High, Reliable, 0, LoginOnServer, 2, false, [];
     ItemStats: High, ReliableOrdered, 0, LoginOnServer, 3, false, [];
     AddBrokenGlass: High, Reliable, 0, LoginOnServer, 3, false, [];
-    AddExplosiveTrap: High, Reliable, 0, LoginOnServer, 3, false, [];
+    AddExplosiveTrap: High, Reliable, 0, LoginOnServer, 2, false, [];
     SledgehammerDestroy: High, Reliable, 0, UseDebugContextMenu, 3, false, [];
     SyncPlayerAlarmClock: High, Reliable, 0, LoginOnServer, 3, false, [];
     SyncWorldAlarmClock: High, Reliable, 0, LoginOnServer, 3, false, [];
@@ -440,21 +446,22 @@ packet_types! {
     GlobalModDataRequest: Immediate, Reliable, 0, LoginOnServer, 1, false, [];
     SyncItemFields: High, Reliable, 1, LoginOnServer, 3, false, [];
     SyncItemModData: Medium, Reliable, 1, LoginOnServer, 2, false, [];
-    SyncHandWeaponFields: High, Reliable, 1, LoginOnServer, 3, false, [];
-    PlayerHitSquare: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::HitLongDistance];
-    PlayerHitObject: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::HitLongDistance, AntiCheat::HitWeapon];
-    PlayerHitVehicle: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::HitLongDistance];
-    PlayerHitZombie: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::HitDamage, AntiCheat::HitLongDistance, AntiCheat::HitWeapon];
-    PlayerHitPlayer: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::HitDamage, AntiCheat::HitLongDistance, AntiCheat::HitWeapon, AntiCheat::Safety];
-    PlayerHitAnimal: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::HitDamage, AntiCheat::HitLongDistance, AntiCheat::HitWeapon];
+    SyncHandWeaponFields: High, Reliable, 1, LoginOnServer, 2, false, [];
+    PlayerHit: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [];
+    PlayerHitSquare: Immediate, ReliableOrdered, 0, LoginOnServer, 0, false, [AntiCheat::HitLongDistance];
+    PlayerHitObject: Immediate, ReliableOrdered, 0, LoginOnServer, 0, false, [AntiCheat::HitLongDistance, AntiCheat::HitWeapon];
+    PlayerHitVehicle: Immediate, ReliableOrdered, 0, LoginOnServer, 0, false, [AntiCheat::HitLongDistance];
+    PlayerHitZombie: Immediate, ReliableOrdered, 0, LoginOnServer, 0, false, [AntiCheat::HitLongDistance, AntiCheat::HitWeapon];
+    PlayerHitPlayer: Immediate, ReliableOrdered, 0, LoginOnServer, 0, false, [AntiCheat::HitLongDistance, AntiCheat::HitWeapon, AntiCheat::Safety];
+    PlayerHitAnimal: Immediate, ReliableOrdered, 0, LoginOnServer, 0, false, [AntiCheat::HitLongDistance, AntiCheat::HitWeapon];
     ZombieHitPlayer: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::HitShortDistance, AntiCheat::Target];
     AnimalHitPlayer: Immediate, ReliableOrdered, 0, LoginOnServer, 2, false, [];
     AnimalHitAnimal: Immediate, ReliableOrdered, 0, LoginOnServer, 2, false, [];
     AnimalHitThumpable: Immediate, ReliableOrdered, 0, LoginOnServer, 2, false, [];
     ZombieHitThumpable: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::HitShortDistance];
-    VehicleHitZombie: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::HitDamage, AntiCheat::HitShortDistance, AntiCheat::Speed, AntiCheat::HitVehicle];
-    VehicleHitPlayer: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::HitDamage, AntiCheat::HitShortDistance, AntiCheat::Safety, AntiCheat::Speed, AntiCheat::HitVehicle];
-    VehicleHitAnimal: Immediate, ReliableOrdered, 0, LoginOnServer, 1, false, [AntiCheat::HitDamage, AntiCheat::HitShortDistance, AntiCheat::Speed, AntiCheat::HitVehicle];
+    VehicleHitZombie: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::HitShortDistance, AntiCheat::HitVehicle];
+    VehicleHitPlayer: Immediate, ReliableOrdered, 0, LoginOnServer, 3, false, [AntiCheat::HitShortDistance, AntiCheat::Safety, AntiCheat::HitVehicle];
+    VehicleHitAnimal: Immediate, ReliableOrdered, 0, LoginOnServer, 1, false, [AntiCheat::HitShortDistance, AntiCheat::HitVehicle];
     PlayerDamage: Medium, ReliableOrdered, 10, LoginOnServer, 2, false, [];
     PlayerStats: Medium, ReliableOrdered, 12, LoginOnServer, 2, false, [];
     PlayerHealth: Medium, ReliableOrdered, 14, LoginOnServer, 2, false, [];
@@ -464,6 +471,7 @@ packet_types! {
     AttackCollisionCheckPacket: Immediate, ReliableOrdered, 0, LoginOnServer, 1, false, [];
     PlayerEmptyShot: Medium, Unreliable, 5, LoginOnServer, 3, false, [];
     PlayerSteppedOnGlass: Medium, Reliable, 0, LoginOnServer, 1, false, [];
+    HitStatistic: Medium, Reliable, 0, LoginOnServer, 2, false, [];
     PlaySound: High, Reliable, 0, LoginOnServer, 3, false, [];
     RangedWeaponSound: High, Reliable, 0, LoginOnServer, 3, false, [];
     LoopedRangedWeaponSound: High, Reliable, 0, LoginOnServer, 3, false, [];
@@ -511,8 +519,7 @@ packet_types! {
     PlayerInventory: High, Reliable, 0, InspectPlayerInventory, 3, false, [];
     ExtraInfo: High, Reliable, 0, LoginOnServer, 3, false, [];
     Teleport: Immediate, Reliable, 0, TeleportToCoordinates, 3, false, [];
-    InvMngReqItem: High, Reliable, 0, InspectPlayerInventory, 3, false, [];
-    InvMngGetItem: High, Reliable, 0, LoginOnServer, 3, false, [];
+    InvMngReqItem: High, Reliable, 0, InspectPlayerInventory, 1, false, [];
     InvMngRemoveItem: High, Reliable, 0, InspectPlayerInventory, 3, false, [];
     InvMngUpdateItem: High, Reliable, 0, InspectPlayerInventory, 1, false, [];
     ChangePlayerStats: High, Reliable, 0, CanSeePlayersStats, 3, false, [];
@@ -550,6 +557,8 @@ packet_types! {
     ViewBannedIPs: High, Reliable, 0, BanUnbanUser, 3, false, [];
     ViewBannedSteamIDs: High, Reliable, 0, BanUnbanUser, 3, false, [];
     RequestTrading: High, Reliable, 0, LoginOnServer, 3, false, [];
+    AcceptTrading: High, Reliable, 0, LoginOnServer, 3, false, [];
+    RejectTrading: High, Reliable, 0, LoginOnServer, 3, false, [];
     TradingUIAddItem: High, ReliableOrdered, 0, LoginOnServer, 3, false, [];
     TradingUIRemoveItem: High, ReliableOrdered, 0, LoginOnServer, 3, false, [];
     TradingUIUpdateState: High, ReliableOrdered, 0, LoginOnServer, 3, false, [];
@@ -597,7 +606,7 @@ mod tests {
 
     #[test]
     fn ids_are_ordinals() {
-        assert_eq!(PacketType::ALL.len(), 298);
+        assert_eq!(PacketType::ALL.len(), 303);
         for (i, t) in PacketType::ALL.iter().enumerate() {
             assert_eq!(t.id() as usize, i);
             assert_eq!(PacketType::from_id(t.id()), Some(*t));
@@ -606,7 +615,7 @@ mod tests {
         assert_eq!(PacketType::Checksum.id(), 0);
         assert_eq!(PacketType::Login.id(), 1);
         assert_eq!(PacketType::from_id(-1), None);
-        assert_eq!(PacketType::from_id(298), None);
+        assert_eq!(PacketType::from_id(303), None);
     }
 
     #[test]
