@@ -598,6 +598,7 @@ impl WorldRender {
                 size,
                 view_proj: c3.view_proj(aspect).0,
                 sky: pz_world3d::frame::sky_colour(v.climate.climate.ambient),
+                eye: c3.eye,
                 faces: &faces,
                 models: &models,
                 screen: v.screen,

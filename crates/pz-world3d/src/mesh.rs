@@ -24,6 +24,9 @@ pub struct Face {
     pub uv: [[f32; 2]; 4],
     /// ABGR, as `vert_lights`.
     pub color: [u32; 4],
+    /// Semi-transparent sprite (window glass, translucent depth flag):
+    /// drawn in the blended pass after the opaque faces.
+    pub translucent: bool,
 }
 
 /// `performRenderFrame`'s scale for the sprite's instance (1.0).
@@ -156,6 +159,7 @@ struct Ctx<'a> {
     obj: &'a RenderObject,
     sq_pos: [f32; 3],
     origin: [f32; 3],
+    translucent: bool,
 }
 
 /// Emits the quad `p` (world corners, in `(s,t)` order `(0,0) (1,0) (1,1)
@@ -207,6 +211,7 @@ fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4]
             pos,
             uv,
             color,
+            translucent: c.translucent,
         });
         return;
     }
@@ -222,6 +227,7 @@ fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4]
             pos,
             uv,
             color,
+            translucent: c.translucent,
         });
         return;
     }
@@ -261,6 +267,7 @@ fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4]
             pos: tri.map(|t| t.0),
             uv: tri.map(|t| t.1),
             color: tri.map(|t| t.2),
+            translucent: c.translucent,
         });
     }
 }
@@ -417,6 +424,11 @@ pub fn square_faces(sq: &RenderSquare, origin: [f32; 3], out: &mut Vec<Face>) {
             obj,
             sq_pos: [x, y, z],
             origin,
+            translucent: sprite.depth_flags & 2 != 0
+                || sprite.flags.window_n
+                || sprite.flags.window_w
+                || sprite.flags.transparent_n
+                || sprite.flags.transparent_w,
         };
         let lit = |col: [u32; 4]| {
             if sprite.flags.unlit {
@@ -722,6 +734,26 @@ mod tests {
             close(px(*uv), e);
         }
         assert_eq!(f.color, [1, 4, 8, 5]);
+    }
+
+    #[test]
+    fn window_is_translucent_and_wall_is_not() {
+        let (mut sq, _) = sq_with(full(), |s| s.flags.window_n = true);
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(!out.is_empty() && out.iter().all(|f| f.translucent));
+        let (wall, _) = sq_with(full(), |s| s.flags.wall_n = true);
+        sq = wall;
+        out.clear();
+        square_faces(&sq, O, &mut out);
+        assert!(!out.is_empty() && out.iter().all(|f| !f.translucent));
+        let (tr, _) = sq_with(full(), |s| {
+            s.flags.wall_n = true;
+            s.depth_flags = 2;
+        });
+        out.clear();
+        square_faces(&tr, O, &mut out);
+        assert!(out.iter().all(|f| f.translucent));
     }
 
     #[test]

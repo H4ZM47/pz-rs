@@ -407,6 +407,7 @@ mod tests {
             ],
             uv: [[0.0; 2]; 4],
             color: [0xFFFF_FFFF; 4],
+            translucent: false,
         }
     }
 

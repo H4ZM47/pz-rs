@@ -18,6 +18,8 @@ pub struct Scene<'a> {
     pub view_proj: [[f32; 4]; 4],
     /// The sky colour behind everything.
     pub sky: [f32; 4],
+    /// The camera position in model space, for sorting translucent faces.
+    pub eye: [f32; 3],
     pub faces: &'a [Face],
     /// Character and vehicle draws (only [`DrawCmd::Model`] and
     /// [`DrawCmd::VehicleModel`] are kept) made with a perspective
@@ -66,6 +68,7 @@ pub fn face_cmd(f: &Face) -> DrawCmd {
         pos: f.pos,
         uv: f.uv,
         color: f.color,
+        translucent: f.translucent,
     }
 }
 
@@ -96,13 +99,22 @@ pub fn scene_frame(s: &Scene<'_>) -> Vec<DrawCmd> {
             clear: Some(s.sky),
         },
     ];
-    out.extend(s.faces.iter().map(face_cmd));
+    out.extend(s.faces.iter().filter(|f| !f.translucent).map(face_cmd));
     out.extend(
         s.models
             .iter()
             .filter(|c| matches!(c, DrawCmd::Model(_) | DrawCmd::VehicleModel(_)))
             .cloned(),
     );
+    // Translucent faces last, far to near, so they blend over everything
+    // behind them (they do not write depth).
+    let dist = |f: &Face| {
+        let c = [0, 1, 2].map(|i| f.pos.iter().map(|p| p[i]).sum::<f32>() / 4.0);
+        (0..3).map(|i| (c[i] - s.eye[i]).powi(2)).sum::<f32>()
+    };
+    let mut glass: Vec<&Face> = s.faces.iter().filter(|f| f.translucent).collect();
+    glass.sort_by(|a, b| dist(b).total_cmp(&dist(a)));
+    out.extend(glass.into_iter().map(face_cmd));
     out.extend([
         DrawCmd::Scene3DEnd,
         DrawCmd::GlDisable(gl::DEPTH_TEST),
@@ -145,6 +157,7 @@ mod tests {
             },
             view_proj: crate::Mat4::identity().0,
             sky: sky_colour(1.0),
+            eye: [0.0; 3],
             faces: &[],
             models: &models,
             screen: ScreenParams::default(),
@@ -169,6 +182,40 @@ mod tests {
             2
         );
         assert!(matches!(cmds[cmds.len() - 2], DrawCmd::ScreenPass { .. }));
+    }
+
+    #[test]
+    fn translucent_faces_follow_models_far_to_near() {
+        let white = pz_render::TextureManager::default().white();
+        let face = |z: f32, translucent: bool| Face {
+            texture: white.clone(),
+            pos: [[-1.0, -1.0, z], [1.0, -1.0, z], [1.0, 1.0, z], [-1.0, 1.0, z]],
+            uv: [[0.0; 2]; 4],
+            color: [0xFFFF_FFFF; 4],
+            translucent,
+        };
+        // Glass at 2, 9 and 5 units from the eye, an opaque face between.
+        let faces = [face(-2.0, true), face(-9.0, true), face(-4.0, false), face(-5.0, true)];
+        let models = [DrawCmd::GlEnable(gl::BLEND)];
+        let s = Scene {
+            size: FrameSize { width: 800, height: 600 },
+            view_proj: crate::Mat4::identity().0,
+            sky: sky_colour(1.0),
+            eye: [0.0; 3],
+            faces: &faces,
+            models: &models,
+            screen: ScreenParams::default(),
+            crosshair: false,
+        };
+        let cmds = scene_frame(&s);
+        let zs: Vec<(f32, bool)> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::Quad3D { pos, translucent, .. } => Some((pos[0][2], *translucent)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(zs, [(-4.0, false), (-9.0, true), (-5.0, true), (-2.0, true)]);
     }
 
     #[test]
