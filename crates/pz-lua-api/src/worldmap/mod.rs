@@ -8,6 +8,7 @@ pub mod host;
 pub mod present;
 pub mod style;
 pub mod ui;
+pub mod visited;
 
 use crate::bind_ui::{element_of, UIELEMENT};
 use crate::expose::{bool_arg, expose_class, int_arg, num_arg, str_arg};
