@@ -10,7 +10,8 @@ original isometric one.
 |---|---|
 | O | First person on or off |
 | Shift+O | Third person (from isometric), or swap first and third person |
-| Mouse | Look (the cursor is captured) |
+| Mouse | Look (the cursor is captured, a crosshair shows) |
+| Clicks while looking | Act on what the crosshair is on (right click opens its context menu) |
 | Middle mouse | Free the cursor for the UI, press again to capture it |
 | WASD | Move relative to where you look |
 
@@ -19,8 +20,16 @@ original isometric one.
 - `pz-world3d` builds the scene. Floors, north and west walls, doors and
   windows become quads textured from their own tile sprites. The isometric
   view is an affine projection, so projecting each 3D corner into the sprite
-  frame gives exact texture coordinates. Other objects (furniture, trees,
-  stairs, roofs) are vertical cards on the square's diagonal.
+  frame gives exact texture coordinates. Stairs are ramps rising a third of a
+  level per piece. Roofs are planes whose corner heights are fitted, at load,
+  from each roof sprite's depth map (tile data has no roof slope). Other
+  objects (furniture, trees) are vertical cards on the square's diagonal.
+- The first-person eye is kept 0.22 units off walls, so standing against
+  one never puts the near plane inside it.
+- Picking: under mouse-look, a ray through the crosshair hits the nearest
+  face; the hit's isometric screen position stands in for the mouse
+  (`pz_input::world_mouse`), so the existing pickers and context menus act on
+  it. With the cursor freed for the UI, the mouse is the real cursor.
 - Lighting is the game's own per-square vertex light, so night, lamps and
   interiors match the isometric view. The weather screen pass still runs.
 - Characters and vehicles are the existing 3D models drawn with a
@@ -33,6 +42,6 @@ original isometric one.
 
 ## Not done yet
 
-Stairs and roofs as real geometry, picking and context menus from the 3D
-view, item and corpse drawing, shadows, per-chunk mesh caching, split screen
+Picking with a freed cursor, item and corpse drawing, furniture as more than
+cards, shadows, per-chunk mesh caching, split screen
 (player 0 only).

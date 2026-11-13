@@ -403,7 +403,15 @@ fn game_keyboard_update(mgr: &mut LuaManager) {
 }
 
 fn mouse_update(seconds: f32) {
-    let (cx, cy, wheel, buttons) = with_input(|i| (i.cursor_x, i.cursor_y, i.take_wheel(), i.buttons_down));
+    let (mut cx, mut cy, wheel, buttons) = with_input(|i| (i.cursor_x, i.cursor_y, i.take_wheel(), i.buttons_down));
+    // Port extension: while the 3D view's mouse-look holds the cursor, the
+    // mouse is where the view's crosshair meets the world, in isometric
+    // screen pixels, so world picking and context menus act on it. (The
+    // UI cannot be used then; freeing the cursor clears the override.)
+    if let Some((wx, wy)) = pz_input::world_mouse() {
+        cx = f64::from(wx);
+        cy = f64::from(wy) + 1.0;
+    }
     let core = shared_core();
     let zoom = core.borrow().get_zoom(0);
     MS.with(|m| {

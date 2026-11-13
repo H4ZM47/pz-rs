@@ -90,6 +90,7 @@ fn floor_below_wall_ahead_sky_above() {
         faces: &faces,
         models: &[],
         screen: ScreenParams::default(),
+        crosshair: false,
     };
     let dl = DrawList {
         cmds: scene_frame(&scene),

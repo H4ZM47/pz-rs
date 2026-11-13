@@ -208,6 +208,41 @@ impl Camera3D {
         Mat4(m)
     }
 
+    /// The model-space ray through normalized device point (`ndc_x`,
+    /// `ndc_y`) (-1..1, y up) of a view with this `aspect`: the eye and a
+    /// unit direction.
+    pub fn ray(&self, aspect: f32, ndc_x: f32, ndc_y: f32) -> ([f32; 3], [f32; 3]) {
+        let f = self.forward_model();
+        let s = normalize(cross(f, [0.0, 1.0, 0.0]));
+        let u = cross(s, f);
+        let t = (self.fov_y * 0.5).tan();
+        let (kx, ky) = (ndc_x * t * aspect, ndc_y * t);
+        let d = [
+            f[0] + s[0] * kx + u[0] * ky,
+            f[1] + s[1] * kx + u[1] * ky,
+            f[2] + s[2] * kx + u[2] * ky,
+        ];
+        (self.eye, normalize(d))
+    }
+
+    /// The nearest face point along the ray through (`ndc_x`, `ndc_y`),
+    /// in model space, within the far plane.
+    pub fn pick(&self, aspect: f32, ndc_x: f32, ndc_y: f32, faces: &[Face]) -> Option<[f32; 3]> {
+        let (o, d) = self.ray(aspect, ndc_x, ndc_y);
+        let mut best: Option<f32> = None;
+        for face in faces {
+            let p = face.pos;
+            for [i, j, k] in [[0, 1, 2], [0, 2, 3]] {
+                if let Some(t) = ray_triangle(o, d, p[i], p[j], p[k]) {
+                    if t >= self.near && t <= self.far && best.map_or(true, |b| t < b) {
+                        best = Some(t);
+                    }
+                }
+            }
+        }
+        best.map(|t| add_scaled(o, d, t))
+    }
+
     /// `projection * view`.
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
         self.projection(aspect).mul_mat(&self.view())
@@ -373,6 +408,31 @@ mod tests {
             uv: [[0.0; 2]; 4],
             color: [0xFFFF_FFFF; 4],
         }
+    }
+
+    #[test]
+    fn centre_ray_is_the_look_direction_and_picks_the_nearest_face() {
+        let c = Camera3D {
+            eye: [0.0, 0.0, 0.0],
+            ..north_cam()
+        };
+        let (o, d) = c.ray(1.5, 0.0, 0.0);
+        assert_eq!(o, c.eye);
+        let f = c.forward_model();
+        assert!((0..3).all(|i| (d[i] - f[i]).abs() < 1e-6));
+        // North is model +z: walls at z = 2 and z = 4, the nearer wins.
+        let hit = c.pick(1.5, 0.0, 0.0, &[quad_at_z(4.0), quad_at_z(2.0)]).unwrap();
+        assert!((hit[2] - 2.0).abs() < 1e-5, "{hit:?}");
+        // Nothing behind the eye is picked.
+        assert!(c.pick(1.5, 0.0, 0.0, &[quad_at_z(-2.0)]).is_none());
+    }
+
+    #[test]
+    fn edge_ray_spans_half_the_field_of_view() {
+        let c = north_cam();
+        let (_, d) = c.ray(1.0, 0.0, 1.0);
+        let up = d[1].atan2(d[2]);
+        assert!((up - c.fov_y * 0.5).abs() < 1e-5, "{up}");
     }
 
     #[test]
