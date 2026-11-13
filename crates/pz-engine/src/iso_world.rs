@@ -1214,6 +1214,10 @@ impl IsoWorld {
             b.load_headers(rand);
             let seed = self.world_gen_params.borrow().seed();
             let no_save = pz_lua_api::bind_core::shared_core().borrow().is_no_save();
+            let world_version = pz_classfile::Jar::open(self.jar())
+                .ok()
+                .and_then(|j| pz_sandbox::save_bin::world_version(&j).ok())
+                .unwrap_or(WORLD_VERSION);
             let mut write_err = None;
             with_world(|w| {
                 if let Some(meta) = w.meta_grid.as_mut() {
@@ -1221,7 +1225,7 @@ impl IsoWorld {
                     b.create_building_defs(meta);
                     // `writeSavefile()`.
                     if !no_save {
-                        write_err = b.write_savefile(&file).err();
+                        write_err = b.write_savefile(&file, world_version).err();
                     }
                     b.meta_buildings = b.add_building_defs_to_meta_grid(meta, rand);
                 }

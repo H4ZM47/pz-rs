@@ -86,7 +86,9 @@ pub struct BasementBuilding {
 
 /// `Basements.FILE_MAGIC`.
 pub const FILE_MAGIC: [u8; 4] = *b"BSMT";
-/// The world version `writeSavefile` stores.
+/// The world version this port's reference build stores
+/// (`IsoWorld.WorldVersion`, inlined into `writeSavefile`; later builds
+/// write theirs, so callers pass the installed jar's value).
 pub const SAVEFILE_WORLD_VERSION: i32 = 249;
 /// The file version `writeSavefile` stores.
 pub const SAVEFILE_VERSION: i32 = 1;
@@ -545,11 +547,12 @@ impl Basements {
 
     /// `writeSavefile(out)`: the bytes of `map_basements.bin`, big-endian
     /// as `DataOutputStream` writes them (sizes and room levels are
-    /// narrowed as Java's `writeShort` / `writeByte` do).
-    pub fn savefile_bytes(&self) -> std::io::Result<Vec<u8>> {
+    /// narrowed as Java's `writeShort` / `writeByte` do). `world_version`
+    /// is the game build's `IsoWorld.WorldVersion`.
+    pub fn savefile_bytes(&self, world_version: i32) -> std::io::Result<Vec<u8>> {
         let mut out = Vec::new();
         out.extend_from_slice(&FILE_MAGIC);
-        out.extend_from_slice(&SAVEFILE_WORLD_VERSION.to_be_bytes());
+        out.extend_from_slice(&world_version.to_be_bytes());
         out.extend_from_slice(&SAVEFILE_VERSION.to_be_bytes());
         let short = |out: &mut Vec<u8>, v: i32| out.extend_from_slice(&(v as i16).to_be_bytes());
         let utf = pz_core::save_trackers::encode_modified_utf;
@@ -641,8 +644,8 @@ impl Basements {
     }
 
     /// `writeSavefile()` without its `Core.isNoSave` check (the caller's).
-    pub fn write_savefile(&self, path: &std::path::Path) -> std::io::Result<()> {
-        std::fs::write(path, self.savefile_bytes()?)
+    pub fn write_savefile(&self, path: &std::path::Path, world_version: i32) -> std::io::Result<()> {
+        std::fs::write(path, self.savefile_bytes(world_version)?)
     }
 
     /// `onNewChunkLoaded(chunk)`: stamps every placement whose bounds (plus
@@ -1213,7 +1216,7 @@ mod tests {
                 rects: vec![(9, 19, 1, 1)],
             }],
         });
-        let bytes = b.savefile_bytes().unwrap();
+        let bytes = b.savefile_bytes(SAVEFILE_WORLD_VERSION).unwrap();
         let mut want = b"BSMT".to_vec();
         for v in [249i32, 1, 1, 10, 20, -1] {
             want.extend_from_slice(&v.to_be_bytes());
