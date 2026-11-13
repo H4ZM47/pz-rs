@@ -57,6 +57,9 @@ pub struct MouseState {
     pub ui_blocked: Vec<bool>,
     /// `Mouse.isRightDelay()`.
     pub right_delay: bool,
+    /// Port extension: the mouse stands for the 3D view's crosshair (the
+    /// cursor is captured), so clicks go to the world, never to elements.
+    pub world_only: bool,
 }
 
 impl Default for MouseState {
@@ -71,6 +74,7 @@ impl Default for MouseState {
             wheel: 0,
             ui_blocked: vec![false; 5],
             right_delay: false,
+            world_only: false,
         }
     }
 }
@@ -608,7 +612,7 @@ impl UIManager {
         let mut consumed_rclick = false;
         for btn in 0..mouse.button_count() {
             let mut consumed = false;
-            if btn == 0 {
+            if btn == 0 && !mouse.world_only {
                 if let Some(h) = with_ui(|m| m.gizmo_hit_test_hook.clone()) {
                     consumed = h(t, mx, my);
                 }
@@ -622,7 +626,7 @@ impl UIManager {
                     }
                 }
                 let uis = Self::get_ui();
-                let mut i = uis.len() as isize - 1;
+                let mut i = if mouse.world_only { -1 } else { uis.len() as isize - 1 };
                 while i >= 0 && !consumed {
                     let ui = uis[i as usize].clone();
                     let (lx, ly) = (mx as f64 - ui.get_x(), my as f64 - ui.get_y());

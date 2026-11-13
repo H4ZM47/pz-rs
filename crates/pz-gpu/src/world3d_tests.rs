@@ -28,7 +28,13 @@ fn quad(z: f32, half: f32, tex: &Texture, color: u32) -> DrawCmd {
         pos: [[-half, -half, z], [half, -half, z], [half, half, z], [-half, half, z]],
         uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
         color: [color; 4],
+        translucent: false,
     }
+}
+
+fn glass(z: f32, half: f32, tex: &Texture, color: u32) -> DrawCmd {
+    let DrawCmd::Quad3D { texture, pos, uv, color, .. } = quad(z, half, tex, color) else { unreachable!() };
+    DrawCmd::Quad3D { texture, pos, uv, color, translucent: true }
 }
 
 fn params() -> FrameParams {
@@ -118,4 +124,33 @@ fn texel_above_half_alpha_draws_opaque() {
     g.render_frame(&[(params(), &dl)], &mut tm);
     let p = g.read_pixels();
     assert_eq!(px(&p, 16, 8, 8), [255, 0, 0, 255]);
+}
+
+#[test]
+fn translucent_quad_blends_over_opaque() {
+    let Some(mut g) = gpu(16, 16) else { return };
+    let mut tm = TextureManager::new();
+    let white = tm.white();
+    let half = tm.texture_from_pixels("half3d", 1, 1, vec![255, 255, 255, 128], 0);
+    let mut dl = DrawList::default();
+    dl.cmds.extend([begin(), quad(-3.0, 0.9, &white, GREEN), glass(-1.5, 0.5, &half, RED), DrawCmd::Scene3DEnd]);
+    g.render_frame(&[(params(), &dl)], &mut tm);
+    let p = g.read_pixels();
+    let c = px(&p, 16, 8, 8);
+    assert!((i32::from(c[0]) - 128).abs() <= 6 && (i32::from(c[1]) - 127).abs() <= 6 && c[2] <= 6, "{c:?}");
+}
+
+#[test]
+fn translucent_quad_does_not_write_depth() {
+    let Some(mut g) = gpu(16, 16) else { return };
+    let mut tm = TextureManager::new();
+    let white = tm.white();
+    let half = tm.texture_from_pixels("half3d", 1, 1, vec![255, 255, 255, 128], 0);
+    let mut dl = DrawList::default();
+    // Glass first, then a farther opaque quad that must still show through it.
+    dl.cmds.extend([begin(), glass(-1.5, 0.5, &half, RED), quad(-3.0, 0.9, &white, GREEN), DrawCmd::Scene3DEnd]);
+    g.render_frame(&[(params(), &dl)], &mut tm);
+    let p = g.read_pixels();
+    let c = px(&p, 16, 8, 8);
+    assert!(c[1] > 100, "{c:?}");
 }

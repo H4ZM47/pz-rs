@@ -39,6 +39,16 @@ pub fn to_model(p: [f32; 3], origin: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+/// The inverse of [`to_model`]: a model-space point back to world
+/// coordinates.
+pub fn from_model(m: [f32; 3], origin: [f32; 3]) -> [f32; 3] {
+    [
+        origin[0] - m[0],
+        origin[1] - m[2],
+        origin[2] + m[1] / LEVEL_HEIGHT,
+    ]
+}
+
 /// Which view the world is drawn from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ViewMode {
@@ -61,5 +71,13 @@ mod tests {
         assert_eq!(to_model([11.0, 20.0, 0.0], o), [-1.0, 0.0, 0.0]);
         assert_eq!(to_model([10.0, 21.0, 0.0], o), [0.0, 0.0, -1.0]);
         assert_eq!(to_model([10.0, 20.0, 1.0], o), [0.0, LEVEL_HEIGHT, 0.0]);
+    }
+
+    #[test]
+    fn from_model_inverts_to_model() {
+        let o = [10.0, 20.0, 1.0];
+        let p = [12.5, 18.25, 1.5];
+        let q = from_model(to_model(p, o), o);
+        assert!((0..3).all(|i| (p[i] - q[i]).abs() < 1e-5), "{q:?}");
     }
 }

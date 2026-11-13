@@ -9,6 +9,7 @@
 //! Floors and walls keep their full geometry with UVs clamped into the
 //! (trimmed) texture; cards are clipped to the texture rectangle.
 
+use pz_iso_render::world::StairPart;
 use pz_iso_render::{RenderObject, RenderSquare, SpriteInfo, TileType};
 use pz_render::iso::{x_to_screen, y_to_screen, TILE_SCALE};
 use pz_render::Texture;
@@ -23,6 +24,9 @@ pub struct Face {
     pub uv: [[f32; 2]; 4],
     /// ABGR, as `vert_lights`.
     pub color: [u32; 4],
+    /// Semi-transparent sprite (window glass, translucent depth flag):
+    /// drawn in the blended pass after the opaque faces.
+    pub translucent: bool,
 }
 
 /// `performRenderFrame`'s scale for the sprite's instance (1.0).
@@ -128,6 +132,11 @@ fn clip(poly: &[Vtx], val: impl Fn(&Vtx) -> f32) -> Vec<Vtx> {
 /// inset makes edges sample interior opaque texels. Geometry is unchanged.
 const EDGE_INSET: f32 = 3.0;
 
+/// How far (texture pixels at tile scale 1) a floor or wall corner may fall
+/// outside a trimmed texture and still be clamped rather than clipped:
+/// enough for the few transparent rows trimmed off a wall's edge.
+const FILL_MAX_OVERSHOOT: f32 = 6.0;
+
 /// Moves each vertex's frame fraction toward the quad's centre by the inset
 /// (capped at the distance to the centre).
 fn inset_fracs(tex: &Texture, verts: &mut [Vtx]) {
@@ -155,6 +164,7 @@ struct Ctx<'a> {
     obj: &'a RenderObject,
     sq_pos: [f32; 3],
     origin: [f32; 3],
+    translucent: bool,
 }
 
 /// Emits the quad `p` (world corners, in `(s,t)` order `(0,0) (1,0) (1,1)
@@ -185,6 +195,19 @@ fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4]
             }
         })
         .collect();
+    // A texture trimmed well inside the face (a rug piece, the triangle of
+    // a gable wall) would smear its edge texels across the rest of the
+    // face; such faces are clipped to the texture like cards.
+    let (tw, th) = (tex.width as f32, tex.height as f32);
+    let overshoot = verts
+        .iter()
+        .map(|v| {
+            let ox = (-v.f[0]).max(v.f[0] - 1.0) * tw;
+            let oy = (-v.f[1]).max(v.f[1] - 1.0) * th;
+            ox.max(oy)
+        })
+        .fold(0.0f32, f32::max);
+    let fill = fill && overshoot <= FILL_MAX_OVERSHOOT * TILE_SCALE as f32;
     if fill {
         inset_fracs(tex, &mut verts);
     }
@@ -206,6 +229,7 @@ fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4]
             pos,
             uv,
             color,
+            translucent: c.translucent,
         });
         return;
     }
@@ -221,6 +245,7 @@ fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4]
             pos,
             uv,
             color,
+            translucent: c.translucent,
         });
         return;
     }
@@ -260,6 +285,7 @@ fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4]
             pos: tri.map(|t| t.0),
             uv: tri.map(|t| t.1),
             color: tri.map(|t| t.2),
+            translucent: c.translucent,
         });
     }
 }
@@ -269,7 +295,48 @@ enum Kind {
     WallN,
     WallW,
     WallNW,
+    /// A stair piece: a ramp rising toward the north or west edge.
+    Stairs(StairPart),
+    /// A roof piece: a plane over the square with these corner heights
+    /// (levels; NW, NE, SE, SW), fitted from the sprite's depth map.
+    Roof([f32; 4]),
     Card,
+}
+
+/// The ramp heights of a stair piece above its level, at its low and high
+/// edges, as `getApparentZ` (thirds of a level), and whether it rises
+/// toward the north (else toward the west).
+fn stair_ramp(part: StairPart) -> (f32, f32, bool) {
+    const THIRD: f32 = 1.0 / 3.0;
+    match part {
+        StairPart::BottomN => (0.0, THIRD, true),
+        StairPart::MiddleN => (THIRD, 2.0 * THIRD, true),
+        StairPart::TopN => (2.0 * THIRD, 1.0, true),
+        StairPart::BottomW => (0.0, THIRD, false),
+        StairPart::MiddleW => (THIRD, 2.0 * THIRD, false),
+        StairPart::TopW => (2.0 * THIRD, 1.0, false),
+    }
+}
+
+/// The corners of a stair ramp on square `(x, y, z)`, in `(s,t)` order:
+/// the high edge is north (y) or west (x), the low edge south or east.
+fn stair_quad(x: f32, y: f32, z: f32, part: StairPart) -> [[f32; 3]; 4] {
+    let (lo, hi, north) = stair_ramp(part);
+    if north {
+        [
+            [x, y, z + hi],
+            [x + 1.0, y, z + hi],
+            [x + 1.0, y + 1.0, z + lo],
+            [x, y + 1.0, z + lo],
+        ]
+    } else {
+        [
+            [x, y, z + hi],
+            [x + 1.0, y, z + lo],
+            [x + 1.0, y + 1.0, z + lo],
+            [x, y + 1.0, z + hi],
+        ]
+    }
 }
 
 /// Whether the iso renderer draws the object with `render_floor`: the Floor
@@ -281,9 +348,44 @@ fn is_floor(sprite: &SpriteInfo, obj: &RenderObject) -> bool {
     if f.floor_overlay || f.diamond_floor || f.water || f.transparent_floor {
         return true;
     }
-    (f.solidfloor || sprite.render_layer == 1)
+    if (f.solidfloor || sprite.render_layer == 1)
         && !sprite.sloped
         && obj.kind != pz_iso_render::ObjectKind::Fire
+    {
+        return true;
+    }
+    // Port extension: rugs carry only `attachedFloor`. One whose pixels all
+    // lie within the floor diamond's rows is drawn flat on the floor (as a
+    // card it would be a sliver a sixth of a level tall).
+    sprite.attached_floor && !sprite.sloped && lies_in_floor_diamond(sprite, obj)
+}
+
+/// Whether the sprite's trimmed texture starts at or below the top row of
+/// the square's floor diamond (allowing a pixel of slack).
+fn lies_in_floor_diamond(sprite: &SpriteInfo, obj: &RenderObject) -> bool {
+    let Some(tex) = sprite.texture.as_ref() else {
+        return false;
+    };
+    let top = off_y(obj) - sprite.soff_y as f32;
+    tex.offset_y * frame_scale(tex) >= top - 1.0
+}
+
+/// Whether the sprite is drawn on a north or west wall plane.
+fn is_wall(sprite: &SpriteInfo) -> bool {
+    let f = &sprite.flags;
+    f.wall_nw
+        || f.wall_n
+        || f.wall_w
+        || f.door_wall_n
+        || f.door_wall_w
+        || f.window_n
+        || f.window_w
+        || f.door_n
+        || f.door_w
+        || matches!(
+            sprite.tile_type,
+            TileType::DoorFrN | TileType::DoorN | TileType::DoorFrW | TileType::DoorW
+        )
 }
 
 fn classify(sprite: &SpriteInfo, obj: &RenderObject) -> Kind {
@@ -307,8 +409,12 @@ fn classify(sprite: &SpriteInfo, obj: &RenderObject) -> Kind {
 fn classify_closed(sprite: &SpriteInfo, obj: &RenderObject) -> Kind {
     let f = &sprite.flags;
     let t = sprite.tile_type;
-    if is_floor(sprite, obj) {
+    if let Some(part) = sprite.stairs {
+        Kind::Stairs(part)
+    } else if is_floor(sprite, obj) {
         Kind::Floor
+    } else if let (Some(h), false) = (sprite.roof_plane, is_wall(sprite)) {
+        Kind::Roof(h)
     } else if f.wall_nw {
         Kind::WallNW
     } else if f.wall_n
@@ -353,6 +459,11 @@ pub fn square_faces(sq: &RenderSquare, origin: [f32; 3], out: &mut Vec<Face>) {
             obj,
             sq_pos: [x, y, z],
             origin,
+            translucent: sprite.depth_flags & 2 != 0
+                || sprite.flags.window_n
+                || sprite.flags.window_w
+                || sprite.flags.transparent_n
+                || sprite.flags.transparent_w,
         };
         let lit = |col: [u32; 4]| {
             if sprite.flags.unlit {
@@ -394,6 +505,19 @@ pub fn square_faces(sq: &RenderSquare, origin: [f32; 3], out: &mut Vec<Face>) {
             Kind::WallNW => {
                 north(out);
                 west(out);
+            }
+            Kind::Roof(h) => {
+                let p = [
+                    [x, y, z + h[0]],
+                    [x + 1.0, y, z + h[1]],
+                    [x + 1.0, y + 1.0, z + h[2]],
+                    [x, y + 1.0, z + h[3]],
+                ];
+                push_face(out, &c, p, lit([v[0], v[1], v[2], v[3]]), false);
+            }
+            Kind::Stairs(part) => {
+                let p = stair_quad(x, y, z, part);
+                push_face(out, &c, p, lit([v[0], v[1], v[2], v[3]]), false);
             }
             Kind::Card => {
                 let s = frame_scale(tex);
@@ -546,6 +670,75 @@ mod tests {
     }
 
     #[test]
+    fn north_stairs_are_a_ramp_rising_north() {
+        let third = crate::LEVEL_HEIGHT / 3.0;
+        for (part, lo, hi) in [
+            (StairPart::BottomN, 0.0, third),
+            (StairPart::MiddleN, third, 2.0 * third),
+            (StairPart::TopN, 2.0 * third, crate::LEVEL_HEIGHT),
+        ] {
+            let (sq, _) = sq_with(full(), |s| s.stairs = Some(part));
+            let mut out = Vec::new();
+            square_faces(&sq, O, &mut out);
+            assert!(!out.is_empty(), "{part:?}");
+            // Model y is height; model z = -(world y - origin y), so the
+            // north edge (world y = 20) is model z = 0, south is -1.
+            for f in &out {
+                for p in f.pos {
+                    let expect = lo + (hi - lo) * (1.0 + p[2]);
+                    assert!((p[1] - expect).abs() < 1e-4, "{part:?} {p:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn west_stairs_are_a_ramp_rising_west() {
+        let (sq, _) = sq_with(full(), |s| s.stairs = Some(StairPart::TopW));
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(!out.is_empty());
+        let third = crate::LEVEL_HEIGHT / 3.0;
+        for f in &out {
+            for p in f.pos {
+                // Model x = -(world x - origin x): west edge 0, east edge -1.
+                let expect = 2.0 * third + third * (1.0 + p[0]);
+                assert!((p[1] - expect).abs() < 1e-4, "{p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn roof_follows_its_fitted_plane() {
+        // Rising from 0 at the east edge to 1/3 at the west edge.
+        let h = [1.0 / 3.0, 0.0, 0.0, 1.0 / 3.0];
+        let (sq, _) = sq_with(full(), |s| s.roof_plane = Some(h));
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(!out.is_empty());
+        let third = crate::LEVEL_HEIGHT / 3.0;
+        for f in &out {
+            for p in f.pos {
+                // Model x = -(world x - origin x): west edge 0, east edge -1.
+                let expect = third * (1.0 + p[0]);
+                assert!((p[1] - expect).abs() < 1e-4, "{p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn wall_flags_win_over_a_roof_plane() {
+        let (sq, _) = sq_with(full(), |s| {
+            s.flags.wall_n = true;
+            s.roof_plane = Some([0.0; 4]);
+        });
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].pos[2][1], crate::LEVEL_HEIGHT);
+    }
+
+    #[test]
     fn open_door_swings_to_the_other_edge() {
         let (mut sq, _) = sq_with(full(), |s| s.flags.door_n = true);
         sq.objects[0].kind = pz_iso_render::ObjectKind::Door { open: true };
@@ -576,6 +769,26 @@ mod tests {
             close(px(*uv), e);
         }
         assert_eq!(f.color, [1, 4, 8, 5]);
+    }
+
+    #[test]
+    fn window_is_translucent_and_wall_is_not() {
+        let (mut sq, _) = sq_with(full(), |s| s.flags.window_n = true);
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(!out.is_empty() && out.iter().all(|f| f.translucent));
+        let (wall, _) = sq_with(full(), |s| s.flags.wall_n = true);
+        sq = wall;
+        out.clear();
+        square_faces(&sq, O, &mut out);
+        assert!(!out.is_empty() && out.iter().all(|f| !f.translucent));
+        let (tr, _) = sq_with(full(), |s| {
+            s.flags.wall_n = true;
+            s.depth_flags = 2;
+        });
+        out.clear();
+        square_faces(&tr, O, &mut out);
+        assert!(out.iter().all(|f| f.translucent));
     }
 
     #[test]
@@ -622,10 +835,11 @@ mod tests {
     }
 
     #[test]
-    fn trimmed_wall_keeps_geometry_and_clamps_uvs() {
-        let mut t = tex(128, 64, 0.0, 192.0, (128, 256));
-        t.y_start = 0.5;
-        t.y_end = 0.75;
+    fn slightly_trimmed_wall_keeps_geometry_and_clamps_uvs() {
+        // 4 transparent rows trimmed off the top: 128x252 from y 4.
+        let mut t = tex(128, 252, 0.0, 4.0, (128, 256));
+        t.y_start = 0.0;
+        t.y_end = 1.0;
         let (sq, _) = sq_with(t, |s| s.flags.wall_n = true);
         let mut out = Vec::new();
         square_faces(&sq, O, &mut out);
@@ -634,33 +848,73 @@ mod tests {
         // Full wall height is kept.
         assert_eq!(f.pos[2], [-1.0, crate::LEVEL_HEIGHT, 0.0]);
         assert_eq!(f.pos[3], [0.0, crate::LEVEL_HEIGHT, 0.0]);
-        let (hx, hy) = (0.5 / 128.0, 0.5 / 64.0 * 0.25);
+        let (hx, hy) = (0.5 / 128.0, 0.5 / 252.0);
         for uv in f.uv {
             assert!(
-                uv[0] >= hx - 1e-6
-                    && uv[0] <= 1.0 - hx + 1e-6
-                    && uv[1] >= 0.5 + hy - 1e-6
-                    && uv[1] <= 0.75 - hy + 1e-6,
+                uv[0] >= hx - 1e-6 && uv[0] <= 1.0 - hx + 1e-6 && uv[1] >= hy - 1e-6 && uv[1] <= 1.0 - hy + 1e-6,
                 "{uv:?}"
             );
         }
     }
 
     #[test]
-    fn trimmed_floor_keeps_geometry_and_clamps_uvs() {
+    fn heavily_trimmed_wall_is_clipped_not_smeared() {
+        // Only the bottom 64 rows have pixels (a gable's foot, a low
+        // trim): the face stops where the texture does.
+        let mut t = tex(128, 64, 0.0, 192.0, (128, 256));
+        t.y_start = 0.5;
+        t.y_end = 0.75;
+        let (sq, _) = sq_with(t, |s| s.flags.wall_n = true);
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(!out.is_empty());
+        let top = out.iter().flat_map(|f| f.pos).map(|p| p[1]).fold(0.0f32, f32::max);
+        assert!(top < crate::LEVEL_HEIGHT * 0.5, "{top}");
+    }
+
+    #[test]
+    fn half_floor_texture_is_clipped_to_its_half() {
+        // A rug piece covering only the top half of the diamond.
         let mut t = tex(128, 32, 0.0, 192.0, (128, 256));
         t.y_start = 0.0;
         t.y_end = 0.5;
         let (sq, _) = sq_with(t, |s| s.flags.solidfloor = true);
         let mut out = Vec::new();
         square_faces(&sq, O, &mut out);
-        assert_eq!(out.len(), 1);
-        let f = &out[0];
-        assert_eq!(f.pos[2], [-1.0, 0.0, -1.0]);
-        let hy = 0.5 / 32.0 * 0.5;
-        for uv in f.uv {
-            assert!(uv[1] >= hy - 1e-6 && uv[1] <= 0.5 - hy + 1e-6, "{uv:?}");
+        assert!(!out.is_empty());
+        // Nothing reaches the south corner (model (-1, 0, -1)).
+        for f in &out {
+            for p in f.pos {
+                assert!(p[0] + p[2] > -1.0 - 1e-4, "{p:?}");
+            }
         }
+    }
+
+    #[test]
+    fn attached_floor_rug_lies_flat() {
+        // A rug piece: only `attachedFloor`, pixels in the diamond rows.
+        let mut t = tex(100, 53, 26.0, 203.0, (128, 256));
+        t.y_start = 0.0;
+        t.y_end = 1.0;
+        let (mut sq, _) = sq_with(t, |s| s.attached_floor = true);
+        sq.objects[0].offset_y = 192.0;
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(!out.is_empty());
+        for f in &out {
+            for p in f.pos {
+                assert!(p[1].abs() < 1e-5, "{p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn attached_floor_sprite_reaching_above_the_floor_stays_a_card() {
+        let (mut sq, _) = sq_with(full(), |s| s.attached_floor = true);
+        sq.objects[0].offset_y = 192.0;
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(out.iter().flat_map(|f| f.pos).any(|p| p[1] > 0.1));
     }
 
     #[test]

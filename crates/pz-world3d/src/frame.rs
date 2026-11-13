@@ -5,7 +5,7 @@
 //! still apply.
 
 use pz_iso_render::frame::FrameSize;
-use pz_render::{gl, DrawCmd, ScreenParams};
+use pz_render::{gl, DrawCmd, Rgba, ScreenParams};
 
 use crate::mesh::Face;
 
@@ -18,6 +18,8 @@ pub struct Scene<'a> {
     pub view_proj: [[f32; 4]; 4],
     /// The sky colour behind everything.
     pub sky: [f32; 4],
+    /// The camera position in model space, for sorting translucent faces.
+    pub eye: [f32; 3],
     pub faces: &'a [Face],
     /// Character and vehicle draws (only [`DrawCmd::Model`] and
     /// [`DrawCmd::VehicleModel`] are kept) made with a perspective
@@ -25,6 +27,32 @@ pub struct Scene<'a> {
     pub models: &'a [DrawCmd],
     /// The player's `WeatherShader` inputs.
     pub screen: ScreenParams,
+    /// Draw a crosshair at the centre (mouse-look on: what the mouse acts
+    /// on).
+    pub crosshair: bool,
+}
+
+/// A small plus at the centre of a `w` x `h` view: a dark outline under a
+/// light cross.
+pub fn crosshair(w: f32, h: f32) -> Vec<DrawCmd> {
+    let (cx, cy) = ((w / 2.0).floor(), (h / 2.0).floor());
+    let bar = |x: f32, y: f32, bw: f32, bh: f32, c: Rgba| DrawCmd::Quad {
+        texture: None,
+        x,
+        y,
+        w: bw,
+        h: bh,
+        color: c,
+    };
+    let dark = Rgba(0.0, 0.0, 0.0, 0.6);
+    let light = Rgba(1.0, 1.0, 1.0, 0.85);
+    let (arm, t) = (7.0, 2.0);
+    vec![
+        bar(cx - arm - 1.0, cy - t / 2.0 - 1.0, 2.0 * arm + 2.0, t + 2.0, dark),
+        bar(cx - t / 2.0 - 1.0, cy - arm - 1.0, t + 2.0, 2.0 * arm + 2.0, dark),
+        bar(cx - arm, cy - t / 2.0, 2.0 * arm, t, light),
+        bar(cx - t / 2.0, cy - arm, t, 2.0 * arm, light),
+    ]
 }
 
 /// The sky colour for an ambient light level (0 = night, 1 = full day).
@@ -40,6 +68,7 @@ pub fn face_cmd(f: &Face) -> DrawCmd {
         pos: f.pos,
         uv: f.uv,
         color: f.color,
+        translucent: f.translucent,
     }
 }
 
@@ -70,13 +99,22 @@ pub fn scene_frame(s: &Scene<'_>) -> Vec<DrawCmd> {
             clear: Some(s.sky),
         },
     ];
-    out.extend(s.faces.iter().map(face_cmd));
+    out.extend(s.faces.iter().filter(|f| !f.translucent).map(face_cmd));
     out.extend(
         s.models
             .iter()
             .filter(|c| matches!(c, DrawCmd::Model(_) | DrawCmd::VehicleModel(_)))
             .cloned(),
     );
+    // Translucent faces last, far to near, so they blend over everything
+    // behind them (they do not write depth).
+    let dist = |f: &Face| {
+        let c = [0, 1, 2].map(|i| f.pos.iter().map(|p| p[i]).sum::<f32>() / 4.0);
+        (0..3).map(|i| (c[i] - s.eye[i]).powi(2)).sum::<f32>()
+    };
+    let mut glass: Vec<&Face> = s.faces.iter().filter(|f| f.translucent).collect();
+    glass.sort_by(|a, b| dist(b).total_cmp(&dist(a)));
+    out.extend(glass.into_iter().map(face_cmd));
     out.extend([
         DrawCmd::Scene3DEnd,
         DrawCmd::GlDisable(gl::DEPTH_TEST),
@@ -99,6 +137,9 @@ pub fn scene_frame(s: &Scene<'_>) -> Vec<DrawCmd> {
         },
         DrawCmd::GlEnable(gl::BLEND),
     ]);
+    if s.crosshair {
+        out.extend(crosshair(w as f32, h as f32));
+    }
     out
 }
 
@@ -116,9 +157,11 @@ mod tests {
             },
             view_proj: crate::Mat4::identity().0,
             sky: sky_colour(1.0),
+            eye: [0.0; 3],
             faces: &[],
             models: &models,
             screen: ScreenParams::default(),
+            crosshair: false,
         };
         let cmds = scene_frame(&s);
         assert!(matches!(
@@ -139,6 +182,53 @@ mod tests {
             2
         );
         assert!(matches!(cmds[cmds.len() - 2], DrawCmd::ScreenPass { .. }));
+    }
+
+    #[test]
+    fn translucent_faces_follow_models_far_to_near() {
+        let white = pz_render::TextureManager::default().white();
+        let face = |z: f32, translucent: bool| Face {
+            texture: white.clone(),
+            pos: [[-1.0, -1.0, z], [1.0, -1.0, z], [1.0, 1.0, z], [-1.0, 1.0, z]],
+            uv: [[0.0; 2]; 4],
+            color: [0xFFFF_FFFF; 4],
+            translucent,
+        };
+        // Glass at 2, 9 and 5 units from the eye, an opaque face between.
+        let faces = [face(-2.0, true), face(-9.0, true), face(-4.0, false), face(-5.0, true)];
+        let models = [DrawCmd::GlEnable(gl::BLEND)];
+        let s = Scene {
+            size: FrameSize { width: 800, height: 600 },
+            view_proj: crate::Mat4::identity().0,
+            sky: sky_colour(1.0),
+            eye: [0.0; 3],
+            faces: &faces,
+            models: &models,
+            screen: ScreenParams::default(),
+            crosshair: false,
+        };
+        let cmds = scene_frame(&s);
+        let zs: Vec<(f32, bool)> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::Quad3D { pos, translucent, .. } => Some((pos[0][2], *translucent)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(zs, [(-4.0, false), (-9.0, true), (-5.0, true), (-2.0, true)]);
+    }
+
+    #[test]
+    fn crosshair_is_centred() {
+        let c = crosshair(800.0, 600.0);
+        assert_eq!(c.len(), 4);
+        for cmd in &c {
+            let DrawCmd::Quad { x, y, w, h, .. } = cmd else {
+                panic!("{cmd:?}");
+            };
+            assert!((x + w / 2.0 - 400.0).abs() < 1e-4);
+            assert!((y + h / 2.0 - 300.0).abs() < 1e-4);
+        }
     }
 
     #[test]

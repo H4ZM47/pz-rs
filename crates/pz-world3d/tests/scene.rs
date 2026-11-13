@@ -18,6 +18,7 @@ fn face(tex: &pz_render::Texture, corners: [[f32; 3]; 4], origin: [f32; 3], colo
         pos: corners.map(|c| to_model(c, origin)),
         uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
         color: [color; 4],
+        translucent: false,
     }
 }
 
@@ -87,9 +88,11 @@ fn floor_below_wall_ahead_sky_above() {
         },
         view_proj: cam.view_proj(W as f32 / H as f32).0,
         sky: [0.0, 0.0, 1.0, 1.0],
+        eye: cam.eye,
         faces: &faces,
         models: &[],
         screen: ScreenParams::default(),
+        crosshair: false,
     };
     let dl = DrawList {
         cmds: scene_frame(&scene),
