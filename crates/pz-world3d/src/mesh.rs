@@ -9,6 +9,7 @@
 //! Floors and walls keep their full geometry with UVs clamped into the
 //! (trimmed) texture; cards are clipped to the texture rectangle.
 
+use pz_iso_render::world::StairPart;
 use pz_iso_render::{RenderObject, RenderSquare, SpriteInfo, TileType};
 use pz_render::iso::{x_to_screen, y_to_screen, TILE_SCALE};
 use pz_render::Texture;
@@ -269,7 +270,45 @@ enum Kind {
     WallN,
     WallW,
     WallNW,
+    /// A stair piece: a ramp rising toward the north or west edge.
+    Stairs(StairPart),
     Card,
+}
+
+/// The ramp heights of a stair piece above its level, at its low and high
+/// edges, as `getApparentZ` (thirds of a level), and whether it rises
+/// toward the north (else toward the west).
+fn stair_ramp(part: StairPart) -> (f32, f32, bool) {
+    const THIRD: f32 = 1.0 / 3.0;
+    match part {
+        StairPart::BottomN => (0.0, THIRD, true),
+        StairPart::MiddleN => (THIRD, 2.0 * THIRD, true),
+        StairPart::TopN => (2.0 * THIRD, 1.0, true),
+        StairPart::BottomW => (0.0, THIRD, false),
+        StairPart::MiddleW => (THIRD, 2.0 * THIRD, false),
+        StairPart::TopW => (2.0 * THIRD, 1.0, false),
+    }
+}
+
+/// The corners of a stair ramp on square `(x, y, z)`, in `(s,t)` order:
+/// the high edge is north (y) or west (x), the low edge south or east.
+fn stair_quad(x: f32, y: f32, z: f32, part: StairPart) -> [[f32; 3]; 4] {
+    let (lo, hi, north) = stair_ramp(part);
+    if north {
+        [
+            [x, y, z + hi],
+            [x + 1.0, y, z + hi],
+            [x + 1.0, y + 1.0, z + lo],
+            [x, y + 1.0, z + lo],
+        ]
+    } else {
+        [
+            [x, y, z + hi],
+            [x + 1.0, y, z + lo],
+            [x + 1.0, y + 1.0, z + lo],
+            [x, y + 1.0, z + hi],
+        ]
+    }
 }
 
 /// Whether the iso renderer draws the object with `render_floor`: the Floor
@@ -307,7 +346,9 @@ fn classify(sprite: &SpriteInfo, obj: &RenderObject) -> Kind {
 fn classify_closed(sprite: &SpriteInfo, obj: &RenderObject) -> Kind {
     let f = &sprite.flags;
     let t = sprite.tile_type;
-    if is_floor(sprite, obj) {
+    if let Some(part) = sprite.stairs {
+        Kind::Stairs(part)
+    } else if is_floor(sprite, obj) {
         Kind::Floor
     } else if f.wall_nw {
         Kind::WallNW
@@ -394,6 +435,10 @@ pub fn square_faces(sq: &RenderSquare, origin: [f32; 3], out: &mut Vec<Face>) {
             Kind::WallNW => {
                 north(out);
                 west(out);
+            }
+            Kind::Stairs(part) => {
+                let p = stair_quad(x, y, z, part);
+                push_face(out, &c, p, lit([v[0], v[1], v[2], v[3]]), false);
             }
             Kind::Card => {
                 let s = frame_scale(tex);
@@ -543,6 +588,45 @@ mod tests {
             close(px(*uv), e);
         }
         assert_eq!(f.color, [1, 2, 6, 5]);
+    }
+
+    #[test]
+    fn north_stairs_are_a_ramp_rising_north() {
+        let third = crate::LEVEL_HEIGHT / 3.0;
+        for (part, lo, hi) in [
+            (StairPart::BottomN, 0.0, third),
+            (StairPart::MiddleN, third, 2.0 * third),
+            (StairPart::TopN, 2.0 * third, crate::LEVEL_HEIGHT),
+        ] {
+            let (sq, _) = sq_with(full(), |s| s.stairs = Some(part));
+            let mut out = Vec::new();
+            square_faces(&sq, O, &mut out);
+            assert!(!out.is_empty(), "{part:?}");
+            // Model y is height; model z = -(world y - origin y), so the
+            // north edge (world y = 20) is model z = 0, south is -1.
+            for f in &out {
+                for p in f.pos {
+                    let expect = lo + (hi - lo) * (1.0 + p[2]);
+                    assert!((p[1] - expect).abs() < 1e-4, "{part:?} {p:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn west_stairs_are_a_ramp_rising_west() {
+        let (sq, _) = sq_with(full(), |s| s.stairs = Some(StairPart::TopW));
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(!out.is_empty());
+        let third = crate::LEVEL_HEIGHT / 3.0;
+        for f in &out {
+            for p in f.pos {
+                // Model x = -(world x - origin x): west edge 0, east edge -1.
+                let expect = 2.0 * third + third * (1.0 + p[0]);
+                assert!((p[1] - expect).abs() < 1e-4, "{p:?}");
+            }
+        }
     }
 
     #[test]
