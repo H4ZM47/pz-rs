@@ -300,7 +300,11 @@ and the complete Java ItemCodeOnCreate class remain separate work.
 The genuine ItemCodeOnCreate class now exposes onCreateRecipeMagazine for
 actual Literature receivers: get the actual ModData table, read full type,
 then rawset literatureTitle, retaining unrelated entries and returning no
-values. This implements one of 58 public callbacks. The other 57 callbacks,
+values. The custom-colour callbacks (`onCreateLipstick`, `onCreateFabricRoll`,
+`onCreateSprayPaint`, `onCreateToyPlane`, `onCreateRandomColor`) draw from the
+`ItemGenerationConstants` weighted colour lists read from the jar, or from
+`Colors.GetRandomColor`, and set the item's custom colour. That makes six of 58
+public callbacks. The other 52 callbacks,
 constructor/private helpers, successful resolver cache and native factory
 callback ordering still need work. Supported argument conversion order and
 messages follow the installed invoker; unavailable reflected-null diagnostics
