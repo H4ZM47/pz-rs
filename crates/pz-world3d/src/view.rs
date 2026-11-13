@@ -97,7 +97,7 @@ impl ViewState {
         }
     }
 
-    /// Like [`camera`](Self::camera), but the third-person eye is kept out of `faces` (walls).
+    /// Like [`camera`](Self::camera), but the eye is kept out of `faces` (walls).
     pub fn camera_with(
         &self,
         feet_world: [f32; 3],
@@ -112,7 +112,14 @@ impl ViewState {
                 self.pitch,
                 faces,
             )),
-            _ => self.camera(feet_world, origin_world),
+            ViewMode::FirstPerson => Some(Camera3D::first_person_clamped(
+                feet_world,
+                origin_world,
+                self.yaw,
+                self.pitch,
+                faces,
+            )),
+            ViewMode::Iso => None,
         }
     }
 }

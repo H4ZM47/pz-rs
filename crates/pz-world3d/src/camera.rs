@@ -120,6 +120,58 @@ pub fn clamp_eye(pivot: [f32; 3], eye: [f32; 3], faces: &[Face]) -> [f32; 3] {
     }
 }
 
+/// How close the first-person eye may come to a wall, in model units.
+pub const FP_WALL_GAP: f32 = 0.22;
+
+/// Pushes an eye out of any wall (a vertical, axis-aligned face) that is
+/// closer than `gap`, so standing against a wall never puts the near plane
+/// inside it. Diagonal cards and flat faces are ignored.
+pub fn keep_eye_off_walls(eye: [f32; 3], faces: &[Face], gap: f32) -> [f32; 3] {
+    let mut e = eye;
+    // Two passes settle corners, where two walls push in turn.
+    for _ in 0..2 {
+        for face in faces {
+            let p = face.pos;
+            let n = cross(sub(p[1], p[0]), sub(p[3], p[0]));
+            let len = dot(n, n).sqrt();
+            if len < 1e-6 {
+                continue;
+            }
+            let n = [n[0] / len, n[1] / len, n[2] / len];
+            // Walls only: horizontal normal along model x or z.
+            let axis = if n[0].abs() > 0.99 {
+                0
+            } else if n[2].abs() > 0.99 {
+                2
+            } else {
+                continue;
+            };
+            let other = 2 - axis;
+            let (lo_o, hi_o) = span(&p, other);
+            let (lo_y, hi_y) = span(&p, 1);
+            if e[other] < lo_o - gap * 0.5
+                || e[other] > hi_o + gap * 0.5
+                || e[1] < lo_y
+                || e[1] > hi_y
+            {
+                continue;
+            }
+            let d = e[axis] - p[0][axis];
+            if d.abs() < gap {
+                let side = if d >= 0.0 { 1.0 } else { -1.0 };
+                e[axis] = p[0][axis] + side * gap;
+            }
+        }
+    }
+    e
+}
+
+fn span(p: &[[f32; 3]; 4], k: usize) -> (f32, f32) {
+    let lo = p.iter().map(|v| v[k]).fold(f32::INFINITY, f32::min);
+    let hi = p.iter().map(|v| v[k]).fold(f32::NEG_INFINITY, f32::max);
+    (lo, hi)
+}
+
 impl Camera3D {
     /// Unit look direction in model space, including pitch.
     pub fn forward_model(&self) -> [f32; 3] {
@@ -193,6 +245,19 @@ impl Camera3D {
         c
     }
 
+    /// First-person camera whose eye is kept [`FP_WALL_GAP`] off walls.
+    pub fn first_person_clamped(
+        feet_world: [f32; 3],
+        origin_world: [f32; 3],
+        yaw: f32,
+        pitch: f32,
+        faces: &[Face],
+    ) -> Camera3D {
+        let mut c = Camera3D::first_person(feet_world, origin_world, yaw, pitch);
+        c.eye = keep_eye_off_walls(c.eye, faces, FP_WALL_GAP);
+        c
+    }
+
     /// Third-person camera whose eye is pulled in by [`clamp_eye`] so walls do not block the view.
     pub fn third_person_clamped(
         feet_world: [f32; 3],
@@ -201,7 +266,7 @@ impl Camera3D {
         pitch: f32,
         faces: &[Face],
     ) -> Camera3D {
-        let pivot = Camera3D::first_person(feet_world, origin_world, yaw, pitch).eye;
+        let pivot = Camera3D::first_person_clamped(feet_world, origin_world, yaw, pitch, faces).eye;
         let mut c = Camera3D::third_person(feet_world, origin_world, yaw, pitch);
         c.eye = clamp_eye(pivot, c.eye, faces);
         c
@@ -308,6 +373,35 @@ mod tests {
             uv: [[0.0; 2]; 4],
             color: [0xFFFF_FFFF; 4],
         }
+    }
+
+    #[test]
+    fn eye_is_pushed_off_a_close_wall() {
+        // Wall at z = -0.1, eye on the +z side: pushed to z = -0.1 + gap.
+        let e = keep_eye_off_walls([0.0, 0.0, 0.0], &[quad_at_z(-0.1)], 0.22);
+        assert!((e[2] - 0.12).abs() < 1e-5, "{e:?}");
+        // From the other side it is pushed the other way.
+        let e = keep_eye_off_walls([0.0, 0.0, -0.15], &[quad_at_z(-0.1)], 0.22);
+        assert!((e[2] + 0.32).abs() < 1e-5, "{e:?}");
+    }
+
+    #[test]
+    fn far_or_offset_walls_leave_the_eye_alone() {
+        let eye = [0.0, 0.0, 0.0];
+        assert_eq!(keep_eye_off_walls(eye, &[quad_at_z(-0.5)], 0.22), eye);
+        // Beside the wall's end, not in front of it.
+        let eye = [3.0, 0.0, 0.0];
+        assert_eq!(keep_eye_off_walls(eye, &[quad_at_z(-0.1)], 0.22), eye);
+        // Above the wall's top.
+        let eye = [0.0, 2.0, 0.0];
+        assert_eq!(keep_eye_off_walls(eye, &[quad_at_z(-0.1)], 0.22), eye);
+    }
+
+    #[test]
+    fn first_person_clamped_without_faces_matches_first_person() {
+        let a = Camera3D::first_person([0.0; 3], [0.0; 3], 0.3, 0.1);
+        let b = Camera3D::first_person_clamped([0.0; 3], [0.0; 3], 0.3, 0.1, &[]);
+        assert_eq!(a.eye, b.eye);
     }
 
     #[test]
