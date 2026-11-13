@@ -168,6 +168,39 @@ pub fn read_default(fs: &mut GameFs) -> Vec<String> {
     m.mod_ids()
 }
 
+/// `ZomboidFileSystem.saveModsFile()`: writes `ActiveMods "default"` to
+/// `mods/default.txt` (write failures are logged and ignored, as there).
+pub fn save_mods_file(fs: &GameFs) -> LuaResult<()> {
+    let m = get_by_id("default")?;
+    let dir = fs.cache_dir().join("mods");
+    let _ = std::fs::create_dir_all(&dir);
+    if let Err(e) = std::fs::write(dir.join("default.txt"), pz_fs::mods::active_mods_to_string(&m.to_file())) {
+        eprintln!("saveModsFile: {e}");
+    }
+    Ok(())
+}
+
+/// `ZomboidFileSystem.resetDefaultModsForNewRelease(versionStr)`: the first
+/// boot of a release writes `mods/reset-mods-<version>.txt` and empties the
+/// default mod list. Runs whether or not mods are enabled.
+pub fn reset_default_mods_for_new_release(fs: &GameFs, version: &str) -> LuaResult<()> {
+    let dir = fs.cache_dir().join("mods");
+    let _ = std::fs::create_dir_all(&dir);
+    let marker = dir.join(format!("reset-mods-{version}.txt"));
+    if marker.exists() {
+        return Ok(());
+    }
+    if let Err(e) = std::fs::write(
+        &marker,
+        "If this file does not exist, default.txt will be reset to empty (no mods active).",
+    ) {
+        eprintln!("resetDefaultModsForNewRelease: {e}");
+        return Ok(());
+    }
+    get_by_id("default")?.clear();
+    save_mods_file(fs)
+}
+
 fn with_self<R>(c: &NativeCall<'_>, f: impl FnOnce(&ActiveMods) -> R) -> LuaResult<R> {
     let o = this::<ActiveMods>(c)?;
     Ok(f(o.as_any().downcast_ref::<ActiveMods>().unwrap()))
@@ -298,10 +331,7 @@ pub fn register(mgr: &mut LuaManager) {
         if crate::bind_core::shared_core().borrow().is_no_save() {
             return Ok(0);
         }
-        let m = get_by_id("default")?;
-        let dir = f.borrow().cache_dir().join("mods");
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join("default.txt"), pz_fs::mods::active_mods_to_string(&m.to_file()));
+        save_mods_file(&f.borrow())?;
         Ok(0)
     });
 }

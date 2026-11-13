@@ -39,12 +39,67 @@ pub fn load_key_bindings(lua: &mut pz_lua_api::LuaManager) -> Result<(), String>
         .map_err(|(error, trace)| format!("MainOptions.loadKeys: {error:?}\n{trace}"))
 }
 
+/// The release `GameWindow.init` resets the default mod list for.
+const MODS_RESET_RELEASE: &str = "42_00";
+
+/// `GameWindow.init`'s "Loading Mods" step (and `IngameState.exit`'s):
+/// `resetDefaultModsForNewRelease("42_00")`, then `loadMods("default")`,
+/// which reads `mods/default.txt` and loads its mods only when Core's mods
+/// option is on, then `loadModPackFiles()`. Lua/data mods only.
+pub fn load_default_mods(fs: &mut pz_fs::GameFs, mods_enabled: bool) {
+    if let Err(e) = pz_lua_api::bind_mods::reset_default_mods_for_new_release(fs, MODS_RESET_RELEASE) {
+        eprintln!("resetDefaultModsForNewRelease: {e:?}");
+    }
+    if mods_enabled {
+        let ids = pz_lua_api::bind_mods::read_default(fs);
+        fs.load_mods(&ids);
+    }
+    load_mod_pack_files(fs);
+}
+
+/// `ZomboidFileSystem.loadModPackFiles()`: each loaded mod's texture packs
+/// through `GameWindow.LoadTexturePack(name, flags, modID)`, then
+/// `setTexturePackLookup()`. A pack file the texture manager already
+/// holds is not loaded again (the original's `loadedPacks` outlives the
+/// file-system resets that build a fresh `GameFs` here).
+pub fn load_mod_pack_files(fs: &mut pz_fs::GameFs) {
+    let packs = fs.mod_pack_files();
+    let textures = pz_lua_api::bind_render::textures();
+    let mut tm = textures.borrow_mut();
+    for (name, flags, mod_id) in packs {
+        let file = fs.get_string(&format!("media/texturepacks/{name}.pack"));
+        if tm.packs.iter().any(|p| p.file_name == file) {
+            continue;
+        }
+        tm.load_texture_pack(fs, &name, flags, Some(&mod_id));
+    }
+    tm.set_texture_pack_lookup(fs.mod_ids());
+}
+
+/// The mod folders `ScriptManager.Load` reads after the game's scripts:
+/// each loaded mod with available details, its common then version dir.
+pub fn mod_script_dirs(fs: &mut pz_fs::GameFs) -> Vec<pz_scripts::ModScriptDirs> {
+    let ids = fs.mod_ids().to_vec();
+    ids.into_iter()
+        .filter_map(|id| {
+            let dir = fs.available_mod_dir(&id)?;
+            let info = fs.mod_info(&dir)?;
+            Some(pz_scripts::ModScriptDirs {
+                id,
+                common_dir: Some(info.common_dir.clone().into()),
+                version_dir: Some(info.version_dir.clone().into()),
+            })
+        })
+        .collect()
+}
+
 /// The `Registries` bootstrap, `PerkFactory.init()`,
 /// `ScriptManager.instance.Load()` and the clothing loads after it
 /// (`ClothingDecals`, `BeardStyles`, `HairStyles`, `OutfitManager`,
 /// `VoiceStyles`, with `ModelManager`'s `PopTemplateManager.init`) of
 /// `GameWindow.initShared`, shared with the Lua API; then the `ClothingItem`
-/// assets item visuals read. TODO: mod script folders, `CustomPerks`.
+/// assets item visuals read, with the loaded mods' script folders.
+/// TODO: `CustomPerks`.
 pub fn load_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>) -> Result<(), String> {
     // Same real asset owner before any Item.DoParam. The immutable load
     // scope permits nested provider reads; population gets a later mut scope.
@@ -71,9 +126,13 @@ pub fn load_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>) -> Result<
     pz_lua_api::bind_characters::install_characters(Rc::new(RefCell::new(chars)));
     let attributes = native_attribute_types(&jar)?;
     pz_lua_api::attribute_templates::install(attributes.clone());
+    let mods = {
+        let mut fs = fs.try_borrow_mut().map_err(|_| "script mod file system is borrowed")?;
+        mod_script_dirs(&mut fs)
+    };
     let loaded = {
         let fs = fs.try_borrow().map_err(|_| "script texture file system is borrowed")?;
-        sm.load_with_textures(&fs, &[])
+        sm.load_with_textures(&fs, &mods)
     };
     pz_lua_api::attribute_templates::flush_notices()
         .map_err(|error| format!("attribute template diagnostics: {error:?}"))?;
@@ -114,6 +173,10 @@ pub fn reload_main_menu_environment(
 ) -> Result<(), String> {
     let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&launch.game_dir)));
     fs.borrow_mut().set_cache_dir(&launch.cache_dir);
+    // IngameState.exit: `Core.optionModsEnabled = true`, then
+    // `loadMods("default")` and `loadModPackFiles()`.
+    pz_lua_api::bind_core::shared_core().borrow_mut().set_option_mods_enabled(true);
+    load_default_mods(&mut fs.borrow_mut(), true);
     // Read the installation before retiring the current Lua/UI owners.
     // Later failures retain the LuaManager value but cannot roll back
     // every shared host registry changed during initialization.
@@ -405,5 +468,102 @@ mod session_reset_tests {
         machine.render(&mut cx, &mut pz_render::DrawList::default());
         assert_eq!(old_globals.get_str("oldMainMenuCount").as_num(), Some(0.0));
         std::fs::remove_dir_all(game).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod mod_loading_tests {
+    use super::*;
+
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let p = std::env::temp_dir().join(format!("pz-engine-mods-{tag}-{}-{n}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            Scratch(p)
+        }
+        fn file(&self, rel: &str, text: &str) {
+            let p = self.0.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
+        fn fs(&self) -> pz_fs::GameFs {
+            let mut fs = pz_fs::GameFs::new(self.0.join("game"));
+            fs.set_cache_dir(self.0.join("user"));
+            fs
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    const DEFAULT_TXT: &str = "VERSION = 1,\n\nmods\n{\n    mod = ModA,\n}\n\nmaps\n{\n}\n";
+
+    fn fixture(tag: &str) -> Scratch {
+        let s = Scratch::new(tag);
+        s.file("game/media/lua/shared/Base.lua", "");
+        s.file("user/mods/ModA/common/mod.info", "name=Mod A\nid=ModA\npack=APack\n");
+        s.file("user/mods/ModA/42/media/lua/shared/FromMod.lua", "");
+        s.file("user/mods/ModA/42/media/scripts/mod_items.txt", "");
+        s.file("user/mods/ModA/42/media/texturepacks/APack.pack", "");
+        s
+    }
+
+    #[test]
+    fn first_boot_of_the_release_empties_the_default_list() {
+        let s = fixture("reset");
+        s.file("user/mods/default.txt", DEFAULT_TXT);
+        let mut fs = s.fs();
+        load_default_mods(&mut fs, true);
+        assert!(s.0.join("user/mods/reset-mods-42_00.txt").exists());
+        assert!(fs.mod_ids().is_empty());
+        assert!(fs.lookup("media/lua/shared/FromMod.lua").is_none());
+        let text = std::fs::read_to_string(s.0.join("user/mods/default.txt")).unwrap();
+        assert!(!text.contains("ModA"), "{text}");
+    }
+
+    #[test]
+    fn enabled_mods_override_files_and_add_packs_and_script_dirs_once() {
+        let s = fixture("enabled");
+        s.file("user/mods/reset-mods-42_00.txt", "");
+        s.file("user/mods/default.txt", DEFAULT_TXT);
+        let mut fs = s.fs();
+        load_default_mods(&mut fs, true);
+        assert_eq!(fs.mod_ids(), ["ModA"]);
+        assert!(fs.lookup("media/lua/shared/FromMod.lua").is_some());
+        let dirs = mod_script_dirs(&mut fs);
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0].id, "ModA");
+        assert!(dirs[0].version_dir.as_ref().unwrap().ends_with("42"));
+        // A fresh file system (IngameState.exit) loads the same pack once.
+        let mut again = s.fs();
+        load_default_mods(&mut again, true);
+        let tm = pz_lua_api::bind_render::textures();
+        let packs = tm
+            .borrow()
+            .packs
+            .iter()
+            .filter(|p| p.pack_name == "APack" && p.mod_id.as_deref() == Some("ModA"))
+            .count();
+        assert_eq!(packs, 1);
+    }
+
+    #[test]
+    fn mods_option_off_loads_nothing() {
+        let s = fixture("disabled");
+        s.file("user/mods/reset-mods-42_00.txt", "");
+        s.file("user/mods/default.txt", DEFAULT_TXT);
+        let mut fs = s.fs();
+        load_default_mods(&mut fs, false);
+        assert!(fs.mod_ids().is_empty());
+        assert!(fs.lookup("media/lua/shared/FromMod.lua").is_none());
+        assert!(mod_script_dirs(&mut fs).is_empty());
     }
 }

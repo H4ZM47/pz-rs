@@ -213,6 +213,9 @@ impl App {
         let _collection_deferral = pz_kahlua::gc::defer_collection();
         let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&self.launch.game_dir)));
         fs.borrow_mut().set_cache_dir(&self.launch.cache_dir);
+        // GameWindow.init: "Loading Mods" before initShared's UI packs.
+        let mods_enabled = self.core.borrow().get_option_mods_enabled();
+        crate::boot::load_default_mods(&mut fs.borrow_mut(), mods_enabled);
         pz_lua_api::bind_render::textures()
             .borrow_mut()
             .load_ui_packs(&fs.borrow());

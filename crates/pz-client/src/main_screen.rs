@@ -16,7 +16,9 @@ pub fn run_headless(game_dir: &Path, cache_dir: &Path, frames: u32) -> Result<()
     fs.borrow_mut().set_cache_dir(cache_dir);
     pz_lua_api::bind_core::shared_core().borrow_mut().set_cache_dir(cache_dir);
     let errors: Rc<RefCell<BTreeMap<String, usize>>> = Rc::default();
-    // GameWindow.init: the UI texture packs, then the pack lookup.
+    // GameWindow.init: "Loading Mods", then the UI texture packs and lookup.
+    let mods_enabled = pz_lua_api::bind_core::shared_core().borrow().get_option_mods_enabled();
+    pz_engine::boot::load_default_mods(&mut fs.borrow_mut(), mods_enabled);
     pz_lua_api::bind_render::textures()
         .borrow_mut()
         .load_ui_packs(&fs.borrow());
