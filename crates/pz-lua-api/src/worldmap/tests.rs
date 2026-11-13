@@ -338,3 +338,56 @@ fn first_pyramid_creation_reads_actual_core_and_propagates_borrow_failure() {
     );
     drop(held);
 }
+
+#[test]
+fn current_map_files_follow_game_map_then_world_lot_list() {
+    use pz_worldmap::triangulate::MapFilesInfo;
+    let root = std::env::temp_dir().join(format!("pz-worldmap-mapfiles-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for (dir, cells) in [
+        ("A", &[(0, 0), (1, 0), (0, 1), (1, 1)][..]),
+        ("B", &[(5, 5)][..]),
+    ] {
+        let d = root.join("media/maps").join(dir);
+        std::fs::create_dir_all(&d).unwrap();
+        for (x, y) in cells {
+            std::fs::write(d.join(format!("{x}_{y}.lotheader")), b"").unwrap();
+        }
+    }
+    install_fs(Rc::new(std::cell::RefCell::new(pz_fs::GameFs::new(&root))));
+    crate::bind_world::set_meta_grid(None);
+    host::reset_current_map_files();
+    let core = crate::bind_core::shared_core();
+    // A missing directory still takes a priority slot.
+    core.borrow_mut().game_map = "A;Missing;B".into();
+    let files = host::CurrentMapFiles;
+    assert_eq!(files.map_directory_names(), ["A", "B"]);
+    assert_eq!(
+        host::with_current_map_files(|m| m.iter().map(|f| f.priority).collect::<Vec<_>>()),
+        [0, 2]
+    );
+    assert!(files.has_cell300(0, 0, 0));
+    assert!(!files.has_cell300(1, 0, 0));
+    assert!(!files.has_cell300(7, 0, 0));
+    // A different Core.gameMap reloads the list (with no map.info, only a
+    // ';' list names lot directories).
+    core.borrow_mut().game_map = "B;".into();
+    assert_eq!(files.map_directory_names(), ["B"]);
+    // An empty IsoLot.MapFiles still reads the standalone list.
+    crate::bind_world::set_meta_grid(Some(pz_world::IsoMetaGrid::with_bounds(0, 0, 1, 1)));
+    assert_eq!(files.map_directory_names(), ["B"]);
+    // A loaded world's IsoLot.MapFiles wins.
+    let mut grid = pz_world::IsoMetaGrid::with_bounds(0, 0, 1, 1);
+    grid.map_files.push(pz_world::MapFiles::new(
+        "World",
+        root.join("media/maps/A"),
+        0,
+        0,
+    ));
+    crate::bind_world::set_meta_grid(Some(grid));
+    assert_eq!(files.map_directory_names(), ["World"]);
+    crate::bind_world::set_meta_grid(None);
+    host::reset_current_map_files();
+    core.borrow_mut().game_map = "DEFAULT".into();
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -97,6 +97,12 @@ pub fn meta_grid_cell_bounds() -> Option<(i32, i32, i32, i32)> {
     })
 }
 
+/// `IsoLot.MapFiles`: the installed meta grid's map directories (`None`
+/// without a meta grid).
+pub fn with_world_map_files<R>(f: impl FnOnce(&[pz_world::MapFiles]) -> R) -> Option<R> {
+    with_world_state_cell(|w| w.borrow().meta_grid.as_ref().map(|g| f(&g.map_files)))
+}
+
 /// Access the world state (e.g. to load chunks into the cell). Must not be
 /// called from inside a bound method.
 pub fn with_world<R>(f: impl FnOnce(&mut WorldState) -> R) -> R {

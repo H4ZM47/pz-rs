@@ -40,6 +40,65 @@ impl WorldMapMetaGrid for WorldMetaGrid {
     }
 }
 
+/// `MapFiles.getCurrentMapFiles()`: the loaded world's `IsoLot.MapFiles`
+/// (the meta grid's) when there are any, else the standalone list loaded
+/// from `Core.gameMap`'s lot directories and kept until the map changes or
+/// [`reset_current_map_files`] (`MapFiles.Reset`).
+pub struct CurrentMapFiles;
+
+thread_local! {
+    /// `MapFiles.currentMap` and `MapFiles.currentMapFiles`.
+    static CURRENT: RefCell<(Option<String>, Vec<pz_world::MapFiles>)> =
+        const { RefCell::new((None, Vec::new())) };
+}
+
+/// `MapFiles.Reset()`.
+pub fn reset_current_map_files() {
+    CURRENT.with(|c| *c.borrow_mut() = (None, Vec::new()));
+}
+
+/// Run `f` on `MapFiles.getCurrentMapFiles()`.
+pub fn with_current_map_files<R>(f: impl FnOnce(&[pz_world::MapFiles]) -> R) -> R {
+    let mut f = Some(f);
+    if let Some(r) = crate::bind_world::with_world_map_files(|files| {
+        (!files.is_empty()).then(|| (f.take().unwrap())(files))
+    })
+    .flatten()
+    {
+        return r;
+    }
+    let f = f.take().unwrap();
+    CURRENT.with(|c| {
+        let game_map = crate::bind_core::shared_core().borrow().game_map.clone();
+        let stale = {
+            let c = c.borrow();
+            c.1.is_empty() || c.0.as_deref() != Some(game_map.as_str())
+        };
+        if stale {
+            reset_current_map_files();
+            let files = super::with_fs(|fs| {
+                // `getLotDirectories()`: may switch a DEFAULT game map to the
+                // only map group's world first, so `currentMap` is read after.
+                let dirs = crate::bind_world::lua_world::lot_directories(fs).unwrap_or_default();
+                pz_world::map_files::load_current_map_files(fs, &dirs)
+            })
+            .unwrap_or_default();
+            let map = crate::bind_core::shared_core().borrow().game_map.clone();
+            *c.borrow_mut() = (Some(map), files);
+        }
+        f(&c.borrow().1)
+    })
+}
+
+impl pz_worldmap::triangulate::MapFilesInfo for CurrentMapFiles {
+    fn map_directory_names(&self) -> Vec<String> {
+        with_current_map_files(|m| m.iter().map(|f| f.map_directory_name.clone()).collect())
+    }
+    fn has_cell300(&self, index: usize, x: i32, y: i32) -> bool {
+        with_current_map_files(|m| m.get(index).is_some_and(|f| f.has_cell300(x, y)))
+    }
+}
+
 /// The installed inputs.
 pub struct WorldMapHost {
     pub players: Box<dyn WorldMapPlayers>,
@@ -55,7 +114,7 @@ impl Default for WorldMapHost {
         WorldMapHost {
             players: Box::new(NoHost),
             meta_grid: Box::new(WorldMetaGrid),
-            map_files: Box::new(pz_worldmap::triangulate::NoMapFiles),
+            map_files: Box::new(CurrentMapFiles),
         }
     }
 }
