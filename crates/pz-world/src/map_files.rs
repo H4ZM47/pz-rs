@@ -94,6 +94,34 @@ pub fn lot_directories(fs: &GameFs, game_map: &str) -> Vec<String> {
     result
 }
 
+/// The loading loop of `MapFiles.getCurrentMapFiles()` when no world is
+/// loaded (`IsoLot.MapFiles` empty): one `MapFiles` for each lot directory
+/// that exists, its priority being the directory's position in `lot_dirs`.
+/// A directory whose `load()` fails is kept, unloaded, as in the original.
+pub fn load_current_map_files(fs: &GameFs, lot_dirs: &[String]) -> Vec<MapFiles> {
+    let mut out: Vec<MapFiles> = Vec::new();
+    for (i, lot_dir) in lot_dirs.iter().enumerate() {
+        let Some(path) = fs.resolve(&format!("media/maps/{lot_dir}/")) else {
+            continue;
+        };
+        if !path.is_dir() {
+            continue;
+        }
+        let abs = std::path::absolute(&path).unwrap_or(path);
+        let index = out.len();
+        let mut mf = MapFiles::new(lot_dir, abs, i, index);
+        // `ChooseGameInfo.getMapDetails(name).isFixed2x()`
+        let fixed2x = MapInfo::load(fs, lot_dir)
+            .map(|m| m.fixed2x)
+            .unwrap_or(false);
+        if mf.load(fixed2x, false) {
+            mf.post_load();
+        }
+        out.push(mf);
+    }
+    out
+}
+
 fn collect_lot_directories(fs: &GameFs, map_name: &str, result: &mut Vec<String>) {
     if result.iter().any(|r| r == map_name) {
         return;

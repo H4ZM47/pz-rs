@@ -2000,16 +2000,23 @@ registered):
       image-pyramid cache and UI presentation from the preserved code commits.
       Native numeric/counter and presentation edge repairs have separate tests;
       source integration does not establish original-game rendering parity.
-- [ ] Map inputs: `pz_lua_api::worldmap::host::install(WorldMapHost {
+- [x] Map inputs: `pz_lua_api::worldmap::host::install(WorldMapHost {
       players, meta_grid, map_files })` with the live local players (position, or
       the vehicle's; username) for the map's player dots, and
       `IsoMetaGrid`'s cell bounds for `setBoundsFromWorld` (#213). The
       default `meta_grid` (`host::WorldMetaGrid`) already reads the grid
       installed with `bind_world::set_meta_grid`; pass it when installing
-      players (#223).
-- [ ] Supply the live `MapFilesInfo` cell priority and directory from the
-      world's actual MapFiles. The standalone no-files profile is not a
-      substitute for the game's map-priority input.
+      players (#223). Done: `install_character_hud_hosts` installs
+      `CharacterMapPlayers` (#235) and the default meta grid reads
+      `bind_world`. Player owner/error parity stays on ALX-448.
+- [x] Supply the live `MapFilesInfo` cell priority and directory from the
+      world's actual MapFiles. The default host is `CurrentMapFiles`
+      (`MapFiles.getCurrentMapFiles()`): the meta grid's `IsoLot.MapFiles`
+      when non-empty, else the standalone list loaded from `Core.gameMap`'s
+      lot directories and reloaded when the map changes. Remaining:
+      `MapFiles.Reset` from `WorldMap.Reset` (IngameState.exit and
+      Core.ResetLua) is exposed as `host::reset_current_map_files` but not
+      called yet.
 - [ ] Move `WorldMapImages.startFrame/endFrame` from each UI map draw to the
       global SpriteRenderer frame boundary. Restore native file-thread queue
       scheduling and shared per-frame loading budget across multiple maps.
