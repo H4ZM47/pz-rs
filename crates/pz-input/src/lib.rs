@@ -159,6 +159,9 @@ pub enum WindowRequest {
     SetCursorPosition(i32, i32),
     SetGrabbed(bool),
     SetCursorVisible(bool),
+    /// First-person mouse-look: grab the cursor (preferring `Locked`, falling
+    /// back to `Confined`) and hide it, or release and show it.
+    SetMouseLook(bool),
 }
 
 /// Everything GLFW would report.
@@ -179,6 +182,10 @@ pub struct InputState {
     /// `Mouse.scrollypos`: accumulated vertical scroll in lines.
     pub scroll_y: f64,
     pub focused: bool,
+    /// Raw (device) mouse motion accumulated since the last take.
+    pub mouse_motion: (f64, f64),
+    /// Whether mouse-look mode is requested.
+    pub mouse_look: bool,
     pub requests: Vec<WindowRequest>,
     /// Printable key names learned from the keyboard layout (LWJGL code ->
     /// upper-cased character), as `glfwGetKeyName` reports them.
@@ -197,6 +204,8 @@ impl Default for InputState {
             buttons_down: [false; MOUSE_BUTTONS],
             scroll_y: 0.0,
             focused: true,
+            mouse_motion: (0.0, 0.0),
+            mouse_look: false,
             requests: Vec::new(),
             layout_names: Vec::new(),
             start: Instant::now(),
@@ -257,6 +266,17 @@ impl InputState {
         }
     }
 
+    /// Adds raw mouse motion (winit `DeviceEvent::MouseMotion`).
+    pub fn add_mouse_motion(&mut self, dx: f64, dy: f64) {
+        self.mouse_motion.0 += dx;
+        self.mouse_motion.1 += dy;
+    }
+
+    /// Returns the accumulated raw mouse motion and resets it.
+    pub fn take_mouse_motion(&mut self) -> (f64, f64) {
+        std::mem::take(&mut self.mouse_motion)
+    }
+
     pub fn request(&mut self, r: WindowRequest) {
         self.requests.push(r);
     }
@@ -287,6 +307,27 @@ pub fn with_controllers<R>(f: impl FnOnce(&mut controller::Controllers) -> R) ->
 /// The input state of this (the game) thread.
 pub fn with_input<R>(f: impl FnOnce(&mut InputState) -> R) -> R {
     INPUT.with(|i| f(&mut i.borrow_mut()))
+}
+
+/// Accumulates raw mouse motion on the game thread's input state.
+pub fn add_mouse_motion(dx: f64, dy: f64) {
+    with_input(|i| i.add_mouse_motion(dx, dy));
+}
+
+/// Returns the raw mouse motion accumulated since the last call and resets it.
+pub fn take_mouse_motion() -> (f64, f64) {
+    with_input(|i| i.take_mouse_motion())
+}
+
+/// Requests mouse-look mode (grab + hide cursor) or its release. A no-op when
+/// already in the requested state.
+pub fn set_mouse_look(on: bool) {
+    with_input(|i| {
+        if i.mouse_look != on {
+            i.mouse_look = on;
+            i.request(WindowRequest::SetMouseLook(on));
+        }
+    });
 }
 
 #[cfg(test)]
@@ -337,5 +378,14 @@ mod tests {
         s.scroll(0.6);
         assert_eq!(s.take_wheel(), 1);
         assert_eq!(s.take_wheel(), 0);
+    }
+
+    #[test]
+    fn mouse_motion_accumulates_and_resets() {
+        let mut s = InputState::default();
+        s.add_mouse_motion(1.5, -2.0);
+        s.add_mouse_motion(0.5, 1.0);
+        assert_eq!(s.take_mouse_motion(), (2.0, -1.0));
+        assert_eq!(s.take_mouse_motion(), (0.0, 0.0));
     }
 }

@@ -103,6 +103,7 @@ impl Gpu {
                     target: f.target,
                     clear: *clear,
                     mipmaps: false,
+                    scene: None,
                     batches: f.batches.len()..f.batches.len(),
                 });
             }

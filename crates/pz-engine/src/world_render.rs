@@ -15,7 +15,7 @@ use pz_iso_render::chunk::dirty;
 use pz_iso_render::cutaways::{CutawayPlayer, Cutaways};
 use pz_iso_render::frame::{plan_chunks, world_frame_full, FrameSize};
 use pz_iso_render::objects::FrameObjects;
-use pz_iso_render::{Camera, ChunkRenderer};
+use pz_iso_render::{Camera, ChunkRenderer, CutawayWorld};
 use pz_lighting::jni::{IsoDirection, VisionConeInput};
 use pz_lua_api::bind_character_sim::LuaGameCharacter;
 use pz_render::tile_depth::{
@@ -36,6 +36,21 @@ mod host_tests;
 
 /// `IsoPlayer.MAX`.
 const MAX_PLAYERS: usize = 4;
+
+/// Port extension: how many chunks around the player the 3D view draws
+/// (6 = 13 x 13 chunks, about 50 squares each way).
+const VIEW3D_CHUNK_RADIUS: i32 = 6;
+/// Port extension: in third person, walls whose centre is closer than this
+/// (model units) to the camera are not drawn.
+const VIEW3D_NEAR_WALL: f32 = 0.9;
+/// Port extension: the lift between stacked flat faces on one square.
+const VIEW3D_FLOOR_LAYER_LIFT: f32 = 0.004;
+/// LWJGL key codes the 3D view reads.
+const KEY_O: usize = 24;
+const KEY_LSHIFT: usize = 42;
+const KEY_RSHIFT: usize = 54;
+/// GLFW's middle mouse button.
+const MOUSE_MIDDLE: usize = 2;
 
 /// What one player's frame of the world is drawn from.
 pub struct RenderView {
@@ -83,6 +98,12 @@ pub struct WorldRender {
     lighting_error: bool,
     /// What the square mutations changed since the last frame.
     pub pending: PendingRender,
+    /// Port extension: the 3D view (off by default).
+    pub view3d: pz_world3d::view::ViewState,
+    /// Last frame's O and middle-button state, for presses.
+    view3d_held: (bool, bool),
+    /// The cursor was freed with the middle button: no mouse-look.
+    view3d_cursor_free: bool,
 }
 
 impl WorldRender {
@@ -139,6 +160,135 @@ impl WorldRender {
             start: Instant::now(),
             lighting_error: false,
             pending: PendingRender::new(),
+            view3d: Default::default(),
+            view3d_held: (false, false),
+            view3d_cursor_free: false,
+        }
+    }
+
+    /// Port extension: player 0's 3D view keys and mouse-look, before its
+    /// frame. O turns first person on and off, Shift+O swaps first and
+    /// third person, the middle button frees the cursor (for the UI) and
+    /// captures it again. `facing` is the player's `getDir()` vector.
+    pub fn update_view3d(&mut self, facing: (i32, i32)) {
+        let (o, shift, middle) = pz_input::with_input(|i| {
+            (
+                i.keys_down[KEY_O],
+                i.keys_down[KEY_LSHIFT] || i.keys_down[KEY_RSHIFT],
+                i.buttons_down[MOUSE_MIDDLE],
+            )
+        });
+        let typing = pz_lua_api::bind_core::shared_core()
+            .borrow()
+            .is_doing_text_entry();
+        let (o_held, middle_held) = self.view3d_held;
+        self.view3d_held = (o, middle);
+        if o && !o_held && !typing {
+            if shift {
+                self.view3d.swap_person((facing.0 as f32, facing.1 as f32));
+            } else {
+                self.view3d.toggle_first_person((facing.0 as f32, facing.1 as f32));
+            }
+        }
+        let on = self.view3d.is_3d();
+        if !on {
+            self.view3d_cursor_free = false;
+        } else if middle && !middle_held {
+            self.view3d_cursor_free = !self.view3d_cursor_free;
+        }
+        let look = on && !self.view3d_cursor_free;
+        pz_input::set_mouse_look(look);
+        let (dx, dy) = pz_input::take_mouse_motion();
+        if look {
+            self.view3d.apply_mouse(dx, dy);
+        }
+        pz_player_input::set_view_yaw(0, on.then_some(self.view3d.yaw));
+    }
+
+    /// Port extension: the 3D view's faces within [`VIEW3D_CHUNK_RADIUS`]
+    /// chunks of the camera character, in model space around it. Floors
+    /// above the camera are seen from below, so they take the light of the
+    /// square under them (their own is the light on their upper side).
+    fn view3d_faces(&self, v: &RenderView) -> Vec<pz_world3d::mesh::Face> {
+        let origin = [v.x, v.y, v.z];
+        let mut faces = Vec::new();
+        let (pwx, pwy) = (
+            pz_render::iso::fastfloor(v.x / 8.0),
+            pz_render::iso::fastfloor(v.y / 8.0),
+        );
+        let eye_level = pz_render::iso::fastfloor(v.z);
+        for wx in pwx - VIEW3D_CHUNK_RADIUS..=pwx + VIEW3D_CHUNK_RADIUS {
+            for wy in pwy - VIEW3D_CHUNK_RADIUS..=pwy + VIEW3D_CHUNK_RADIUS {
+                let Some((lo, hi)) = self.world.chunk_levels(wx, wy) else {
+                    continue;
+                };
+                for z in lo..=hi {
+                    for sq in self.world.level_squares(wx, wy, z).iter().flatten() {
+                        let start = faces.len();
+                        pz_world3d::mesh::square_faces(sq, origin, &mut faces);
+                        self.view3d_relight(v, eye_level, sq, &mut faces[start..]);
+                        // Rugs and other floor-layer sprites lie on the
+                        // floor: lift each later flat face a little so it
+                        // does not z-fight the one under it.
+                        let mut layer = 0.0;
+                        for f in &mut faces[start..] {
+                            let y = f.pos[0][1];
+                            if f.pos.iter().all(|p| (p[1] - y).abs() < 1.0e-4) {
+                                for p in &mut f.pos {
+                                    p[1] += layer;
+                                }
+                                layer += VIEW3D_FLOOR_LAYER_LIFT;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        faces
+    }
+
+    /// Port extension: the sprites' lights are for the faces the
+    /// isometric camera sees. A floor above the camera is seen from below,
+    /// so it takes the light of the square under it. A north or west wall
+    /// seen from its north or west side takes the light of the square on
+    /// that side (its own square's light is the other side's, often the
+    /// dark outdoors).
+    fn view3d_relight(
+        &self,
+        v: &RenderView,
+        eye_level: i32,
+        sq: &pz_iso_render::RenderSquare,
+        faces: &mut [pz_world3d::mesh::Face],
+    ) {
+        let lights = |x: i32, y: i32, z: i32| self.world.square(x, y, z).map(|s| s.vert_lights);
+        let below = (sq.z > eye_level).then(|| lights(sq.x, sq.y, sq.z - 1)).flatten();
+        let north = (v.y < sq.y as f32).then(|| lights(sq.x, sq.y - 1, sq.z)).flatten();
+        let west = (v.x < sq.x as f32).then(|| lights(sq.x - 1, sq.y, sq.z)).flatten();
+        let plane = |f: &pz_world3d::mesh::Face, axis: usize| {
+            let a = f.pos[0][axis];
+            f.pos.iter().all(|p| (p[axis] - a).abs() < 1.0e-4)
+        };
+        // Model space: x = -(wx - ox), y = up, z = -(wy - oy).
+        let north_z = -(sq.y as f32 - v.y);
+        let west_x = -(sq.x as f32 - v.x);
+        for f in faces {
+            if plane(f, 1) {
+                if let Some(l) = below {
+                    f.color = [l[0], l[1], l[2], l[3]];
+                }
+            } else if plane(f, 2) && (f.pos[0][2] - north_z).abs() < 1.0e-3 {
+                // Bottom (x, y), (x + 1, y), then the tops: the north
+                // square's south corners.
+                if let Some(l) = north {
+                    f.color = [l[3], l[2], l[2], l[3]];
+                }
+            } else if plane(f, 0) && (f.pos[0][0] - west_x).abs() < 1.0e-3 {
+                // Bottom (x, y), (x, y + 1), then the tops: the west
+                // square's east corners.
+                if let Some(l) = west {
+                    f.color = [l[1], l[2], l[2], l[1]];
+                }
+            }
         }
     }
 
@@ -306,53 +456,46 @@ impl WorldRender {
                 }
             }
         }
-        // `checkNewlyOnScreenChunks`' order: x outer, y inner over the
-        // player's chunk map.
-        let (x0, y0, n) = v.chunk_map;
-        let order: Vec<(i32, i32)> = (x0..x0 + n)
-            .flat_map(|x| (y0..y0 + n).map(move |y| (x, y)))
-            .collect();
-        let inputs = self.world.chunk_inputs(&order);
-        let mut cmds = Vec::new();
-        let chunks = plan_chunks(&mut self.caches[p], &cam, size, &inputs, &mut cmds);
-        let maps = pz_iso_render::seam::WorldDepthMaps {
-            tiles: &self.depth,
-            seams: self.seams.clone(),
-            cutaways: self.cutaway_stencils.clone(),
+        // Port extension: the 3D camera, for player 0 with the view on.
+        let faces = if p == 0 && self.view3d.is_3d() {
+            self.view3d_faces(v)
+        } else {
+            Vec::new()
         };
-        let (dx, dy) = v.dir.delta();
-        let len = ((dx * dx + dy * dy) as f32).sqrt().max(1.0);
-        // TODO(port): aiming, the mouse point of interest and peeking.
-        let player = CutawayPlayer {
-            x: v.x,
-            y: v.y,
-            z: v.z,
-            forward: [dx as f32 / len, dy as f32 / len],
-            aiming: false,
-            mouse_poi: None,
-            peeking: None,
-            occlusion_bounds: Some(pz_iso_render::occlusion::grid_bounds(
-                &cam,
-                v.width as i32,
-                v.height as i32,
-            )),
+        let cam3 = if p == 0 {
+            self.view3d.camera_with([v.x, v.y, v.z], [v.x, v.y, v.z], &faces)
+        } else {
+            None
         };
-        let state = self.cutaways[p].update(&self.world, &player);
-        let cv = pz_iso_render::alpha::CutawayView {
-            state: &state,
-            world: &self.world,
-        };
-        let r = ChunkRenderer::new(cam, &maps, (v.width, v.height)).with_cutaways(Some(cv));
+        // Third person: walls right at the camera would fill the frame.
+        let mut faces = faces;
+        if let (Some(c3), pz_world3d::ViewMode::ThirdPerson) = (&cam3, self.view3d.mode) {
+            faces.retain(|f| {
+                let vertical = (f.pos[0][1] - f.pos[2][1]).abs() > 1.0e-4;
+                let cx = f.pos.iter().map(|p| p[0]).sum::<f32>() / 4.0;
+                let cz = f.pos.iter().map(|p| p[2]).sum::<f32>() / 4.0;
+                !(vertical && (cx - c3.eye[0]).hypot(cz - c3.eye[2]) < VIEW3D_NEAR_WALL)
+            });
+        }
+        let first_person = p == 0 && self.view3d.mode == pz_world3d::ViewMode::FirstPerson;
+        let aspect = v.width as f32 / v.height.max(1) as f32;
         // TODO(port): corpses, world items, the water and sky surfaces
         // (`SkyBox`, `SurfaceChecks`) and the
         // `FrameExtras` (flies, highlights, markers, vision cone, fog).
         let mut objects = FrameObjects::default();
         if let Some(models) = models {
-            let camera = pz_iso_render::models::ModelCamera::new(
-                &cam,
-                v.width as f32 * v.zoom,
-                v.height as f32 * v.zoom,
-            );
+            let camera = match &cam3 {
+                Some(c3) => pz_iso_render::models::ModelCamera::perspective(
+                    &cam,
+                    c3.view(),
+                    c3.projection(aspect),
+                ),
+                None => pz_iso_render::models::ModelCamera::new(
+                    &cam,
+                    v.width as f32 * v.zoom,
+                    v.height as f32 * v.zoom,
+                ),
+            };
             let display_player = pz_lua_api::bind_core::shared_core()
                 .borrow()
                 .is_display_player_model();
@@ -390,7 +533,13 @@ impl WorldRender {
                     forward: [chr.vars.forward_x, chr.vars.forward_y],
                     multiplier: v.multiplier,
                 };
-                let hidden = (chr.is_player() && !display_player)
+                // Port extension: in first person the view is from inside
+                // the camera character's head.
+                let own_head = first_person
+                    && chr.is_player()
+                    && chr.player.player_index == v.player as i32;
+                let hidden = own_head
+                    || (chr.is_player() && !display_player)
                     || (!chr.is_player() && light.is_some_and(|l| l.vis & 2 == 0));
                 let cv = CharacterView {
                     camera: &camera,
@@ -418,6 +567,63 @@ impl WorldRender {
                 }
             }
         }
+        // Port extension: the 3D view (pz-world3d) replaces the isometric
+        // frame for player 0 when it is on.
+        if let Some(c3) = &cam3 {
+            let models: Vec<DrawCmd> = objects
+                .players
+                .iter()
+                .chain(objects.moving.iter())
+                .flat_map(|o| o.draws.iter().cloned())
+                .collect();
+            let scene = pz_world3d::frame::Scene {
+                size,
+                view_proj: c3.view_proj(aspect).0,
+                sky: pz_world3d::frame::sky_colour(v.climate.climate.ambient),
+                faces: &faces,
+                models: &models,
+                screen: v.screen,
+            };
+            out.extend(pz_world3d::frame::scene_frame(&scene));
+            return;
+        }
+        // `checkNewlyOnScreenChunks`' order: x outer, y inner over the
+        // player's chunk map.
+        let (x0, y0, n) = v.chunk_map;
+        let order: Vec<(i32, i32)> = (x0..x0 + n)
+            .flat_map(|x| (y0..y0 + n).map(move |y| (x, y)))
+            .collect();
+        let inputs = self.world.chunk_inputs(&order);
+        let mut cmds = Vec::new();
+        let chunks = plan_chunks(&mut self.caches[p], &cam, size, &inputs, &mut cmds);
+        let maps = pz_iso_render::seam::WorldDepthMaps {
+            tiles: &self.depth,
+            seams: self.seams.clone(),
+            cutaways: self.cutaway_stencils.clone(),
+        };
+        let (dx, dy) = v.dir.delta();
+        let len = ((dx * dx + dy * dy) as f32).sqrt().max(1.0);
+        // TODO(port): aiming, the mouse point of interest and peeking.
+        let player = CutawayPlayer {
+            x: v.x,
+            y: v.y,
+            z: v.z,
+            forward: [dx as f32 / len, dy as f32 / len],
+            aiming: false,
+            mouse_poi: None,
+            peeking: None,
+            occlusion_bounds: Some(pz_iso_render::occlusion::grid_bounds(
+                &cam,
+                v.width as i32,
+                v.height as i32,
+            )),
+        };
+        let state = self.cutaways[p].update(&self.world, &player);
+        let cv = pz_iso_render::alpha::CutawayView {
+            state: &state,
+            world: &self.world,
+        };
+        let r = ChunkRenderer::new(cam, &maps, (v.width, v.height)).with_cutaways(Some(cv));
         // `renderWeatherFX` draws after the cell, in the world projection.
         // TODO(port): `render_weather_fx` from `ClimateRenderValues` with
         // the weather mask.
@@ -534,6 +740,9 @@ impl IsoWorld {
                 r.lighting.set_chunk_map(n as i32, *m);
             }
             // `currentCell.render()`.
+            if view.player == 0 {
+                r.update_view3d(view.dir.delta());
+            }
             r.render_player(&wv, view, models.as_mut(), zombies, out);
             check_changed_buildings(&mut r.lighting, &mut r.caches, &mut r.pending, num_players);
             Ok(())

@@ -39,6 +39,10 @@ pub struct ModelCamera {
     pub cz: f32,
     /// The camera's character position, for square depths.
     pub cam: Camera,
+    /// Port extension: the 3D view's view matrix (model space around
+    /// `(cx, cy, cz)`), with `projection` a perspective one. `None` is the
+    /// original isometric camera.
+    pub view3d: Option<Mat4>,
 }
 
 impl ModelCamera {
@@ -46,7 +50,13 @@ impl ModelCamera {
     /// times zoom) centred on the camera's character.
     pub fn new(cam: &Camera, width: f32, height: f32) -> Self {
         let (w, h) = (width / 1920.0, height / 1920.0);
-        ModelCamera { projection: Mat4::ortho(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, -10.0, 10.0), cx: cam.x, cy: cam.y, cz: cam.z, cam: *cam }
+        ModelCamera { projection: Mat4::ortho(-w / 2.0, w / 2.0, -h / 2.0, h / 2.0, -10.0, 10.0), cx: cam.x, cy: cam.y, cz: cam.z, cam: *cam, view3d: None }
+    }
+
+    /// Port extension: a camera for the 3D view, with `view` and `projection`
+    /// in model space around the camera character (see `pz-world3d`).
+    pub fn perspective(cam: &Camera, view: Mat4, projection: Mat4) -> Self {
+        ModelCamera { projection, cx: cam.x, cy: cam.y, cz: cam.z, cam: *cam, view3d: Some(view) }
     }
 
     /// The model-view for a model at world `(ox, oy, oz)`.
@@ -54,15 +64,23 @@ impl ModelCamera {
     #[allow(clippy::approx_constant)]
     pub fn model_view(&self, ox: f32, oy: f32, oz: f32, basis: ModelBasis) -> Mat4 {
         let ts = iso::TILE_SCALE as f32 / 2.0;
-        let mv = Mat4::scaling(core_scale())
-            .scale(ts, ts, ts)
-            .rotate_x(0.523_598_8)
-            .rotate_y(2.356_194_5)
-            .translate(-(ox - self.cx), (oz - self.cz) * LEVEL_HEIGHT, -(oy - self.cy));
+        let mv = match self.view3d {
+            Some(view) => view.translate(-(ox - self.cx), (oz - self.cz) * LEVEL_HEIGHT, -(oy - self.cy)),
+            None => self.iso_model_view(ox, oy, oz, ts),
+        };
         match basis {
             ModelBasis::Character { angle } => mv.scale(-1.5, 1.5, 1.5).rotate_y(angle + std::f32::consts::PI).translate(0.0, -0.48, 0.0),
             ModelBasis::Vehicle => mv.scale(-1.0, 1.0, 1.0).rotate_y(std::f32::consts::PI),
         }
+    }
+
+    #[allow(clippy::approx_constant)]
+    fn iso_model_view(&self, ox: f32, oy: f32, oz: f32, ts: f32) -> Mat4 {
+        Mat4::scaling(core_scale())
+            .scale(ts, ts, ts)
+            .rotate_x(0.523_598_8)
+            .rotate_y(2.356_194_5)
+            .translate(-(ox - self.cx), (oz - self.cz) * LEVEL_HEIGHT, -(oy - self.cy))
     }
 
     /// `ModelViewProjection` for a model-view.
@@ -75,6 +93,11 @@ impl ModelCamera {
     /// at the square's depth; `bias` is 1e-4 for characters, 0 for
     /// vehicles.
     pub fn target_depth(&self, mvp: &Mat4, x: f32, y: f32, z: f32, bias: f32) -> f32 {
+        // The 3D view has a real depth buffer: no shift (the shaders add
+        // `targetDepth - 0.5`).
+        if self.view3d.is_some() {
+            return 0.5;
+        }
         let square = iso::square_depth(fastfloor(self.cam.x), fastfloor(self.cam.y), x + self.cam.fix_jiggly_square_x, y + self.cam.fix_jiggly_square_y, z);
         let d0 = mvp.transform([0.0, 0.0, 0.0])[2];
         square - (d0 + 1.0) / 2.0 + 0.5 - bias

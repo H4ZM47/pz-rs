@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
@@ -511,6 +511,12 @@ impl ApplicationHandler for App {
         }
     }
 
+    fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if let DeviceEvent::MouseMotion { delta } = event {
+            pz_input::add_mouse_motion(delta.0, delta.1);
+        }
+    }
+
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         // GLFW's key, char, cursor, button and scroll callbacks.
         pz_input::with_input(|i| pz_input::winit::handle(i, &event));
@@ -575,6 +581,17 @@ fn apply_window_requests(w: &Window, requests: Vec<pz_input::WindowRequest>) {
                 }
             }
             SetCursorVisible(v) => w.set_cursor_visible(v),
+            SetMouseLook(on) => {
+                use winit::window::CursorGrabMode;
+                if on {
+                    if w.set_cursor_grab(CursorGrabMode::Locked).is_err() {
+                        let _ = w.set_cursor_grab(CursorGrabMode::Confined);
+                    }
+                } else {
+                    let _ = w.set_cursor_grab(CursorGrabMode::None);
+                }
+                w.set_cursor_visible(!on);
+            }
         }
     }
 }

@@ -70,6 +70,8 @@ impl CameraInfo {
 #[derive(Clone, Copy, Debug, Default)]
 struct View {
     cameras: [CameraInfo; 4],
+    /// First-person view yaw per player (`None` = isometric).
+    view_yaw: [Option<f32>; 4],
 }
 
 thread_local! {
@@ -82,6 +84,16 @@ pub fn set_camera_info(player_index: usize, info: CameraInfo) {
     VIEW.with(|v| {
         if let Some(c) = v.borrow_mut().cameras.get_mut(player_index) {
             *c = info;
+        }
+    });
+}
+
+/// Sets player `player_index`'s first-person view yaw (a world angle: 0 faces
+/// +x, increasing toward +y); `None` is the isometric view (the default).
+pub fn set_view_yaw(player_index: usize, yaw: Option<f32>) {
+    VIEW.with(|v| {
+        if let Some(c) = v.borrow_mut().view_yaw.get_mut(player_index) {
+            *c = yaw;
         }
     });
 }
@@ -187,6 +199,8 @@ pub struct EnginePlayerInput {
     pub zoom: [f32; 4],
     /// `IsoCamera.cameras`.
     pub cameras: [CameraInfo; 4],
+    /// First-person view yaw per player (see [`set_view_yaw`]).
+    pub view_yaw: [Option<f32>; 4],
     /// `Core.getScreenWidth()` / `getScreenHeight()`.
     pub screen_width: i32,
     pub screen_height: i32,
@@ -234,6 +248,7 @@ impl EnginePlayerInput {
             options: InputOptions::from_core(&core),
             zoom: std::array::from_fn(|i| core.get_zoom(i as i32)),
             cameras: view.cameras,
+            view_yaw: view.view_yaw,
             screen_width: core.get_screen_width(),
             screen_height: core.get_screen_height(),
             num_players: core.num_players,
@@ -433,6 +448,10 @@ impl PlayerInput for EnginePlayerInput {
 
     fn is_selecting_all(&self) -> bool {
         self.options.selecting_all
+    }
+
+    fn view_yaw(&self, player_index: usize) -> Option<f32> {
+        self.view_yaw.get(player_index).copied().flatten()
     }
 
     /// `Core.getZoom(playerIndex)` (the index clamped to 0..3 as `Core` does).

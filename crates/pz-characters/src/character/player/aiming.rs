@@ -207,11 +207,19 @@ impl<I: 'static> GameCharacter<I> {
     /// `calculateAimVector(vec)`: from the aim origin to the reticle on the
     /// ground at the origin's height, normalized.
     pub fn calculate_aim_vector(&self, input: &dyn PlayerInput) -> (f32, f32) {
+        if let Some(yaw) = self.first_person_yaw(input) {
+            return (yaw.cos(), yaw.sin());
+        }
         let mx = self.aiming_reticle_x(input);
         let my = self.aiming_reticle_y(input);
         let z = self.aim_origin_pos_z();
         let (ix, iy) = input.screen_to_iso(self.player.player_index, mx, my, z);
         crate::character::zombie::math::normalize(ix - self.vars.x, iy - self.vars.y)
+    }
+
+    /// The first-person view yaw of this player, if any.
+    pub fn first_person_yaw(&self, input: &dyn PlayerInput) -> Option<f32> {
+        usize::try_from(self.player.player_index).ok().and_then(|p| input.view_yaw(p))
     }
 
     /// `getAimVector(vec)`: zero unless an aim key is down.

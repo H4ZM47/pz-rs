@@ -1,0 +1,13 @@
+[package]
+name = "pz-world3d"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+pz-render = { path = "../pz-render" }
+pz-iso-render = { path = "../pz-iso-render" }
+
+[dev-dependencies]
+pz-gpu = { path = "../pz-gpu" }

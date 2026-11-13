@@ -261,6 +261,12 @@ pub enum DrawCmd {
     /// depth written as the fragment depth (interpolated), colour times
     /// texel with no discard. `FBORenderShadows` draws drop shadows so.
     ProjectedDepthQuad { texture: Texture, pos: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: u32 },
+    /// Port extension (not in the original): starts a perspective 3D scene in the current target. Clears the depth buffer (and the colour to `clear` if given). Until `Scene3DEnd`, `Quad3D`s are drawn with `view_proj`, depth test LESS-or-equal, depth writes on, no culling, standard alpha blending. `view_proj` is column-major GL clip space (depth -1..1), like `ModelDraw::mvp`.
+    Scene3DBegin { view_proj: [[f32; 4]; 4], clear: Option<[f32; 4]> },
+    /// A textured quad in model space (corners in order, as a fan 0-1-2, 0-2-3), per-corner ABGR colour multiplied with the texel; texels with alpha < 0.01 are discarded. Perspective-correct texturing. `texture.uv`/`x_start..y_end` give the sub-image as elsewhere; `uv` here are already in the backing image's normalised coordinates.
+    Quad3D { texture: Texture, pos: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: [u32; 4] },
+    /// Ends the scene begun by `Scene3DBegin`.
+    Scene3DEnd,
     /// [`DrawCmd::ProjectedQuad`] with a float colour, as `VBORenderer`'s
     /// `formatPositionColorUv` carries it (`WeatherParticleDrawer`): faint
     /// colours are not rounded to 8 bits before the texel is multiplied.

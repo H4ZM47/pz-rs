@@ -67,6 +67,18 @@ pub enum PlayerUpdateStep {
 
 type InputStep = ControlFlow<(&'static str, PlayerUpdatePhase), bool>;
 
+/// The world movement direction for the first-person view at `yaw`: the
+/// screen-space input vector (forward key = (0, -1), right key = (1, 0)) as
+/// `move_x * right + (-move_y) * forward`. Scaled by sqrt 2 so its length
+/// matches the isometric conversion `(move_y + move_x, move_y - move_x)`,
+/// which is sqrt 2 times the input length.
+fn first_person_move_dir(yaw: f32, move_x: f32, move_y: f32) -> (f32, f32) {
+    let (s, c) = yaw.sin_cos();
+    let k = std::f32::consts::SQRT_2;
+    let (fwd, right) = (-move_y * k, move_x * k);
+    (fwd * c - right * s, fwd * s + right * c)
+}
+
 impl<I: 'static> GameCharacter<I> {
     fn moodle_level(&self, sm: &ScriptManager, f: &str) -> i32 {
         self.moodles.moodle_level_of(sm, f).unwrap_or(0)
@@ -510,7 +522,10 @@ impl<I: 'static> GameCharacter<I> {
         if self.is_player_aiming() && self.player.input.input_mode(input, self.input_owner()) != super::CharacterInputMode::Gamepad {
             self.player.player_move_dir = (mv.move_x, mv.move_y);
         }
-        if !self.is_player_aiming() && self.player.just_moved {
+        if self.first_person_yaw(input).is_some() && (mv.move_x != 0.0 || mv.move_y != 0.0) {
+            // Move relative to the view (strafing/backing up), not along the facing.
+            self.player.player_move_dir = (mv.move_x, mv.move_y);
+        } else if !self.is_player_aiming() && self.player.just_moved {
             self.player.player_move_dir = (self.vars.forward_x, self.vars.forward_y);
         }
         let speed = if self.player.just_moved {
@@ -968,9 +983,19 @@ impl<I: 'static> GameCharacter<I> {
         if self.vars.fall_time > 2.0 {
             return;
         }
+        let fp_yaw = self.first_person_yaw(input);
+        if let Some(yaw) = fp_yaw {
+            // First person: the character always faces the view.
+            let (fx, fy) = (yaw.cos(), yaw.sin());
+            self.set_forward_direction(fx, fy);
+            mv.new_facing = Some(crate::character::state::vars::iso_direction_from_angle(fx, fy));
+        }
         let (aim_x, aim_y) = self.aim_vector(input);
         let (move_x, move_y) = self.player_input_move_vector(input);
-        self.player.player_move_dir = (move_y + move_x, move_y - move_x);
+        self.player.player_move_dir = match fp_yaw {
+            Some(yaw) => first_person_move_dir(yaw, move_x, move_y),
+            None => (move_y + move_x, move_y - move_x),
+        };
         if move_x.abs() > 0.0 || move_y.abs() > 0.0 {
             self.player.just_moved = true;
         }
@@ -978,7 +1003,7 @@ impl<I: 'static> GameCharacter<I> {
         if aim_x != 0.0 || aim_y != 0.0 {
             let (nx, ny) = normalize(aim_x, aim_y);
             mv.new_facing = Some(crate::character::state::vars::iso_direction_from_angle(nx, ny));
-        } else if (move_x != 0.0 || move_y != 0.0) && pmd.0 * pmd.0 + pmd.1 * pmd.1 > 0.0 {
+        } else if fp_yaw.is_none() && (move_x != 0.0 || move_y != 0.0) && pmd.0 * pmd.0 + pmd.1 * pmd.1 > 0.0 {
             let (nx, ny) = normalize(pmd.0, pmd.1);
             mv.new_facing = Some(crate::character::state::vars::iso_direction_from_angle(nx, ny));
         }
@@ -987,7 +1012,7 @@ impl<I: 'static> GameCharacter<I> {
         self.resolve_strafe_direction_from_path(cx);
         let pmd = self.player.player_move_dir;
         if pmd.0 != 0.0 || pmd.1 != 0.0 {
-            if self.is_strafing() {
+            if self.is_strafing() || fp_yaw.is_some() {
                 let (tx, ty) = normalize(pmd.0, -pmd.1);
                 let mut angle = cx.world.rendered_angle(self.id).unwrap_or_else(|| self.anim_angle_radians());
                 if angle as f64 > std::f64::consts::PI * 2.0 {
@@ -1667,3 +1692,37 @@ pub fn pacing_mod(level: i32) -> f32 {
     }
 }
 
+
+#[cfg(test)]
+mod first_person_tests {
+    use super::first_person_move_dir;
+    use std::f32::consts::{FRAC_PI_2, SQRT_2};
+
+    fn near(a: (f32, f32), b: (f32, f32)) -> bool {
+        (a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5
+    }
+
+    #[test]
+    fn iso_conversion_unchanged() {
+        // Forward key (0,-1) in iso: (move_y + move_x, move_y - move_x).
+        let (mx, my) = (0.0f32, -1.0f32);
+        assert_eq!((my + mx, my - mx), (-1.0, -1.0));
+    }
+
+    #[test]
+    fn east_yaw_forward_is_plus_x_right_is_plus_y() {
+        assert!(near(first_person_move_dir(0.0, 0.0, -1.0), (SQRT_2, 0.0)));
+        assert!(near(first_person_move_dir(0.0, 1.0, 0.0), (0.0, SQRT_2)));
+    }
+
+    #[test]
+    fn north_yaw_forward_is_minus_y() {
+        assert!(near(first_person_move_dir(-FRAC_PI_2, 0.0, -1.0), (0.0, -SQRT_2)));
+    }
+
+    #[test]
+    fn length_matches_iso() {
+        let (x, y) = first_person_move_dir(0.7, 1.0, -1.0);
+        assert!(((x * x + y * y).sqrt() - 2.0).abs() < 1e-5); // iso: |(0,-2)| = 2
+    }
+}

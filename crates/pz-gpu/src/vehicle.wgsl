@@ -59,7 +59,7 @@ struct VsOut {
 
 fn finish(local: vec4<f32>, normal: vec3<f32>, uv: vec2<f32>, uv1: vec2<f32>) -> VsOut {
     let o = v.mvp * local;
-    var clip = (o.z + 1.0) / 2.0;
+    var clip = (o.z / o.w + 1.0) / 2.0;
     clip = clip + v.params.x - 0.5;
     var out: VsOut;
     // GL window depth `clip`; wgpu takes clip-space z in 0..w.
