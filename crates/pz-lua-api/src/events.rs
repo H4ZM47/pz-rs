@@ -337,6 +337,39 @@ fn remove_callback(capture: &RefCell<EventCapture>, c: &mut NativeCall<'_>) -> L
 }
 
 /// One event table family (`Events` or `Hook`).
+/// The event and hook names the installed game registers, in order:
+/// the `AddEvent("…")` calls in `LuaEventManager.AddEvents` and
+/// `LuaHookManager.AddEvents`, read from `projectzomboid.jar`.
+/// [`EVENT_NAMES`] and [`HOOK_NAMES`] are the same lists for runs without
+/// an install (unit tests).
+pub fn names_from_jar(jar: &pz_classfile::Jar) -> pz_classfile::Result<(Vec<String>, Vec<String>)> {
+    let read = |class: &str| -> pz_classfile::Result<Vec<String>> {
+        let cf = pz_classfile::load_class(jar, class)?;
+        let mut names = Vec::new();
+        for effect in pz_classfile::method_effects(&cf, "AddEvents")? {
+            let pz_classfile::Effect::Call(pz_classfile::Value::Call { name, args, .. }) = effect else {
+                continue;
+            };
+            if name != "AddEvent" {
+                continue;
+            }
+            match args.first() {
+                Some(pz_classfile::Value::Str(s)) => names.push(s.clone()),
+                other => {
+                    return Err(pz_classfile::Error::Unsupported(format!(
+                        "{class}.AddEvents: AddEvent argument {other:?}"
+                    )))
+                }
+            }
+        }
+        if names.is_empty() {
+            return Err(pz_classfile::Error::Missing(format!("{class}.AddEvents")));
+        }
+        Ok(names)
+    };
+    Ok((read("zombie/Lua/LuaEventManager")?, read("zombie/Lua/LuaHookManager")?))
+}
+
 #[derive(Clone)]
 pub struct EventManager {
     inner: Rc<RefCell<Registry>>,
@@ -449,3 +482,43 @@ pub(crate) fn trigger_registered_event(
 
 #[cfg(test)]
 mod gc_tests;
+
+#[cfg(test)]
+mod jar_name_tests {
+    use super::{names_from_jar, EVENT_NAMES, HOOK_NAMES};
+
+    /// With an install (`PZ_GAME_DIR`), the jar's lists hold the built-in
+    /// ones in the same order; the jar may add newer events after them.
+    #[test]
+    fn jar_names_extend_the_built_in_lists() {
+        let Ok(dir) = std::env::var("PZ_GAME_DIR") else {
+            eprintln!("PZ_GAME_DIR not set; skipping");
+            return;
+        };
+        let jar = pz_classfile::Jar::open(std::path::Path::new(&dir).join("projectzomboid.jar")).unwrap();
+        let (events, hooks) = names_from_jar(&jar).unwrap();
+        assert_eq!(hooks, HOOK_NAMES);
+        assert!(events.len() >= EVENT_NAMES.len());
+        assert_eq!(&events[..EVENT_NAMES.len()], EVENT_NAMES);
+        // LuaManager registers the jar's names, newer ones included.
+        let fs = std::rc::Rc::new(std::cell::RefCell::new(pz_fs::GameFs::new(&dir)));
+        let mgr = crate::lua_manager::LuaManager::init(fs).unwrap();
+        let table = match mgr.thread.globals().get_str("Events") {
+            pz_kahlua::Value::Table(t) => t,
+            _ => panic!("no Events table"),
+        };
+        for name in &events {
+            assert!(matches!(table.get_str(name), pz_kahlua::Value::Table(_)), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_jar_without_the_classes_is_an_error() {
+        let mut zip = Vec::new();
+        // An empty zip: just the end-of-central-directory record.
+        zip.extend_from_slice(&[0x50, 0x4b, 0x05, 0x06]);
+        zip.extend_from_slice(&[0; 18]);
+        let jar = pz_classfile::Jar::from_bytes(zip).unwrap();
+        assert!(names_from_jar(&jar).is_err());
+    }
+}
