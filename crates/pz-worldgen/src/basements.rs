@@ -64,6 +64,37 @@ pub struct BasementPlacement {
     pub name: String,
 }
 
+/// A room of a basement building (`RoomDef` before it joins the meta
+/// grid): rectangles in world squares, `level` the absolute level.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BasementRoom {
+    /// `RoomDef.id` inside its building.
+    pub id: i64,
+    pub name: String,
+    pub level: i32,
+    /// `(x, y, w, h)`.
+    pub rects: Vec<(i32, i32, i32, i32)>,
+}
+
+/// A building of `Basements.buildingDefs`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BasementBuilding {
+    pub rooms: Vec<BasementRoom>,
+    /// Not saved: a loaded world's buildings have none.
+    pub emptyoutside: Vec<BasementRoom>,
+}
+
+/// `Basements.FILE_MAGIC`.
+pub const FILE_MAGIC: [u8; 4] = *b"BSMT";
+/// The world version this port's reference build stores
+/// (`IsoWorld.WorldVersion`, inlined into `writeSavefile`; later builds
+/// write theirs, so callers pass the installed jar's value).
+pub const SAVEFILE_WORLD_VERSION: i32 = 249;
+/// The file version `writeSavefile` stores.
+pub const SAVEFILE_VERSION: i32 = 1;
+/// `map_basements.bin`.
+pub const SAVEFILE_NAME: &str = "map_basements.bin";
+
 /// `BasementsPerMap`.
 #[derive(Clone, Debug, Default)]
 pub struct BasementsPerMap {
@@ -143,6 +174,9 @@ pub struct Basements {
     /// In `getOrCreatePerMap` order.
     pub per_map: Vec<BasementsPerMap>,
     pub placements: Vec<BasementPlacement>,
+    /// `buildingDefs`: one building per placement that has rooms, before
+    /// any merge (what `map_basements.bin` stores).
+    pub buildings: Vec<BasementBuilding>,
     /// Errors met while loading definitions (missing `.pzby` files and the
     /// like).
     pub errors: Vec<String>,
@@ -162,6 +196,7 @@ impl Basements {
             fs,
             per_map: Vec::new(),
             placements: Vec::new(),
+            buildings: Vec::new(),
             errors: Vec::new(),
             meta_buildings: (0, 0),
         }
@@ -395,19 +430,11 @@ impl Basements {
         find(false).or_else(|| find(true))
     }
 
-    /// `createBasementBuildingDefs`, `addBasementBuildingDefsToLotHeaders`
-    /// and `addBasementBuildingDefsToMetaGrid`: each placement becomes a
-    /// building of the meta grid (rooms moved to the placement and its
-    /// bottom level). A building that does not go below level 0 (an access
-    /// piece) and touches exactly one other such building is merged into
-    /// it. `rand` is `Rand` at world loading (`new BuildingDef()` draws).
-    /// Returns the number of new buildings and of merged ones.
-    pub fn add_buildings_to_meta_grid(
-        &self,
-        meta: &mut IsoMetaGrid,
-        rand: &mut dyn GameRand,
-    ) -> (usize, usize) {
-        let mut defs: Vec<BuildingIdx> = Vec::new();
+    /// `createBasementBuildingDefs`: each placement whose piece has
+    /// buildings and whose cell exists becomes a building (rooms moved to
+    /// the placement and its bottom level), kept in [`Basements::buildings`].
+    pub fn create_building_defs(&mut self, meta: &IsoMetaGrid) {
+        let mut out = Vec::new();
         for p in &self.placements {
             let Some(header) = self.placement_header(&p.name) else {
                 continue;
@@ -415,26 +442,72 @@ impl Basements {
             if header.buildings.is_empty() || meta.get_cell_data(p.x / 256, p.y / 256).is_none() {
                 continue;
             }
-            let mut def = BuildingDef::new(rand);
-            def.id = defs.len() as i64;
-            let (mut rooms, mut empty) = (Vec::new(), Vec::new());
+            let mut b = BasementBuilding::default();
             for r in &header.rooms {
-                let mut nr = RoomDef::new(rooms.len() as i64, r.name.clone());
-                nr.level = p.z + r.level;
-                for &(x, y, w, h) in &r.rects {
-                    nr.rects.push(RoomRect::new(p.x + x, p.y + y, w, h));
-                }
-                nr.CalculateBounds();
+                let room = BasementRoom {
+                    // `buildingDef.rooms.size()` when the room is made.
+                    id: b.rooms.len() as i64,
+                    name: r.name.clone(),
+                    level: p.z + r.level,
+                    rects: r
+                        .rects
+                        .iter()
+                        .map(|&(x, y, w, h)| (p.x + x, p.y + y, w, h))
+                        .collect(),
+                };
                 if r.is_empty_outside() {
-                    empty.push(nr);
+                    b.emptyoutside.push(room);
                 } else {
-                    rooms.push(nr);
+                    b.rooms.push(room);
                 }
             }
-            defs.push(meta.insert_building(def, rooms, empty));
+            out.push(b);
         }
-        // `mergedRooms` (a HashMap keyed by identity in the original; kept
-        // here in first-merge order).
+        self.buildings = out;
+    }
+
+    /// [`Basements::create_building_defs`], then
+    /// [`Basements::add_building_defs_to_meta_grid`].
+    pub fn add_buildings_to_meta_grid(
+        &mut self,
+        meta: &mut IsoMetaGrid,
+        rand: &mut dyn GameRand,
+    ) -> (usize, usize) {
+        self.create_building_defs(meta);
+        self.add_building_defs_to_meta_grid(meta, rand)
+    }
+
+    /// The `BuildingDef`s of [`Basements::buildings`] (`new BuildingDef()`
+    /// draws from `rand` for each, in order, as `createBasementBuildingDefs`
+    /// or `loadSavefile` do), then `addBasementBuildingDefsToLotHeaders` and
+    /// `addBasementBuildingDefsToMetaGrid`: a building that does not go
+    /// below level 0 (an access piece) and touches exactly one other such
+    /// building is merged into it. Returns the number of new buildings and
+    /// of merged ones.
+    pub fn add_building_defs_to_meta_grid(
+        &self,
+        meta: &mut IsoMetaGrid,
+        rand: &mut dyn GameRand,
+    ) -> (usize, usize) {
+        let mut defs: Vec<BuildingIdx> = Vec::new();
+        for b in &self.buildings {
+            let mut def = BuildingDef::new(rand);
+            def.id = defs.len() as i64;
+            let make = |list: &[BasementRoom]| -> Vec<RoomDef> {
+                list.iter()
+                    .map(|r| {
+                        let mut nr = RoomDef::new(r.id, r.name.clone());
+                        nr.level = r.level;
+                        for &(x, y, w, h) in &r.rects {
+                            nr.rects.push(RoomRect::new(x, y, w, h));
+                        }
+                        nr.CalculateBounds();
+                        nr
+                    })
+                    .collect()
+            };
+            defs.push(meta.insert_building(def, make(&b.rooms), make(&b.emptyoutside)));
+        }
         let mut merged: Vec<(BuildingIdx, Vec<RoomIdx>, Vec<RoomIdx>)> = Vec::new();
         let mut kept = Vec::new();
         let mut n_merged = 0;
@@ -472,6 +545,109 @@ impl Basements {
         counts
     }
 
+    /// `writeSavefile(out)`: the bytes of `map_basements.bin`, big-endian
+    /// as `DataOutputStream` writes them (sizes and room levels are
+    /// narrowed as Java's `writeShort` / `writeByte` do). `world_version`
+    /// is the game build's `IsoWorld.WorldVersion`.
+    pub fn savefile_bytes(&self, world_version: i32) -> std::io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&FILE_MAGIC);
+        out.extend_from_slice(&world_version.to_be_bytes());
+        out.extend_from_slice(&SAVEFILE_VERSION.to_be_bytes());
+        let short = |out: &mut Vec<u8>, v: i32| out.extend_from_slice(&(v as i16).to_be_bytes());
+        let utf = pz_core::save_trackers::encode_modified_utf;
+        out.extend_from_slice(&(self.placements.len() as i32).to_be_bytes());
+        for p in &self.placements {
+            for v in [p.x, p.y, p.z] {
+                out.extend_from_slice(&v.to_be_bytes());
+            }
+            short(&mut out, p.w);
+            short(&mut out, p.h);
+            out.extend_from_slice(&utf(&p.name)?);
+        }
+        out.extend_from_slice(&(self.buildings.len() as i32).to_be_bytes());
+        for b in &self.buildings {
+            short(&mut out, b.rooms.len() as i32);
+            for r in &b.rooms {
+                out.extend_from_slice(&utf(&r.name)?);
+                out.push(r.level as u8);
+                short(&mut out, r.rects.len() as i32);
+                for &(x, y, w, h) in &r.rects {
+                    for v in [x, y, w, h] {
+                        short(&mut out, v);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// `loadSavefile(file, in)`: the placements and buildings of
+    /// `map_basements.bin` (added to any already held, as the original
+    /// appends to its lists). The two version ints are skipped. Fails on a
+    /// bad magic or truncated data; whatever was read before the failure
+    /// is kept, as in the original.
+    pub fn load_savefile_bytes(&mut self, path: &str, bytes: &[u8]) -> std::io::Result<()> {
+        use std::io::{Error, ErrorKind};
+        let mut r = Reader { b: bytes, i: 0 };
+        if bytes.len() < 4 || bytes[..4] != FILE_MAGIC {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("{path} does not appear to be map_basements.bin"),
+            ));
+        }
+        r.i = 4;
+        r.int()?;
+        r.int()?;
+        let n = r.int()?;
+        for _ in 0..n {
+            let p = BasementPlacement {
+                x: r.int()?,
+                y: r.int()?,
+                z: r.int()?,
+                w: r.short()? as i32,
+                h: r.short()? as i32,
+                name: r.utf()?,
+            };
+            self.placements.push(p);
+        }
+        let n = r.int()?;
+        for _ in 0..n {
+            let mut b = BasementBuilding::default();
+            let rooms = r.short()?;
+            for id in 0..rooms.max(0) as i64 {
+                let name = r.utf()?;
+                let level = r.byte()? as i32;
+                let rects = r.short()?;
+                let mut room = BasementRoom { id, name, level, rects: Vec::new() };
+                for _ in 0..rects.max(0) {
+                    let (x, y, w, h) = (r.short()?, r.short()?, r.short()?, r.short()?);
+                    room.rects.push((x as i32, y as i32, w as i32, h as i32));
+                }
+                b.rooms.push(room);
+            }
+            self.buildings.push(b);
+        }
+        Ok(())
+    }
+
+    /// `loadSavefile()`: `Ok(false)` when there is no file, `Err` (logged
+    /// by the caller, then the world recomputes) when it cannot be read.
+    pub fn load_savefile(&mut self, path: &std::path::Path) -> std::io::Result<bool> {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        self.load_savefile_bytes(&path.to_string_lossy(), &bytes)?;
+        Ok(true)
+    }
+
+    /// `writeSavefile()` without its `Core.isNoSave` check (the caller's).
+    pub fn write_savefile(&self, path: &std::path::Path, world_version: i32) -> std::io::Result<()> {
+        std::fs::write(path, self.savefile_bytes(world_version)?)
+    }
+
     /// `onNewChunkLoaded(chunk)`: stamps every placement whose bounds (plus
     /// one square) touch the chunk.
     pub fn on_new_chunk_loaded(
@@ -494,6 +670,36 @@ impl Basements {
                     .push(format!("SpawnBasementInChunk {}: {e}", p.name));
             }
         }
+    }
+}
+
+/// Big-endian reads as `DataInputStream` does them.
+struct Reader<'a> {
+    b: &'a [u8],
+    i: usize,
+}
+
+impl Reader<'_> {
+    fn take(&mut self, n: usize) -> std::io::Result<&[u8]> {
+        if self.b.len() - self.i < n {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        let s = &self.b[self.i..self.i + n];
+        self.i += n;
+        Ok(s)
+    }
+    fn int(&mut self) -> std::io::Result<i32> {
+        Ok(i32::from_be_bytes(self.take(4)?.try_into().unwrap()))
+    }
+    fn short(&mut self) -> std::io::Result<i16> {
+        Ok(i16::from_be_bytes(self.take(2)?.try_into().unwrap()))
+    }
+    fn byte(&mut self) -> std::io::Result<i8> {
+        Ok(self.take(1)?[0] as i8)
+    }
+    fn utf(&mut self) -> std::io::Result<String> {
+        let n = u16::from_be_bytes(self.take(2)?.try_into().unwrap()) as usize;
+        pz_core::save_trackers::decode_modified_utf(self.take(n)?)
     }
 }
 
@@ -983,5 +1189,61 @@ mod tests {
         assert!(r.building.is_some());
         assert!(meta.get_room_at(11, 21, 0).is_none());
         assert!(meta.get_room_at(13, 21, -1).is_none());
+    }
+
+    #[test]
+    fn savefile_round_trips_placements_and_buildings() {
+        let mut b = Basements::new(Rc::new(GameFs::new("/nonexistent")));
+        b.placements.push(BasementPlacement {
+            x: 10,
+            y: 20,
+            z: -1,
+            w: 3,
+            h: 4,
+            name: "b".into(),
+        });
+        b.buildings.push(BasementBuilding {
+            rooms: vec![BasementRoom {
+                id: 0,
+                name: "basement".into(),
+                level: -1,
+                rects: vec![(10, 20, 3, 4)],
+            }],
+            emptyoutside: vec![BasementRoom {
+                id: 1,
+                name: "out".into(),
+                level: 0,
+                rects: vec![(9, 19, 1, 1)],
+            }],
+        });
+        let bytes = b.savefile_bytes(SAVEFILE_WORLD_VERSION).unwrap();
+        let mut want = b"BSMT".to_vec();
+        for v in [249i32, 1, 1, 10, 20, -1] {
+            want.extend_from_slice(&v.to_be_bytes());
+        }
+        want.extend_from_slice(&[0, 3, 0, 4, 0, 1, b'b']);
+        want.extend_from_slice(&1i32.to_be_bytes());
+        want.extend_from_slice(&[0, 1, 0, 8]);
+        want.extend_from_slice(b"basement");
+        want.extend_from_slice(&[0xff, 0, 1, 0, 10, 0, 20, 0, 3, 0, 4]);
+        assert_eq!(bytes, want);
+
+        let mut l = Basements::new(Rc::new(GameFs::new("/nonexistent")));
+        l.load_savefile_bytes("map_basements.bin", &bytes).unwrap();
+        assert_eq!(l.placements, b.placements);
+        // `emptyoutside` rooms are not saved.
+        assert_eq!(l.buildings.len(), 1);
+        assert_eq!(l.buildings[0].rooms, b.buildings[0].rooms);
+        assert!(l.buildings[0].emptyoutside.is_empty());
+
+        let mut meta = IsoMetaGrid::blank(0, 0, 0, 0);
+        meta.create_cell(0, 0);
+        assert_eq!(l.add_building_defs_to_meta_grid(&mut meta, &mut JavaRandom::new(1)), (1, 0));
+        assert_eq!(meta.get_room_at(11, 21, -1).expect("loaded room").level, -1);
+
+        let mut bad = Basements::new(Rc::new(GameFs::new("/nonexistent")));
+        let e = bad.load_savefile_bytes("x/map_basements.bin", b"NOPE").unwrap_err();
+        assert_eq!(e.to_string(), "x/map_basements.bin does not appear to be map_basements.bin");
+        assert!(bad.load_savefile_bytes("f", &bytes[..bytes.len() - 1]).is_err());
     }
 }
