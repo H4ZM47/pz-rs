@@ -132,6 +132,11 @@ fn clip(poly: &[Vtx], val: impl Fn(&Vtx) -> f32) -> Vec<Vtx> {
 /// inset makes edges sample interior opaque texels. Geometry is unchanged.
 const EDGE_INSET: f32 = 3.0;
 
+/// How far (texture pixels at tile scale 1) a floor or wall corner may fall
+/// outside a trimmed texture and still be clamped rather than clipped:
+/// enough for the few transparent rows trimmed off a wall's edge.
+const FILL_MAX_OVERSHOOT: f32 = 6.0;
+
 /// Moves each vertex's frame fraction toward the quad's centre by the inset
 /// (capped at the distance to the centre).
 fn inset_fracs(tex: &Texture, verts: &mut [Vtx]) {
@@ -190,6 +195,19 @@ fn push_face(out: &mut Vec<Face>, c: &Ctx<'_>, p: [[f32; 3]; 4], color: [u32; 4]
             }
         })
         .collect();
+    // A texture trimmed well inside the face (a rug piece, the triangle of
+    // a gable wall) would smear its edge texels across the rest of the
+    // face; such faces are clipped to the texture like cards.
+    let (tw, th) = (tex.width as f32, tex.height as f32);
+    let overshoot = verts
+        .iter()
+        .map(|v| {
+            let ox = (-v.f[0]).max(v.f[0] - 1.0) * tw;
+            let oy = (-v.f[1]).max(v.f[1] - 1.0) * th;
+            ox.max(oy)
+        })
+        .fold(0.0f32, f32::max);
+    let fill = fill && overshoot <= FILL_MAX_OVERSHOOT * TILE_SCALE as f32;
     if fill {
         inset_fracs(tex, &mut verts);
     }
@@ -800,10 +818,11 @@ mod tests {
     }
 
     #[test]
-    fn trimmed_wall_keeps_geometry_and_clamps_uvs() {
-        let mut t = tex(128, 64, 0.0, 192.0, (128, 256));
-        t.y_start = 0.5;
-        t.y_end = 0.75;
+    fn slightly_trimmed_wall_keeps_geometry_and_clamps_uvs() {
+        // 4 transparent rows trimmed off the top: 128x252 from y 4.
+        let mut t = tex(128, 252, 0.0, 4.0, (128, 256));
+        t.y_start = 0.0;
+        t.y_end = 1.0;
         let (sq, _) = sq_with(t, |s| s.flags.wall_n = true);
         let mut out = Vec::new();
         square_faces(&sq, O, &mut out);
@@ -812,32 +831,45 @@ mod tests {
         // Full wall height is kept.
         assert_eq!(f.pos[2], [-1.0, crate::LEVEL_HEIGHT, 0.0]);
         assert_eq!(f.pos[3], [0.0, crate::LEVEL_HEIGHT, 0.0]);
-        let (hx, hy) = (0.5 / 128.0, 0.5 / 64.0 * 0.25);
+        let (hx, hy) = (0.5 / 128.0, 0.5 / 252.0);
         for uv in f.uv {
             assert!(
-                uv[0] >= hx - 1e-6
-                    && uv[0] <= 1.0 - hx + 1e-6
-                    && uv[1] >= 0.5 + hy - 1e-6
-                    && uv[1] <= 0.75 - hy + 1e-6,
+                uv[0] >= hx - 1e-6 && uv[0] <= 1.0 - hx + 1e-6 && uv[1] >= hy - 1e-6 && uv[1] <= 1.0 - hy + 1e-6,
                 "{uv:?}"
             );
         }
     }
 
     #[test]
-    fn trimmed_floor_keeps_geometry_and_clamps_uvs() {
+    fn heavily_trimmed_wall_is_clipped_not_smeared() {
+        // Only the bottom 64 rows have pixels (a gable's foot, a low
+        // trim): the face stops where the texture does.
+        let mut t = tex(128, 64, 0.0, 192.0, (128, 256));
+        t.y_start = 0.5;
+        t.y_end = 0.75;
+        let (sq, _) = sq_with(t, |s| s.flags.wall_n = true);
+        let mut out = Vec::new();
+        square_faces(&sq, O, &mut out);
+        assert!(!out.is_empty());
+        let top = out.iter().flat_map(|f| f.pos).map(|p| p[1]).fold(0.0f32, f32::max);
+        assert!(top < crate::LEVEL_HEIGHT * 0.5, "{top}");
+    }
+
+    #[test]
+    fn half_floor_texture_is_clipped_to_its_half() {
+        // A rug piece covering only the top half of the diamond.
         let mut t = tex(128, 32, 0.0, 192.0, (128, 256));
         t.y_start = 0.0;
         t.y_end = 0.5;
         let (sq, _) = sq_with(t, |s| s.flags.solidfloor = true);
         let mut out = Vec::new();
         square_faces(&sq, O, &mut out);
-        assert_eq!(out.len(), 1);
-        let f = &out[0];
-        assert_eq!(f.pos[2], [-1.0, 0.0, -1.0]);
-        let hy = 0.5 / 32.0 * 0.5;
-        for uv in f.uv {
-            assert!(uv[1] >= hy - 1e-6 && uv[1] <= 0.5 - hy + 1e-6, "{uv:?}");
+        assert!(!out.is_empty());
+        // Nothing reaches the south corner (model (-1, 0, -1)).
+        for f in &out {
+            for p in f.pos {
+                assert!(p[0] + p[2] > -1.0 - 1e-4, "{p:?}");
+            }
         }
     }
 
