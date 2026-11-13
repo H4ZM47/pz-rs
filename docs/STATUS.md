@@ -71,7 +71,7 @@ Numbering follows [WORKSTREAMS.md](WORKSTREAMS.md).
 | 10 | Characters, animation, models | `pz-characters`, `pz-anim`, `pz-model`, `pz-character-model`, `pz-ragdoll`, `pz-animals`, `pz-vehicles`, `pz-pathfind`, `pz-popman` | **Libraries ported**, several checked bit-for-bit against the original in isolation (e.g. zombie chase, body damage). Players and zombies update in the loop; animals, ragdolls, vehicles, ballistics and pathfinding are not yet wired. |
 | 11 | Audio | `pz-audio`, `pz-sound`, `pz-world-sound`, `pz-radio` | **Decoding done** (FSB5/Vorbis from FMOD banks). Sound manager ticks per frame; positioned world sounds, fire sounds and radio are not wired. |
 | 12 | Saves | in `pz-world::save`, `pz-core`, `pz-sqlite`, `pz-inventory` (no separate `pz-save` crate) | **Partial.** Chunk files, `map_t.bin`, player load and quit-save exist. Vehicle DB, sandbox load, basements, reanimated players and the full `GameWindow.save` path are open. |
-| 13 | Multiplayer | `pz-network` | **Not started.** The crate only holds the offline server list and account database; there is no RakNet protocol, `GameClient` or `GameServer`. |
+| 13 | Multiplayer | `pz-network` | **Started.** The crate holds the offline server list and account database, the packet type table (`PacketTypes`, ids and send settings) and role `Capability`. There is no RakNet transport, `GameClient` or `GameServer` yet. |
 
 ## What remains
 
