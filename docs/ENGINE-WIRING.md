@@ -303,8 +303,11 @@ then rawset literatureTitle, retaining unrelated entries and returning no
 values. The custom-colour callbacks (`onCreateLipstick`, `onCreateFabricRoll`,
 `onCreateSprayPaint`, `onCreateToyPlane`, `onCreateRandomColor`) draw from the
 `ItemGenerationConstants` weighted colour lists read from the jar, or from
-`Colors.GetRandomColor`, and set the item's custom colour. That makes six of 58
-public callbacks. The other 52 callbacks,
+`Colors.GetRandomColor`, and set the item's custom colour. The ID card
+callbacks (`onCreateIDCard`, `onCreateIDCardFemale`, `onCreateIDCardMale`) name
+the item after its display name and a random survivor name, and give a
+Literature card a random `lockedBy`. That makes nine of 58 public callbacks.
+The other 49 callbacks,
 constructor/private helpers, successful resolver cache and native factory
 callback ordering still need work. Supported argument conversion order and
 messages follow the installed invoker; unavailable reflected-null diagnostics
