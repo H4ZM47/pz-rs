@@ -80,7 +80,10 @@ mod control;
 mod key_ring;
 pub(crate) mod known_poison;
 mod reading;
+mod safety;
 pub(crate) mod read_flags;
+#[cfg(test)]
+mod get_players_tests;
 #[cfg(test)]
 mod running_tests;
 #[cfg(test)]
@@ -89,6 +92,18 @@ mod sneaking_tests;
 mod timed_action_phases_tests;
 #[cfg(test)]
 mod timed_actions_tests;
+#[cfg(test)]
+mod designation_zone_tests;
+#[cfg(test)]
+mod safety_tests;
+#[cfg(test)]
+mod definition_texture_tests;
+#[cfg(test)]
+mod traits_tests;
+#[cfg(test)]
+mod gender_tests;
+#[cfg(test)]
+mod unwanted_tests;
 #[cfg(test)]
 mod floor_bridge_tests;
 #[cfg(test)]
@@ -599,6 +614,8 @@ enum Handle {
     Xp,
     PerkInfo,
     WornItems,
+    Safety,
+    Traits,
 }
 
 /// One Lua object per (kind, owner, member), so Lua `==` is identity.
@@ -721,6 +738,27 @@ fn register_vision(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         Ok(c.push(v.map_or(Value::Nil, |v| pz_vehicles::lua::vehicle_value(&v))))
     });
     let p = expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS));
+    // getPlayers(): a new list with all four player slots, empty ones
+    // included.
+    p.static_fn("getPlayers", |c| {
+        let slots = (0..crate::bind_players::MAX_PLAYERS)
+            .map(|i| crate::bind_players::player(i).map_or(Value::Nil, |p| character_value(&p)))
+            .collect();
+        Ok(c.push(crate::bind_java_util::list_value(slots)))
+    });
+    // isUnwanted(id): getModData().rawget("itemUnwanted:" + id) is
+    // Boolean.TRUE. A null id is a null key, so false.
+    p.method("isUnwanted", |c| {
+        let Some(id) = crate::expose::str_arg(c, 1) else {
+            return Ok(c.push(false));
+        };
+        let table = chr_of(c)?.borrow_mut().get_mod_data();
+        match table.rawget(&Value::str(&format!("itemUnwanted:{id}"))) {
+            Value::Nil => Ok(c.push(false)),
+            Value::Bool(b) => Ok(c.push(b)),
+            other => Err(crate::bind_java_util::class_cast(&other, "java.lang.Boolean")),
+        }
+    });
     p.method("IsRunning", running_query);
     // getIndex() and getPlayerNum() (which calls it): `playerIndex`.
     p.method("getIndex", |c| {
@@ -734,6 +772,17 @@ fn register_vision(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     p.method("getJoypadBind", |c| {
         let v = chr_of(c)?.borrow().player.input.joypad_bind;
         Ok(c.push(v))
+    });
+    // isSeeDesignationZone() / setSeeDesignationZone(b): the
+    // seeDesignationZone field.
+    p.method("isSeeDesignationZone", |c| {
+        let v = chr_of(c)?.borrow().player.see_designation_zone;
+        Ok(c.push(v))
+    });
+    p.method("setSeeDesignationZone", |c| {
+        let v = bool_arg(c, 1);
+        chr_of(c)?.borrow_mut().player.see_designation_zone = v;
+        Ok(0)
     });
     p.method("isLocalPlayer", |c| {
         let ctx = current_sim_context();
@@ -1140,6 +1189,14 @@ lua_object!(MoodleObject, MOODLE_CLASS);
 lua_object!(XpObject, XP_CLASS);
 lua_object!(PerkInfoObject, PERK_INFO_CLASS);
 lua_object!(XpMultiplierObject, XP_MULTIPLIER_CLASS);
+
+/// `IsoGameCharacter.getCharacterGender()`.
+fn character_gender(chr: &LuaGameCharacterRef) -> pz_characters::CharacterGender {
+    match &chr.borrow().descriptor {
+        None => pz_characters::CharacterGender::Female,
+        Some(d) => d.borrow().character_gender,
+    }
+}
 
 pub(crate) fn chr_of(c: &NativeCall<'_>) -> LuaResult<LuaGameCharacterRef> {
     with_this::<CharacterObject, _>(c, |o| o.0.clone())
@@ -1815,6 +1872,17 @@ fn register_character(
     known_poison::register(&b, sm, chars);
     reading::register(&b);
     read_flags::register(&b);
+    safety::register(thread);
+    // getCharacterGender(): FEMALE without a descriptor, else the
+    // descriptor's. isFemale(): true when that gender is FEMALE.
+    b.method("getCharacterGender", |c| {
+        let gender = character_gender(&chr_of(c)?);
+        Ok(c.push(crate::bind_characters::gender_value(gender)))
+    });
+    b.method("isFemale", |c| {
+        let gender = character_gender(&chr_of(c)?);
+        Ok(c.push(gender == pz_characters::CharacterGender::Female))
+    });
     b.method("createKeyRing", key_ring::create_key_ring);
     b.method("getModData", |c| {
         let table = chr_of(c)?.borrow_mut().get_mod_data();
@@ -1908,6 +1976,15 @@ fn register_character(
         });
         Ok(c.push(v))
     });
+    // getCharacterTraits(): the characterTraits field (one Lua object).
+    b.method("getCharacterTraits", |c| {
+        let chr = chr_of(c)?;
+        let v = canonical((Handle::Traits, Rc::as_ptr(&chr) as usize, 0), || {
+            Value::Object(Rc::new(crate::bind_characters::CharacterTraitsObject::Of(chr.clone())))
+        });
+        Ok(c.push(v))
+    });
+    b.method("getSafety", safety::get_safety);
     b.method("getMoodles", |c| {
         let chr = chr_of(c)?;
         let v = canonical((Handle::Moodles, Rc::as_ptr(&chr) as usize, 0), || {

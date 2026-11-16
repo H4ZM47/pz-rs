@@ -781,6 +781,11 @@ fn register_inventory_item(thread: &mut Thread) {
             .map_err(|error| error.to_lua_error())?;
         Ok(c.push(Value::Table(table)))
     });
+    b.method("isUnwanted", |c| {
+        let item = this(c)?;
+        let unwanted = crate::item_tooltip::chr::unwanted_by(c.thread, &item, &c.arg(1))?;
+        Ok(c.push(unwanted))
+    });
     b.method("hasModData", |c| {
         let item = this(c)?;
         let value = pz_inventory::moddata::has_mod_data_ref(&item)
@@ -1119,6 +1124,39 @@ fn register_inventory_item(thread: &mut Thread) {
     with!(b, "setActivated", |i, c| {
         i.set_activated(bool_arg(c, 1));
         Ok(Value::Nil)
+    });
+    // `itemHeat` (1 is room temperature), `getInvHeat()` = 1 - itemHeat.
+    get!(b, "getItemHeat", |i| f(i.get_item_heat()));
+    get!(b, "getInvHeat", |i| f(1.0 - i.get_item_heat()));
+    with!(b, "setItemHeat", |i, c| {
+        i.set_item_heat(num_arg(c, 1) as f32);
+        Ok(Value::Nil)
+    });
+    get!(b, "getJobDelta", |i| f(i.job_delta));
+    get!(b, "getJobType", |i| opt_str(i.job_type.as_deref()));
+    with!(b, "setJobDelta", |i, c| {
+        i.job_delta = num_arg(c, 1) as f32;
+        Ok(Value::Nil)
+    });
+    with!(b, "setJobType", |i, c| {
+        i.job_type = str_arg(c, 1).map(|s| s.to_string());
+        Ok(Value::Nil)
+    });
+    // `isFavouriteRecipeInput(player)`: false without a script item, else
+    // whether `player.isFavouriteRecipe(name)` for a name of
+    // `scriptItem.getUsedInRecipes(player)`. That list is empty until the
+    // craft recipes are linked to their inputs (not ported); a non-empty
+    // one needs `isRecipeActuallyKnown`, which is not ported either.
+    b.method("isFavouriteRecipeInput", |c| {
+        let r = this(c)?;
+        let script = crate::item_tooltip::script(&r.borrow());
+        let used = script.is_some_and(|s| s.borrow().is_used_in_recipes());
+        if !used {
+            return Ok(c.push(false));
+        }
+        Err(LuaError::runtime(
+            "TODO(IsoGameCharacter): isFavouriteRecipeInput needs getUsedInRecipes(character)",
+        ))
     });
     with!(b, "setFavorite", |i, c| {
         i.favorite = bool_arg(c, 1);
@@ -1624,6 +1662,8 @@ fn register_drainable(thread: &mut Thread) {
         .map(Value::from)
         .unwrap_or_default());
     get!(b, "getWeightEmpty", |i| f(i.template.weight_empty));
+    // `DrainableComboItem.heat`, set to 1 by its constructors.
+    get!(b, "getHeat", |i| i.drainable_heat.map(f).unwrap_or_default());
     get!(b, "getOnEat", |i| opt_str(i.get_on_eat()));
     get!(b, "isEmptyUses", |i| Value::from(
         i.get_current_uses_float() <= 0.0
@@ -1809,6 +1849,10 @@ pub fn register(thread: &mut Thread) {
 mod moddata_tests;
 
 #[cfg(test)]
+#[path = "bind_items/pane_row_tests.rs"]
+mod pane_row_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use pz_inventory::ItemTemplate;
@@ -1851,6 +1895,39 @@ mod tests {
         assert!(matches!(r[5], Value::Bool(true)));
         assert!(matches!(r[6], Value::Bool(true)));
         assert_eq!(item.borrow().condition, 0);
+    }
+
+    #[test]
+    fn item_heat_and_job_progress_for_the_inventory_pane() {
+        let mut thread = item_thread();
+        let item = make(ItemClass::Normal, "Apple", |_| {});
+        thread.globals().set_str("item", item_value(&item));
+        // ISInventoryPane:renderdetails reads these for every row.
+        let r = run(
+            &mut thread,
+            "local a, b, c, d = item:getItemHeat(), item:getInvHeat(), item:getJobDelta(), item:getJobType()\n\
+             item:setItemHeat(1.5) item:setJobDelta(0.25) item:setJobType('Eating')\n\
+             return a, b, c, d, item:getItemHeat(), item:getInvHeat(), item:getJobDelta(), item:getJobType()",
+        );
+        let n = |v: &Value| v.as_num().unwrap();
+        assert_eq!((n(&r[0]), n(&r[1]), n(&r[2])), (1.0, 0.0, 0.0));
+        assert!(r[3].is_nil());
+        assert_eq!((n(&r[4]), n(&r[5]), n(&r[6])), (1.5, -0.5, 0.25));
+        assert_eq!(pz_kahlua::exec::java_value_of(&r[7]), "Eating");
+        // setItemHeat clamps to [0, 3].
+        run(&mut thread, "item:setItemHeat(9)");
+        assert_eq!(item.borrow().item_heat, 3.0);
+    }
+
+    #[test]
+    fn favourite_recipe_input_is_false_without_recipes() {
+        let mut thread = item_thread();
+        let item = make(ItemClass::Normal, "Apple", |_| {});
+        thread.globals().set_str("item", item_value(&item));
+        // No script item, or a script used in no recipe: false whatever
+        // the player is.
+        let r = run(&mut thread, "return item:isFavouriteRecipeInput(nil), item:isFavouriteRecipeInput({})");
+        assert!(matches!((&r[0], &r[1]), (Value::Bool(false), Value::Bool(false))));
     }
 
     /// A Lua thread with the item bindings (and `Radio.getDeviceData`).

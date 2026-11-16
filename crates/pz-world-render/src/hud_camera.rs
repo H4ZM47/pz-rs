@@ -74,6 +74,11 @@ impl CameraFrame {
             .map_or(([0.0; 3], 1.0), |c| ([c.x, c.y, c.z], c.zoom))
     }
 
+    /// `IsoCamera.cameras[player].fixJigglyModelsSquareX/Y`.
+    pub fn fix_jiggly_square(&self, player: usize) -> (f32, f32) {
+        self.camera(player).map_or((0.0, 0.0), |c| (c.fix_jiggly_square_x, c.fix_jiggly_square_y))
+    }
+
     /// `Core.getZoom(player)`: 1 without an offscreen buffer (no camera).
     pub fn zoom(&self, player: usize) -> f32 {
         self.camera(player).map_or(1.0, |c| c.zoom)
