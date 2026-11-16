@@ -80,6 +80,7 @@ pub mod bind_bent_fences;
 pub mod bind_map_objects;
 pub mod bind_tile_overlays;
 pub mod bind_broken_fences;
+pub mod bind_item_picker;
 pub mod bind_key_namer;
 pub mod bind_world_gen_utils;
 pub mod bind_world_gen_params;
@@ -256,6 +257,8 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_tile_overlays::register(&mut mgr.thread);
     bind_broken_fences::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
+    bind_item_picker::register(&mut mgr.thread);
+    bind_item_picker::install_event_sink(mgr.events.clone());
     bind_world_gen_utils::register(&mut mgr.thread, mgr.fs.clone());
     bind_world_gen_params::register(&mut mgr.thread);
     {
