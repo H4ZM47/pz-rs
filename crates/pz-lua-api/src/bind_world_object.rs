@@ -401,6 +401,33 @@ fn register_door(thread: &mut Thread) {
     door.method("isLockedByKey", |c| Ok(c.push(field(c, |d| d.locked_by_key)?)));
 }
 
+/// Gives `square` to the containers of an object read from that square's
+/// list when they have no source grid. The `ItemContainer` constructor for
+/// a map object always sets it, but objects loaded from the map have no
+/// square link here, and `ItemPicker.fillContainer` needs the source grid.
+pub(crate) fn adopt_square(this: &Value, object: &IsoObjectRef, square: &Value) -> LuaResult<()> {
+    let mut body = object.try_borrow_mut().map_err(|_| borrowed("IsoObject body"))?;
+    if body.runtime_containers.is_none()
+        && body.container.is_none()
+        && body.secondary_containers.is_empty()
+    {
+        return Ok(());
+    }
+    let installed = body.install_runtime_containers(|container| {
+        crate::bind_item_container::set_parent(container, this.clone());
+    });
+    for container in installed.iter() {
+        let mut container = container
+            .try_borrow_mut()
+            .map_err(|_| borrowed("ItemContainer"))?;
+        if container.source_grid.is_none() {
+            container.source_grid =
+                Some(Rc::new(crate::bind_item_container::LuaRef(square.clone())) as Rc<dyn Any>);
+        }
+    }
+    Ok(())
+}
+
 fn receiver_object(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<IsoObjectRef> {
     let receiver = crate::expose::this::<LuaWorldObject>(c)?;
     Ok(receiver
