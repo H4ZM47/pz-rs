@@ -41,6 +41,7 @@ pub mod bind_items;
 pub mod bind_fluid_container;
 pub mod component_gc;
 pub mod attribute_templates;
+pub mod item_picker;
 pub mod item_tooltip;
 pub mod bind_iso_enums;
 pub mod bind_java_util;
