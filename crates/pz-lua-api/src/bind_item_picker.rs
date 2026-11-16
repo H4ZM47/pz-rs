@@ -300,6 +300,76 @@ fn roll_item(
     do_roll_item(t, dist, tg, density, do_item_container, room, false)
 }
 
+/// `IsoChunk.loadGridSquareIfNeeded` then
+/// `LoadGridsquarePerformanceWorkaround.LoadGridsquare` in single player:
+/// once per square, the main container of each object with a named sprite
+/// (not a floor item) is filled if unexplored and marked explored.
+/// Not ported: `ItemPickerJava.updateOverlaySprite` and
+/// `TileOverlays.updateTileOverlaySprite`.
+pub fn load_gridsquare(t: &mut Thread, x: i32, y: i32, z: i32) -> LuaResult<()> {
+    // Before `ItemPickerJava.Parse` there are no tables (the game always
+    // parses them before a chunk loads).
+    let d = item_picker::shared();
+    if d.rooms.is_empty() {
+        return Ok(());
+    }
+    let in_use = || LuaError::runtime("LoadGridsquare: IsoGridSquare is in use");
+    let Some(square) = crate::bind_world::with_world(|w| {
+        w.cell.as_ref().and_then(|cell| cell.get_grid_square(x, y, z))
+    }) else {
+        return Ok(());
+    };
+    let objects = {
+        let sq = square.try_borrow().map_err(|_| in_use())?;
+        if sq.objects.is_empty() {
+            return Ok(());
+        }
+        if sq.overlay_done {
+            return Ok(());
+        }
+        sq.objects.iter().map(|slot| slot.ref_handle()).collect::<Vec<_>>()
+    };
+    let sprites = crate::bind_sprites::manager()?;
+    let square_value = crate::bind_world::square_value(x, y, z);
+    for object in &objects {
+        let named = {
+            let body = object
+                .try_borrow()
+                .map_err(|_| LuaError::runtime("LoadGridsquare: IsoObject is in use"))?;
+            if matches!(body.kind, pz_world::ObjectKind::WorldInventory(_)) {
+                continue;
+            }
+            let sprites = sprites
+                .try_borrow()
+                .map_err(|_| LuaError::runtime("LoadGridsquare: sprite manager is in use"))?;
+            let sprite = body
+                .sprite
+                .try_read(&sprites)
+                .map_err(|e| LuaError::runtime(format!("LoadGridsquare: sprite: {e:?}")))?;
+            sprite.is_some_and(|sprite| sprite.name.is_some())
+        };
+        if !named {
+            continue;
+        }
+        let value = crate::bind_world_object::object_value(object)?;
+        crate::bind_world_object::adopt_square(&value, object, &square_value)?;
+        let main = object
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("LoadGridsquare: IsoObject is in use"))?
+            .runtime_containers
+            .as_ref()
+            .and_then(|r| r.main.clone());
+        let Some(container) = main else { continue };
+        if !container.borrow().explored {
+            let player = player_instance(t)?;
+            fill_container(t, &d, &container, &player)?;
+            container.borrow_mut().explored = true;
+        }
+    }
+    square.try_borrow_mut().map_err(|_| in_use())?.overlay_done = true;
+    Ok(())
+}
+
 fn player_instance(t: &mut Thread) -> LuaResult<Value> {
     let Value::Table(p) = t.globals().get_str("IsoPlayer") else {
         return Ok(Value::Nil);

@@ -197,3 +197,58 @@ fn without_a_source_square_nothing_is_filled() {
     assert_eq!(pz_kahlua::exec::java_value_of(&v[0]), "0.0");
 }
 
+
+#[test]
+fn load_gridsquare_fills_named_objects_once_and_marks_the_square() {
+    let old_items = pz_inventory::shared::install_item_observer(Some(crate::component_gc::observe_item));
+    let old_objects =
+        pz_world::object_slot::install_object_observer(Some(crate::component_gc::observe_object));
+    let mut t = setup();
+    crate::bind_world_object::register_classes(&mut t);
+    install_all(vec![("counter", dist(&[("Base.Rock", 100.0)], 1.0))], vec![]);
+    let mut sprites = pz_world::sprite::IsoSpriteManager::new(pz_world::sprite::test_tables());
+    let named = sprites.add_sprite_named("fixtures_counters_01_0");
+    sprites.sprites[named].name = Some("fixtures_counters_01_0".into());
+    let old_sprites = crate::bind_sprites::manager().ok();
+    crate::bind_sprites::install_sprite_manager(Some(Rc::new(RefCell::new(sprites))));
+    let mut square = pz_world::IsoGridSquare::new(1, 1, 0);
+    for (id, sprite) in [(1, Some(named)), (2, None)] {
+        let mut o = pz_world::IsoObject::new(id, pz_world::ObjectKind::Object, sprite);
+        o.container = Some(pz_inventory::ItemContainer::new(Some("counter")));
+        square.objects.push(pz_world::ObjectSlot::new(o).into());
+    }
+    let objects: Vec<_> = square.objects.iter().map(|s| s.ref_handle()).collect();
+    let mut chunk = pz_world::IsoChunk::new(0, 0);
+    chunk.set_square(1, 1, 0, Some(square.into()));
+    let mut cell = pz_world::IsoCell::default();
+    cell.chunks.insert((0, 0), chunk);
+    let old_cell = crate::bind_world::with_world(|w| w.cell.take());
+    crate::bind_world::set_cell(Some(cell));
+
+    let main = |i: usize| {
+        let v = crate::bind_world_object::object_value(&objects[i]).unwrap();
+        crate::bind_world_object::adopt_square(&v, &objects[i], &Value::Nil).unwrap();
+        objects[i].borrow().runtime_containers.as_ref().unwrap().main.clone().unwrap()
+    };
+    load_gridsquare(&mut t, 1, 1, 0).unwrap();
+    let (filled, unnamed) = (main(0), main(1));
+    assert!(filled.borrow().explored);
+    assert_eq!(filled.borrow().items.len(), 1);
+    // Without a sprite name `checkObject` returns before the container.
+    assert!(!unnamed.borrow().explored);
+    assert!(unnamed.borrow().items.is_empty());
+    let done = crate::bind_world::with_world(|w| {
+        w.cell.as_ref().unwrap().get_grid_square(1, 1, 0).unwrap().borrow().overlay_done
+    });
+    assert!(done);
+    // `isOverlayDone`: a second load does not roll again.
+    filled.borrow_mut().explored = false;
+    load_gridsquare(&mut t, 1, 1, 0).unwrap();
+    assert_eq!(filled.borrow().items.len(), 1);
+
+    drop((filled, unnamed, objects));
+    crate::bind_world::set_cell(old_cell);
+    crate::bind_sprites::install_sprite_manager(old_sprites);
+    pz_inventory::shared::install_item_observer(old_items);
+    pz_world::object_slot::install_object_observer(old_objects);
+}
