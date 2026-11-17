@@ -175,9 +175,9 @@ pub(super) fn fetch(cx: &mut Cx<'_>, fetch: &TableRef, v: &Value, player: f64, d
         if props.is_nil() {
             false
         } else {
-            let key = cx.static_field("TilePropertyKey", "CAN_ATTACH_ANIMAL");
-            let key = cx.call(&key, "toString", &[])?;
-            cx.is(&props, "has", &[key])?
+            // `TilePropertyKey.CAN_ATTACH_ANIMAL.toString()`: the id of its
+            // `ResourceLocation`, `namespace:path` in lower case.
+            cx.is(&props, "has", &[Value::str("base:canattachanimal")])?
         }
     };
     if attach_animal {
@@ -341,10 +341,11 @@ pub(super) fn fetch(cx: &mut Cx<'_>, fetch: &TableRef, v: &Value, player: f64, d
         if climb {
             fetch.set_str("sheetRopeSquare", square.clone());
         }
-        if !cx.static_call("FireFighting", "getSquareToExtinguish", &[square.clone()])?.is_nil() {
-            let extinguisher = cx.static_call("FireFighting", "getExtinguisher", &[player_obj.clone()])?;
-            fetch.set_str("extinguisher", extinguisher);
-            fetch.set_str("firetile", square.clone());
+        if !square_to_extinguish(cx, &square)?.is_nil() {
+            // fetch.extinguisher = FireFighting.getExtinguisher(player) (the
+            // hands, then the inventory's extinguisher, sand bag or water
+            // source); fetch.firetile = square.
+            return Err(crate::bind_world_object::unsupported("FireFighting.getExtinguisher"));
         }
         fetch.set_str("clickedSquare", square);
     }
@@ -876,4 +877,57 @@ fn compare_type(type1: &str, type2: &str) -> bool {
 #[cfg(test)]
 pub(super) fn compare_type_for_test(a: &str, b: &str) -> bool {
     compare_type(a, b)
+}
+
+/// `FireFighting.getSquareToExtinguish(square)`: the square, else the
+/// first of its eight neighbours that has a fire to put out.
+fn square_to_extinguish(cx: &mut Cx<'_>, square: &Value) -> LuaResult<Value> {
+    if is_square_to_extinguish(cx, square)? {
+        return Ok(square.clone());
+    }
+    let x = cx.num(square, "getX", &[])?;
+    let y = cx.num(square, "getY", &[])?;
+    let z = cx.num(square, "getZ", &[])?;
+    let cell = cx.global("getCell", &[])?;
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            let near = cx.call(&cell, "getGridSquare", &[Value::Num(x + f64::from(dx)), Value::Num(y + f64::from(dy)), Value::Num(z)])?;
+            if is_square_to_extinguish(cx, &near)? {
+                return Ok(near);
+            }
+        }
+    }
+    Ok(Value::Nil)
+}
+
+/// `FireFighting.isSquareToExtinguish(square)`: a burning square with a
+/// fire that is not permanent, or a character on fire on the square.
+fn is_square_to_extinguish(cx: &mut Cx<'_>, square: &Value) -> LuaResult<bool> {
+    if square.is_nil() {
+        return Ok(false);
+    }
+    // IsoGridSquare.has(flag) reads the square's properties.
+    let props = cx.call(square, "getProperties", &[])?;
+    if cx.has_flag(&props, "burning")? {
+        let objects = cx.call(square, "getObjects", &[])?;
+        let n = cx.num(&objects, "size", &[])? as i64;
+        for i in 0..n {
+            let object = cx.call(&objects, "get", &[Value::Num(i as f64)])?;
+            if instance_of(&object, "IsoFire") && !cx.is(&object, "isPermanent", &[])? {
+                return Ok(true);
+            }
+        }
+    }
+    let moving = cx.call(square, "getMovingObjects", &[])?;
+    let n = cx.num(&moving, "size", &[])? as i64;
+    for i in 0..n {
+        let object = cx.call(&moving, "get", &[Value::Num(i as f64)])?;
+        if instance_of(&object, "IsoGameCharacter") && cx.is(&object, "isOnFire", &[])? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

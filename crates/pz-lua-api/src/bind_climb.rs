@@ -158,16 +158,6 @@ fn toggle_window(c: &NativeCall<'_>) -> LuaResult<()> {
 
 pub(crate) fn register(thread: &mut Thread) {
     let object = expose_class(thread, ISO_OBJECT, None);
-    // `getProperties()`: the sprite's property container.
-    object.method("getProperties", |c| {
-        let object = receiver(c)?;
-        let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
-        match &body.sprite {
-            ObjectSprite::None => Ok(c.push(Value::Nil)),
-            ObjectSprite::Tile(idx) => Ok(c.push(crate::bind_sprites::sprite_value(Some(*idx), true))),
-            _ => Err(unsupported("IsoObject.getProperties: the sprite has no Lua object")),
-        }
-    });
     // `getObjectIndex()`: the position in the square's object list, `-1`
     // when the object is off the map.
     object.method("getObjectIndex", |c| {

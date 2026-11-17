@@ -2052,6 +2052,12 @@ fn register_character(
         let v = chr_of(c)?.borrow().is_unlimited_endurance(&*ctx);
         Ok(c.push(v))
     });
+    // `isBuildCheat()`: `getCheats().isSet(CheatType.BUILD)`.
+    b.method("isBuildCheat", |c| {
+        let ctx = CONTEXT.with(|c| c.borrow().clone());
+        let v = chr_of(c)?.borrow().cheats.is_set(&*ctx, "BUILD");
+        Ok(c.push(v))
+    });
     b.method("isGodMod", |c| {
         let ctx = CONTEXT.with(|c| c.borrow().clone());
         let v = chr_of(c)?.borrow().is_god_mod(&*ctx);
