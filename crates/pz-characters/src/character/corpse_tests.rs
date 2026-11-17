@@ -8,8 +8,8 @@ use crate::character::tests::{give_item, item_constant, Recorder};
 use crate::character::thermoregulator::body_tests::body_fixture;
 use crate::character::{CharacterKind, GameCharacter};
 
-#[test]
-fn zombie_corpse_takes_the_inventory_and_worn_items() {
+/// A killed zombie with an apple (id 3) and a worn shirt (id 4).
+fn killed_zombie() -> (GameCharacter<()>, std::rc::Rc<pz_scripts::registry::RegistryKey>) {
     let (sm, mut chars) = body_fixture();
     let shirt = item_constant(&sm, "item_body_location", "SHIRT");
     let group = chars.body_locations.get_group("Human").unwrap();
@@ -25,8 +25,27 @@ fn zombie_corpse_takes_the_inventory_and_worn_items() {
     give_item(&sm, &mut z, ItemClass::Clothing, "Shirt", 4, |_| {}, |_| {});
     z.items.worn_items.as_mut().unwrap().set_item(Some(shirt.clone()), Some(4)).unwrap();
     z.kill_by(None, &mut StateCx::new(&sm, &chars, &Recorder::default(), &mut NullWorld));
+    (z, shirt)
+}
 
-    let body = z.become_dead_body(5.5).unwrap();
+/// The zombie still has the apple and wears the shirt.
+fn assert_keeps_its_items(z: &GameCharacter<()>) {
+    let ids: Vec<_> = z.items.inventory.borrow().items.iter().map(|i| i.borrow().id).collect();
+    assert_eq!(ids, vec![3, 4]);
+    assert_eq!(z.items.worn_items.as_ref().unwrap().items().len(), 1);
+}
+
+#[test]
+fn zombie_corpse_takes_the_inventory_and_worn_items() {
+    let (mut z, shirt) = killed_zombie();
+    let mut placed = None;
+
+    assert!(z.become_dead_body(5.5, |b| {
+        placed = Some(b);
+        true
+    }).unwrap());
+
+    let body = placed.unwrap();
 
     assert_eq!((body.base.x, body.base.y, body.base.z), (12.25, 7.5, 0.0));
     assert_eq!(body.base.dir, pz_world::square::IsoDirections::S as i32);
@@ -55,5 +74,25 @@ fn zombie_corpse_takes_the_inventory_and_worn_items() {
 fn animal_corpse_is_unsupported() {
     let (sm, _chars) = body_fixture();
     let mut a: GameCharacter<()> = GameCharacter::new(&sm, CharacterKind::Animal);
-    assert!(a.become_dead_body(0.0).unwrap_err().to_string().contains("unsupported"));
+    assert!(a.become_dead_body(0.0, |_| true).unwrap_err().to_string().contains("unsupported"));
+}
+
+#[test]
+fn unplaced_corpse_leaves_the_zombie_its_items() {
+    let (mut z, _) = killed_zombie();
+
+    assert!(!z.become_dead_body(5.5, |_| false).unwrap());
+
+    assert_keeps_its_items(&z);
+}
+
+#[test]
+fn failed_corpse_leaves_the_zombie_its_items() {
+    let (mut z, _) = killed_zombie();
+    z.items.primary_hand_item = Some(3);
+
+    let result = z.become_dead_body(5.5, |_| panic!("no corpse to place"));
+
+    assert!(result.unwrap_err().to_string().contains("dropHeldItems"));
+    assert_keeps_its_items(&z);
 }

@@ -18,12 +18,22 @@ impl<I: 'static> GameCharacter<I> {
     /// items, and the character is left a new empty inventory.
     /// `death_time` is `GameTime.getWorldAgeHours()`.
     ///
+    /// `place` puts the corpse on its square (`getStaticMovingObjects().add`,
+    /// which the original does before it takes the inventory) and returns
+    /// whether it is there. The character keeps its inventory and worn items
+    /// when the corpse cannot be made or placed; the result is whether the
+    /// corpse was placed.
+    ///
     /// The square, the world registries and the Lua events are the
     /// caller's part. Not ported: the ragdoll pose (`diedBoneTransforms`),
     /// the eating zombies, the shadow, the speech fields, `StartFire` for a
     /// burning character, a player's `removeSaveFile` and `deathFinished`,
     /// and the `ObjectIDManager` id (the id is left unset).
-    pub fn become_dead_body(&mut self, death_time: f32) -> ScriptResult<IsoDeadBody> {
+    pub fn become_dead_body(
+        &mut self,
+        death_time: f32,
+        place: impl FnOnce(IsoDeadBody) -> bool,
+    ) -> ScriptResult<bool> {
         if self.is_animal() {
             return Err(ScriptError::new("unsupported: IsoDeadBody(IsoAnimal)"));
         }
@@ -135,13 +145,16 @@ impl<I: 'static> GameCharacter<I> {
             burn_timer: 0.0,
             runtime: None,
         };
+        if !place(body) {
+            return Ok(false);
+        }
         // `chr.setInventory(new ItemContainer())`, `clearWornItems()`,
         // `clearAttachedItems()`.
         self.items.inventory = SharedContainer { explored: true, ..Default::default() }.into_ref();
         if let Some(w) = self.items.worn_items.as_mut() {
             w.clear();
         }
-        Ok(body)
+        Ok(true)
     }
 }
 

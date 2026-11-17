@@ -726,11 +726,12 @@ all installed assets, render paths or foreign platforms.
 - [x] Zombie corpses: a zombie that raises `SimEvent::Die` in its update,
       postupdate or animation events (`IsoGameCharacter.die`) becomes a
       corpse after that phase: `GameCharacter::become_dead_body` (`new
-      IsoDeadBody(chr)`: position, look, inventory, worn items),
-      `zombie_remove_from_world` and removal from `IsoWorld::zombies`, then
+      IsoDeadBody(chr)`: position, look, inventory, worn items) with
       `MutationEnv::place_new_corpse` (`staticMovingObjects`,
-      `CorpseCount`, render invalidation), then `OnContainerUpdate` and
-      `OnDeadBodySpawn` with the corpse's Lua object. Not wired:
+      `CorpseCount`, render invalidation), then `zombie_remove_from_world`,
+      removal from `IsoWorld::zombies`, and `OnContainerUpdate` and
+      `OnDeadBodySpawn` with the corpse's Lua object. A zombie whose corpse
+      cannot be made or placed stays with its items. Not wired:
       `DoZombieInventory` and `DoDeath` (`onKilled`), `dropHeldItems`,
       `ObjectIDManager`, `FliesSound`, the ragdoll pose, and the Lua
       objects for `OnZombieDead` and `OnCharacterDeath` (reported as
@@ -750,7 +751,8 @@ all installed assets, render paths or foreign platforms.
       posed by `BodyParams`/`diedBoneTransforms` and drawn into the atlas)
       and its shadow. New and loaded corpses use the same path. The
       texture jobs run in `WorldModels::prepare`, so a new body shows one
-      frame later. Not wired: animal corpses (reported once), attached
+      frame later. The 3D view (a port extension) draws no corpses and
+      prepares no atlas entries. Not wired: animal corpses (reported once), attached
       models, the hand items' models, highlights, the alpha fade and the
       release of atlas entries.
 - [x] `ZombiePopulationManager::update_main` with PopulationHost and

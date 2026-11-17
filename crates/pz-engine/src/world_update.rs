@@ -865,8 +865,10 @@ impl IsoWorld {
     }
 
     /// `IsoGameCharacter.die()` for the zombies that raised it: `becomeCorpse()`
-    /// (`new IsoDeadBody(zombie)`), which takes the zombie off the cell's
-    /// zombie list (`removeFromWorld`) and puts the corpse on its square.
+    /// (`new IsoDeadBody(zombie)`), which puts the corpse on its square and
+    /// takes the zombie off the cell's zombie list (`removeFromWorld`). A
+    /// zombie whose corpse cannot be made or placed stays in the world with
+    /// its inventory.
     ///
     /// TODO(port): `dropHeldItems` (a zombie holding an item is reported
     /// as unsupported by [`GameCharacter::become_dead_body`]), the zombies
@@ -882,12 +884,17 @@ impl IsoWorld {
         if dying.is_empty() {
             return Ok(());
         }
-        let sm = pz_lua_api::bind_registry::shared_script_manager();
-        let chars = shared_characters();
         // `GameTime.getWorldAgeHours()`.
         let death_time = sim.world_age_hours as f32;
-        let mut bodies = Vec::new();
-        let mut errors = Vec::new();
+        let (placed, errors) = self.place_new_corpses(&dying, death_time);
+        for e in errors {
+            self.log_update_error(e);
+        }
+        if placed.is_empty() {
+            return Ok(());
+        }
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let chars = shared_characters();
         let IsoWorld {
             sprites,
             states_runtime,
@@ -907,14 +914,10 @@ impl IsoWorld {
             floor_world.as_ref(),
             |w| {
                 let chars = chars.borrow();
-                for id in &dying {
+                for (id, _) in &placed {
                     let Some(i) = zombies.iter().position(|z| z.id == *id) else {
                         continue;
                     };
-                    match zombies[i].become_dead_body(death_time) {
-                        Ok(body) => bodies.push(body),
-                        Err(e) => errors.push(format!("IsoZombie.becomeCorpse: {e}")),
-                    }
                     // `chr.removeFromWorld()`: off the cell's zombie list.
                     let mut z = zombies.remove(i);
                     let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
@@ -927,34 +930,25 @@ impl IsoWorld {
         if let Some(Err(error)) = result {
             return self.finish_state_host_fault(lua, None, sim, Vec::new(), error);
         }
-        for e in errors {
-            self.log_update_error(e);
-        }
-        let placed = self.place_new_corpses(bodies);
-        for r in placed {
-            match r {
-                Ok(Some(body)) => {
-                    // `IsoDeadBody(chr, false, true)`: both with the body.
-                    let body = pz_lua_api::bind_dead_body::dead_body_value(&body);
-                    lua.trigger_event("OnContainerUpdate", std::slice::from_ref(&body));
-                    lua.trigger_event("OnDeadBodySpawn", &[body]);
-                }
-                Ok(None) => (),
-                Err(e) => self.log_update_error(format!("IsoDeadBody: {e}")),
-            }
+        for body in placed.iter().filter_map(|(_, body)| body.as_ref()) {
+            // `IsoDeadBody(chr, false, true)`: both with the body.
+            let body = pz_lua_api::bind_dead_body::dead_body_value(body);
+            lua.trigger_event("OnContainerUpdate", std::slice::from_ref(&body));
+            lua.trigger_event("OnDeadBodySpawn", &[body]);
         }
         Ok(())
     }
 
-    /// The square side of `new IsoDeadBody(chr)` for each body
-    /// ([`pz_world::square_mutation::MutationEnv::place_new_corpse`]).
+    /// The corpse side of `new IsoDeadBody(chr)` for each dying zombie
+    /// ([`pz_characters::GameCharacter::become_dead_body`] with
+    /// [`pz_world::square_mutation::MutationEnv::place_new_corpse`]).
+    /// Returns the zombies whose corpse is on its square with the corpse
+    /// (none when only `CorpseCount` failed), and the errors.
     fn place_new_corpses(
         &mut self,
-        bodies: Vec<pz_world::save::visual::IsoDeadBody>,
-    ) -> Vec<Result<Option<pz_world::save::visual::DeadBodyRef>, String>> {
-        if bodies.is_empty() {
-            return Vec::new();
-        }
+        dying: &[i32],
+        death_time: f32,
+    ) -> (Vec<(i32, Option<pz_world::save::visual::DeadBodyRef>)>, Vec<String>) {
         let num_players = pz_lua_api::bind_players::num_players();
         let IsoWorld {
             door_tables,
@@ -962,10 +956,11 @@ impl IsoWorld {
             rand,
             regions,
             render,
+            zombies,
             ..
         } = self;
         let (Some(sprites), Some(doors)) = (sprites.as_ref(), door_tables.as_ref()) else {
-            return vec![Err("corpses require sprites and door tables".into())];
+            return (Vec::new(), vec!["IsoDeadBody: corpses require sprites and door tables".into()]);
         };
         let mut sprites = sprites.borrow_mut();
         let water = sprites.tables.flag.water;
@@ -977,7 +972,7 @@ impl IsoWorld {
         };
         with_world(|w| {
             let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else {
-                return vec![Err("corpses require the live cell".into())];
+                return (Vec::new(), vec!["IsoDeadBody: corpses require the live cell".into()]);
             };
             let mut hooks = pz_world::square_mutation::NoMutationHooks;
             let mut path = pz_world::square_mutation::NoMutationHooks;
@@ -1000,18 +995,40 @@ impl IsoWorld {
                 render,
                 num_players,
             };
-            bodies
-                .into_iter()
-                .map(|body| {
+            let mut placed = Vec::new();
+            let mut errors = Vec::new();
+            for id in dying {
+                let Some(z) = zombies.iter_mut().find(|z| z.id == *id) else {
+                    continue;
+                };
+                let mut corpse = None;
+                let result = z.become_dead_body(death_time, |body| {
                     // `chr.getCurrentSquare()`, else `getGridSquare(x, y, z)`.
                     let pos = (
                         body.base.x.floor() as i32,
                         body.base.y.floor() as i32,
                         body.base.z.floor() as i32,
                     );
-                    env.place_new_corpse(pos, body).map_err(|e| format!("{e:?}"))
-                })
-                .collect()
+                    match env.place_new_corpse(pos, body) {
+                        Ok(body) => {
+                            corpse = body;
+                            corpse.is_some()
+                        }
+                        Err(e) => {
+                            // Only `CorpseCount.corpseAdded` failed: the
+                            // corpse is already on its square.
+                            errors.push(format!("IsoDeadBody: {e:?}"));
+                            true
+                        }
+                    }
+                });
+                match result {
+                    Ok(true) => placed.push((*id, corpse)),
+                    Ok(false) => errors.push(format!("IsoDeadBody: no loaded square for zombie {id}")),
+                    Err(e) => errors.push(format!("IsoZombie.becomeCorpse: {e}")),
+                }
+            }
+            (placed, errors)
         })
     }
 
