@@ -201,3 +201,38 @@ fn swipe_hits_the_zombie_in_front() {
     p.change_state(None, &mut cx);
     assert!(!p.vars.do_shove);
 }
+
+/// `IsoPlayer.postupdate` clears the attack vars between `enter` and the
+/// swing's `AttackCollisionCheck`; the check takes the weapon again from
+/// `getAttackingWeapon()` (the bat, not the bare hands).
+#[test]
+fn swipe_collision_after_postupdate_uses_the_held_weapon() {
+    let (sm, mut chars) = body_fixture();
+    let mut p = player(&sm, &mut chars);
+    p.id = 1;
+    bat(&sm, &mut p, 5);
+    p.set_forward_direction(1.0, 0.0);
+    let mut z: GameCharacter<()> = GameCharacter::new(&sm, CharacterKind::Zombie);
+    z.id = 2;
+    z.vars.x = 1.0;
+    z.health = 10.0;
+    let mut world = World(vec![z]);
+    let ctx = Fixed::default();
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+    p.change_state(Some(swipe::instance()), &mut cx);
+    // clearAttackVars() of postUpdateInternal.
+    p.attack_vars = Default::default();
+    let e = pz_anim::AnimEventRecord {
+        state_name: None,
+        layer_depth: 0,
+        track: None,
+        event: Rc::new(pz_anim::AnimEvent::named("AttackCollisionCheck", pz_anim::AnimEventTime::Percentage, 0.5)),
+    };
+    p.in_players = true;
+    p.on_anim_event(&e, &mut cx);
+    assert_eq!(p.attack_vars.weapon, Some(5));
+    assert_eq!(p.vars.last_hit_count, 1);
+    let z = world.0.iter().find(|c| c.id == 2).unwrap();
+    assert!(z.health < 10.0);
+    assert_eq!(z.vars.attacked_by, Some(1));
+}
