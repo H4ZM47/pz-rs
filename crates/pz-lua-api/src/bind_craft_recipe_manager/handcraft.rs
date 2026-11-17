@@ -174,6 +174,11 @@ pub(crate) struct RecipeData<'a> {
 }
 
 impl<'a> RecipeData<'a> {
+    /// `getVariableInputRatio()`: 1 until a ratio is calculated.
+    pub fn variable_input_ratio(&self) -> f32 {
+        if self.st.calculated_ratio == f32::MAX { 1.0 } else { self.st.calculated_ratio }
+    }
+
     /// A fresh data set to the recipe.
     pub fn new(recipe: &'a CraftRecipe, items: &'a [&'a dyn CraftItem], chr: &'a dyn RecipeCharacter) -> Self {
         Self::with_state(recipe, items, chr, DataState::new(recipe))
@@ -210,8 +215,9 @@ impl<'a> RecipeData<'a> {
         test: bool,
     ) -> LuaResult<bool> {
         let item = self.item(key);
+        let ratio = if with_cache { self.variable_input_ratio() } else { 1.0 };
         let cache = if with_cache { Some(&mut self.st.inputs[input].cache) } else { None };
-        consume_input_item(self.inputs[input], self.recipe, item, self.chr, on_test, cache, test)
+        consume_input_item(self.inputs[input], self.recipe, item, self.chr, on_test, cache, ratio, test)
     }
 
     /// The item types `getPossibleInputItems()` gives, in order, for the
@@ -292,7 +298,8 @@ impl<'a> RecipeData<'a> {
                     }
                 }
                 let uses = if script.is_item_count() { 1.0 } else { item.current_uses() as f32 };
-                let queued = if test { self.chr.item_queued_amount(item)? } else { 0.0 };
+                let ratio = if with_cache { self.variable_input_ratio() } else { 1.0 };
+                let queued = if test { self.chr.item_queued_amount(item, ratio)? } else { 0.0 };
                 if queued == f32::MAX {
                     continue;
                 }

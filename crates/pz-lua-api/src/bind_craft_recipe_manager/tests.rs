@@ -67,7 +67,7 @@ impl RecipeCharacter for Chr {
     fn knows(&self, name: &str) -> bool {
         self.known.contains(&name)
     }
-    fn item_queued_amount(&self, _item: &dyn CraftItem) -> LuaResult<f32> {
+    fn item_queued_amount(&self, _item: &dyn CraftItem, _ratio: f32) -> LuaResult<f32> {
         Ok(self.queued)
     }
     fn too_dark_to_read(&self) -> LuaResult<bool> {
@@ -124,6 +124,9 @@ fn it(sm: &ScriptManager, key: usize, name: &str) -> It {
 impl CraftItem for It {
     fn key(&self) -> usize {
         self.key
+    }
+    fn has_replace_on_use(&self) -> bool {
+        false
     }
     fn script_item(&self) -> Option<Rc<RefCell<Item>>> {
         self.script.clone()
@@ -480,6 +483,57 @@ fn lua_get_unique_recipe_items() {
         run(&mut t, "return CraftRecipeManager.getUniqueRecipeItems(bat, player, ArrayList.new()):get(0):getName()")
             .unwrap();
     assert!(out[0].raw_equals(&Value::str("Glue")), "{out:?}");
+}
+
+#[test]
+fn a_queued_handcraft_action_holds_back_its_manual_inputs() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let sm = manager(
+        "craftRecipe SliceApple { time = 10, Tags = InHandCraft, inputs { item 1 [Base.Apple] mode:destroy, } outputs { item 1 Base.Apple, } }",
+    );
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    crate::bind_items::register(&mut t);
+    crate::bind_scripts::register(&mut t, sm.clone());
+    register(&mut t, sm.clone(), Rc::new(RefCell::new(Characters::default())));
+    let player = Rc::new(RefCell::new(crate::bind_character_sim::LuaGameCharacter::new(
+        &ScriptManager::new(),
+        pz_characters::CharacterKind::Player,
+    )));
+    let player = Value::Object(Rc::new(CharacterObject::try_new(&player).unwrap()));
+    t.globals().set_str("player", player);
+    for name in ["apple", "other"] {
+        t.globals().set_str(name, crate::bind_items::try_item_value(&item(&sm, ItemClass::Food, "Apple")).unwrap());
+    }
+    let count = |t: &mut Thread, item: &str| {
+        let out = run(t, &format!("return CraftRecipeManager.getUniqueRecipeItems({item}, player, ArrayList.new()):size()"));
+        out.unwrap()[0].clone()
+    };
+    assert!(count(&mut t, "apple").raw_equals(&Value::Num(1.0)));
+    // The action holds the apple in its only input (index 0): a destroy
+    // input takes all of it.
+    let out = run(
+        &mut t,
+        r#"
+        local list, recipe = CraftRecipeManager.queryRecipes("InHandCraft")
+        for i = 0, list:size() - 1 do
+            if list:get(i):getName() == "SliceApple" then recipe = list:get(i) end
+        end
+        local inputs = ArrayList.new()
+        inputs:add(apple)
+        local action = setmetatable({ manualInputs = { [0] = inputs }, craftRecipe = recipe }, { Type = "ISHandcraftAction" })
+        ISTimedActionQueue = { queues = { [player] = { queue = { action } } } }
+        return recipe:getName()
+        "#,
+    )
+    .unwrap();
+    assert!(out[0].raw_equals(&Value::str("SliceApple")), "{out:?}");
+    assert!(count(&mut t, "apple").raw_equals(&Value::Num(0.0)));
+    assert!(count(&mut t, "other").raw_equals(&Value::Num(1.0)), "another apple is not held");
+    // A list of two items holds back neither.
+    run(&mut t, "ISTimedActionQueue.queues[player].queue[1].manualInputs[0]:add(other)").unwrap();
+    assert!(count(&mut t, "apple").raw_equals(&Value::Num(1.0)));
 }
 
 #[test]

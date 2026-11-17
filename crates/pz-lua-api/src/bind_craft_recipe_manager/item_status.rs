@@ -103,6 +103,8 @@ pub enum CraftItemClass {
 pub trait CraftItem {
     /// The item's identity (`==` on the Java object).
     fn key(&self) -> usize;
+    /// `getReplaceOnUse() != null`.
+    fn has_replace_on_use(&self) -> bool;
     /// `getScriptItem()`.
     fn script_item(&self) -> Option<Rc<RefCell<Item>>>;
     /// `getFullType()`.
@@ -425,7 +427,8 @@ pub fn consume_input_item_test(
     on_test: &mut dyn FnMut(&str, usize) -> bool,
     cache: Option<&mut InputCache>,
 ) -> LuaResult<bool> {
-    consume_input_item(input, recipe, item, chr, on_test, cache, true)
+    // This cache has no recipe data: the variable input ratio is 1.
+    consume_input_item(input, recipe, item, chr, on_test, cache, 1.0, true)
 }
 
 /// `CraftRecipeManager.consumeInputItem(input, item, testOnly, cache, chr)`
@@ -445,12 +448,13 @@ pub fn consume_input_item(
     chr: &dyn RecipeCharacter,
     on_test: &mut dyn FnMut(&str, usize) -> bool,
     mut cache: Option<&mut InputCache>,
+    ratio: f32,
     test: bool,
 ) -> LuaResult<bool> {
     if input.resource_type() != ResourceType::Item {
         return Ok(false);
     }
-    let ok = consume_item_tests(input, recipe, item, chr, on_test, cache.as_deref_mut(), test)?;
+    let ok = consume_item_tests(input, recipe, item, chr, on_test, cache.as_deref_mut(), ratio, test)?;
     if let Some(c) = cache {
         if ok {
             c.move_to_outputs = input.is_keep();
@@ -468,6 +472,7 @@ fn consume_item_tests(
     chr: &dyn RecipeCharacter,
     on_test: &mut dyn FnMut(&str, usize) -> bool,
     mut cache: Option<&mut InputCache>,
+    ratio: f32,
     test: bool,
 ) -> LuaResult<bool> {
     if !consume_input_item_internal(input, recipe, item, chr, on_test)? {
@@ -477,7 +482,7 @@ fn consume_item_tests(
     if let Some(c) = cache.as_deref_mut() {
         c.applied.push(item.key());
     }
-    let queued = if test { chr.item_queued_amount(item)? } else { 0.0 };
+    let queued = if test { chr.item_queued_amount(item, ratio)? } else { 0.0 };
     if test && (queued == f32::MAX || !input.has_consume_from_item() && item.current_uses() < queued as i32) {
         return Ok(false);
     }
@@ -502,6 +507,13 @@ fn consume_item_tests(
         return Err(unsupported("CraftRecipeManager.consumeInputItem (CreateToItem)"));
     }
     Ok(true)
+}
+
+/// `CraftRecipeManager.consumesEntireItem(input, item)`.
+pub fn consumes_entire_item(input: &InputScript, item: &dyn CraftItem) -> bool {
+    let replaces = item.has_replace_on_use()
+        || item.script_item().is_some_and(|s| s.borrow().replace_on_deplete.is_some());
+    input.is_destroy() || input.has_flag(InputFlag::DontReplace) && replaces || input.is_item_count()
 }
 
 /// The input line at `index` of the recipe's `ioLines`.

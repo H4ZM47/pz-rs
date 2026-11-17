@@ -71,6 +71,9 @@ pub fn register(thread: &mut Thread) {
         };
         Ok(c.push(r))
     });
+    // `showDebugInfoInChat(text)`: only a client (`GameClient.client`) with
+    // the Action or Trace debug log shows it in the chat; this is not one.
+    global(thread, "showDebugInfoInChat", |_| Ok(0));
     // `convertToPZNetTable(table)`: a shallow copy.
     global(thread, "convertToPZNetTable", |c| {
         let Value::Table(from) = c.arg(0) else {

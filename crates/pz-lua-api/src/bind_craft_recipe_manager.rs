@@ -21,7 +21,7 @@ mod logic;
 use crate::bind_character_sim::CharacterObject;
 use crate::bind_item_container::LuaItemContainer;
 use crate::bind_items::ItemRef;
-use crate::bind_java_util::JavaList;
+use crate::bind_java_util::{class_cast, JavaList};
 use crate::bind_scripts::script_list;
 use crate::expose::expose_class;
 use item_status::{CraftItem, CraftItemClass, FoodState};
@@ -141,8 +141,9 @@ pub trait RecipeCharacter {
     /// `getKnownRecipes().contains(name)`.
     fn knows(&self, name: &str) -> bool;
     /// `CraftRecipeManager.itemGetQueuedAmount(chr, item, cache)`: how much
-    /// of the item the queued `ISHandcraftAction`s use.
-    fn item_queued_amount(&self, item: &dyn CraftItem) -> LuaResult<f32>;
+    /// of the item the queued `ISHandcraftAction`s use. `ratio` is the
+    /// cache's `getRecipeData().getVariableInputRatio()`, 1 without a cache.
+    fn item_queued_amount(&self, item: &dyn CraftItem, ratio: f32) -> LuaResult<f32>;
     /// `IsoPlayer.tooDarkToRead()`.
     fn too_dark_to_read(&self) -> LuaResult<bool> {
         Err(crate::bind_world_object::unsupported("IsoPlayer.tooDarkToRead"))
@@ -380,6 +381,22 @@ struct LuaRecipeCharacter<'a> {
     env: TableRef,
 }
 
+impl LuaRecipeCharacter<'_> {
+    /// `CraftRecipeManager.isCurrentCraftActionPending(chr, table)`: the
+    /// first of `getCharacterActions()` is this action and it has not set
+    /// `craftStarted`.
+    fn is_current_craft_action_pending(&self, table: &TableRef) -> LuaResult<bool> {
+        let first = self.character.0.borrow().character_actions.borrow().first().cloned();
+        let started = match table.rawget(&Value::str("craftStarted")) {
+            Value::Nil => None,
+            Value::Bool(b) => Some(b),
+            other => return Err(class_cast(&other, "java.lang.Boolean")),
+        };
+        let current = first.is_some_and(|a| a.borrow().table.as_ref().is_some_and(|t| t.ptr_eq(table)));
+        Ok(current && started != Some(true))
+    }
+}
+
 impl RecipeCharacter for LuaRecipeCharacter<'_> {
     fn perk_level(&self, perk: &str) -> i32 {
         let perk = self.chars.borrow().perks.constant(perk);
@@ -395,9 +412,10 @@ impl RecipeCharacter for LuaRecipeCharacter<'_> {
     fn knows(&self, name: &str) -> bool {
         self.character.0.borrow().known_recipes.iter().any(|k| k == name)
     }
-    /// `ISTimedActionQueue.queues[chr].queue`: 0 without a queue; the
-    /// `ISHandcraftAction` entries (their `manualInputs`) are not ported.
-    fn item_queued_amount(&self, _item: &dyn CraftItem) -> LuaResult<f32> {
+    /// `ISTimedActionQueue.queues[chr].queue`: 0 without a queue. A queued
+    /// `ISHandcraftAction` that has not started counts its `manualInputs`
+    /// lists that hold only this item.
+    fn item_queued_amount(&self, item: &dyn CraftItem, ratio: f32) -> LuaResult<f32> {
         let table = |v: Value| match v {
             Value::Table(t) => Some(t),
             _ => None,
@@ -409,17 +427,80 @@ impl RecipeCharacter for LuaRecipeCharacter<'_> {
         else {
             return Ok(0.0);
         };
+        let mut total = 0.0f32;
         for (_, action) in queue.entries() {
-            let is_handcraft = table(action)
-                .and_then(|a| a.metatable())
+            let Some(action) = table(action) else { continue };
+            let is_handcraft = action
+                .metatable()
                 .is_some_and(|m| matches!(m.get_str("Type"), Value::Str(s) if &*s == "ISHandcraftAction"));
-            if is_handcraft {
-                return Err(crate::bind_world_object::unsupported(
-                    "CraftRecipeManager.itemGetQueuedAmount (ISHandcraftAction)",
-                ));
+            if !is_handcraft || self.is_current_craft_action_pending(&action)? {
+                continue;
+            }
+            let manual = match action.rawget(&Value::str("manualInputs")) {
+                Value::Table(t) => t,
+                Value::Nil => continue,
+                other => return Err(class_cast(&other, "se.krka.kahlua.vm.KahluaTable")),
+            };
+            let recipe = action.rawget(&Value::str("craftRecipe"));
+            for (index, list) in manual.entries() {
+                let list = match &list {
+                    Value::Nil => continue,
+                    Value::Object(o) if o.as_any().is::<JavaList>() => o.as_any().downcast_ref::<JavaList>().unwrap().snapshot(),
+                    other => return Err(class_cast(other, "java.util.List")),
+                };
+                let holds_item = |v: &Value| {
+                    crate::bind_items::item_arg_value(v).is_some_and(|i| Rc::as_ptr(&i) as *const () as usize == item.key())
+                };
+                if list.len() != 1 || !list.iter().any(holds_item) {
+                    continue;
+                }
+                let index = match index {
+                    Value::Num(n) => n as i32,
+                    other => return Err(class_cast(&other, "java.lang.Double")),
+                };
+                let recipe = match &recipe {
+                    Value::Object(o) => o.as_any().downcast_ref::<crate::bind_scripts::ScriptHandle>().map(|h| h.root.clone()),
+                    _ => None,
+                };
+                let recipe = recipe.ok_or_else(|| LuaError::runtime("java.lang.NullPointerException"))?;
+                let recipe = recipe
+                    .downcast::<CraftRecipe>()
+                    .ok_or_else(|| LuaError::runtime("java.lang.ClassCastException"))?;
+                let recipe = recipe.borrow();
+                let Some(line) = recipe.io_for_index(index) else { continue };
+                let input = line
+                    .as_input()
+                    .ok_or_else(|| LuaError::runtime("java.lang.ClassCastException: OutputScript cannot be cast to InputScript"))?;
+                if let Some(from) = input.consume_from_item_script() {
+                    let from = recipe
+                        .io_lines()
+                        .get(from)
+                        .and_then(|l| l.as_input())
+                        .ok_or_else(|| LuaError::runtime("java.lang.NullPointerException"))?;
+                    total += match from.resource_type() {
+                        ResourceType::Item | ResourceType::Energy => input.amount() as i32 as f32,
+                        ResourceType::Fluid => input.amount(),
+                        ResourceType::Any => 0.0,
+                    };
+                    continue;
+                }
+                if item_status::consumes_entire_item(input, item) {
+                    return Ok(f32::MAX);
+                }
+                if input.is_keep() {
+                    continue;
+                }
+                let amount = if input.is_variable_amount() {
+                    input.int_amount() as f32 * ratio
+                } else {
+                    input.int_amount() as f32
+                };
+                let n = if amount > 1e-5 { (amount as f64).ceil() as f32 } else { 0.0 };
+                let full_name = item.script_item().ok_or_else(|| LuaError::runtime("java.lang.NullPointerException"))?.borrow().full_name();
+                total += (n * input.relative_scale(&full_name)) as i32 as f32;
             }
         }
-        Ok(0.0)
+        Ok(total)
     }
     /// `IsoPlayer.tooDarkToRead()` (`is_player` has passed).
     ///
@@ -487,6 +568,9 @@ impl LuaCraftItem {
 impl CraftItem for LuaCraftItem {
     fn key(&self) -> usize {
         Rc::as_ptr(&self.item) as *const () as usize
+    }
+    fn has_replace_on_use(&self) -> bool {
+        self.item.borrow().get_replace_on_use().is_some()
     }
     fn script_item(&self) -> Option<Rc<RefCell<Item>>> {
         self.script.clone()
