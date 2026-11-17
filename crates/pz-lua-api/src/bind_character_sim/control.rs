@@ -209,6 +209,11 @@ pub(super) fn register(b: &ClassBuilder) {
         };
         Ok(c.push(r))
     });
+    // `getLastHourSleeped()`: `lastHourSleeped`.
+    b.method("getLastHourSleeped", |c| {
+        let v = chr_of(c)?.borrow().last_hour_sleeped;
+        Ok(c.push(v))
+    });
     // `isOnFire()`: `onFire`.
     b.method("isOnFire", |c| {
         let v = chr_of(c)?.borrow().vars.on_fire;
