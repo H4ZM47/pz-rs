@@ -255,6 +255,9 @@ pub struct ItemTemplate {
     pub have_chamber: bool,
     /// `ammoType.getItemKey()`.
     pub ammo_item: Option<String>,
+    /// `ammoType`, which `Item.InstanceItem` gives the item
+    /// (`InventoryItem.getAmmoType()`).
+    pub ammo_type: Option<Rc<pz_scripts::registry::RegistryKey>>,
     pub cosmetic: bool,
     pub remove_on_broken: bool,
     pub can_have_holes: bool,
@@ -495,6 +498,7 @@ impl ItemTemplate {
             two_hand_weapon: false,
             have_chamber: true,
             ammo_item: None,
+            ammo_type: None,
             cosmetic: false,
             remove_on_broken: true,
             can_have_holes: true,
@@ -705,6 +709,7 @@ impl ItemTemplate {
             two_hand_weapon: item.two_hand_weapon,
             have_chamber: item.have_chamber,
             ammo_item: item.ammo_type.as_ref().and_then(|k| k.item_key.clone()),
+            ammo_type: item.ammo_type.clone(),
             cosmetic: item.cosmetic,
             remove_on_broken: item.remove_on_broken,
             can_have_holes: item.can_have_holes,
