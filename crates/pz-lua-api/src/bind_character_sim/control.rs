@@ -4,6 +4,7 @@
 //! movement/context flags and `CharacterInputComponentEntity`'s input
 //! component setters.
 
+use std::rc::Rc;
 use super::{chr_of, float_arg, float_value, CharacterKind, CharacterObject, LuaGameCharacterRef, CONTEXT};
 use crate::expose::{bool_arg, int_arg, ClassBuilder, JavaEnum};
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
@@ -92,6 +93,20 @@ fn debug_cheat(name: &str) -> bool {
         && pz_core::debug::debug_options().borrow().get_boolean(name)
 }
 
+thread_local! {
+    /// `IsoGameCharacter.sitOnFurnitureObject` of each character, by the
+    /// character's address: the field holds a Lua world object, which the
+    /// character body cannot keep.
+    static SIT_ON_FURNITURE: std::cell::RefCell<std::collections::HashMap<usize, Value>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// `chr.sitOnFurnitureObject`; nil when none is set.
+fn sit_on_furniture_object(chr: &LuaGameCharacterRef) -> Value {
+    let key = Rc::as_ptr(chr) as usize;
+    SIT_ON_FURNITURE.with(|s| s.borrow().get(&key).cloned().unwrap_or(Value::Nil))
+}
+
 /// The `LuaManager.GlobalObject` functions about player control.
 pub(super) fn register_globals(thread: &mut Thread) {
     // `getLoosingXpTick(timer)`. TODO(port): the `DebugType.Multiplayer`
@@ -159,6 +174,40 @@ pub(super) fn register(b: &ClassBuilder) {
     b.method("isSitOnGround", |c| {
         let v = chr_of(c)?.borrow().sit_on_ground;
         Ok(c.push(v))
+    });
+    // `getSitOnFurnitureObject()`: `sitOnFurnitureObject`.
+    b.method("getSitOnFurnitureObject", |c| {
+        let v = sit_on_furniture_object(&chr_of(c)?);
+        Ok(c.push(v))
+    });
+    // `setSitOnFurnitureObject(object)`.
+    b.method("setSitOnFurnitureObject", |c| {
+        let key = Rc::as_ptr(&chr_of(c)?) as usize;
+        let object = c.arg(1);
+        SIT_ON_FURNITURE.with(|s| {
+            let mut s = s.borrow_mut();
+            if object.is_nil() {
+                s.remove(&key);
+            } else {
+                s.insert(key, object);
+            }
+        });
+        Ok(0)
+    });
+    // `isSitOnFurnitureObject(object)`: false without a furniture object,
+    // else the same object or `furniture.isConnectedSpriteGridObject(object)`.
+    b.method("isSitOnFurnitureObject", |c| {
+        let furniture = sit_on_furniture_object(&chr_of(c)?);
+        let object = c.arg(1);
+        let r = if furniture.is_nil() {
+            false
+        } else if object.raw_equals(&furniture) {
+            true
+        } else {
+            let f = c.thread.table_get(&furniture, &Value::str("isConnectedSpriteGridObject"))?;
+            c.thread.call1(&f, &[furniture, object])?.truthy()
+        };
+        Ok(c.push(r))
     });
     // `isOnFire()`: `onFire`.
     b.method("isOnFire", |c| {
