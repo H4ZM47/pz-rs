@@ -3,10 +3,10 @@
 //! Implemented: onCreateRecipeMagazine, the custom-colour callbacks
 //! (onCreateLipstick, onCreateFabricRoll, onCreateSprayPaint,
 //! onCreateToyPlane, onCreateRandomColor) and the ID card callbacks
-//! (onCreateIDCard, onCreateIDCardFemale, onCreateIDCardMale). Other declared
-//! handlers, the public constructor, inherited helpers and factory/callback
-//! phase parity are separate capabilities; no replacement Lua callbacks are
-//! installed here.
+//! (onCreateIDCard, onCreateIDCardFemale, onCreateIDCardMale). The remaining
+//! public handlers are registered from `on_create_callbacks`. The public
+//! constructor, inherited helpers and factory/callback phase parity are
+//! separate capabilities; no replacement Lua callbacks are installed here.
 
 use pz_entity::RetiredComponents;
 use pz_inventory::moddata::{get_mod_data_ref, ModDataError};
@@ -129,7 +129,7 @@ fn invoke(call: &mut NativeCall<'_>) -> LuaResult<usize> {
 /// The `setCustomColor(item, color)` helper: the item's colour, its red,
 /// green and blue channels, then the custom-colour flag. Java keeps the
 /// Color reference itself in `col`; the port's item stores its value.
-fn set_custom_color(item: &ItemRef, color: &crate::bind_misc_classes::Color) -> LuaResult<()> {
+pub(super) fn set_custom_color(item: &ItemRef, color: &crate::bind_misc_classes::Color) -> LuaResult<()> {
     let rgba = [color.r.get(), color.g.get(), color.b.get(), color.a.get()];
     {
         let mut body = item.try_borrow_mut().map_err(|_| {
@@ -307,6 +307,7 @@ pub(super) fn register(thread: &mut Thread) {
     for (name, gender, null_receiver) in ID_CARD_CALLBACKS {
         class.static_fn(name, move |c| invoke_id_card(c, gender, null_receiver));
     }
+    super::on_create_callbacks::register(&class);
 }
 
 #[cfg(test)]
@@ -396,7 +397,7 @@ mod tests {
             local count = select('#', ItemCodeOnCreate.onCreateRecipeMagazine(item))
             return sameClass, count, retained == item:getModData(),
                 retained.literatureTitle, retained.retained,
-                ItemCodeOnCreate.onCreatePopBottle == nil
+                ItemCodeOnCreate.onCreatePopBottle ~= nil
             "#,
         );
         assert!(matches!(result[0], Value::Bool(true)));
