@@ -263,6 +263,7 @@ fn menu_reads_of_an_outdoor_square() {
         assert(a:getDeadBody() == nil and a:getAnimalTrack() == nil and not a:haveGraffiti() and not a:haveGrime())
         local o = a:getObjects():get(0)
         assert(o:getProperties() == nil and o:getAttachedAnimSprite() == nil)
+        assert(a:getOre() == nil and o:getSpriteName() == nil)
         assert(not o:hasFluid())
     "#,
     );
