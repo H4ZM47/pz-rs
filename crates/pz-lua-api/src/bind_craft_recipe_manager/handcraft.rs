@@ -17,7 +17,9 @@ use pz_kahlua::LuaResult;
 use pz_scripts::objects::entity::components::crafting::{CraftRecipe, InputFlag, InputScript};
 use pz_scripts::objects::entity::components::resources::ResourceType;
 use pz_scripts::objects::items::Item;
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 /// `CraftRecipeData` with its `InputScriptData` list, for one recipe.
 struct RecipeData<'a> {
@@ -56,29 +58,29 @@ impl<'a> RecipeData<'a> {
         consume_input_item_test(self.inputs[input], self.recipe, self.item(item), self.chr, on_test)
     }
 
-    /// The full names `getPossibleInputItems()` gives, in order, for the
+    /// The item types `getPossibleInputItems()` gives, in order, for the
     /// items offered: the listed items, then (see `contains_item`) the items
     /// of the input tags, which the port's cache does not hold yet. Item
     /// types that none of the offered items has add nothing to the amounts,
-    /// so only those are listed.
-    fn possible_input_items(&self, input: usize, list: &[usize]) -> Vec<String> {
+    /// so only those are listed. The original matches types by
+    /// `getFullName()`; the `ScriptManager` holds one script per full name,
+    /// so the scripts are compared instead.
+    fn possible_input_items(&self, input: usize, list: &[usize]) -> Vec<Rc<RefCell<Item>>> {
         let input = self.inputs[input];
-        let mut names: Vec<String> = input
+        let offered: Vec<_> = list.iter().filter_map(|&i| self.item(i).script_item()).collect();
+        let has = |types: &[Rc<RefCell<Item>>], s: &Rc<RefCell<Item>>| types.iter().any(|t| Rc::ptr_eq(t, s));
+        let mut types: Vec<_> = input
             .possible_input_items()
             .iter()
             .filter_map(|s| s.downcast::<Item>())
-            .map(|s| s.borrow().full_name())
+            .filter(|s| has(&offered, s))
             .collect();
-        for &i in list {
-            let Some(script) = self.item(i).script_item() else {
-                continue;
-            };
-            let name = script.borrow().full_name();
-            if is_tag_item(input, &script) && !names.contains(&name) {
-                names.push(name);
+        for script in offered {
+            if is_tag_item(input, &script) && !has(&types, &script) {
+                types.push(script);
             }
         }
-        names
+        types
     }
 
     /// `consumeInputFromItems(input, items, true, data, clearUsed, chr)`.
@@ -106,10 +108,10 @@ impl<'a> RecipeData<'a> {
         }
         let mut used: Vec<usize> = Vec::new();
         let (mut left, mut max_left) = (amount, max_amount);
-        for name in self.possible_input_items(input, list) {
+        for item_type in self.possible_input_items(input, list) {
             for &i in list {
                 let item = self.item(i);
-                if item.script_item().map(|s| s.borrow().full_name()).as_deref() != Some(name.as_str()) {
+                if !item.script_item().is_some_and(|s| Rc::ptr_eq(&s, &item_type)) {
                     continue;
                 }
                 if self.used_items.contains(&item.key()) || used.contains(&item.key()) {
