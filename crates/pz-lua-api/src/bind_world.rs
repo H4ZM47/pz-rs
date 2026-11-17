@@ -154,6 +154,8 @@ enum Key {
     /// Absolute chunk coordinates.
     MetaChunk(i32, i32),
     Room(u32),
+    /// The runtime `IsoRoom` of a room id (what `IsoGridSquare.getRoom` returns).
+    IsoRoom(i64),
     Building(u32),
     /// Room, index in `objects`.
     MetaObject(u32, u32),
@@ -205,6 +207,7 @@ impl Key {
                 | Key::MetaCell(..)
                 | Key::MetaChunk(..)
                 | Key::Room(_)
+                | Key::IsoRoom(_)
                 | Key::Building(_)
                 | Key::MetaObject(..)
                 | Key::RoomRect(..)
@@ -226,6 +229,7 @@ impl Key {
             Key::MetaCell(..) => "zombie.iso.IsoMetaCell",
             Key::MetaChunk(..) => "zombie.iso.IsoMetaChunk",
             Key::Room(_) => "zombie.iso.RoomDef",
+            Key::IsoRoom(_) => "zombie.iso.areas.IsoRoom",
             Key::Building(_) => "zombie.iso.BuildingDef",
             Key::MetaObject(..) => "zombie.iso.MetaObject",
             Key::RoomRect(..) => RECT_CLASS,
@@ -1951,6 +1955,13 @@ fn register_grid_square(thread: &mut Thread) {
     get(&b, "getRoomIDString", |c| {
         let (x, y, z) = self_square(c)?;
         Ok(square_room_id(x, y, z)?.to_string().into())
+    });
+    // `getRoom()`: the room of the square, `nil` outside. Rooms of the same id
+    // are one Lua object, so `==` compares them as Java does.
+    get(&b, "getRoom", |c| {
+        let (x, y, z) = self_square(c)?;
+        let id = square_room_id(x, y, z)?;
+        Ok(if id == -1 { Value::Nil } else { obj(Key::IsoRoom(id)) })
     });
     get(&b, "getRoomDef", |c| {
         let (x, y, z) = self_square(c)?;

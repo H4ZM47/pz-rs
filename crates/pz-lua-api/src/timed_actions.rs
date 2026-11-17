@@ -142,6 +142,11 @@ fn callback(
 ) -> Option<Vec<Value>> {
     let table = action.borrow().table.clone()?;
     let f = table.rawget(&Value::str(name));
+    // `LuaCaller.pcall` returns at once for a function that is nil: an action
+    // class without `complete`, `update` or `stop` is not an error.
+    if f.is_nil() {
+        return None;
+    }
     let mut args = vec![Value::Table(table)];
     args.extend_from_slice(extra);
     match thread.pcall(&f, &args) {

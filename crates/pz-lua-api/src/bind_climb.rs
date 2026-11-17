@@ -53,6 +53,32 @@ pub(crate) fn register(thread: &mut Thread) {
             _ => Err(unsupported("IsoObject.getProperties: the sprite has no Lua object")),
         }
     });
+    // `getObjectIndex()`: the position in the square's object list, `-1`
+    // when the object is off the map.
+    object.method("getObjectIndex", |c| {
+        let this = c.arg(0);
+        let world = crate::bind_world_object::object_from_value(&this)
+            .ok_or_else(|| crate::bind_java_util::class_cast(&this, ISO_OBJECT))?;
+        let square = crate::bind_world_object::object_square(world)?;
+        let Some((x, y, z)) = crate::bind_world::square_coords(&square) else {
+            return Ok(c.push(-1));
+        };
+        let index = crate::bind_world::try_with_world_read(|w| {
+            let Some(square) = w.cell.as_ref().and_then(|cell| cell.get_grid_square(x, y, z)) else {
+                return Ok(-1);
+            };
+            let square = square
+                .try_borrow()
+                .map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("IsoGridSquare"))?;
+            Ok(square
+                .objects
+                .iter()
+                .position(|slot| std::rc::Rc::ptr_eq(&slot.ref_handle(), &world.object))
+                .map_or(-1, |i| i as i32))
+        })
+        .map_err(crate::bind_world_object::host_error)?;
+        Ok(c.push(index))
+    });
     // `isTallHoppable()`: `TallHoppableN` or `TallHoppableW` on the sprite.
     object.method("isTallHoppable", |c| {
         let object = receiver(c)?;
