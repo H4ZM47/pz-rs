@@ -407,6 +407,25 @@ fn register_input(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     });
     get(&b, "isDestroy", |i: &InputScript| i.is_destroy());
     get(&b, "isKeep", |i: &InputScript| i.is_keep());
+    // `isUsesPartialItem(item)`: never for an item count, destroy or keep
+    // input; then a drainable with a use delta under 1, or a food that
+    // changes hunger.
+    let s = sm.clone();
+    method(&b, "isUsesPartialItem", move |c, h| {
+        let item = handle_arg(c, 1)?;
+        let whole = h.read(|i: &InputScript| i.is_item_count() || i.is_destroy() || i.is_keep())?;
+        let Some(item) = item.filter(|_| !whole) else {
+            return Ok(false.into_lua());
+        };
+        item.read(|i: &Item| {
+            if i.is_item_type(&s, "DRAINABLE") {
+                i.use_delta < 1.0
+            } else {
+                i.is_item_type(&s, "FOOD") && i.hunger_change.abs() > 0.0
+            }
+            .into_lua()
+        })
+    });
     get(&b, "isTool", |i: &InputScript| i.is_tool());
     get(&b, "isProp1", |i: &InputScript| i.is_prop1());
     get(&b, "isProp2", |i: &InputScript| i.is_prop2());

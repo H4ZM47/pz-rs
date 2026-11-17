@@ -2045,6 +2045,41 @@ fn register_character(
         let v = chr_of(c)?.borrow().is_wearing_awkward_gloves(&s);
         Ok(c.push(v))
     });
+    // `isRecipeKnown(CraftRecipe[, actuallyKnown])`: unless `actuallyKnown`,
+    // `SandboxOptions.seeNotLearntRecipe` makes every recipe known. The
+    // `Recipe` and recipe name forms are not ported.
+    b.method("isRecipeKnown", |c| {
+        use pz_scripts::objects::entity::components::crafting::CraftRecipe;
+        let recipe = match c.arg(1) {
+            Value::Object(o) => o
+                .as_any()
+                .downcast_ref::<crate::bind_scripts::ScriptHandle>()
+                .and_then(|h| h.root.downcast::<CraftRecipe>()),
+            _ => None,
+        };
+        let Some(recipe) = recipe else {
+            return Err(crate::bind_world_object::unsupported("IsoGameCharacter.isRecipeKnown (Recipe or name)"));
+        };
+        if !c.arg(2).truthy() {
+            crate::bind_sandbox::instance(c.thread)?;
+            let see_all = crate::bind_sandbox::current_bool("SeeNotLearntRecipe")
+                .ok_or_else(|| crate::bind_world_object::unsupported("SandboxOptions.seeNotLearntRecipe"))?;
+            if see_all {
+                return Ok(c.push(true));
+            }
+        }
+        let chr = chr_of(c)?;
+        let chr = chr.borrow();
+        let ctx = current_sim_context();
+        let r = recipe.borrow();
+        let known = |name: Option<&str>| name.is_some_and(|n| chr.known_recipes.iter().any(|k| k == n));
+        let v = chr.cheats.is_set(&*ctx, "KNOW_ALL_RECIPES")
+            || !r.need_to_be_learn()
+            || known(r.name())
+            || known(r.meta_recipe())
+            || known(r.translation_name());
+        Ok(c.push(v))
+    });
     let s = sm.clone();
     b.method("isInventive", move |c| {
         let v = chr_of(c)?.borrow().is_inventive(&s).map_err(java_error)?;
