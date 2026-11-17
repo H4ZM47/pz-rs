@@ -353,3 +353,68 @@ impl WorldModels {
         Ok(Some(CorpseDraw { draws, shadow }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pz_world::save::visual::{BoneTransform as SavedBone, MovingBase};
+
+    fn body(ragdoll: Option<Vec<SavedBone>>) -> IsoDeadBody {
+        IsoDeadBody {
+            base: MovingBase {
+                offset_x: 0.0,
+                offset_y: 0.0,
+                x: 1.5,
+                y: 2.5,
+                z: 0.0,
+                dir: 0,
+                mod_data: None,
+            },
+            female: false,
+            was_zombie: true,
+            animal: None,
+            object_id: (1, 0),
+            persistent_outfit_id: 0,
+            desc: None,
+            visual: CorpseVisual::Human(Box::new(HumanVisual::new(0))),
+            container: None,
+            worn_items: vec![],
+            attached_items: vec![],
+            death_time: 0.0,
+            reanimate_time: 0.0,
+            fall_on_front: false,
+            killed_by_fall: false,
+            was_skeleton: false,
+            angle: 0.0,
+            zombie_rot_stage_at_death: 0,
+            animal_rot_stage_at_death: 0,
+            rotten_texture: String::new(),
+            skel_inv_icon: String::new(),
+            crawling: false,
+            fake_dead: false,
+            ragdoll,
+            burn_timer: 0.0,
+        }
+    }
+
+    #[test]
+    fn no_ragdoll_has_no_died_bones() {
+        assert!(died_bone_transforms(&body(None)).is_empty());
+    }
+
+    #[test]
+    fn ragdoll_bones_are_position_rotation_scale() {
+        let values = [1.0, 2.0, 3.0, 0.0, 0.6, 0.0, 0.8, 1.0, 2.0, 0.5];
+        let bones = vec![
+            SavedBone { bone: 0, values: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0] },
+            SavedBone { bone: 1, values },
+        ];
+        let mut t = died_bone_transforms(&body(Some(bones)));
+        assert_eq!(t.len(), 2);
+        let (pos, rot, scale) = t[1].prs();
+        assert_eq!(pos, Vector3f { x: 1.0, y: 2.0, z: 3.0 });
+        assert_eq!(rot, Quaternion { x: 0.0, y: 0.6, z: 0.0, w: 0.8 });
+        assert_eq!(scale, Vector3f { x: 1.0, y: 2.0, z: 0.5 });
+        assert_eq!(t[0].prs().0, Vector3f::ZERO);
+    }
+}
