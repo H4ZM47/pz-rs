@@ -129,6 +129,15 @@ impl IsoDeadBody {
         Some(container)
     }
 
+    /// `isEquipped(item)`: `isEquippedClothing(item)` (`wornItems`
+    /// holds it) or `isHandItem(item)`. The port's corpses have no hand
+    /// items. Call after [`Self::runtime_container`].
+    pub fn is_equipped(&self, item: &ItemRef) -> bool {
+        self.runtime.as_ref().is_some_and(|r| {
+            r.worn.iter().any(|(_, i)| i.as_ref().is_some_and(|i| Rc::ptr_eq(i, item)))
+        })
+    }
+
     /// `checkClothing(item)`: the worn and attached items that are no
     /// longer in the container leave `wornItems` and `attachedItems`.
     pub fn check_clothing(&mut self) {
