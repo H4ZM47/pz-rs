@@ -244,3 +244,26 @@ fn an_object_read_from_a_square_reports_it_until_it_leaves() {
     f.square(|sq| drop(sq.objects.pop()));
     f.run("assert(o:getSquare() == nil)");
 }
+
+#[test]
+fn menu_reads_of_an_outdoor_square() {
+    let mut f = Fixture::new();
+    crate::bind_world_object::register_classes(&mut f.thread);
+    crate::bind_sprites::register(&mut f.thread);
+    crate::world_menu_logic::register(&mut f.thread);
+    let slot = pz_world::ObjectSlot::new(pz_world::IsoObject::new(7, pz_world::ObjectKind::Object, None));
+    crate::bind_world_object::ensure_class(&slot.ref_handle(), crate::bind_world_object::ISO_OBJECT).unwrap();
+    f.square(|sq| sq.objects.push(slot));
+    f.run(
+        r#"
+        assert(a:getNextNonItemObjectIndex(0) == 0)
+        assert(a:getNextNonItemObjectIndex(1) == -1)
+        assert(not a:getProperties():has("fuelAmount"))
+        assert(a:getRoom() == nil and a:getBuilding() == nil)
+        assert(a:getDeadBody() == nil and a:getAnimalTrack() == nil)
+        local o = a:getObjects():get(0)
+        assert(o:getProperties() == nil and o:getAttachedAnimSprite() == nil)
+        assert(not o:hasFluid())
+    "#,
+    );
+}

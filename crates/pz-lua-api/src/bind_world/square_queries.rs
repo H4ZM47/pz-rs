@@ -207,6 +207,74 @@ pub(super) fn register(b: &ClassBuilder) {
         let player = player_index(c, 1, true)?;
         Ok(Value::Num(square_lighting(player, x, y, z).light_level as f64))
     });
+    // `getProperties()`: `properties`, as a copy.
+    get(b, "getProperties", |c| {
+        let (x, y, z) = self_square(c)?;
+        let props = with_square(x, y, z, |square| Ok(square.properties.clone()))?;
+        Ok(crate::bind_sprites::square_props_value(props))
+    });
+    // `getNextNonItemObjectIndex(index)`: the first object at or after
+    // `index` that is not an IsoWorldInventoryObject, or -1.
+    get(b, "getNextNonItemObjectIndex", |c| {
+        let (x, y, z) = self_square(c)?;
+        let from = int_arg(c, 1);
+        let next = with_square(x, y, z, |square| {
+            Ok(square
+                .objects
+                .iter()
+                .enumerate()
+                .skip(from.max(0) as usize)
+                .find(|(_, slot)| !matches!(slot.borrow().kind, pz_world::ObjectKind::WorldInventory(_)))
+                .map_or(-1, |(i, _)| i as i32))
+        })?;
+        Ok(next.into())
+    });
+    // `getRoom()`: null when `roomId` is -1. IsoRoom has no Lua object.
+    let room = |b: &ClassBuilder, name: &'static str| {
+        get(b, name, move |c| {
+            let (x, y, z) = self_square(c)?;
+            let room_id = with_square(x, y, z, |square| Ok(square.room_id))?;
+            if room_id == -1 {
+                return Ok(Value::Nil);
+            }
+            Err(crate::bind_world_object::unsupported(format!(
+                "IsoGridSquare.{name}: IsoRoom has no Lua object"
+            )))
+        });
+    };
+    room(b, "getRoom");
+    // `getBuilding()`: `getRoom().getBuilding()`, null without a room.
+    room(b, "getBuilding");
+    // `getDeadBody()`: the first IsoDeadBody of `staticMovingObjects`.
+    get(b, "getDeadBody", |c| {
+        let (x, y, z) = self_square(c)?;
+        let count = with_square(x, y, z, |square| Ok(square.static_moving.len()))?;
+        if count != 0 {
+            return Err(crate::bind_world_object::unsupported(
+                "IsoGridSquare.getDeadBody: IsoDeadBody is not exposed to Lua",
+            ));
+        }
+        Ok(Value::Nil)
+    });
+    // `getAnimalTrack()`: the first IsoAnimalTrack of the objects.
+    get(b, "getAnimalTrack", |c| {
+        let (x, y, z) = self_square(c)?;
+        let track = with_square(x, y, z, |square| {
+            Ok(square
+                .objects
+                .iter()
+                .find(|slot| matches!(slot.borrow().kind, pz_world::ObjectKind::AnimalTrack(_)))
+                .map(|slot| slot.ref_handle()))
+        })?;
+        match track {
+            None => Ok(Value::Nil),
+            Some(track) => {
+                let value = crate::bind_world_object::object_value(&track)?;
+                crate::bind_world_object::remember_square(&value, [x, y, z]);
+                Ok(value)
+            }
+        }
+    });
     for (name, bit) in [("isSeen", 1u8), ("isCanSee", 2), ("isCouldSee", 4)] {
         get(b, name, move |c| {
             let (x, y, z) = self_square(c)?;
