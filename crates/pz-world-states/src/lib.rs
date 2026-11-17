@@ -31,6 +31,8 @@ mod bent_fences;
 mod broken_fences;
 mod climb;
 mod collide;
+mod context;
+mod door;
 mod floor;
 pub mod population;
 mod query;
@@ -53,6 +55,8 @@ use pz_characters::character::state::{
     CorpseInfo, EatTarget, SheetRopeExit, SheetRopeSquare, SquareInfo, StateWorld, ThumpInfo,
     ThumpTarget, WindowInfo,
 };
+use pz_characters::character::player::context::{ContextQuery, ContextSpecial};
+use pz_characters::character::player::ContextualAction;
 use pz_characters::GameCharacter;
 use pz_pathfind::mover::{CharacterView, MoverId, ObjectRef};
 use pz_world::java::{fastfloor, GameRand};
@@ -771,6 +775,50 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         let sq_owner = self.cell.get_grid_square(x, y, z)?;
         let sq = sq_owner.borrow();
         Some(self.square_info(&sq))
+    }
+
+    fn context_sheet_rope_side(&self, q: &ContextQuery, dir: IsoDirections) -> bool {
+        self.context_sheet_rope_side_at(q, dir)
+    }
+
+    fn context_door_or_window_object(&self, q: &ContextQuery, dir: IsoDirections) -> Option<ObjectRef> {
+        self.context_door_or_window_object_at(q, dir)
+    }
+
+    fn context_do_door_or_window(
+        &mut self,
+        q: &ContextQuery,
+        dir: IsoDirections,
+        obj: ObjectRef,
+    ) -> pz_inventory::floor_drop::HostResult<Vec<ContextualAction>> {
+        self.context_do_door_or_window_at(q, dir, obj)
+    }
+
+    fn context_special(
+        &self,
+        q: &ContextQuery,
+        dir: IsoDirections,
+        which: ContextSpecial,
+    ) -> pz_inventory::floor_drop::HostResult<Option<ContextualAction>> {
+        self.context_special_at(q, dir, which)
+    }
+
+    fn context_hoppable(&self, q: &ContextQuery, dir: IsoDirections) -> Option<((i32, i32, i32), Option<i64>)> {
+        self.context_hoppable_at(q, dir)
+    }
+
+    fn context_safe_to_climb_over(&self, q: &ContextQuery, dir: IsoDirections) -> bool {
+        self.is_safe_to_climb_over(q.square, dir)
+    }
+
+    fn context_toggle_door(
+        &mut self,
+        chr: i32,
+        action: &ContextualAction,
+        actor: &pz_characters::character::player::context::DoorActor<'_>,
+    ) -> pz_inventory::floor_drop::HostResult<()> {
+        let (Some((x, y, z)), Some(id)) = (action.square, action.object) else { return Ok(()) };
+        self.toggle_player_door(ObjectRef { x, y, z, id: id as u32 }, chr, actor)
     }
 
     fn sloped_surface_height(&self, sq: (i32, i32, i32), dx: f32, dy: f32) -> f32 {

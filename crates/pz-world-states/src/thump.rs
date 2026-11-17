@@ -116,7 +116,7 @@ impl StatesWorldAdapter<'_> {
         })
     }
 
-    fn opposite(&self, sq: &IsoGridSquare, north: bool) -> Option<SquareRef> {
+    pub(crate) fn opposite(&self, sq: &IsoGridSquare, north: bool) -> Option<SquareRef> {
         if north {
             self.cell.get_grid_square(sq.x, sq.y - 1, sq.z)
         } else {
@@ -162,7 +162,7 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `IsoBarricade.GetBarricadeForCharacter(obj, chr)`.
-    fn barricade_for_character(
+    pub(crate) fn barricade_for_character(
         &self,
         sq: &IsoGridSquare,
         north: bool,
@@ -527,7 +527,7 @@ impl StatesWorldAdapter<'_> {
 
     /// `getSoundPrefix()` of a door or thumpable: the closed sprite's
     /// `DoorSound`, else `WoodDoor`.
-    fn sound_prefix(&self, o: &IsoObject) -> String {
+    pub(crate) fn sound_prefix(&self, o: &IsoObject) -> String {
         let closed = match &o.kind {
             ObjectKind::Door(d) => d.closed_sprite,
             ObjectKind::Thumpable(t) => t.closed_sprite,
@@ -1371,7 +1371,7 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `IsoDoor.checkKeyId()` (without storing the found id).
-    fn check_key_id(&self, sq: &IsoGridSquare, o: &IsoObject, north: bool, _locked: bool) -> i32 {
+    pub(crate) fn check_key_id(&self, sq: &IsoGridSquare, o: &IsoObject, north: bool, _locked: bool) -> i32 {
         if o.key_id != -1 {
             return o.key_id;
         }

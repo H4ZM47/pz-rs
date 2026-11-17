@@ -1663,7 +1663,14 @@ registered):
       `animation_player_ready`, `rendered_angle`, `primary_hand_model_ready`,
       `square_trees`, `collapsed_fence`, `tree_slow_factor`, `ground_info`,
       `foot_injury_floor`, `vehicle_useable_part_near`,
-      `context_actions_nswe`/`context_actions_corners`/`context_door_or_window`;
+      the interact key's `context_*` hooks (`context_door_or_window_object`,
+      `context_do_door_or_window`, `context_special`, `context_hoppable`,
+      `context_safe_to_climb_over`, `context_sheet_rope_side`; implemented
+      by `StatesWorldAdapter` in `pz-world-states::context`) and
+      `context_toggle_door` (`pz-world-states::door`: the door the key
+      chose is toggled by the world, which needs the player's current square
+      and a key lookup, `DoorActor`; other chosen actions come back as
+      `PlayerEvent::ContextualAction` for the engine/Lua);
       `SimContext::wet_ground_final_value`, `clothing_degradation`
       (#135).
 
