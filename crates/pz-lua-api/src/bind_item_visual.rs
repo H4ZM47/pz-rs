@@ -1360,5 +1360,11 @@ mod tests {
         assert_eq!(h.natural_beard_color, Some([0.1, 0.2, 0.3]));
         assert_eq!(h.skin_color, Some([0.9, 0.8, 0.7]));
         assert_eq!((h.skin_texture, h.body_hair, h.blood[0]), (2, 1, 3));
+        drop(c);
+        // The character's `getHumanVisual()` object reads the same visual
+        // and asks the character as its owner.
+        let object = crate::bind_characters::HumanVisualObject::Character(chr.clone());
+        let read = object.with(|hv, owner| (hv.skin_color, owner.is_zombie())).unwrap();
+        assert_eq!(read, (Some([0.9, 0.8, 0.7]), false));
     }
 }
