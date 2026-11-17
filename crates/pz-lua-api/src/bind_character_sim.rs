@@ -79,6 +79,7 @@ mod grapple_tests;
 mod control;
 mod key_ring;
 pub(crate) mod known_poison;
+pub(crate) use known_poison::with_recipe_knowledge;
 mod reading;
 pub(crate) mod read_flags;
 #[cfg(test)]

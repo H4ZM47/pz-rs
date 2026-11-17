@@ -3,8 +3,8 @@
 //! Not exposed yet: `InstanceItem` (TODO(inventory)), members taking a
 //! character or player (`isUnwanted`, `setUnwanted`, `setWanted`,
 //! `researchRecipes`, `isFavouriteRecipeInput`, `getUsedInFavouriteRecipes`,
-//! the character overloads of `getUsedInRecipes`, `getResearchableRecipes`
-//! and `isUsedInBuildRecipes`; TODO(IsoGameCharacter)), `getLootType`
+//! the character overload of `isUsedInRecipes` and `isUsedInBuildRecipes`;
+//! TODO(IsoGameCharacter)), `getLootType`
 //! (TODO(ItemPickerJava)), `getNumSpawned` (TODO(InstanceTracker)),
 //! `getDiscomfortModifier` (TODO(SandboxOptions)), `getNormalTexture`
 //! (TODO(Texture)), `getClothingItemAsset`/`setClothingItemAsset`
@@ -92,6 +92,13 @@ fn researchable_recipes(sm: &ScriptManager, h: &ScriptHandle) -> LuaResult<Vec<S
     h.read(|i: &Item| i.researchable_recipes.clone())
 }
 
+/// `ScriptManager.getCraftRecipe(name)`.
+fn craft_recipe_lookup(
+    sm: &ScriptManager,
+) -> impl Fn(&str) -> Option<Rc<std::cell::RefCell<pz_scripts::objects::entity::components::crafting::CraftRecipe>>> + '_ {
+    move |name| sm.get_script(ScriptType::CraftRecipe, name).and_then(|r| r.downcast())
+}
+
 fn key_args(c: &NativeCall<'_>, from: usize) -> LuaResult<Vec<Option<Rc<pz_scripts::registry::RegistryKey>>>> {
     (from..c.nargs().max(from)).map(|i| key_arg(c, i)).collect()
 }
@@ -170,11 +177,18 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
             Ok(())
         })?
     });
-    method(&b, "getUsedInRecipes", |c, h| {
-        if !c.arg(1).is_nil() {
-            return Err(pz_kahlua::LuaError::runtime("TODO(IsoGameCharacter): getUsedInRecipes(character)"));
+    let s = sm.clone();
+    method(&b, "getUsedInRecipes", move |c, h| {
+        let chr = c.arg(1);
+        let names = h.read(|i: &Item| i.used_in_recipes().to_vec())?;
+        if chr.is_nil() || names.is_empty() {
+            return Ok(string_list(names));
         }
-        h.read(|i: &Item| string_list(i.used_in_recipes()))
+        let lookup = craft_recipe_lookup(&s);
+        let v = crate::bind_character_sim::with_recipe_knowledge(c, &chr, &s, |k| {
+            super::item_recipes::used_in_recipes(&names, &lookup, k)
+        })?;
+        Ok(string_list(v))
     });
     method(&b, "isUsedInRecipes", |c, h| {
         if !c.arg(1).is_nil() {
@@ -230,10 +244,18 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     });
     let s = sm.clone();
     method(&b, "getResearchableRecipes", move |c, h| {
-        if !c.arg(1).is_nil() {
-            return Err(pz_kahlua::LuaError::runtime("TODO(IsoGameCharacter): getResearchableRecipes(character)"));
+        let chr = c.arg(1);
+        let all = researchable_recipes(&s, h)?;
+        if chr.is_nil() || all.is_empty() {
+            return Ok(string_list(all));
         }
-        Ok(string_list(researchable_recipes(&s, h)?))
+        // `getResearchableRecipes(chr)` is `getResearchableRecipes(chr, true)`.
+        let b = c.nargs() < 3 || crate::expose::bool_arg(c, 2);
+        let lookup = craft_recipe_lookup(&s);
+        let v = crate::bind_character_sim::with_recipe_knowledge(c, &chr, &s, |k| {
+            super::item_recipes::researchable_recipes(&all, &lookup, k, b)
+        })?;
+        Ok(string_list(v))
     });
     let s = sm.clone();
     method(&b, "canBeForaged", move |_, h| {

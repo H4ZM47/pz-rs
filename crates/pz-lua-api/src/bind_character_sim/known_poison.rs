@@ -326,3 +326,63 @@ pub(crate) fn register_food_fields(builder: &ClassBuilder) {
         });
     }
 }
+
+/// The recipe knowledge of a Lua character, for `Item.getUsedInRecipes`
+/// and `Item.getResearchableRecipes`.
+struct Knowledge<'a> {
+    host: Host<'a>,
+    character: super::LuaGameCharacterRef,
+    perks: &'a pz_characters::skills::PerkFactory,
+    sm: &'a ScriptManager,
+}
+impl crate::bind_scripts::RecipeKnowledge for Knowledge<'_> {
+    fn see_not_learnt_recipe(&self) -> LuaResult<bool> {
+        self.host.see_not_learnt_recipe().map_err(crate::bind_world_object::host_error)
+    }
+    fn actually_knows_name(&self, name: &str) -> LuaResult<bool> {
+        known_poison::is_recipe_actually_known(&self.character, name, &self.host)
+            .map_err(crate::bind_world_object::host_error)
+    }
+    fn knows_all(&self) -> LuaResult<bool> {
+        known_poison::is_know_all_recipes(&self.character, &self.host).map_err(crate::bind_world_object::host_error)
+    }
+    fn knows(&self, name: &str) -> bool {
+        self.character.borrow().known_recipes.iter().any(|k| k == name)
+    }
+    fn perk_level(&self, perk: &str) -> i32 {
+        self.character.borrow().perk_level(self.perks.from_string(perk).as_ref())
+    }
+    fn is_inventive(&self) -> LuaResult<bool> {
+        self.character.borrow().is_inventive(self.sm).map_err(crate::bind_registry::java_error)
+    }
+}
+
+/// Runs `f` with the recipe knowledge of the `IsoGameCharacter` argument
+/// `chr` (a `ClassCastException` for anything else).
+pub(crate) fn with_recipe_knowledge<R>(
+    call: &mut pz_kahlua::NativeCall<'_>,
+    chr: &Value,
+    sm: &ScriptManager,
+    f: impl FnOnce(&dyn crate::bind_scripts::RecipeKnowledge) -> LuaResult<R>,
+) -> LuaResult<R> {
+    let character = match chr {
+        Value::Object(o) => o.as_any().downcast_ref::<super::CharacterObject>().map(|o| o.0.clone()),
+        _ => None,
+    }
+    .ok_or_else(|| crate::bind_java_util::class_cast(chr, super::ISO_GAME_CHARACTER_CLASS))?;
+    let chars = crate::bind_characters::shared_characters();
+    let chars_ref = chars
+        .try_borrow()
+        .map_err(|_| crate::bind_world_object::borrowed("recipe knowledge PerkFactory"))?;
+    let knowledge = Knowledge {
+        host: Host { sm, chars: &chars, thread: RefCell::new(&mut *call.thread), lua_fault: RefCell::new(None) },
+        character,
+        perks: &chars_ref.perks,
+        sm,
+    };
+    let result = f(&knowledge);
+    match knowledge.host.lua_fault.into_inner() {
+        Some(error) => Err(error),
+        None => result,
+    }
+}
