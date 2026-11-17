@@ -133,6 +133,7 @@ type Spec<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
 const SPRITES: &[Spec] = &[
     ("floor", "normal", &[("solidfloor", "")]),
     ("door_n", "doorN", &[("doorN", ""), ("collideN", "")]),
+    ("door_n_open", "normal", &[]),
     (
         "door_w_mat",
         "doorW",
@@ -1682,4 +1683,175 @@ fn sprite_replacement_observes_full_native_class_after_object_guards() {
             ["zombie.iso.IsoObject", "zombie.iso.objects.IsoWindow"]
         );
     });
+}
+
+// ---- the interact key (`IsoPlayer.doContext`) ----
+
+mod context {
+    use pz_characters::character::player::context::{ContextQuery, ContextSpecial};
+    use pz_characters::character::player::ContextualActionKind as Kind;
+
+    use super::*;
+
+    /// A player standing in the middle of `(x, y, 0)`, tapping the key.
+    fn query(x: i32, y: i32) -> ContextQuery {
+        ContextQuery {
+            chr: 1,
+            square: (x, y, 0),
+            x: x as f32 + 0.5,
+            y: y as f32 + 0.5,
+            shift: false,
+            ticks_since_pressed_movement: 0.0,
+            grappling: false,
+            time_pressed_context: 0.0,
+            ignore_auto_vault: false,
+        }
+    }
+
+    /// A door with a closed and an open sprite on the north edge of
+    /// `(x, y)`.
+    fn north_door(w: &mut World, x: i32, y: i32, open: bool) -> ObjectRef {
+        let mut k = door(true, 500);
+        if let ObjectKind::Door(d) = &mut k {
+            d.open = open;
+            d.closed_sprite = Some(w.m.named_map["door_n"]);
+            d.open_sprite = Some(w.m.named_map["door_n_open"]);
+        }
+        w.add(x, y, if open { "door_n_open" } else { "door_n" }, k, true)
+    }
+
+    fn found(w: &mut World, q: &ContextQuery, dir: IsoDirections) -> Option<ObjectRef> {
+        w.adapter().context_door_or_window_object_at(q, dir)
+    }
+
+    fn toggles(w: &mut World, q: &ContextQuery, dir: IsoDirections, obj: ObjectRef) -> Vec<Kind> {
+        let actions = w.adapter().context_do_door_or_window_at(q, dir, obj).unwrap();
+        actions.iter().for_each(|a| assert_eq!((a.dir, a.object), (Some(dir), Some(obj.id as i64))));
+        actions.iter().map(|a| a.action).collect()
+    }
+
+    fn is_open(w: &World, r: ObjectRef) -> bool {
+        matches!(&w.object(r).unwrap().borrow().kind, ObjectKind::Door(d) if d.open)
+    }
+
+    #[test]
+    fn a_closed_door_in_front_opens_and_closes() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        let q = query(10, 10);
+        assert_eq!(found(&mut w, &q, IsoDirections::N), Some(d));
+        assert_eq!(toggles(&mut w, &q, IsoDirections::N, d), vec![Kind::ToggleDoor]);
+        w.adapter().toggle_player_door(d, 1).unwrap();
+        assert!(is_open(&w, d));
+        assert_eq!(w.object(d).unwrap().borrow().sprite, Some(w.m.named_map["door_n_open"]));
+        assert!(w.engine.played.last().unwrap().ends_with("Open"));
+        // The open door is still found from the square, and closes again.
+        assert_eq!(found(&mut w, &q, IsoDirections::N), Some(d));
+        assert_eq!(toggles(&mut w, &q, IsoDirections::N, d), vec![Kind::ToggleDoor]);
+        w.adapter().toggle_player_door(d, 1).unwrap();
+        assert!(!is_open(&w, d));
+        assert_eq!(w.object(d).unwrap().borrow().sprite, Some(w.m.named_map["door_n"]));
+        assert!(w.engine.played.last().unwrap().ends_with("Close"));
+    }
+
+    #[test]
+    fn a_door_is_found_from_the_other_side_of_its_edge() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        // Standing north of it, facing south.
+        assert_eq!(found(&mut w, &query(10, 9), IsoDirections::S), Some(d));
+        // Not through the sides, and not where there is no door.
+        assert_eq!(found(&mut w, &query(10, 10), IsoDirections::E), None);
+        assert_eq!(found(&mut w, &query(10, 10), IsoDirections::W), None);
+        assert_eq!(found(&mut w, &query(12, 12), IsoDirections::N), None);
+        // An open door swings onto the west edge of its square.
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, true);
+        assert_eq!(found(&mut w, &query(10, 10), IsoDirections::W), Some(d));
+    }
+
+    #[test]
+    fn an_open_door_is_still_found_by_the_square_across_its_edge() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, true);
+        // The open door does not block the edge, so `getDoor(NORTH_SOUTH)`
+        // of the neighbour finds it after `getOpenDoor` and the closed-state
+        // lookup have not.
+        assert_eq!(found(&mut w, &query(10, 9), IsoDirections::S), Some(d));
+    }
+
+    #[test]
+    fn a_door_in_the_way_is_not_toggled() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        w.add(10, 10, "solid_block", ObjectKind::Object, false);
+        w.adapter().toggle_player_door(d, 1).unwrap();
+        assert!(!is_open(&w, d));
+        assert!(w.engine.played.is_empty());
+    }
+
+    #[test]
+    fn doors_the_port_does_not_cover_fail_loudly() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        if let ObjectKind::Door(dd) = &mut w.object(d).unwrap().borrow_mut().kind {
+            dd.locked = true;
+        }
+        let err = w.adapter().toggle_player_door(d, 1).unwrap_err();
+        assert!(matches!(err, pz_inventory::floor_drop::RuntimeHostError::Unsupported { .. }));
+        assert!(!is_open(&w, d));
+    }
+
+    #[test]
+    fn a_closed_window_is_toggled_with_a_short_or_long_press() {
+        let mut w = World::new();
+        let kind = window(&w, 50);
+        let win = w.add(10, 10, "window_w", kind, true);
+        let mut q = query(10, 10);
+        assert_eq!(found(&mut w, &q, IsoDirections::W), Some(win));
+        assert_eq!(toggles(&mut w, &q, IsoDirections::W, win), vec![Kind::ToggleWindow]);
+        q.time_pressed_context = 0.6;
+        assert_eq!(toggles(&mut w, &q, IsoDirections::W, win), vec![Kind::ToggleWindow]);
+    }
+
+    #[test]
+    fn a_curtain_key_press_is_not_guessed() {
+        let mut w = World::new();
+        let kind = window(&w, 50);
+        let win = w.add(10, 10, "window_w", kind, true);
+        let mut q = query(10, 10);
+        q.shift = true;
+        assert!(w.adapter().context_do_door_or_window_at(&q, IsoDirections::W, win).is_err());
+    }
+
+    #[test]
+    fn a_fence_is_hopped_from_the_square_that_has_it() {
+        let mut w = World::new();
+        w.add(10, 10, "fence_n", ObjectKind::Object, false);
+        let a = w.adapter();
+        let (sq, object) = a.context_hoppable_at(&query(10, 10), IsoDirections::N).unwrap();
+        assert_eq!(sq, (10, 10, 0));
+        assert!(object.is_some());
+        // Seen from the north it is the south neighbour's edge.
+        assert_eq!(a.context_hoppable_at(&query(10, 9), IsoDirections::S).unwrap().0, (10, 10, 0));
+        assert!(a.context_hoppable_at(&query(10, 10), IsoDirections::W).is_none());
+    }
+
+    #[test]
+    fn a_sheet_rope_is_found_on_its_side_of_the_square() {
+        let mut w = World::new();
+        w.add(10, 10, "sheet_w", ObjectKind::Object, false);
+        let a = w.adapter();
+        assert!(a.context_sheet_rope_side_at(&query(10, 10), IsoDirections::W));
+        assert!(!a.context_sheet_rope_side_at(&query(10, 10), IsoDirections::N));
+    }
+
+    #[test]
+    fn nothing_special_on_an_empty_square() {
+        let mut w = World::new();
+        let a = w.adapter();
+        for which in [ContextSpecial::Hutch, ContextSpecial::ButcherHook, ContextSpecial::RestOnFurniture] {
+            assert_eq!(a.context_special_at(&query(10, 10), IsoDirections::N, which).unwrap(), None);
+        }
+    }
 }
