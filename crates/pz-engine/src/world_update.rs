@@ -181,9 +181,10 @@ mod animation_bridge_tests {
     }
 }
 
-/// The engine's side of the character states: the game's `Rand` and the
-/// squares' moving objects outside the zombie list. The rest of
-/// `StatesEngine` (other characters by id, LOS, corpses, sounds, the path
+/// The engine's side of the character states: the game's `Rand`, the
+/// squares' moving objects outside the zombie list and the squares'
+/// visibility from the renderer's lighting. The rest of
+/// `StatesEngine` (other characters by id, corpses, sounds, the path
 /// host) keeps its defaults: TODO(port): those owners.
 struct EngineStates<'a> {
     rand: StandardRand,
@@ -270,6 +271,16 @@ impl StatesEngine for EngineStates<'_> {
             pz_inventory::floor_drop::RuntimeHostError::Borrowed("actual state floor service")
         })?;
         floor.place_retained(cell, square, item, x, y, height)
+    }
+
+    /// `square.isCanSee(playerIndex)`: the renderer's decoded lighting.
+    fn can_see(&self, sq: (i32, i32, i32), player_index: i32) -> bool {
+        pz_lua_api::bind_world::square_queries::square_vis(player_index, sq.0, sq.1, sq.2) & 2 != 0
+    }
+
+    /// `square.isCouldSee(playerIndex)`: the renderer's decoded lighting.
+    fn could_see(&self, sq: (i32, i32, i32), player_index: i32) -> bool {
+        pz_lua_api::bind_world::square_queries::square_vis(player_index, sq.0, sq.1, sq.2) & 4 != 0
     }
 
     /// `!square.getMovingObjects().isEmpty()` for the players and animals;
@@ -1045,24 +1056,40 @@ impl IsoWorld {
             self.fire_sim_events(lua, Some(&p), sim);
         }
         let mut host_error = None;
-        for chr in &mut self.zombies {
-            ids.push(chr.id);
+        // A zombie's attack events reach its target player: the players are
+        // lent to the list and each zombie is out of it for its events.
+        let zombie_ids: Vec<i32> = self.zombies.iter().map(|z| z.id).collect();
+        let players: Vec<LuaGameCharacterRef> = local_players().into_iter().flatten().collect();
+        let lent = self.lend_players(&players);
+        for id in zombie_ids {
+            ids.push(id);
+            let Some(chr) = self.zombies.iter_mut().find(|z| z.id == id) else { continue };
             match models.update_character(chr, dt, days) {
                 Ok(events) if !events.is_empty() => {
                     if let Some(sprites) = self.sprites.as_ref() {
-                        let result = with_states(
+                        let result = with_states_and_characters(
                             sprites,
                             &mut self.states_runtime,
                             Some(&mut models),
                             sim,
                             self.floor_world.as_ref(),
+                            Some(&mut self.zombies),
                             |w| {
+                                let Some(mut chr) = StateWorld::<LuaItem>::take_character(w, id) else {
+                                    return Ok(());
+                                };
                                 let chars = chars.borrow();
-                                let mut cx = StateCx::new(&sm, &chars, sim, w);
+                                let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
+                                let mut state = Ok(());
                                 for event in events {
                                     chr.on_anim_event(&event, &mut cx);
-                                    cx.state_result()?;
+                                    state = cx.state_result();
+                                    if state.is_err() {
+                                        break;
+                                    }
                                 }
+                                StateWorld::<LuaItem>::put_character(w, chr);
+                                state?;
                                 Ok::<_, pz_characters::character::state::StateFailure>(())
                             },
                         );
@@ -1076,6 +1103,7 @@ impl IsoWorld {
                 _ => {}
             }
         }
+        self.return_players(&players, lent);
         if let Some(error) = host_error {
             self.models = Some(models);
             return self.finish_state_host_fault(lua, None, sim, Vec::new(), error);
