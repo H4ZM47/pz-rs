@@ -1698,7 +1698,7 @@ mod tests {
     }
 
     #[test]
-    fn inputs_tell_partial_uses_and_skills_name_their_perk() {
+    fn the_recipe_panel_reads_partial_uses_skill_perks_and_output_items() {
         let scripts = "module Base {
             item Stone { Weight = 1, }
             item Thread { ItemType = t:drainable, UseDelta = 0.1, }
@@ -1707,6 +1707,8 @@ mod tests {
                 inputs { item 1 [Base.Thread], item 1 [Base.Apple] mode:destroy, } outputs { item 1 Base.Stone, } }
         }";
         let sm = load("partial", &[("media/scripts/test.txt", scripts)]);
+        // Resolves the output mapper results.
+        sm.post_world_dictionary_init();
         let mut t = thread(sm);
         run(
             &mut t,
@@ -1722,6 +1724,10 @@ mod tests {
             assert(not sew:isUsesPartialItem(nil))
             assert(not eat:isUsesPartialItem(apple), "a destroy input")
             assert(r:getRequiredSkill(0):getPerk() == 'W')
+            local mapper = r:getOutputs():get(0):getOutputMapper()
+            assert(mapper:getOutputItem(nil):getFullName() == "Base.Stone")
+            local held = { getFirstManualInputFor = function(self, input) return stone end }
+            assert(mapper:getOutputItem(held, true):getFullName() == "Base.Stone")
             "#,
         )
         .unwrap();

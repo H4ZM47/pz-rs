@@ -13,7 +13,7 @@
 //! IsoGameCharacter)), perks (`getPerk`, `involvesSkill`,
 //! `getHighestPerkRequirement`; TODO(PerkFactory)), fluids and energies (`getPossibleInputFluids`,
 //! `getFluid`, ...; TODO(Fluid, Energy)), `getOverlayMapper`,
-//! `getOutputMapper`, `getLuaCallString`/`hasLuaCall` (enum not exposed),
+//! `getLuaCallString`/`hasLuaCall` (enum not exposed),
 //! `getRecipeGroup` (TODO(CraftRecipeGroup)), `setTags`, `setProp1`/`setProp2`, `getTagBits`/`getModTags`, and a mod's
 //! name in `getModName` (TODO(ChooseGameInfo)). `couldBenefitFromRecipeAtHand`
 //! and `characterHasRequiredSkills` are bound in `bind_craft_recipe_manager`.
@@ -26,8 +26,8 @@ use crate::bind_registry::{key_value, ITEM_TAG_CLASS};
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg};
 use pz_kahlua::{LuaResult, NativeCall, Thread, Value};
 use pz_scripts::objects::entity::components::crafting::{
-    CraftRecipe, FluidMatchMode, InputFlag, InputScript, ItemApplyMode, OutputFlag, OutputScript, RequiredSkill,
-    XpAward,
+    CraftRecipe, FluidMatchMode, InputFlag, InputScript, ItemApplyMode, OutputFlag, OutputMapper, OutputScript,
+    RequiredSkill, XpAward,
 };
 use pz_scripts::objects::entity::components::resources::ResourceType;
 use pz_scripts::objects::entity::ComponentType;
@@ -37,6 +37,7 @@ use std::rc::Rc;
 
 pub const INPUT_SCRIPT_CLASS: &str = "zombie.scripting.entity.components.crafting.InputScript";
 pub const OUTPUT_SCRIPT_CLASS: &str = "zombie.scripting.entity.components.crafting.OutputScript";
+pub const OUTPUT_MAPPER_CLASS: &str = "zombie.entity.components.crafting.recipe.OutputMapper";
 pub const IO_SCRIPT_CLASS: &str = "zombie.scripting.entity.components.crafting.CraftRecipe$IOScript";
 pub const REQUIRED_SKILL_CLASS: &str = "zombie.scripting.entity.components.crafting.CraftRecipe$RequiredSkill";
 pub const XP_AWARD_CLASS: &str = "zombie.scripting.entity.components.crafting.CraftRecipe$XpAward";
@@ -48,6 +49,35 @@ pub const RESOURCE_TYPE_CLASS: &str = "zombie.entity.components.resources.Resour
 
 fn list(values: Vec<Value>) -> Value {
     crate::bind_java_util::list_value(values)
+}
+
+/// `OutputMapper.getOutputItem(data[, manualInputs])`. Matching the
+/// entrees against the input items (`matchItem`) is not ported.
+fn register_output_mapper(thread: &mut Thread) {
+    let b = expose_class(thread, OUTPUT_MAPPER_CLASS, None);
+    method(&b, "getOutputItem", |c, h| {
+        let (data, manual) = (c.arg(1), c.arg(2).truthy());
+        let (entrees, inputs, result) = h.read(|m: &OutputMapper| {
+            let result = m.default_output_entree().map(|e| e.result.clone());
+            (!m.entrees().is_empty(), m.input_scripts().to_vec(), result)
+        })?;
+        if entrees && !data.is_nil() {
+            return Err(crate::bind_world_object::unsupported("OutputMapper.getOutputItem (entrees)"));
+        }
+        let Some(result) = result else { return Ok(Value::Nil) };
+        if manual {
+            // Every input of the mapper needs a manual input item.
+            let recipe = h.parent().ok_or_else(|| pz_kahlua::LuaError::runtime("java.lang.NullPointerException"))?;
+            for i in inputs {
+                let input = io_value(recipe, i)?;
+                let f = c.thread.table_get(&data, &Value::str("getFirstManualInputFor"))?;
+                if c.thread.call1(&f, &[data.clone(), input])?.is_nil() {
+                    return Ok(Value::Nil);
+                }
+            }
+        }
+        Ok(script_value(result.as_ref()))
+    });
 }
 
 /// Line `i` of a recipe (an `InputScript` or `OutputScript`).
@@ -550,6 +580,17 @@ fn sibling<T: 'static>(h: &ScriptHandle, f: fn(&T) -> Option<usize>) -> LuaResul
 
 fn register_output(thread: &mut Thread) {
     let b = expose_class(thread, OUTPUT_SCRIPT_CLASS, Some(IO_SCRIPT_CLASS));
+    method(&b, "getOutputMapper", |_, h| {
+        let Some((recipe, i)) = line_index(h)? else { return Ok(Value::Nil) };
+        fn mapper(r: &CraftRecipe, i: usize) -> Option<&OutputMapper> {
+            r.output_mapper_for(r.io_lines().get(i)?.as_output()?)
+        }
+        if !recipe.read(|r: &CraftRecipe| mapper(r, i).is_some())? {
+            return Ok(Value::Nil);
+        }
+        Ok(recipe.child(OUTPUT_MAPPER_CLASS, &format!("mapper{i}"), move |r: &CraftRecipe| mapper(r, i)))
+    });
+    register_output_mapper(thread);
     method(&b, "hasFlag", |c, h| {
         let f = flag_arg(c, OutputFlag::ALL, OutputFlag::name);
         h.read(|o: &OutputScript| f.is_some_and(|f| o.has_flag(f)).into_lua())
