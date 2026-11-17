@@ -100,6 +100,27 @@ impl LiveItemTextures {
     pub fn base_slot(&self) -> Option<&TextureRef> {
         self.slots[0].as_ref()
     }
+    /// `InventoryItem.save` texture name for an item body that the caller
+    /// already holds. Same checks and order as the ItemRef save path.
+    pub fn saved_name(&self) -> HostResult<Option<String>> {
+        let Some(texture) = self.base_slot() else { return Ok(None) };
+        texture_name(texture)?;
+        let question =
+            pz_render::get_shared_texture_ref(QUESTION_TEXTURE).map_err(texture_host_error)?;
+        if question.as_ref().is_some_and(|q| Rc::ptr_eq(q, texture)) {
+            return Ok(None);
+        }
+        let script = self
+            .script_item
+            .as_ref()
+            .ok_or_else(|| unsupported("InventoryItem.save null script icon diagnostic"))?;
+        let Some(icon) = script_icon(script)? else { return Ok(None) };
+        let name = texture_name(texture)?;
+        if is_script_icon_name(&name, &icon) {
+            return Ok(None);
+        }
+        Ok(Some(name))
+    }
 }
 impl PartialEq for LiveItemTextures {
     fn eq(&self, other: &Self) -> bool {
@@ -134,10 +155,12 @@ impl ItemTextures {
             Self::Archive(_) => None,
         }
     }
-    pub fn archive_saved_name(&self) -> HostResult<Option<&str>> {
+    /// Texture name `InventoryItem.save` writes under flag 0x10000000.
+    /// A live receiver evaluates the native checks on its own slots.
+    pub fn saved_name(&self) -> HostResult<Option<String>> {
         match self {
-            Self::Archive(v) => Ok(v.saved_name.as_deref()),
-            Self::Live(_) => Err(unsupported("live texture requires actual asset save")),
+            Self::Archive(v) => Ok(v.saved_name.clone()),
+            Self::Live(live) => live.saved_name(),
         }
     }
 }
@@ -494,6 +517,27 @@ fn texture_name(texture: &TextureRef) -> HostResult<String> {
         .name
         .to_string())
 }
+/// scriptItem.getIcon(), or None when native skips the texture name
+/// (null, "None" or "default").
+fn script_icon(script: &ScriptItemRef) -> HostResult<Option<String>> {
+    let script = script
+        .0
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("actual save script icon"))?;
+    Ok(script
+        .icon
+        .clone()
+        .filter(|icon| icon != "None" && icon != "default"))
+}
+/// Native normalizes the name after the last File.separator only, then
+/// compares it with "Item_" + icon.
+fn is_script_icon_name(name: &str, icon: &str) -> bool {
+    let normalized = match name.rfind(std::path::MAIN_SEPARATOR) {
+        Some(index) => name[index + 1..].replace(".png", ""),
+        None => name.to_string(),
+    };
+    normalized == format!("Item_{icon}")
+}
 fn native_saved_name(item: &ItemRef) -> HostResult<Option<String>> {
     let base = slot(item, 0)?;
     let Some(texture) = base else { return Ok(None) };
@@ -513,26 +557,10 @@ fn native_saved_name(item: &ItemRef) -> HostResult<Option<String>> {
     }
     let script = get_script_item_ref(item)?
         .ok_or_else(|| unsupported("InventoryItem.save null script icon diagnostic"))?;
-    let icon = {
-        let script = script
-            .0
-            .try_borrow()
-            .map_err(|_| RuntimeHostError::Borrowed("actual save script icon"))?;
-        script.icon.clone()
-    };
-    let Some(icon) = icon else { return Ok(None) };
-    if icon == "None" || icon == "default" {
-        return Ok(None);
-    }
+    let Some(icon) = script_icon(&script)? else { return Ok(None) };
     let current = slot(item, 0)?
         .ok_or_else(|| unsupported("InventoryItem.save null texture name diagnostic"))?;
-    let name = texture_name(&current)?;
-    let normalized = if let Some(index) = name.rfind(std::path::MAIN_SEPARATOR) {
-        name[index + 1..].replace(".png", "")
-    } else {
-        name
-    };
-    if normalized == format!("Item_{icon}") {
+    if is_script_icon_name(&texture_name(&current)?, &icon) {
         return Ok(None);
     }
     let current = slot(item, 0)?
