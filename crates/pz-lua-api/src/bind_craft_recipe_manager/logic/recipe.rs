@@ -273,7 +273,12 @@ pub(super) fn base_set_recipe(thread: &mut Thread, o: &Rc<dyn LuaObject>, recipe
 fn recalculate_possible_craft_count(thread: &mut Thread, o: &Rc<dyn LuaObject>) -> LuaResult<i32> {
     let count = if selected(o).is_some() {
         let manual = state(o).borrow().manual_select_inputs;
-        with_data(thread, o, &[], |d, all, t| d.possible_craft_count(all, manual, t))?
+        let (count, consumed) = with_data(thread, o, &[], |d, all, t| {
+            let mut consumed = Vec::new();
+            Ok((d.possible_craft_count(all, manual, &mut consumed, t)?, consumed))
+        })?;
+        state(o).borrow_mut().multicraft_consumed_items = consumed;
+        count
     } else {
         // `CraftRecipeData.getPossibleCraftCount` with no inputs.
         100
@@ -931,6 +936,77 @@ pub(super) fn register(b: &ClassBuilder) {
             scripts.push(sm.get_script(ScriptType::Item, &full_type).ok_or_else(npe)?);
         }
         Ok(c.push(script_list(&scripts)))
+    });
+    b.method("clearManualInputs", |c| {
+        let o = logic_arg(c)?;
+        with_data(c.thread, &o, &[], |d, _, _| {
+            d.clear_manual_inputs();
+            Ok(())
+        })?;
+        Ok(0)
+    });
+    // `setManualInputsFor(input, items)`: false without manual input
+    // selection, or for an input of another recipe.
+    b.method("setManualInputsFor", |c| {
+        let o = logic_arg(c)?;
+        if !state(&o).borrow().manual_select_inputs {
+            return Ok(c.push(false));
+        }
+        let input = c.arg(1);
+        let index = match selected(&o) {
+            Some(script) => {
+                let r = script.downcast::<CraftRecipe>().ok_or_else(class_cast)?;
+                let r = r.borrow();
+                if !contains_io(&r, &input)? {
+                    return Ok(c.push(false));
+                }
+                input_index(&r, &input)?
+            }
+            None => return Ok(c.push(false)),
+        };
+        let i = index.ok_or_else(npe)?;
+        let list = match c.arg(2) {
+            Value::Object(l) => l,
+            Value::Nil => return Err(npe()),
+            _ => return Err(class_cast()),
+        };
+        let list = list.as_any().downcast_ref::<JavaList>().ok_or_else(class_cast)?;
+        // An item in no container counts only on a square.
+        let mut items = Vec::new();
+        for v in list.snapshot() {
+            let item = crate::bind_world_object::item_argument(&v)?;
+            if call(c.thread, &v, "getContainer", &[])?.is_nil() {
+                let world = call(c.thread, &v, "getWorldItem", &[])?;
+                if world.is_nil() || number(&call(c.thread, &world, "getWorldObjectIndex", &[])?)? == -1.0 {
+                    continue;
+                }
+            }
+            items.push(item);
+        }
+        let keys: Vec<usize> = items.iter().map(key).collect();
+        let v = with_data(c.thread, &o, &items, |d, _, t| d.set_manual_inputs_for(i, &keys, t))?;
+        Ok(c.push(v))
+    });
+    b.method("getMulticraftConsumedItemsFor", |c| {
+        let o = logic_arg(c)?;
+        let i = input_data(&o, &c.arg(1))?.ok_or_else(npe)?;
+        let list = match c.arg(2) {
+            Value::Object(l) => l,
+            Value::Nil => return Err(npe()),
+            _ => return Err(class_cast()),
+        };
+        let java_list = list.as_any().downcast_ref::<JavaList>().ok_or_else(class_cast)?;
+        let mut keys = Vec::new();
+        for v in java_list.snapshot() {
+            keys.push(key(&crate::bind_world_object::item_argument(&v)?));
+        }
+        let before = keys.len();
+        let consumed = state(&o).borrow().multicraft_consumed_items.clone();
+        with_data(c.thread, &o, &[], |d, _, t| d.multicraft_consumed_items_for(i, &consumed, &mut keys, t))?;
+        for item in items_for_keys(&o, &keys[before..]) {
+            java_list.push(crate::bind_items::try_item_value(&item)?)?;
+        }
+        Ok(c.push(Value::Object(list)))
     });
     b.method("updateManualInputAllowedItemTypes", |c| {
         let o = logic_arg(c)?;

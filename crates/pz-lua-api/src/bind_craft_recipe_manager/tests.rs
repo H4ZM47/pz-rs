@@ -573,10 +573,20 @@ fn the_window_logic_counts_crafts_and_consumes_the_populated_inputs() {
     assert_eq!(d.st.inputs.iter().map(|i| i.items.clone()).collect::<Vec<_>>(), [vec![1], vec![2, 3]]);
     assert!(d.consume_inputs_internal(true, None, true, false, t).unwrap());
     // One bat, four nails (two per craft).
-    assert_eq!(d.possible_craft_count(&all, false, t).unwrap(), 1);
-    assert_eq!(d.possible_craft_count(&all[1..], false, t).unwrap(), 0);
+    assert_eq!(d.possible_craft_count(&all, false, &mut Vec::new(), t).unwrap(), 1);
+    assert_eq!(d.possible_craft_count(&all[1..], false, &mut Vec::new(), t).unwrap(), 0);
     // With manual input selection only the applied item types count.
-    assert_eq!(d.possible_craft_count(&all, true, t).unwrap(), 1);
+    let mut consumed = Vec::new();
+    assert_eq!(d.possible_craft_count(&all, true, &mut consumed, t).unwrap(), 1);
+    assert_eq!(consumed, [1, 2, 3, 4, 5]);
+    // `getMulticraftConsumedItemsFor`: the applied items, then the other
+    // counted items of the same types.
+    let mut nails = Vec::new();
+    d.multicraft_consumed_items_for(1, &consumed, &mut nails, t).unwrap();
+    assert_eq!(nails, [2, 3, 4, 5]);
+    let mut bats = Vec::new();
+    d.multicraft_consumed_items_for(0, &consumed, &mut bats, t).unwrap();
+    assert_eq!(bats, [1]);
     assert_eq!(d.applied_input_item_types(), ["Base.BaseballBat", "Base.Nails", "Base.Nails"]);
     assert_eq!(d.items_of_types(&all, &["Base.Nails".to_string()]), [2, 3, 4, 5]);
     assert!(d.can_perform(Some(&all), true, true, t).unwrap());
@@ -591,13 +601,21 @@ fn the_window_logic_counts_crafts_and_consumes_the_populated_inputs() {
 
     // The nails are gone from the applied items: no input can be covered.
     d.st.inputs[1].cache.applied.clear();
-    assert_eq!(d.possible_craft_count(&all, true, t).unwrap(), 0);
+    assert_eq!(d.possible_craft_count(&all, true, &mut Vec::new(), t).unwrap(), 0);
 
     // `refresh`: the inputs that are not kept drop their items.
     d.verify_input_items(1, &all, t).unwrap();
     assert!(d.st.inputs[1].items.is_empty());
     d.populate_inputs(&[4, 5], true, t).unwrap();
     assert_eq!(d.st.inputs.iter().map(|i| i.items.clone()).collect::<Vec<_>>(), [vec![], vec![4, 5]]);
+
+    // The action's manual inputs: cleared, then set per input.
+    d.clear_manual_inputs();
+    assert!(d.st.inputs.iter().all(|i| i.items.is_empty()));
+    assert!(!d.set_manual_inputs_for(1, &[4], t).unwrap(), "one nail is not enough");
+    assert!(d.set_manual_inputs_for(1, &[4, 5], t).unwrap());
+    assert!(d.set_manual_inputs_for(0, &[1], t).unwrap());
+    assert_eq!(d.st.inputs.iter().map(|i| i.items.clone()).collect::<Vec<_>>(), [vec![1], vec![4, 5]]);
 }
 
 #[test]

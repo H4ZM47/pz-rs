@@ -718,10 +718,17 @@ impl<'a> RecipeData<'a> {
     /// manual)` without manual input selection (the items `getInputCraftCount`
     /// lists are only read for it) and with no resources
     /// (`getResourceCraftCount` gives 0).
-    pub fn possible_craft_count(&mut self, items: &[usize], manual: bool, on_test: &mut OnTest) -> LuaResult<i32> {
+    pub fn possible_craft_count(
+        &mut self,
+        items: &[usize],
+        manual: bool,
+        consumed: &mut Vec<usize>,
+        on_test: &mut OnTest,
+    ) -> LuaResult<i32> {
+        consumed.clear();
         let mut count = 100;
         for input in 0..self.inputs.len() {
-            count = count.min(self.input_craft_count(input, items, manual, on_test)?);
+            count = count.min(self.input_craft_count(input, items, manual, consumed, on_test)?);
             if count == 0 {
                 break;
             }
@@ -730,8 +737,16 @@ impl<'a> RecipeData<'a> {
     }
 
     /// `getInputCraftCount(data, items, outItems, manual)`. With manual
-    /// input selection only the item types the input holds count.
-    fn input_craft_count(&mut self, input: usize, items: &[usize], manual: bool, on_test: &mut OnTest) -> LuaResult<i32> {
+    /// input selection only the item types the input holds count. The
+    /// items that count are added to `consumed`.
+    fn input_craft_count(
+        &mut self,
+        input: usize,
+        items: &[usize],
+        manual: bool,
+        consumed: &mut Vec<usize>,
+        on_test: &mut OnTest,
+    ) -> LuaResult<i32> {
         let script = self.inputs[input];
         let from = self.consume_from_item_script(input);
         let from_fluid = from.is_some_and(|f| f.resource_type() == ResourceType::Fluid);
@@ -762,6 +777,7 @@ impl<'a> RecipeData<'a> {
                 }
             }
             total += d;
+            consumed.push(key);
         }
         // The original adds the double constant of `(double) 1.0E-5f`.
         total += 9.999999747378752e-6;
@@ -786,6 +802,68 @@ impl<'a> RecipeData<'a> {
             (None, None) => true,
             _ => false,
         })
+    }
+
+    /// `BaseCraftingLogic.getMulticraftConsumedItemsFor(input, list)`: the
+    /// applied items of the input that `consumed` has, then the other items
+    /// of `consumed` the input can use whose script item an applied item
+    /// has, added to `list`.
+    pub fn multicraft_consumed_items_for(
+        &mut self,
+        input: usize,
+        consumed: &[usize],
+        list: &mut Vec<usize>,
+        on_test: &mut OnTest,
+    ) -> LuaResult<()> {
+        let mut scripts: Vec<Option<Rc<RefCell<Item>>>> = Vec::new();
+        let same = |a: &Option<Rc<RefCell<Item>>>, b: &Option<Rc<RefCell<Item>>>| match (a, b) {
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        for k in self.st.inputs[input].cache.applied.clone() {
+            let script = self.item(k).script_item();
+            if !scripts.iter().any(|s| same(s, &script)) {
+                scripts.push(script);
+            }
+            if consumed.contains(&k) {
+                list.push(k);
+            }
+        }
+        for &k in consumed {
+            if list.contains(&k) || !self.consume_input_item(input, k, on_test, false, true)? {
+                continue;
+            }
+            let script = self.item(k).script_item();
+            if scripts.iter().any(|s| same(s, &script)) {
+                list.push(k);
+            }
+        }
+        Ok(())
+    }
+
+    /// `clearManualInputs(null)`: every input drops its items, last first.
+    pub fn clear_manual_inputs(&mut self) {
+        for d in &mut self.st.inputs {
+            d.items.clear();
+        }
+    }
+
+    /// `setManualInputsFor(input, items)` for an `Item` input: the input
+    /// drops its items, then gets each of `items` no input holds yet; true
+    /// when that satisfies it. The caller leaves out the items in no
+    /// container and not on a square.
+    pub fn set_manual_inputs_for(&mut self, input: usize, items: &[usize], on_test: &mut OnTest) -> LuaResult<bool> {
+        if self.inputs[input].resource_type() != ResourceType::Item {
+            return Ok(false);
+        }
+        self.st.inputs[input].items.clear();
+        for &key in items {
+            if !self.contains_input_item(key) {
+                self.add_input_item(input, key, on_test)?;
+            }
+        }
+        self.is_satisfied(input, on_test)
     }
 
     /// `getAppliedInputItemTypes(set)`: the full types of `getAllInputItems`.

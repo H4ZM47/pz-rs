@@ -183,6 +183,9 @@ struct State {
     /// `manualInputAllowedItemTypes`: with it set, `populateInputs` only
     /// offers items of these full types.
     manual_input_allowed_item_types: Vec<String>,
+    /// `multicraftConsumedItems` (item keys): what the last
+    /// `getPossibleCraftCount(true)` counted.
+    multicraft_consumed_items: Vec<usize>,
     manual_select_input_script_filter: Value,
     compare_mode: CompareMode,
     containers: Vec<Value>,
@@ -725,6 +728,7 @@ fn construct(c: &mut NativeCall<'_>, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<
         manual_select_inputs: false,
         show_manual_select_inputs: false,
         manual_input_allowed_item_types: Vec::new(),
+        multicraft_consumed_items: Vec::new(),
         manual_select_input_script_filter: Value::Nil,
         compare_mode: CompareMode::Name,
         containers: Vec::new(),

@@ -71,6 +71,17 @@ pub fn register(thread: &mut Thread) {
         };
         Ok(c.push(r))
     });
+    // `convertToPZNetTable(table)`: a shallow copy.
+    global(thread, "convertToPZNetTable", |c| {
+        let Value::Table(from) = c.arg(0) else {
+            return Err(pz_kahlua::LuaError::runtime("java.lang.ClassCastException"));
+        };
+        let to = TableRef::new();
+        for (k, v) in from.entries() {
+            to.rawset(k, v);
+        }
+        Ok(c.push(to))
+    });
     global(thread, "mergeTable", |c| {
         let result = TableRef::new();
         let mut index = 1;

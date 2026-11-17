@@ -2041,6 +2041,11 @@ fn register_character(
         Ok(c.push(any))
     });
     let s = sm.clone();
+    b.method("isWearingAwkwardGloves", move |c| {
+        let v = chr_of(c)?.borrow().is_wearing_awkward_gloves(&s);
+        Ok(c.push(v))
+    });
+    let s = sm.clone();
     b.method("isInventive", move |c| {
         let v = chr_of(c)?.borrow().is_inventive(&s).map_err(java_error)?;
         Ok(c.push(v))
