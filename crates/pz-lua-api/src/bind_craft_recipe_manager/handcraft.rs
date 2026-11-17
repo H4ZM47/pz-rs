@@ -13,11 +13,11 @@
 use super::item_status::{consume_input_item_test, is_tag_item, CraftItem};
 use super::RecipeCharacter;
 use crate::bind_world_object::unsupported;
-use pz_kahlua::LuaResult;
+use pz_kahlua::{LuaError, LuaResult};
 use pz_scripts::objects::entity::components::crafting::{CraftRecipe, InputFlag, InputScript};
 use pz_scripts::objects::entity::components::resources::ResourceType;
 use pz_scripts::objects::items::Item;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -29,6 +29,8 @@ struct RecipeData<'a> {
     input_items: Vec<Vec<usize>>,
     /// `usedItems` (item keys).
     used_items: HashSet<usize>,
+    /// `InputScriptData.fluidConsumed` (its `CacheData`) per input.
+    fluid_consumed: Vec<Cell<f32>>,
     items: &'a [&'a dyn CraftItem],
     chr: &'a dyn RecipeCharacter,
 }
@@ -43,6 +45,7 @@ impl<'a> RecipeData<'a> {
         RecipeData {
             recipe,
             input_items: vec![Vec::new(); inputs.len()],
+            fluid_consumed: inputs.iter().map(|_| Cell::new(0.0)).collect(),
             inputs,
             used_items: HashSet::new(),
             items,
@@ -50,12 +53,18 @@ impl<'a> RecipeData<'a> {
         }
     }
 
+    /// `inputs[input].getConsumeFromItemScript()`.
+    fn consume_from_item_script(&self, input: usize) -> Option<&'a InputScript> {
+        self.inputs[input].consume_from_item_script().and_then(|i| self.recipe.io_lines().get(i)?.as_input())
+    }
+
     fn item(&self, i: usize) -> &'a dyn CraftItem {
         self.items[i]
     }
 
     fn consume_input_item(&self, input: usize, item: usize, on_test: &mut OnTest) -> LuaResult<bool> {
-        consume_input_item_test(self.inputs[input], self.recipe, self.item(item), self.chr, on_test)
+        let cache = Some(&self.fluid_consumed[input]);
+        consume_input_item_test(self.inputs[input], self.recipe, self.item(item), self.chr, on_test, cache)
     }
 
     /// The item types `getPossibleInputItems()` gives, in order, for the
@@ -95,11 +104,11 @@ impl<'a> RecipeData<'a> {
         if script.resource_type() != ResourceType::Item || list.is_empty() {
             return Ok(false);
         }
-        if script.has_consume_from_item() {
-            // The amounts come from the `ConsumeFromItem` line (fluids).
-            return Err(unsupported("CraftRecipeData.consumeInputFromItems (ConsumeFromItem)"));
-        }
-        let (amount, max_amount) = (script.int_amount() as f32, script.int_max_amount() as f32);
+        // With a `ConsumeFromItem` line, the amounts are that line's.
+        let (amount, max_amount) = match self.consume_from_item_script(input) {
+            Some(from) => (from.amount(), from.max_amount()),
+            None => (script.int_amount() as f32, script.int_max_amount() as f32),
+        };
         if amount <= 0.0 {
             return Ok(false);
         }
@@ -127,7 +136,17 @@ impl<'a> RecipeData<'a> {
                     continue;
                 }
                 let uses = (uses - queued).max(0.0);
-                let scaled = uses / script.relative_scale(&item.full_type());
+                let mut scaled = uses / script.relative_scale(&item.full_type());
+                let mut uses = uses;
+                // A fluid `ConsumeFromItem` line counts the item's fluid
+                // over the queued amount.
+                if self.consume_from_item_script(input).is_some_and(|f| f.resource_type() == ResourceType::Fluid) {
+                    let Some(fc) = item.fluid_container()? else {
+                        return Err(LuaError::runtime("java.lang.NullPointerException"));
+                    };
+                    uses = (fc.amount - queued).max(0.0);
+                    scaled = uses;
+                }
                 let uses = scaled.min(uses);
                 left -= uses;
                 max_left -= uses;
@@ -263,6 +282,10 @@ impl<'a> RecipeData<'a> {
     /// no resources: every input that applies to hand crafting must be
     /// covered by the items it holds.
     fn consume_recipe_inputs(&mut self, on_test: &mut OnTest) -> LuaResult<bool> {
+        // `consumeInputsInternal` calls `clearCaches()` first.
+        for c in &self.fluid_consumed {
+            c.set(0.0);
+        }
         self.used_items.clear();
         let mut failed = false;
         for input in 0..self.inputs.len() {
