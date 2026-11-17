@@ -535,15 +535,15 @@ fn icon_texture(r: &CraftRecipe) -> pz_render::TextureResult<Option<pz_render::T
 
 /// The order `iconTexture` is chosen in: the `Item_<icon>` texture; else
 /// the normal texture of the first possible result of the first item
-/// output that has one; else that of the first possible item of the last
-/// item input (a later input overrides an earlier one, even with null).
+/// output that has one; else that of the first possible item of the first
+/// item input that has one (`OnPostWorldDictionaryInit` keeps the first
+/// non-null input texture and skips the later inputs).
 fn pick_icon<T>(
     icon: Option<T>,
     outputs: impl Iterator<Item = Option<T>>,
     inputs: impl Iterator<Item = Option<T>>,
 ) -> Option<T> {
-    let last_input = inputs.last().flatten();
-    icon.or_else(|| outputs.flatten().next()).or(last_input)
+    icon.or_else(|| outputs.flatten().next()).or_else(|| inputs.flatten().next())
 }
 
 #[cfg(test)]
@@ -551,12 +551,14 @@ mod icon_tests {
     use super::pick_icon;
 
     #[test]
-    fn icon_texture_falls_back_to_outputs_then_the_last_input() {
+    fn icon_texture_falls_back_to_outputs_then_the_first_input_texture() {
         let none = || std::iter::empty::<Option<i32>>();
         assert_eq!(pick_icon(Some(1), [Some(2)].into_iter(), [Some(3)].into_iter()), Some(1));
         assert_eq!(pick_icon(None, [None, Some(2), Some(5)].into_iter(), [Some(3)].into_iter()), Some(2));
-        assert_eq!(pick_icon(None, none(), [Some(3), Some(4)].into_iter()), Some(4));
-        assert_eq!(pick_icon(None, none(), [Some(3), None].into_iter()), None);
+        assert_eq!(pick_icon(None, none(), [Some(3), Some(4)].into_iter()), Some(3));
+        assert_eq!(pick_icon(None, none(), [None, Some(4), Some(5)].into_iter()), Some(4));
+        assert_eq!(pick_icon(None, none(), [Some(3), None].into_iter()), Some(3));
+        assert_eq!(pick_icon(None, none(), [None, None].into_iter()), None);
         assert_eq!(pick_icon::<i32>(None, none(), none()), None);
     }
 }
