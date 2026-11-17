@@ -848,7 +848,13 @@ impl IsoWorld {
                 // raises it with the player as `chr`), and a zombie has no
                 // Lua object. Vanilla only listens in the tutorial; with
                 // no listener the events do nothing.
-                SimEvent::Killed { .. } => {
+                SimEvent::Killed { victim, .. } => {
+                    // `IsoZombie.onKilled`: `DoZombieInventory()` first.
+                    if let Some(z) = self.zombies.iter_mut().find(|z| z.id == victim) {
+                        if let Err(e) = pz_lua_api::zombie_inventory::do_zombie_inventory(&mut lua.thread, z) {
+                            self.log_update_error(format!("IsoZombie.DoZombieInventory: {e}"));
+                        }
+                    }
                     for name in ["OnZombieDead", "OnCharacterDeath"] {
                         if lua.events.callbacks(name) > 0 {
                             self.log_update_error(format!(

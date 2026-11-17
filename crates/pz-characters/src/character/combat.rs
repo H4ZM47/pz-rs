@@ -1170,7 +1170,7 @@ impl<I: 'static> GameCharacter<I> {
         self.set_health(cx.ctx, 0.0);
         self.body_damage.overall_body_health = 0.0;
         if !self.vars.on_kill_done {
-            cx.ctx.event(SimEvent::Killed { attacker: killer });
+            cx.ctx.event(SimEvent::Killed { attacker: killer, victim: self.id });
             self.vars.on_kill_done = true;
         }
     }
