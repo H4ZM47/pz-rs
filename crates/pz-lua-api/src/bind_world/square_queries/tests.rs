@@ -267,3 +267,23 @@ fn menu_reads_of_an_outdoor_square() {
     "#,
     );
 }
+
+#[test]
+fn moving_objects_of_a_square() {
+    let mut f = Fixture::new();
+    let sm = pz_scripts::ScriptManager::new();
+    let chr = Rc::new(RefCell::new(crate::bind_character_sim::LuaGameCharacter::new(
+        &sm,
+        pz_characters::CharacterKind::Player,
+    )));
+    chr.borrow_mut().id = 5;
+    crate::bind_players::set_player(0, Some(chr.clone()));
+    let p = crate::bind_character_sim::character_value(&chr);
+    f.thread.globals().rawset(pz_kahlua::Value::str("p"), p);
+    f.run("assert(a:getMovingObjects():size() == 0)");
+    f.square(|sq| sq.moving_objects.push(5));
+    f.run("local l = a:getMovingObjects(); assert(l:size() == 1 and l:get(0) == p)");
+    f.square(|sq| sq.moving_objects.push(9));
+    f.run("assert(not pcall(function() return a:getMovingObjects() end))");
+    crate::bind_players::set_player(0, None);
+}

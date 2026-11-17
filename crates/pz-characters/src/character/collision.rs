@@ -20,7 +20,7 @@
 //! [`StateWorld::virtualize_if_unloaded`]: super::state::StateWorld::virtualize_if_unloaded
 //! [`StateWorld::resolve_collision_radius`]: super::state::StateWorld::resolve_collision_radius
 
-use super::state::StateCx;
+use super::state::{StateCx, StateWorld};
 use super::states::ids;
 use super::GameCharacter;
 
@@ -430,6 +430,7 @@ impl<I: 'static> GameCharacter<I> {
             self.vars.z = self.vars.z.min(c.2 as f32 + 0.99999);
             self.vars.last_z = self.vars.z;
         }
+        self.set_moving_square(found, &mut *cx.world);
         if found.is_none() {
             if let Some(last) = self.vars.last_square {
                 self.path.current_square = Some(last);
@@ -443,6 +444,36 @@ impl<I: 'static> GameCharacter<I> {
 }
 
 impl<I: 'static> GameCharacter<I> {
+    /// `IsoMovingObject.setMovingSquare(sq)`: leaves the old moving square's
+    /// `movingObjects` and joins the new one's.
+    pub fn set_moving_square(&mut self, sq: Option<(i32, i32, i32)>, world: &mut dyn StateWorld<I>) {
+        if sq != self.path.moving_square {
+            if let Some(old) = self.path.moving_square {
+                world.remove_moving_object(old, self.id);
+            }
+        }
+        self.path.moving_square = sq;
+        if let Some(new) = sq {
+            world.add_moving_object(new, self.id);
+        }
+    }
+
+    /// `IsoMovingObject.removeFromSquare()`: out of the current, last and
+    /// moving squares' `movingObjects`. A character is never in
+    /// `staticMovingObjects` or its square's `objects`, so the rest of the
+    /// original (`IsoObject.removeFromSquare`) changes nothing here.
+    pub fn remove_from_square(&mut self, world: &mut dyn StateWorld<I>) {
+        if let Some(sq) = self.path.current_square {
+            world.remove_moving_object(sq, self.id);
+        }
+        if let Some(sq) = self.vars.last_square {
+            world.remove_moving_object(sq, self.id);
+        }
+        self.vars.last_square = None;
+        self.path.current_square = None;
+        self.set_moving_square(None, world);
+    }
+
     /// `IsoZombie.shouldSlideHeadAwayFromWalls()` (other characters:
     /// never).
     fn should_slide_head_away_from_walls(&self) -> bool {

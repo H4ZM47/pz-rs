@@ -65,6 +65,28 @@ fn with_square<R>(
     })
 }
 
+/// The Lua object of the moving object with `id`: a local player
+/// (`IsoPlayer.players`).
+fn moving_object_value(id: i32) -> LuaResult<Value> {
+    for i in 0..4 {
+        let Some(player) = crate::bind_players::player(i) else {
+            continue;
+        };
+        let matches = player
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoPlayer is in use"))?
+            .id
+            == id;
+        if matches {
+            return crate::bind_character_sim::try_character_value(&player)
+                .map_err(crate::bind_world_object::host_error);
+        }
+    }
+    Err(crate::bind_world_object::unsupported(format!(
+        "IsoGridSquare.getMovingObjects: moving object {id} is not a local player and has no Lua object"
+    )))
+}
+
 /// `square.isOutside()`: the cached exterior flag of the loaded square.
 pub fn square_is_outside(x: i32, y: i32, z: i32) -> LuaResult<bool> {
     let sprites = crate::bind_sprites::manager()?;
@@ -226,6 +248,18 @@ pub(super) fn register(b: &ClassBuilder) {
             ));
         }
         Ok(crate::bind_java_util::list_value(Vec::new()))
+    });
+    // `getMovingObjects()`: the characters whose moving square this is
+    // (`movingObjects`), as a copy. Only the local players have Lua objects
+    // yet; any other character on the square stops with `unsupported`.
+    get(b, "getMovingObjects", |c| {
+        let (x, y, z) = self_square(c)?;
+        let ids = with_square(x, y, z, |square| Ok(square.moving_objects.clone()))?;
+        let mut items = Vec::with_capacity(ids.len());
+        for id in ids {
+            items.push(moving_object_value(id)?);
+        }
+        Ok(crate::bind_java_util::list_value(items))
     });
     // `getVehicleContainer()`: the first vehicle of the chunks within four
     // squares that intersects this square.
