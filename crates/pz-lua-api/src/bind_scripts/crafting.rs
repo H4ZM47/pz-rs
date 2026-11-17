@@ -8,7 +8,7 @@
 //! `isFavourite`, `addXP`, `hasPlayerLearned`, `canResearch`,
 //! `checkMetaRecipe`, `checkAutoLearn*Skills`, `characterHasRequiredSkills`,
 //! `getHighestRelevantSkill*`, `*BenefitFromRecipeAtHand`,
-//! `generateDebugText`, `getFavouriteModDataString`, `getTime(character)`,
+//! `generateDebugText`, `getFavouriteModDataString`,
 //! the input item tests, `isFluidMatch`, `isEnergyMatch`; TODO(inventory,
 //! IsoGameCharacter)), perks (`getPerk`, `involvesSkill`,
 //! `getHighestPerkRequirement`; TODO(PerkFactory)), fluids and energies (`getPossibleInputFluids`,
@@ -86,6 +86,30 @@ fn icon_texture(r: &CraftRecipe) -> LuaResult<Value> {
         r.inputs().filter(|i| i.resource_type() == ResourceType::Item).find_map(|i| first(i.possible_input_items()))
     });
     Ok(crate::bind_render::texture_value_ref(texture.as_ref()))
+}
+
+/// The perks whose highest level `getHighestRelevantSkillLevel(chr,
+/// includeAutoLearn)` takes: the required skills, the xp awards, and with
+/// `include_auto_learn` the auto-learn skills.
+fn relevant_skill_perks(r: &CraftRecipe, include_auto_learn: bool) -> Vec<String> {
+    let mut perks: Vec<String> = r.skill_required.iter().flatten().map(|s| s.perk().to_string()).collect();
+    perks.extend(r.xp_award.iter().flatten().map(|x| x.perk().to_string()));
+    if include_auto_learn {
+        perks.extend(r.auto_learn_any.iter().flatten().map(|s| s.perk().to_string()));
+        perks.extend(r.auto_learn_all.iter().flatten().map(|s| s.perk().to_string()));
+    }
+    perks
+}
+
+/// `chr.getPerkLevel(Perks.<perk>)`.
+fn perk_level(t: &mut Thread, chr: &Value, perk: &str) -> LuaResult<i32> {
+    let perk = match t.globals().get_str("Perks") {
+        Value::Table(perks) => perks.get_str(perk),
+        _ => Value::Nil,
+    };
+    let f = t.table_get(chr, &Value::str("getPerkLevel"))?;
+    let level = t.call1(&f, &[chr.clone(), perk])?;
+    Ok(pz_kahlua::exec::raw_tonumber(&level).unwrap_or(0.0) as i32)
 }
 
 fn opt_io(recipe: &ScriptHandle, i: Option<usize>) -> LuaResult<Value> {
@@ -214,10 +238,23 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     set(&b, "setResearchSkillLevel", |r: &mut CraftRecipe, v: i32| r.set_research_skill_level(v));
     method(&b, "normalizeSkillLevel", |c, _| Ok(CraftRecipe::normalize_skill_level(int_arg(c, 1)).into_lua()));
     method(&b, "getTime", |c, h| {
-        if !c.arg(1).is_nil() {
-            return Err(pz_kahlua::LuaError::runtime("TODO(IsoGameCharacter): getTime(character)"));
+        let chr = c.arg(1);
+        let (time, highest, perks) = h.read(|r: &CraftRecipe| {
+            (r.time(), r.highest_skill_requirement(false), relevant_skill_perks(r, true))
+        })?;
+        if chr.is_nil() {
+            return Ok(time.into_lua());
         }
-        h.read(|r: &CraftRecipe| r.time().into_lua())
+        // `getTime(chr)`: 1/20 of the time less per level above the highest
+        // requirement.
+        let mut level = 0;
+        for perk in &perks {
+            level = level.max(perk_level(c.thread, &chr, perk)?);
+        }
+        if level <= highest {
+            return Ok(time.into_lua());
+        }
+        Ok((time - (level - highest) * (time / 20)).into_lua())
     });
     get(&b, "getTimedActionScript", |r: &CraftRecipe| script_value(r.timed_action_script()));
     method(&b, "getHighestSkillRequirement", |c, h| {

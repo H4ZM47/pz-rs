@@ -1686,4 +1686,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn craft_recipe_time_drops_a_twentieth_per_level_above_the_requirement() {
+        let scripts = "module Base {
+            item Stone { Weight = 1, }
+            craftRecipe Chip { time = 100, Tags = InHandCraft, SkillRequired = Woodwork:2, xpAward = Cooking:5,
+                inputs { item 1 [Base.Stone], } outputs { item 1 Base.Stone, } }
+        }";
+        let sm = load("time", &[("media/scripts/test.txt", scripts)]);
+        let mut t = thread(sm);
+        run(
+            &mut t,
+            r#"
+            Perks = { Woodwork = 'W', Cooking = 'C' }
+            local levels = { W = 1, C = 0 }
+            local chr = { getPerkLevel = function(self, p) return levels[p] end }
+            local r = getScriptManager():getCraftRecipe("Base.Chip")
+            assert(r:getTime() == 100)
+            assert(r:getTime(chr) == 100, "below the requirement")
+            levels.W = 2
+            assert(r:getTime(chr) == 100, "at the requirement")
+            levels.W = 5
+            assert(r:getTime(chr) == 85, "3 levels above")
+            levels.C = 7
+            assert(r:getTime(chr) == 75, "the xp award perk counts")
+            "#,
+        )
+        .unwrap();
+    }
 }
