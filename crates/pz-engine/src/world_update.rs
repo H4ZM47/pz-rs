@@ -912,6 +912,13 @@ impl IsoWorld {
         let mut host_error = None;
         for chr in &mut self.zombies {
             ids.push(chr.id);
+            // `ModelManager.Add`: the zombie dresses before its body model
+            // is built.
+            if !models.contains_character(chr.id) {
+                if let Err(e) = crate::zombie_dress::dress_zombie(&lua.thread, chr) {
+                    errors.push(format!("ModelManager.dressInRandomOutfit: {e}"));
+                }
+            }
             match models.update_character(chr, dt, days) {
                 Ok(events) if !events.is_empty() => {
                     if let Some(sprites) = self.sprites.as_ref() {
