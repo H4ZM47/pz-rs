@@ -2,25 +2,35 @@
 //! `getUniqueRecipeItems`, which `ISInventoryPaneContextMenu.createMenu`
 //! calls for each selected item, and the parts of the manager it needs:
 //! the recipe tag query (`queryRecipes`, over `TaggedObjectManager`),
-//! `isValidRecipeForCharacter` and `getValidInputScriptForItem`.
+//! `isValidRecipeForCharacter`, `getValidInputScriptForItem` with the item
+//! status tests (`item_status`), and the context-click part of
+//! `HandcraftLogic` (`handcraft`).
 //!
 //! Not ported yet, and reported with `unsupported` when reached:
-//! - `HandcraftLogic`: `canPerformCurrentRecipe` for a recipe that accepts
-//!   the item;
-//! - the item status tests of `consumeInputItemInternal`
-//!   (`InputScript.doesItemPassRoutineStatusTests` and the others) for an
-//!   item that an input script lists;
+//! - `CraftRecipeData.createRecipeOutputs` (and after it the craft surface
+//!   and workstation tests) for a recipe whose inputs the containers cover;
+//! - `IsoPlayer.tooDarkToRead` for such a recipe;
 //! - `CraftRecipe.validateBenefitFromRecipeAtHand` for a learned recipe
 //!   whose skill requirement the character does not meet
-//!   (`IsoPlayer.tooDarkToRead`, `hasRecipeAtHand`).
+//!   (`tooDarkToRead`, `hasRecipeAtHand`);
+//! - the rarer item reads listed in `item_status`.
+
+mod handcraft;
+pub mod item_status;
 
 use crate::bind_character_sim::CharacterObject;
+use crate::bind_item_container::LuaItemContainer;
+use crate::bind_items::ItemRef;
+use crate::bind_java_util::JavaList;
 use crate::bind_scripts::script_list;
 use crate::expose::expose_class;
+use item_status::{CraftItem, CraftItemClass, FoodState};
 use pz_characters::Characters;
-use pz_kahlua::{LuaError, LuaResult, Thread, Value};
+use pz_inventory::item::ItemKind;
+use pz_inventory::{ItemClass, ItemOwner, ItemPlace};
+use pz_kahlua::{LuaError, LuaResult, TableRef, Thread, Value};
 use pz_scripts::java;
-use pz_scripts::objects::entity::components::crafting::{CraftRecipe, InputScript, LuaCall};
+use pz_scripts::objects::entity::components::crafting::CraftRecipe;
 use pz_scripts::objects::entity::components::resources::ResourceType;
 use pz_scripts::objects::items::Item;
 use pz_scripts::{ScriptManager, ScriptRef, ScriptType};
@@ -130,6 +140,13 @@ pub trait RecipeCharacter {
     fn is_know_all_recipes(&self) -> bool;
     /// `getKnownRecipes().contains(name)`.
     fn knows(&self, name: &str) -> bool;
+    /// `CraftRecipeManager.itemGetQueuedAmount(chr, item, cache)`: how much
+    /// of the item the queued `ISHandcraftAction`s use.
+    fn item_queued_amount(&self, item: &dyn CraftItem) -> LuaResult<f32>;
+    /// `IsoPlayer.tooDarkToRead()`.
+    fn too_dark_to_read(&self) -> LuaResult<bool> {
+        Err(crate::bind_world_object::unsupported("IsoPlayer.tooDarkToRead"))
+    }
 }
 
 /// `IsoGameCharacter.isRecipeKnown(CraftRecipe, true)` (the
@@ -199,77 +216,21 @@ pub fn is_valid_recipe_for_character(
     Ok(true)
 }
 
-/// `CraftRecipe.OnTestItem(item, chr)`: false without a character, true
-/// without an `OnTest` function, otherwise the function's result
-/// (`on_test` calls it).
-fn on_test_item(recipe: &CraftRecipe, has_chr: bool, on_test: &mut dyn FnMut(&str) -> bool) -> bool {
-    if !has_chr {
-        return false;
-    }
-    match recipe.lua_call_string(LuaCall::OnTest) {
-        Some(name) => on_test(name),
-        None => true,
-    }
-}
-
-/// `CraftRecipeManager.consumeInputItem(input, item, true, null, chr)` for
-/// an `Item` input, through `consumeInputItemInternal`: false for an item
-/// without a script or one the input does not list (`containsItem`), and
-/// false when the recipe's `OnTestItem` rejects it.
-fn is_item_valid_for_input_script(
-    input: &InputScript,
-    recipe: &CraftRecipe,
-    script_item: Option<&Rc<RefCell<Item>>>,
-    has_chr: bool,
-    on_test: &mut dyn FnMut(&str) -> bool,
-) -> LuaResult<bool> {
-    if input.resource_type() != ResourceType::Item {
-        return Ok(false);
-    }
-    let Some(script_item) = script_item else {
-        return Ok(false);
-    };
-    // `containsItem`: `itemScriptCache.contains(item)`. The original's
-    // `OnPostWorldDictionaryInit` adds the items of each input tag
-    // (`ItemTags.getItemsForTag`) to that cache after the listed items; the
-    // port's cache has only the listed items yet (TODO(ItemTags) in
-    // `InputScript::resolve_items`), so the tags are tested here.
-    let listed =
-        input.possible_input_items().iter().any(|s| s.downcast::<Item>().is_some_and(|s| Rc::ptr_eq(&s, script_item)))
-            || (!input.is_accepts_any_item() && {
-                let script_item = script_item.borrow();
-                input.item_tags().iter().flatten().any(|t| script_item.has_tag(Some(t)))
-            });
-    if !listed {
-        return Ok(false);
-    }
-    if !on_test_item(recipe, has_chr, on_test) {
-        return Ok(false);
-    }
-    // TODO(CraftRecipeManager.consumeInputItemInternal): the item status
-    // tests (`doesItemPassRoutineStatusTests`, clothing, sharpness, damage,
-    // empty/full, food), the empty-container check, and the uses, fluid and
-    // energy amounts.
-    Err(crate::bind_world_object::unsupported(format!(
-        "CraftRecipeManager.consumeInputItemInternal status tests ({})",
-        recipe.name().unwrap_or_default()
-    )))
-}
-
-/// `CraftRecipeManager.getValidInputScriptForItem(recipe, item, chr)`: the
-/// index (into `getInputs()`) of the first `Item` input that accepts the
-/// item.
+/// `CraftRecipeManager.getValidInputScriptForItem(recipe, item, chr)`
+/// (through `isItemValidForInputScript` and `consumeInputItem(input, item,
+/// true, null, chr)`): the index (into `getInputs()`) of the first `Item`
+/// input that accepts the item.
 fn valid_input_script_for_item(
     recipe: &CraftRecipe,
-    script_item: Option<&Rc<RefCell<Item>>>,
-    has_chr: bool,
-    on_test: &mut dyn FnMut(&str) -> bool,
+    item: &dyn CraftItem,
+    chr: &dyn RecipeCharacter,
+    on_test: &mut dyn FnMut(&str, usize) -> bool,
 ) -> LuaResult<Option<usize>> {
     for (i, input) in recipe.inputs().enumerate() {
         if input.resource_type() != ResourceType::Item {
             continue;
         }
-        if is_item_valid_for_input_script(input, recipe, script_item, has_chr, on_test)? {
+        if item_status::consume_input_item_test(input, recipe, item, chr, on_test)? {
             return Ok(Some(i));
         }
     }
@@ -279,45 +240,50 @@ fn valid_input_script_for_item(
 /// `CraftRecipeManager.getUniqueRecipeItems(item, chr, containers)`: the
 /// `InHandCraft`/`AnySurfaceCraft` recipes that are valid for the character,
 /// have an input that accepts the item, pass `OnTestItem`, and that a
-/// `HandcraftLogic` set to the recipe (with the item, a craft surface within
-/// two squares and the containers) can perform.
+/// `HandcraftLogic` set to the recipe from the context click (with the
+/// containers' items) can perform.
 ///
-/// The original builds the `HandcraftLogic` (and its `findCraftSurface`)
-/// before the loop. Nothing reads it before `canPerformCurrentRecipe`, which
-/// is not ported, so a recipe that gets that far returns an error (until the
-/// item status tests are ported, those return the error first). It also
-/// returns its one static `RecipeList`, cleared on each call; this returns a
-/// new list.
+/// `container_items` are the items of the containers in order
+/// (`getAllItemsFromContainers`); `item` is the clicked item. The original
+/// builds the `HandcraftLogic` before the loop with `findCraftSurface(chr,
+/// 2)`, which only `canPerformCurrentRecipe` reads after the outputs (see
+/// `handcraft`). It returns its one static `RecipeList`, cleared on each
+/// call; this returns a new list.
 pub fn unique_recipe_items(
     sm: &ScriptManager,
-    script_item: Option<&Rc<RefCell<Item>>>,
-    chr: Option<&dyn RecipeCharacter>,
-    has_containers: bool,
-    on_test: &mut dyn FnMut(&str) -> bool,
+    item: &dyn CraftItem,
+    chr: &dyn RecipeCharacter,
+    container_items: &[&dyn CraftItem],
+    on_test: &mut dyn FnMut(&str, usize) -> bool,
 ) -> LuaResult<Vec<ScriptRef>> {
     use pz_scripts::objects::entity::components::crafting::craft_recipe_tag::{ANY_SURFACE_CRAFT, IN_HAND_CRAFT};
     let recipes = query_recipes_for_tags(sm, &[IN_HAND_CRAFT, ANY_SURFACE_CRAFT])?;
-    let out = Vec::new();
+    let mut items: Vec<&dyn CraftItem> = container_items.to_vec();
+    let clicked = match items.iter().position(|i| i.key() == item.key()) {
+        Some(i) => i,
+        None => {
+            items.push(item);
+            items.len() - 1
+        }
+    };
+    let mut out = Vec::new();
     for script in recipes {
         let Some(recipe) = script.downcast::<CraftRecipe>() else {
             continue;
         };
         let recipe = recipe.borrow();
-        if !is_valid_recipe_for_character(&recipe, chr, has_containers)? {
+        if !is_valid_recipe_for_character(&recipe, Some(chr), true)? {
             continue;
         }
-        if valid_input_script_for_item(&recipe, script_item, chr.is_some(), on_test)?.is_none() {
+        if valid_input_script_for_item(&recipe, item, chr, on_test)?.is_none() {
             continue;
         }
-        if !on_test_item(&recipe, chr.is_some(), on_test) {
+        if !item_status::on_test_item(&recipe, item.key(), on_test) {
             continue;
         }
-        // TODO(HandcraftLogic): `setRecipeFromContextClick(recipe, item)`
-        // and `canPerformCurrentRecipe()`.
-        return Err(crate::bind_world_object::unsupported(format!(
-            "HandcraftLogic.canPerformCurrentRecipe ({})",
-            recipe.name().unwrap_or_default()
-        )));
+        if handcraft::can_perform_from_context_click(&recipe, &items, container_items.len(), clicked, chr, on_test)? {
+            out.push(script.clone());
+        }
     }
     Ok(out)
 }
@@ -326,6 +292,9 @@ pub fn unique_recipe_items(
 struct LuaRecipeCharacter<'a> {
     chars: &'a RefCell<Characters>,
     character: &'a CharacterObject,
+    value: Value,
+    /// `LuaManager.env`.
+    env: TableRef,
 }
 
 impl RecipeCharacter for LuaRecipeCharacter<'_> {
@@ -343,6 +312,132 @@ impl RecipeCharacter for LuaRecipeCharacter<'_> {
     fn knows(&self, name: &str) -> bool {
         self.character.0.borrow().known_recipes.iter().any(|k| k == name)
     }
+    /// `ISTimedActionQueue.queues[chr].queue`: 0 without a queue; the
+    /// `ISHandcraftAction` entries (their `manualInputs`) are not ported.
+    fn item_queued_amount(&self, _item: &dyn CraftItem) -> LuaResult<f32> {
+        let table = |v: Value| match v {
+            Value::Table(t) => Some(t),
+            _ => None,
+        };
+        let Some(queue) = table(self.env.rawget(&Value::str("ISTimedActionQueue")))
+            .and_then(|q| table(q.rawget(&Value::str("queues"))))
+            .and_then(|q| table(q.rawget(&self.value)))
+            .and_then(|q| table(q.rawget(&Value::str("queue"))))
+        else {
+            return Ok(0.0);
+        };
+        for (_, action) in queue.entries() {
+            let is_handcraft = table(action)
+                .and_then(|a| a.metatable())
+                .is_some_and(|m| matches!(m.get_str("Type"), Value::Str(s) if &*s == "ISHandcraftAction"));
+            if is_handcraft {
+                return Err(crate::bind_world_object::unsupported(
+                    "CraftRecipeManager.itemGetQueuedAmount (ISHandcraftAction)",
+                ));
+            }
+        }
+        Ok(0.0)
+    }
+}
+
+/// An `InventoryItem` argument or container item, read through its holder.
+struct LuaCraftItem {
+    item: ItemRef,
+    value: Value,
+    owner: Rc<dyn ItemOwner>,
+    script: Option<Rc<RefCell<Item>>>,
+    /// The character argument, for `isNoRecipes(player)`.
+    player: Value,
+}
+
+impl LuaCraftItem {
+    fn new(sm: &ScriptManager, item: ItemRef, player: &Value) -> LuaResult<Self> {
+        let value = crate::bind_items::try_item_value(&item)?;
+        let owner = crate::bind_items::item_env().owner(&item);
+        let script = pz_characters::character::items::script_item(sm, &item.borrow());
+        Ok(LuaCraftItem { item, value, owner, script, player: player.clone() })
+    }
+}
+
+impl CraftItem for LuaCraftItem {
+    fn key(&self) -> usize {
+        Rc::as_ptr(&self.item) as *const () as usize
+    }
+    fn script_item(&self) -> Option<Rc<RefCell<Item>>> {
+        self.script.clone()
+    }
+    fn full_type(&self) -> String {
+        self.item.borrow().get_full_type()
+    }
+    fn current_uses(&self) -> i32 {
+        self.item.borrow().get_current_uses()
+    }
+    fn max_uses(&self) -> i32 {
+        self.item.borrow().get_max_uses()
+    }
+    fn class(&self) -> CraftItemClass {
+        match self.item.borrow().template.class {
+            ItemClass::Container => CraftItemClass::Container,
+            ItemClass::Drainable => CraftItemClass::Drainable,
+            ItemClass::Radio => CraftItemClass::Radio,
+            ItemClass::WeaponPart => CraftItemClass::WeaponPart,
+            _ => CraftItemClass::Other,
+        }
+    }
+    fn is_no_recipes(&self) -> LuaResult<bool> {
+        crate::bind_items::row_read_flags::is_no_recipes_value(&self.item, &self.player)
+    }
+    fn is_favorite(&self) -> bool {
+        self.item.borrow().favorite
+    }
+    fn food(&self) -> Option<FoodState> {
+        let i = self.item.borrow();
+        let ItemKind::Food(f) = &i.kind else {
+            return None;
+        };
+        Some(FoodState {
+            rotten: i.is_rotten(),
+            frozen: f.frozen,
+            cookable: f.is_cookable,
+            cooked: i.is_cooked(),
+            burnt: i.is_burnt(),
+        })
+    }
+    fn is_broken(&self) -> bool {
+        self.item.borrow().is_broken()
+    }
+    fn in_dead_body(&self) -> bool {
+        matches!(self.owner.place(&self.item.borrow()), ItemPlace::DeadBody { .. })
+    }
+    fn is_worn(&self) -> bool {
+        let i = self.item.borrow();
+        matches!(i.kind, ItemKind::Clothing(_) | ItemKind::AlarmClockClothing(..)) && self.owner.is_worn(&i)
+    }
+    fn is_equipped(&self) -> bool {
+        self.owner.is_equipped(&self.item.borrow())
+    }
+    fn condition(&self) -> i32 {
+        self.item.borrow().condition
+    }
+    fn condition_max(&self) -> i32 {
+        self.item.borrow().condition_max
+    }
+    fn is_full_uses(&self) -> bool {
+        let i = self.item.borrow();
+        i.uses >= i.get_max_uses()
+    }
+    fn is_empty_uses(&self) -> bool {
+        self.item.borrow().get_current_uses_float() <= 0.0
+    }
+    fn container_is_empty(&self) -> bool {
+        match &self.item.borrow().kind {
+            ItemKind::Container(c) => c.container.slot().is_none_or(|c| c.borrow().is_empty()),
+            _ => true,
+        }
+    }
+    fn is_fluid_container(&self) -> LuaResult<bool> {
+        Ok(crate::bind_world_object::fluid_component(&self.value)?.is_some())
+    }
 }
 
 /// `protectedCallBoolean(LuaManager.getFunctionObject(name), item, chr)`:
@@ -355,34 +450,58 @@ fn call_on_test(thread: &mut Thread, name: &str, item: &Value, chr: &Value) -> b
     matches!(thread.pcall(&f, &[item.clone(), chr.clone()]).as_deref(), Ok([Value::Bool(true), ..]))
 }
 
+fn npe(what: &str) -> LuaError {
+    LuaError::Runtime { message: format!("{what} is null"), class: "java.lang.NullPointerException" }
+}
+
+/// `getAllItemsFromContainers(containers, allItems)`: each
+/// `ItemContainer`'s items in order.
+fn container_items(containers: &Value) -> LuaResult<Vec<ItemRef>> {
+    let Value::Object(o) = containers else {
+        return Err(npe("containers"));
+    };
+    let list = o.as_any().downcast_ref::<JavaList>().ok_or_else(|| LuaError::runtime("expected ArrayList"))?;
+    let mut items = Vec::new();
+    for c in list.snapshot() {
+        let container = match &c {
+            Value::Object(o) => o.as_any().downcast_ref::<LuaItemContainer>(),
+            _ => None,
+        };
+        let container = container.ok_or_else(|| LuaError::runtime("ClassCastException: expected ItemContainer"))?;
+        items.extend(container.container.borrow().items.iter().cloned());
+    }
+    Ok(items)
+}
+
 pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Characters>>) {
     let b = expose_class(thread, CRAFT_RECIPE_MANAGER_CLASS, None);
     b.static_fn("getUniqueRecipeItems", move |c| {
-        let item_value = c.arg(0);
-        let item = crate::bind_world_object::item_argument(&item_value)?;
+        let item = crate::bind_world_object::item_argument(&c.arg(0))?;
         let chr_value = c.arg(1);
+        // `findCraftSurface(chr, 2)` reads `chr.getCurrentSquare()`, and
+        // `setContainers` copies the list.
         let character = match &chr_value {
-            Value::Object(o) => Some(
-                (&**o as &dyn Any)
-                    .downcast_ref::<CharacterObject>()
-                    .ok_or_else(|| LuaError::runtime("expected IsoGameCharacter"))?,
-            ),
-            Value::Nil => None,
+            Value::Object(o) => (&**o as &dyn Any)
+                .downcast_ref::<CharacterObject>()
+                .ok_or_else(|| LuaError::runtime("expected IsoGameCharacter"))?,
+            Value::Nil => return Err(npe("IsoGameCharacter")),
             _ => return Err(LuaError::runtime("expected IsoGameCharacter")),
         };
-        let has_containers = !c.arg(2).is_nil();
-        let lua_chr = character.map(|character| LuaRecipeCharacter { chars: &chars, character });
+        let containers = container_items(&c.arg(2))?;
+        let lua_chr =
+            LuaRecipeCharacter { chars: &chars, character, value: chr_value.clone(), env: c.thread.globals().clone() };
+        let item = LuaCraftItem::new(&sm, item, &chr_value)?;
+        let containers =
+            containers.into_iter().map(|i| LuaCraftItem::new(&sm, i, &chr_value)).collect::<LuaResult<Vec<_>>>()?;
+        let values: Vec<(usize, Value)> =
+            containers.iter().chain([&item]).map(|i| (i.key(), i.value.clone())).collect();
         let thread = &mut *c.thread;
-        let mut on_test = |name: &str| call_on_test(thread, name, &item_value, &chr_value);
-        // `InventoryItem.getScriptItem`, read before `OnTest` gets the item.
-        let script_item = pz_characters::character::items::script_item(&sm, &item.borrow());
-        let list = unique_recipe_items(
-            &sm,
-            script_item.as_ref(),
-            lua_chr.as_ref().map(|c| c as &dyn RecipeCharacter),
-            has_containers,
-            &mut on_test,
-        )?;
+        let mut on_test = |name: &str, key: usize| {
+            let item = values.iter().find(|(k, _)| *k == key).map_or(Value::Nil, |(_, v)| v.clone());
+            call_on_test(thread, name, &item, &chr_value)
+        };
+        let refs: Vec<&dyn CraftItem> = containers.iter().map(|i| i as &dyn CraftItem).collect();
+        let list = unique_recipe_items(&sm, &item, &lua_chr, &refs, &mut on_test)?;
         Ok(c.push(script_list(&list)))
     });
 }
