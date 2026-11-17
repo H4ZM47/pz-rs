@@ -205,6 +205,33 @@ pub(crate) fn register(thread: &mut Thread) {
         let body = this(c)?;
         container(c, &body)
     });
+    // `getInventoryWeight()`: 0 without a container; else per item the
+    // hotbar weight of an attached item not equipped, the equipped weight
+    // of an equipped one, or the unequipped weight.
+    get(&b, "getInventoryWeight", |c| {
+        let body = this(c)?;
+        let container = body.try_borrow_mut().map_err(|_| borrowed())?.runtime_container();
+        let Some(container) = container else {
+            return Ok(Value::Num(0.0));
+        };
+        let items = container.borrow().items.clone();
+        let e = crate::bind_items::item_env();
+        let ctx = e.context();
+        let mut total = 0.0f32;
+        for item in &items {
+            let equipped = body.try_borrow().map_err(|_| borrowed())?.is_equipped(item);
+            let owner = e.owner(item);
+            let i = item.borrow();
+            if i.attached_slot > -1 && !equipped {
+                total += i.get_hotbar_equipped_weight(ctx, owner.as_ref());
+            } else if equipped {
+                total += i.get_equipped_weight(ctx, owner.as_ref());
+            } else {
+                total += i.get_unequipped_weight(ctx, owner.as_ref());
+            }
+        }
+        Ok(Value::Num(f64::from(total)))
+    });
     // `checkClothing(item)`: worn and attached items no longer in the
     // container leave `wornItems`/`attachedItems` (the body texture follows
     // from the new item visuals).
