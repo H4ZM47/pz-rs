@@ -77,6 +77,9 @@ mod direction_tests;
 #[cfg(test)]
 mod grapple_tests;
 mod control;
+mod sleeping;
+pub(crate) use sleeping::update_asleep_player;
+pub use sleeping::wake_up_ui as sleeping_event_wake_up_ui;
 mod key_ring;
 pub(crate) mod known_poison;
 mod reading;
@@ -338,6 +341,15 @@ impl SimContext for CallContext {
     }
     fn world_age_hours(&self) -> f64 {
         self.base.world_age_hours()
+    }
+    fn time_of_day(&self) -> f32 {
+        self.game_time.borrow().time_of_day
+    }
+    fn last_time_of_day(&self) -> f32 {
+        self.game_time.borrow().last_time_of_day
+    }
+    fn num_players(&self) -> i32 {
+        crate::bind_players::num_players()
     }
     fn all_players_asleep(&self) -> bool {
         self.base.all_players_asleep()

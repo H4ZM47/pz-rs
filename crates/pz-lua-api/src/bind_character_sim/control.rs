@@ -102,7 +102,7 @@ thread_local! {
 }
 
 /// The object field `name` of `chr`; nil when none is set.
-fn object_field(chr: &LuaGameCharacterRef, name: &'static str) -> Value {
+pub(super) fn object_field(chr: &LuaGameCharacterRef, name: &'static str) -> Value {
     let key = (Rc::as_ptr(chr) as usize, name);
     OBJECT_FIELDS.with(|s| s.borrow().get(&key).cloned().unwrap_or(Value::Nil))
 }
@@ -145,28 +145,7 @@ pub(super) fn register_globals(thread: &mut Thread) {
         }
         Ok(c.push(living > 0 && living == asleep))
     });
-    // `getSleepingEvent()`: `SleepingEvent.instance`.
-    let event = crate::expose::expose_class(thread, SLEEPING_EVENT, Some("java.lang.Object"));
-    event.method("setPlayerFallAsleep", |_| {
-        Err(crate::bind_world_object::unsupported(
-            "SleepingEvent.setPlayerFallAsleep: SleepingEventData, the nightmares, the delay to sleep and the zombie intruders",
-        ))
-    });
-    crate::expose::global(thread, "getSleepingEvent", |c| Ok(c.push(Value::Object(Rc::new(SleepingEvent)))));
-}
-
-const SLEEPING_EVENT: &str = "zombie.ai.sadisticAIDirector.SleepingEvent";
-
-/// `SleepingEvent.instance`.
-struct SleepingEvent;
-
-impl pz_kahlua::value::LuaObject for SleepingEvent {
-    fn class_name(&self) -> &str {
-        SLEEPING_EVENT
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+    super::sleeping::register_globals(thread);
 }
 
 /// The methods on `IsoGameCharacter` (and so every character class).

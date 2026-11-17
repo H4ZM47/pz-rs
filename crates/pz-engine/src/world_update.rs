@@ -805,6 +805,9 @@ impl IsoWorld {
                 SimEvent::StopAllActionQueue if chr.is_some() => {
                     pz_lua_api::timed_actions::cancel(&mut lua.thread, chr.unwrap(), "");
                 }
+                SimEvent::SleepingEventWakeUp { fast_wakeup } if chr.is_some() => {
+                    pz_lua_api::bind_character_sim::sleeping_event_wake_up_ui(chr.unwrap(), fast_wakeup);
+                }
                 // TODO(port): the other `SimEvent`s (sounds, visuals, XP,
                 // game speed, the world's side of combat).
                 _ => {}
