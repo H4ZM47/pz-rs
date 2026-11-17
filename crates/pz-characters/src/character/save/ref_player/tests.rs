@@ -384,3 +384,72 @@ fn actual_character_entry_pins_receivers_until_outer_guard_ends_even_on_early_ta
     assert!(weak_character.upgrade().is_none());
     assert!(weak_manager.upgrade().is_none());
 }
+
+#[test]
+fn actual_player_load_equips_a_two_handed_weapon_and_uses_it() {
+    let (sm, chars, target, _) = fixture();
+    let mut template = ItemTemplate::new(ItemClass::Weapon, "Base", "FixtureBat");
+    template.texture_capture = Some(CapturedScriptTextures::new(None, vec![]));
+    let template = Rc::new(template);
+    let mut source = player(&sm, &mut chars.borrow_mut());
+    source.init_worn_items(
+        &sm,
+        chars
+            .borrow_mut()
+            .body_locations
+            .get_group("Human")
+            .unwrap(),
+    );
+    let mut item = InventoryItem::create(template.clone(), 1);
+    item.id = 47;
+    source.items.add_item(item);
+    source.items.primary_hand_item = Some(47);
+    source.items.secondary_hand_item = Some(47);
+    let mut writer = Writer::new();
+    source
+        .save_player(
+            &sm,
+            &chars.borrow(),
+            &Recorder::default(),
+            &SaveEnv {
+                items: &WireEnv(template.clone()),
+                tables: &tables(),
+            },
+            &mut writer,
+        )
+        .unwrap();
+    let bytes = writer.buf;
+    let env = Env {
+        template,
+        target: Rc::downgrade(&target),
+        manager: Rc::downgrade(&chars),
+        calls: Cell::new(0),
+    };
+    let save_tables = tables();
+    let mut reader = Reader::new(&bytes);
+    load_player_ref(
+        &target,
+        &sm,
+        &chars,
+        &Recorder::default(),
+        &SaveEnv {
+            items: &env,
+            tables: &save_tables,
+        },
+        &mut reader,
+        249,
+        &mut |_| panic!("not on fire"),
+    )
+    .unwrap();
+    assert_eq!(reader.pos, bytes.len());
+    let c = target.borrow();
+    let id = c.items.inventory.borrow().items[0].borrow().id;
+    assert_eq!(
+        (c.items.primary_hand_item, c.items.secondary_hand_item),
+        (Some(id), Some(id))
+    );
+    assert_eq!(c.vars.use_hand_weapon, Some(id));
+    let item = c.items.inventory.borrow().items[0].clone();
+    drop(c);
+    pz_inventory::shared::try_set_container(&item, None).unwrap();
+}
