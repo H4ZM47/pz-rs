@@ -666,10 +666,13 @@ fn the_window_logic_counts_crafts_and_consumes_the_populated_inputs() {
     // The action's manual inputs: cleared, then set per input.
     d.clear_manual_inputs();
     assert!(d.st.inputs.iter().all(|i| i.items.is_empty()));
+    assert!(!d.are_all_input_items_satisfied(t).unwrap());
     assert!(!d.set_manual_inputs_for(1, &[4], t).unwrap(), "one nail is not enough");
     assert!(d.set_manual_inputs_for(1, &[4, 5], t).unwrap());
+    assert!(!d.are_all_input_items_satisfied(t).unwrap(), "no bat yet");
     assert!(d.set_manual_inputs_for(0, &[1], t).unwrap());
     assert_eq!(d.st.inputs.iter().map(|i| i.items.clone()).collect::<Vec<_>>(), [vec![1], vec![4, 5]]);
+    assert!(d.are_all_input_items_satisfied(t).unwrap());
 }
 
 #[test]

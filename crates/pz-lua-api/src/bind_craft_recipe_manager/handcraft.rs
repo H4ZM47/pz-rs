@@ -346,6 +346,16 @@ impl<'a> RecipeData<'a> {
         Ok(false)
     }
 
+    /// `areAllInputItemsSatisfied()`.
+    pub fn are_all_input_items_satisfied(&mut self, on_test: &mut OnTest) -> LuaResult<bool> {
+        for input in 0..self.inputs.len() {
+            if !self.is_satisfied(input, on_test)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// `InputScriptData.isInputItemsSatisfied()`.
     pub fn is_satisfied(&mut self, input: usize, on_test: &mut OnTest) -> LuaResult<bool> {
         if self.inputs[input].resource_type() != ResourceType::Item || self.st.inputs[input].items.is_empty() {

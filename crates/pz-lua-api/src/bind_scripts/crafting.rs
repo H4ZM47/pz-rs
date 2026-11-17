@@ -104,13 +104,18 @@ fn relevant_skill_perks(r: &CraftRecipe, include_auto_learn: bool) -> Vec<String
 
 /// `chr.getPerkLevel(Perks.<perk>)`.
 fn perk_level(t: &mut Thread, chr: &Value, perk: &str) -> LuaResult<i32> {
-    let perk = match t.globals().get_str("Perks") {
-        Value::Table(perks) => perks.get_str(perk),
-        _ => Value::Nil,
-    };
+    let perk = perk_of(t, perk);
     let f = t.table_get(chr, &Value::str("getPerkLevel"))?;
     let level = t.call1(&f, &[chr.clone(), perk])?;
     Ok(pz_kahlua::exec::raw_tonumber(&level).unwrap_or(0.0) as i32)
+}
+
+/// The `PerkFactory.Perk` named `perk` (`Perks[perk]`).
+fn perk_of(t: &Thread, perk: &str) -> Value {
+    match t.globals().get_str("Perks") {
+        Value::Table(perks) => perks.get_str(perk),
+        _ => Value::Nil,
+    }
 }
 
 fn opt_io(recipe: &ScriptHandle, i: Option<usize>) -> LuaResult<Value> {
@@ -323,6 +328,10 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
 
     let b = expose_class(thread, REQUIRED_SKILL_CLASS, None);
     get(&b, "getLevel", |s: &RequiredSkill| s.level());
+    method(&b, "getPerk", |c, h| {
+        let perk = h.read(|s: &RequiredSkill| s.perk().to_string())?;
+        Ok(perk_of(c.thread, &perk))
+    });
     let b = expose_class(thread, XP_AWARD_CLASS, None);
     get(&b, "getAmount", |x: &XpAward| x.amount());
 

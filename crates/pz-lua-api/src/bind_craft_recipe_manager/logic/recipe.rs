@@ -913,6 +913,13 @@ pub(super) fn register(b: &ClassBuilder) {
         };
         Ok(c.push(v))
     });
+    // `areAllInputItemsSatisfied()`: the recipe data's, which has no inputs
+    // without a recipe.
+    b.method("areAllInputItemsSatisfied", |c| {
+        let o = logic_arg(c)?;
+        let v = all_input_items_satisfied(c.thread, &o)?;
+        Ok(c.push(v))
+    });
     b.method("getInputUses", |c| {
         let o = logic_arg(c)?;
         let v = input_uses(&o, &c.arg(1))?;
@@ -1041,6 +1048,14 @@ pub(super) fn register(b: &ClassBuilder) {
     });
 }
 
+/// `CraftRecipeData.areAllInputItemsSatisfied()`.
+fn all_input_items_satisfied(thread: &mut Thread, o: &Rc<dyn LuaObject>) -> LuaResult<bool> {
+    if selected(o).is_none() {
+        return Ok(true);
+    }
+    with_data(thread, o, &[], |d, _, t| d.are_all_input_items_satisfied(t))
+}
+
 fn data_logic(c: &NativeCall<'_>) -> LuaResult<Rc<dyn LuaObject>> {
     let o = this::<RecipeDataObject>(c)?;
     Ok(o.as_any().downcast_ref::<RecipeDataObject>().unwrap().0.clone())
@@ -1100,6 +1115,36 @@ pub(super) fn register_recipe_data(thread: &mut Thread) {
             return Err(unsupported("CraftRecipeData.getAllConsumedItems (ArrayList)"));
         }
         data_items(c, |d| d.consumed_items())
+    });
+    b.method("areAllInputItemsSatisfied", |c| {
+        let o = data_logic(c)?;
+        let v = all_input_items_satisfied(c.thread, &o)?;
+        Ok(c.push(v))
+    });
+    // `getFirstManualInputFor(input)`: the first of the input's
+    // `inputItems`; null for an input of another recipe.
+    b.method("getFirstManualInputFor", |c| {
+        let o = data_logic(c)?;
+        let input = c.arg(1);
+        let Some(script) = selected(&o) else {
+            return Ok(c.push(Value::Nil));
+        };
+        let (contains, index) = {
+            let r = script.downcast::<CraftRecipe>().ok_or_else(class_cast)?;
+            let r = r.borrow();
+            (contains_io(&r, &input)?, input_index(&r, &input)?)
+        };
+        if !contains {
+            return Ok(c.push(Value::Nil));
+        }
+        let i = index.ok_or_else(npe)?;
+        let first = state(&o).borrow().data.inputs[i].items.first().copied();
+        let item = first.and_then(|k| items_for_keys(&o, &[k]).into_iter().next());
+        let v = match item {
+            Some(item) => crate::bind_items::try_item_value(&item)?,
+            None => Value::Nil,
+        };
+        Ok(c.push(v))
     });
     b.method("getVariableInputRatio", |c| {
         let r = state(&data_logic(c)?).borrow().data.calculated_ratio;
