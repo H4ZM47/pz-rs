@@ -290,6 +290,15 @@ pub enum SimEvent {
     /// `UIManager.FadeIn(playerIndex, seconds)` (a sleeping player that
     /// dies).
     FadeIn(f64),
+    /// `WorldSoundManager.instance.addSound(chr, x, y, z, radius, volume)`.
+    AddSound { radius: i32, volume: i32 },
+    /// The start of `SleepingEvent.wakeUp(chr, remote)`, before
+    /// `setAsleep(false)`: for a local player `UIManager.setFadeBeforeUI
+    /// (index, true)` and `UIManager.FadeIn(index, fastWakeup ? 0.5 : 2.0)`;
+    /// then, not on a client and with `IsoPlayer.allPlayersAsleep()`,
+    /// `SetCurrentGameSpeed(1)` and, after the character woke,
+    /// `GameWindow.save(true)`.
+    SleepingEventWakeUp { fast_wakeup: bool },
     /// The rest of `IsoPlayer.OnDeath()` after `dropHandItems()`, the
     /// engine's: the death music once all players are dead,
     /// `OnPlayerDeath` and leaving the vehicle for a local player,
@@ -369,6 +378,14 @@ pub trait SimContext {
     /// `GameTime.instance.getTimeOfDay()` (9.0 in a fresh game).
     fn time_of_day(&self) -> f32 {
         9.0
+    }
+    /// `GameTime.instance.getLastTimeOfDay()`.
+    fn last_time_of_day(&self) -> f32 {
+        9.0
+    }
+    /// `IsoPlayer.numPlayers`.
+    fn num_players(&self) -> i32 {
+        1
     }
     /// `GameTime.instance.getMonth()` (0-based; 7 in a fresh game).
     fn month(&self) -> i32 {
