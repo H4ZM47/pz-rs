@@ -51,6 +51,23 @@ pub fn set_update_time(t: i64) {
     UPDATE_TIME.with(|u| u.set(t));
 }
 
+thread_local! {
+    static SAVE_REQUESTED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// `GameWindow.save(doCharacter)` from Lua (`save`) or
+/// `SleepingEvent.wakeUp`. The save needs the live world, which the
+/// running update holds, so the engine runs it when that update ends
+/// ([`take_save_request`]).
+pub(crate) fn request_save() {
+    SAVE_REQUESTED.with(|s| s.set(true));
+}
+
+/// Whether a `GameWindow.save` was asked for since the last call.
+pub fn take_save_request() -> bool {
+    SAVE_REQUESTED.with(|s| s.replace(false))
+}
+
 /// `GameWindow.version`, the static initializer's string in the jar.
 fn version_from_jar(jar: &pz_classfile::Jar) -> Option<String> {
     let cf = pz_classfile::load_class(jar, "zombie/GameWindow.class").ok()?;

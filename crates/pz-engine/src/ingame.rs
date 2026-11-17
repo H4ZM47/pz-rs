@@ -527,6 +527,16 @@ impl GameState for IngameState {
             // TODO(port): `ObjectAmbientEmitters.update`.
             self.number_ticks += 1;
         }
+        // `GameWindow.save` that Lua (`save`) or `SleepingEvent.wakeUp`
+        // asked for during this update.
+        if pz_lua_api::bind_game_window::take_save_request() {
+            if let Some(w) = cx.world.as_mut() {
+                if let Err(error) = w.save_during_play(cx.lua) {
+                    crate::failure::record_first(cx.error, (format!("GameWindow.save host failure: {error}")).into());
+                    return StateAction::Remain;
+                }
+            }
+        }
         // Live character animation advances from postupdate. TODO(port):
         // the remaining `ModelManager.instance.update()` work, `FPSGraph`.
         StateAction::Remain

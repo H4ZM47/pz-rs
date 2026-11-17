@@ -25,6 +25,7 @@ fn falling_asleep_from_lua_then_sleeping_on_in_game_time() {
     let (mut thread, player, _) = setup_with(sleep_script_manager());
     crate::bind_players::set_player(0, Some(player.clone()));
     crate::bind_players::set_num_players(1);
+    crate::bind_game_window::take_save_request();
     // Two hours: too short for a nightmare roll.
     let r = run(&mut thread, r#"
         player:setBedType("floor")
@@ -35,10 +36,13 @@ fn falling_asleep_from_lua_then_sleeping_on_in_game_time() {
         save(true)
     "#);
     let e = r.err().unwrap_or_default();
+    // `save(true)` leaves `GameWindow.save` to the engine.
+    let save_asked = crate::bind_game_window::take_save_request();
     let intruders = run(&mut thread, "getSleepingEvent():setPlayerFallAsleep(player, 2, true, false)");
     super::update_asleep_player(&mut thread, &player);
     crate::bind_players::set_player(0, None);
     assert_eq!(e, "");
+    assert!(save_asked, "save(true) asked for no GameWindow.save");
     {
         let p = player.borrow();
         let data = p.sleeping_event_data.clone().unwrap();
@@ -50,4 +54,26 @@ fn falling_asleep_from_lua_then_sleeping_on_in_game_time() {
     }
     let e = intruders.unwrap_err();
     assert!(e.contains("the zombie intruders"), "{e}");
+}
+
+#[test]
+fn waking_the_last_sleeper_asks_for_a_save() {
+    let (_thread, player, _) = setup_with(sleep_script_manager());
+    crate::bind_players::set_player(0, Some(player.clone()));
+    crate::bind_players::set_num_players(1);
+    crate::bind_game_window::take_save_request();
+    // `chr` was the only player asleep before it woke.
+    super::wake_up_ui(&player, false);
+    let asked = crate::bind_game_window::take_save_request();
+    // Another living player awake: no save.
+    let other = Rc::new(RefCell::new(LuaGameCharacter::new(&shared_script_manager(), CharacterKind::Player)));
+    crate::bind_players::set_player(1, Some(other));
+    crate::bind_players::set_num_players(2);
+    super::wake_up_ui(&player, false);
+    let asked_with_one_awake = crate::bind_game_window::take_save_request();
+    crate::bind_players::set_player(1, None);
+    crate::bind_players::set_player(0, None);
+    crate::bind_players::set_num_players(1);
+    assert!(asked);
+    assert!(!asked_with_one_awake);
 }

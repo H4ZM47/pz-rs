@@ -49,18 +49,12 @@ pub(super) fn register_globals(thread: &mut Thread) {
     });
     crate::expose::global(thread, "getSleepingEvent", |c| Ok(c.push(Value::Object(Rc::new(SleepingEvent)))));
     // save(doCharacter): `GameWindow.save(doCharacter)`, whose exceptions
-    // `ExceptionLogger.logException` logs.
+    // `ExceptionLogger.logException` logs. `doCharacter` is not read on the
+    // way to the files (`IsoCell.save` ignores it).
     crate::expose::global(thread, "save", |_| {
-        log_save_unsupported();
+        crate::bind_game_window::request_save();
         Ok(0)
     });
-}
-
-fn log_save_unsupported() {
-    pz_core::debug::log_exception(
-        &pz_core::debug::LogThrowable::new("GameWindow.save during play is not ported (only the save on quit is)"),
-        None,
-    );
 }
 
 /// The `IsoPlayer` argument.
@@ -161,8 +155,7 @@ fn try_update_asleep_player(t: &mut Thread, chr: &LuaGameCharacterRef) -> LuaRes
 /// ([`SimEvent::SleepingEventWakeUp`]), run after the character part woke
 /// `chr` up: a local player's fade-in; then, not on a client and with all
 /// players asleep before `chr` woke, game speed 1 and
-/// `GameWindow.save(true)`, which is not ported and is logged as its
-/// exception would be.
+/// `GameWindow.save(true)`, which the engine runs after this update.
 pub fn wake_up_ui(chr: &LuaGameCharacterRef, fast_wakeup: bool) {
     let (index, local) = {
         let c = chr.borrow();
@@ -182,7 +175,7 @@ pub fn wake_up_ui(chr: &LuaGameCharacterRef, fast_wakeup: bool) {
         return;
     }
     crate::hud::set_game_speed(1);
-    log_save_unsupported();
+    crate::bind_game_window::request_save();
 }
 
 /// `IsoPlayer.allPlayersAsleep()` as it was before `chr`, then asleep,

@@ -4,7 +4,6 @@
 //! movement/context flags and `CharacterInputComponentEntity`'s input
 //! component setters.
 
-use std::rc::Rc;
 use super::{chr_of, float_arg, float_value, CharacterKind, CharacterObject, LuaGameCharacterRef, CONTEXT};
 use crate::expose::{bool_arg, int_arg, ClassBuilder, JavaEnum};
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
