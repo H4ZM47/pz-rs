@@ -5,7 +5,8 @@
 //! `registerNavZones`), spawn origins, water flow, `Core` game settings
 //! and the `luaPos*` fields; `IsoMetaGrid.registerGeometryZone` /
 //! `registerWorldGenZone` / `getLotDirectories`; the `Zone` objects they
-//! return; and the globals `getLotDirectories` and `fileExists`.
+//! return; and the globals `getLotDirectories`, `fileExists` and
+//! `createRegionFile`.
 //!
 //! What has no engine object yet is kept here for the engine to collect:
 //! `ZombiePopulationManager.spawnOrigins` ([`take_spawn_origins`], read by
@@ -143,6 +144,35 @@ pub fn lot_directories(fs: &GameFs) -> LuaResult<Vec<String>> {
     Ok(pz_world::map_files::lot_directories(fs, &map))
 }
 
+/// `LuaManager.GlobalObject.createRegionFile()`: one `{ name, file }`
+/// spawn region per map directory of `IsoWorld.getMap()` that has a
+/// `spawnpoints.lua`, indexed from 1. "DEFAULT" is first replaced by the
+/// only world of `MapGroups`.
+pub fn create_region_file(fs: &GameFs) -> LuaResult<TableRef> {
+    let regions = TableRef::new();
+    if crate::bind_core::shared_core().borrow().game_map == "DEFAULT" {
+        crate::bind_map_groups::set_default_world()?;
+    }
+    let map = crate::bind_core::shared_core().borrow().game_map.clone();
+    let mut index = 1;
+    for s in map.split(';') {
+        let s = pz_world::java::java_trim(s);
+        if s.is_empty() {
+            continue;
+        }
+        let file = format!("media/maps/{s}/spawnpoints.lua");
+        if !file_exists(fs, &file) {
+            continue;
+        }
+        let t = TableRef::new();
+        t.set_str("name", s);
+        t.set_str("file", file.as_str());
+        regions.set_int(index, t);
+        index += 1;
+    }
+    Ok(regions)
+}
+
 /// `File(ZomboidFileSystem.instance.getString(filename)).exists()`, the
 /// working directory being the install.
 fn file_exists(fs: &GameFs, filename: &str) -> bool {
@@ -211,7 +241,8 @@ fn ret_zone(
     })
 }
 
-/// `getWorld()`, `getLotDirectories()`, `fileExists()` and the `IsoWorld`
+/// `getWorld()`, `getLotDirectories()`, `fileExists()`,
+/// `createRegionFile()` and the `IsoWorld`
 /// / `IsoMetaGrid` methods map loading calls.
 pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>) {
     global(thread, "getWorld", |c| Ok(c.push(obj(Key::World))));
@@ -232,6 +263,12 @@ pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>) {
             };
             let e = file_exists(&fs.borrow(), &f);
             Ok(c.push(e))
+        });
+    }
+    {
+        let fs = fs.clone();
+        global(thread, "createRegionFile", move |c| {
+            Ok(c.push(create_region_file(&fs.borrow())?))
         });
     }
     let b = expose_class(thread, "zombie.iso.IsoWorld", Some("java.lang.Object"));

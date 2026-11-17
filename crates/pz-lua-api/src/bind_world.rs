@@ -2400,4 +2400,25 @@ mod tests {
             assert_eq!(nav[1].points, vec![260, 320, 270, 330, 270, 330, 280, 340]);
         });
     }
+
+    #[test]
+    fn create_region_file_lists_maps_with_spawn_points() {
+        let dir = load_world("region-file");
+        std::fs::write(dir.0.join("media/maps/Test/spawnpoints.lua"), "").unwrap();
+        std::fs::create_dir_all(dir.0.join("media/maps/NoPoints")).unwrap();
+        crate::bind_core::shared_core().borrow_mut().game_map = " ;NoPoints; Test ;;".into();
+        let fs = Rc::new(RefCell::new(GameFs::new(&dir.0)));
+        let mut t = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        register(&mut t);
+        lua_world::register(&mut t, fs);
+        run(
+            &mut t,
+            r#"
+            local r = createRegionFile()
+            check(#r == 1 and r[1].name == "Test")
+            check(r[1].file == "media/maps/Test/spawnpoints.lua")
+            "#,
+        );
+    }
 }
