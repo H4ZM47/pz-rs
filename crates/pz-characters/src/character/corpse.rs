@@ -88,6 +88,10 @@ impl<I: 'static> GameCharacter<I> {
                     .collect()
             })
             .unwrap_or_default();
+        // `IsoDeadBody.setContainer`: the corpse's type and capacity (the
+        // parent and `sourceGrid` are its Lua object's, see `bind_dead_body`).
+        container.kind = Some(if female { "inventoryfemale" } else { "inventorymale" }.into());
+        container.capacity = 12;
         // `setExplored(chr instanceof IsoPlayer || reanimated player)`, then
         // `setExplored(true)` once the character has left the world.
         container.explored = true;

@@ -136,14 +136,22 @@ fn static_moving_index(body: &DeadBodyRef) -> LuaResult<i32> {
     Ok(index.flatten().map_or(-1, |i| i as i32))
 }
 
-/// `getContainer()`: the live container, its parent the corpse.
+/// `getContainer()`: the live container. As `IsoDeadBody.setContainer`
+/// makes it, its parent is the corpse and its `sourceGrid` the square.
 fn container(c: &NativeCall<'_>, body: &DeadBodyRef) -> LuaResult<Value> {
     let container = body.try_borrow_mut().map_err(|_| borrowed())?.runtime_container();
     let Some(container) = container else {
         return Ok(Value::Nil);
     };
-    if container.borrow().parent.is_none() {
+    // `setContainer`: `container.parent = this`.
+    let parent = crate::bind_item_container::parent_of(&container.borrow());
+    if dead_body_of(&parent).is_none_or(|p| !Rc::ptr_eq(&p, body)) {
         crate::bind_item_container::set_parent(&container, c.arg(0));
+        let (x, y, z) = position(body)?;
+        let (x, y, z) = square_of(x, y, z);
+        let grid = crate::bind_world::square_value(x, y, z);
+        container.borrow_mut().source_grid =
+            (!grid.is_nil()).then(|| Rc::new(crate::bind_item_container::LuaRef(grid)) as Rc<dyn Any>);
     }
     Ok(crate::bind_item_container::container_value(&container))
 }

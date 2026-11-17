@@ -260,6 +260,7 @@ fn static_moving_objects_are_the_square_corpses() {
         local c = b:getContainer()
         assert(c:getType() == "inventorymale")
         assert(c:getParent() == b)
+        assert(c:getSourceGrid() == a)
         assert(c == b:getContainer())
     "#,
     );
