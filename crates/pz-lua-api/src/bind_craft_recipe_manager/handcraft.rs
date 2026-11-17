@@ -49,6 +49,8 @@ pub(crate) enum OutputItem {
     Create(Rc<RefCell<Item>>),
     /// A kept input item (`collectKeepItems`), processed.
     Kept(usize),
+    /// An item `Create` made, not processed (the crafting logic makes it).
+    Created(usize),
 }
 
 /// The state of a `CraftRecipeData` set to a recipe.
@@ -88,6 +90,22 @@ impl DataState {
         }
     }
 
+    /// A data with no recipe (`clearRecipe()`), keeping
+    /// `consumedUsedItems`, which only the constructor clears.
+    pub fn empty(consumed_used_items: Vec<usize>) -> Self {
+        DataState {
+            inputs: Vec::new(),
+            used_items: Vec::new(),
+            consumed_used_items,
+            all_viable_items: Vec::new(),
+            has_consumed_inputs: false,
+            has_tested_inputs: false,
+            target_ratio: f32::MAX,
+            calculated_ratio: f32::MAX,
+            to_output: Vec::new(),
+        }
+    }
+
     /// `clearCaches()`.
     pub fn clear_caches(&mut self) {
         for d in &mut self.inputs {
@@ -112,7 +130,7 @@ impl DataState {
         }
         self.used_items.iter().chain(&self.consumed_used_items).chain(&self.all_viable_items).for_each(|&k| add(k));
         for o in &self.to_output {
-            if let OutputItem::Kept(k) = o {
+            if let OutputItem::Kept(k) | OutputItem::Created(k) = o {
                 add(*k);
             }
         }
@@ -322,7 +340,7 @@ impl<'a> RecipeData<'a> {
     }
 
     /// `InputScriptData.isInputItemsSatisfied()`.
-    fn is_satisfied(&mut self, input: usize, on_test: &mut OnTest) -> LuaResult<bool> {
+    pub fn is_satisfied(&mut self, input: usize, on_test: &mut OnTest) -> LuaResult<bool> {
         if self.inputs[input].resource_type() != ResourceType::Item || self.st.inputs[input].items.is_empty() {
             return Ok(false);
         }
@@ -415,10 +433,14 @@ impl<'a> RecipeData<'a> {
         Ok(false)
     }
 
-    /// `populateInputs(chr, items, resources, false)`: each input that is
-    /// not satisfied is offered the items in order until it is.
-    pub fn populate_inputs(&mut self, all: &[usize], on_test: &mut OnTest) -> LuaResult<()> {
+    /// `populateInputs(chr, items, resources, clear)`: with `clear`, each
+    /// input first drops its items (last first); each input that is not
+    /// satisfied is offered the items in order until it is.
+    pub fn populate_inputs(&mut self, all: &[usize], clear: bool, on_test: &mut OnTest) -> LuaResult<()> {
         for input in 0..self.inputs.len() {
+            if clear {
+                self.st.inputs[input].items.clear();
+            }
             if self.is_satisfied(input, on_test)? {
                 continue;
             }
@@ -664,6 +686,134 @@ impl<'a> RecipeData<'a> {
 
 pub(crate) type OnTest<'f> = dyn FnMut(&str, usize) -> bool + 'f;
 
+/// The parts of `CraftRecipeData` the crafting window's logic uses.
+impl<'a> RecipeData<'a> {
+    /// `getInputs()`.
+    pub fn input_scripts(&self) -> &[&'a InputScript] {
+        &self.inputs
+    }
+
+    /// `CraftRecipeManager.isValidRecipeForCharacter(recipe, chr, monitor,
+    /// containers)`.
+    pub fn is_valid(&self, has_containers: bool) -> LuaResult<bool> {
+        super::is_valid_recipe_for_character(self.recipe, Some(self.chr), has_containers)
+    }
+
+    /// `canPerform(chr, resources, items, continueOnFail, containers)`.
+    pub fn can_perform(
+        &mut self,
+        items: Option<&[usize]>,
+        continue_on_fail: bool,
+        has_containers: bool,
+        on_test: &mut OnTest,
+    ) -> LuaResult<bool> {
+        if !self.is_valid(has_containers)? {
+            return Ok(false);
+        }
+        Ok(self.consume_inputs_internal(true, items, continue_on_fail, false, on_test)?
+            && self.create_outputs_internal(true)?)
+    }
+
+    /// `getPossibleCraftCount(resources, items, outResources, outItems,
+    /// manual)` without manual input selection (the items `getInputCraftCount`
+    /// lists are only read for it) and with no resources
+    /// (`getResourceCraftCount` gives 0).
+    pub fn possible_craft_count(&mut self, items: &[usize], on_test: &mut OnTest) -> LuaResult<i32> {
+        let mut count = 100;
+        for input in 0..self.inputs.len() {
+            count = count.min(self.input_craft_count(input, items, on_test)?);
+            if count == 0 {
+                break;
+            }
+        }
+        Ok(count)
+    }
+
+    /// `getInputCraftCount(data, items, outItems, false)`.
+    fn input_craft_count(&mut self, input: usize, items: &[usize], on_test: &mut OnTest) -> LuaResult<i32> {
+        let script = self.inputs[input];
+        let from = self.consume_from_item_script(input);
+        let from_fluid = from.is_some_and(|f| f.resource_type() == ResourceType::Fluid);
+        let mut total = 0f64;
+        for &key in items {
+            // `InputScript.canUseItem(item, chr)`.
+            if !self.consume_input_item(input, key, on_test, false, true)? {
+                continue;
+            }
+            let item = self.item(key);
+            let scale = script.relative_scale(&item.full_type()) as f64;
+            let uses = if script.is_item_count() { 1 } else { item.current_uses() };
+            let mut d = uses as f64 / scale;
+            if !script.is_item_count() {
+                if from_fluid {
+                    let Some(fc) = item.fluid_container()? else {
+                        return Err(LuaError::runtime("java.lang.NullPointerException"));
+                    };
+                    d = fc.amount as f64;
+                }
+                if script.has_create_to_item() {
+                    // `getFluidContainer().getFreeCapacity()` over the
+                    // `CreateToItem` line's amount.
+                    return Err(unsupported("CraftRecipeData.getInputCraftCount (CreateToItem)"));
+                }
+            }
+            total += d;
+        }
+        // The original adds the double constant of `(double) 1.0E-5f`.
+        total += 9.999999747378752e-6;
+        if script.is_keep() && from.is_none() && !script.has_create_to_item() {
+            return Ok(if total >= script.int_amount() as f64 { 100 } else { 0 });
+        }
+        let mut amount = script.amount();
+        if !script.is_item_count() {
+            if let Some(from) = from.filter(|_| from_fluid) {
+                amount = from.amount();
+            }
+        }
+        Ok((total / amount as f64).floor() as i32)
+    }
+
+    /// `InputScriptData.verifyInputItems(allItems)`, last item first: an
+    /// item stays only for a keep input, when `allItems` has it and the
+    /// input still accepts it.
+    pub fn verify_input_items(&mut self, input: usize, all: &[usize], on_test: &mut OnTest) -> LuaResult<()> {
+        for i in (0..self.st.inputs[input].items.len()).rev() {
+            let key = self.st.inputs[input].items[i];
+            let ok = self.inputs[input].resource_type() == ResourceType::Item
+                && self.consume_input_item(input, key, on_test, false, true)?;
+            if self.inputs[input].is_keep() && all.contains(&key) && ok {
+                continue;
+            }
+            self.st.inputs[input].items.remove(i);
+        }
+        Ok(())
+    }
+
+    /// The applied items of the `Item` inputs that pass `keep`, in order.
+    fn applied_items(&self, keep: impl Fn(&InputScript) -> bool) -> Vec<usize> {
+        (0..self.inputs.len())
+            .filter(|&i| self.inputs[i].resource_type() == ResourceType::Item && keep(self.inputs[i]))
+            .flat_map(|i| self.st.inputs[i].cache.applied.iter().copied())
+            .collect()
+    }
+
+    /// `getAllInputItems()`.
+    pub fn all_input_items(&self) -> Vec<usize> {
+        self.applied_items(|_| true)
+    }
+
+    /// `getAllPutBackInputItems()`.
+    pub fn put_back_input_items(&self) -> Vec<usize> {
+        self.applied_items(|i| !i.has_flag(InputFlag::DontPutBack))
+    }
+
+    /// `getAllConsumedItems(list, false, false)`: the keep inputs' items
+    /// are left out.
+    pub fn consumed_items(&self) -> Vec<usize> {
+        self.applied_items(|i| !i.is_keep())
+    }
+}
+
 /// `setRecipeFromContextClick(recipe, item)` then `canPerformCurrentRecipe()`
 /// on the context menu's `HandcraftLogic`. `items` holds the containers'
 /// items (`allItems`) followed by the clicked item when it is not one of
@@ -686,7 +836,7 @@ pub fn can_perform_from_context_click(
     let mut data = RecipeData::new(recipe, items, chr);
     data.offer_and_replace_input_item(items[clicked].key(), on_test)?;
     let all: Vec<usize> = items[..all_items].iter().map(|i| i.key()).collect();
-    data.populate_inputs(&all, on_test)?;
+    data.populate_inputs(&all, false, on_test)?;
     data.consume_inputs_internal(true, None, false, false, on_test)?;
     if !data.consume_inputs_internal(true, None, true, false, on_test)? || !data.create_outputs_internal(true)? {
         return Ok(false);

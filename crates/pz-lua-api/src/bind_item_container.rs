@@ -1263,6 +1263,78 @@ pub fn remove(t: &mut Thread, c: &ContainerRef, item: &ItemRef) -> LuaResult<()>
     Ok(())
 }
 
+/// `ItemUser.RemoveItem(item)`. A floor item's `IsoWorldInventoryObject`
+/// (`transmitRemoveItemFromSquare`) and worn clothing (`Clothing.Unwear`)
+/// are not ported; vehicle part containers are not shared yet.
+pub fn item_user_remove_item(t: &mut Thread, item: &ItemRef) -> LuaResult<()> {
+    let Some(c) = container_of(item) else {
+        // An item with no container is only removed from its square.
+        return Err(crate::bind_world_object::unsupported("ItemUser.RemoveItem (IsoWorldInventoryObject)"));
+    };
+    if c.borrow().kind == "floor" {
+        return Err(crate::bind_world_object::unsupported("ItemUser.RemoveItem (IsoWorldInventoryObject)"));
+    }
+    let p = parent(&c);
+    let v = item_value(item);
+    if instance_of(&p, ISO_GAME_CHARACTER) {
+        let worn = {
+            let i = item.borrow();
+            matches!(i.kind, ItemKind::Clothing(_) | ItemKind::AlarmClockClothing(..)) && item_env().owner(item).is_worn(&i)
+        };
+        if worn {
+            return Err(crate::bind_world_object::unsupported("ItemUser.RemoveItem (Clothing.Unwear)"));
+        }
+        call(t, &p, "removeFromHands", std::slice::from_ref(&v))?;
+        let back = call(t, &p, "getClothingItem_Back", &[])?;
+        let same = !back.is_nil() && crate::bind_world_object::item_argument(&back).is_ok_and(|b| Rc::ptr_eq(&b, item));
+        if same {
+            call(t, &p, "setClothingItem_Back", &[Value::Nil])?;
+        }
+    }
+    {
+        let mut s = c.borrow_mut();
+        if let Some(i) = s.index_of(item) {
+            s.items.remove(i);
+        }
+        s.dirty = true;
+        s.draw_dirty = true;
+    }
+    set_container(item, None);
+    if instance_of(&p, ISO_DEAD_BODY) || instance_of(&p, ISO_MANNEQUIN) {
+        call_if_bound(t, &p, "checkClothing", &[v])?;
+    }
+    Ok(())
+}
+
+/// `ItemUser.UseItem(item, true, false, uses, keep, destroy)`, the form
+/// `CraftRecipeData.processDestroyAndUsedItems` calls: takes up to `uses`
+/// uses (none for a keep input), then removes the item when `destroy` or
+/// when it is used up and not kept on deplete. Returns the uses taken.
+pub fn item_user_use_item(t: &mut Thread, item: &ItemRef, uses: i32, keep: bool, destroy: bool) -> LuaResult<i32> {
+    let n = item.borrow().get_current_uses().min(uses);
+    if !keep {
+        let cur = item.borrow().get_current_uses();
+        let e = item_env();
+        item.borrow_mut().set_current_uses_with(cur - n, Some(e.context()));
+    }
+    // `replaceOnUse` needs the second argument false.
+    let replace = {
+        let i = item.borrow();
+        i.get_replace_on_deplete().is_some_and(|r| !r.is_empty()) && i.get_current_uses() <= 0
+    };
+    if replace {
+        return Err(crate::bind_world_object::unsupported("ItemUser.UseItem (replaceOnDeplete)"));
+    }
+    let remove = {
+        let i = item.borrow();
+        destroy || (i.get_current_uses() <= 0 && !i.is_keep_on_deplete())
+    };
+    if remove {
+        item_user_remove_item(t, item)?;
+    }
+    Ok(n)
+}
+
 /// `DoRemoveItem(item)`.
 fn do_remove_item(t: &mut Thread, c: &ContainerRef, item: &ItemRef) -> LuaResult<()> {
     let p = parent(c);
