@@ -86,8 +86,8 @@ fn is_exposed_to_precipitation(t: &mut Thread, chr: &LuaGameCharacterRef, value:
     if call(t, &square, "isInARoom", &[])?.truthy() || crate::bind_world::square_queries::square_have_roof(x, y, z)? {
         return Ok(false);
     }
-    let bed = super::control::object_field(chr, "bed");
-    if !bed.is_nil() {
+    let bed = chr.borrow().bed.clone();
+    if let Some(bed) = bed {
         let tent = call(t, &bed, "isTent", &[])?.truthy()
             || call(t, &bed, "getName", &[])?.as_str().is_some_and(|name| name == "Tent");
         if tent {
