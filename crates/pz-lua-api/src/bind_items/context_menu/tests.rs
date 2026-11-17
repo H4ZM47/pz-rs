@@ -109,6 +109,11 @@ fn script_getters_read_the_retained_script_and_fail_without_one() {
     script.can_bandage = true;
     script.make_up_type = Some("Lipstick".into());
     script.clothing_item_extra_option = Some(vec!["Hood".into(), "Open".into()]);
+    script.opening_recipe = Some("OpenCannedFood".into());
+    script.eat_type = Some("Can".into());
+    script.eat_time = 300;
+    script.require_in_hand_or_inventory = Some(vec![Some("Lighter".into()), Some("Matches".into())]);
+    script.custom_eat_sound = Some("EatingSoup".into());
     let script = ScriptItemRef(Rc::new(RefCell::new(script)));
     let mut t = ItemTemplate::new(ItemClass::Normal, "Base", "Kit");
     t.script = Some(script.clone());
@@ -122,9 +127,18 @@ fn script_getters_read_the_retained_script_and_fail_without_one() {
     let values = run(
         &mut thread,
         "return kit:isCanBandage(), kit:isTrap(), kit:getMakeUpType(), \
-         kit:getClothingItemExtraOption(), kit:getScriptItem() == script",
+         kit:getClothingItemExtraOption(), kit:getScriptItem() == script, kit:getOpeningRecipe()",
     );
-    assert_eq!(show(&values), ["true", "false", "Lipstick", "[Hood, Open]", "true"]);
+    assert_eq!(show(&values), ["true", "false", "Lipstick", "[Hood, Open]", "true", "OpenCannedFood"]);
+    let values = run(
+        &mut thread,
+        "return kit:getEatType(), kit:getEatTime(), kit:getRequireInHandOrInventory()",
+    );
+    assert_eq!(show(&values), ["Can", "300", "[Lighter, Matches]"]);
+    let mut t = ItemTemplate::new(ItemClass::Food, "Base", "Stew");
+    t.script = Some(script.clone());
+    publish(&thread, "stew", t);
+    assert_eq!(show(&run(&mut thread, "return stew:getCustomEatSound()")), ["EatingSoup"]);
 
     // A later script change is visible through the item.
     script.0.borrow_mut().trap = true;
@@ -132,8 +146,8 @@ fn script_getters_read_the_retained_script_and_fail_without_one() {
     assert_eq!(show(&run(&mut thread, "return kit:isTrap(), kit:getMakeUpType()")), ["true", "nil"]);
 
     publish(&thread, "rock", ItemTemplate::new(ItemClass::Normal, "Base", "Rock"));
-    assert_eq!(show(&run(&mut thread, "return rock:getScriptItem()")), ["nil"]);
-    for name in ["isCanBandage", "isTrap", "getMakeUpType", "getClothingItemExtraOption"] {
+    assert_eq!(show(&run(&mut thread, "return rock:getScriptItem(), rock:getEatTime()")), ["nil", "0"]);
+    for name in ["isCanBandage", "isTrap", "getMakeUpType", "getClothingItemExtraOption", "getOpeningRecipe", "getEatType", "getRequireInHandOrInventory"] {
         let error = failure(&mut thread, &format!("return rock:{name}()"));
         assert!(error.contains("NullPointerException"), "{name}: {error}");
     }
