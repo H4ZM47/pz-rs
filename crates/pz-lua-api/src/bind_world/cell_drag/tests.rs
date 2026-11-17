@@ -144,8 +144,11 @@ fn cell_drag_callable_types_errors_and_reentrant_deactivation_match_native_phase
         check(deactivations == 2 and cell:getDrag(0) == final and final.player == 0)
     "#);
     assert_eq!(native_calls.get(), 1);
-    assert_eq!(f.errors.borrow().len(), 1);
-    assert!(f.errors.borrow()[0].contains("authored deactivate failure"));
+    // luaMainloop dumps the Lua stack of the failing frame first.
+    let errors = f.errors.borrow();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(errors[0].starts_with("dumping Lua stack trace"), "{}", errors[0]);
+    assert!(errors[1].contains("authored deactivate failure"));
 }
 
 #[test]
