@@ -365,6 +365,45 @@ pub(super) fn register(b: &ClassBuilder) {
         Ok((have_blood(c.thread, x, y, z)? || have_overlay(x, y, z, &["overlay_grime"])?).into())
     });
     // `getAnimalTrack()`: the first IsoAnimalTrack of the objects.
+    // `getOre()`: the first object that `isOre()`, whose `CustomName`
+    // property holds ironOre, copperOre, FlintBoulder or LimestoneBoulder.
+    get(b, "getOre", |c| {
+        let (x, y, z) = self_square(c)?;
+        let sprites = crate::bind_sprites::manager()?;
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        let ore = with_square(x, y, z, |square| {
+            for slot in &square.objects {
+                let sprite = match slot.borrow().sprite {
+                    pz_world::objects::ObjectSprite::None => continue,
+                    pz_world::objects::ObjectSprite::Tile(idx) => idx,
+                    _ => {
+                        return Err(crate::bind_world_object::unsupported(
+                            "IsoGridSquare.getOre: an object sprite that has no Lua object",
+                        ))
+                    }
+                };
+                let name = sprites.sprites[sprite].properties.get(&sprites.alias, "CustomName");
+                if name.is_some_and(|n| {
+                    ["ironOre", "copperOre", "FlintBoulder", "LimestoneBoulder"]
+                        .iter()
+                        .any(|ore| n.contains(ore))
+                }) {
+                    return Ok(Some(slot.ref_handle()));
+                }
+            }
+            Ok(None)
+        })?;
+        match ore {
+            None => Ok(Value::Nil),
+            Some(ore) => {
+                let value = crate::bind_world_object::object_value(&ore)?;
+                crate::bind_world_object::remember_square(&value, [x, y, z]);
+                Ok(value)
+            }
+        }
+    });
     get(b, "getAnimalTrack", |c| {
         let (x, y, z) = self_square(c)?;
         let track = with_square(x, y, z, |square| {
