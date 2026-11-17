@@ -81,6 +81,7 @@ pub(crate) fn bare_hands_stats() -> WeaponStats {
         min_angle: 0.65,
         max_angle: 1.0,
         max_hit_count: 1,
+        splat_number: 1,
         use_endurance: true,
         categories: vec![],
         ..WeaponStats::default()

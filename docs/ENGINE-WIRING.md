@@ -734,8 +734,10 @@ all installed assets, render paths or foreign platforms.
       cannot be made or placed stays with its items. `SimEvent::Killed`
       names the victim, and a killed zombie runs `DoZombieInventory`
       (`zombie_inventory`: the worn items from its item visuals and the
-      attached items go into its emptied inventory). Not wired: `DoDeath`
-      (`onKilled`), `ItemSpawner.spawnItem` for `itemsToSpawnAtDeath`
+      attached items go into its emptied inventory). `Kill` then runs
+      `DoDeath` (`death.rs`): the death sound, the blood splats and the
+      giblets as `SimEvent`s, which the engine does not play or draw yet.
+      Not wired: `ItemSpawner.spawnItem` for `itemsToSpawnAtDeath`
       (reported as unsupported), the corpse's attached items, `dropHeldItems`,
       `ObjectIDManager`, `FliesSound`, the ragdoll pose, and the Lua
       objects for `OnZombieDead` and `OnCharacterDeath` (reported as
