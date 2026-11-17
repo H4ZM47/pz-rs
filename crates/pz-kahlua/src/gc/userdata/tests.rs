@@ -476,6 +476,9 @@ fn successful_and_error_values_survive_outer_call_pending_collection() {
         });
         drop(f.object);
         let mut thread = Thread::new(TableRef::new());
+        // Logging the exception would call the error value's toString,
+        // which this payload forbids.
+        thread.log_exception = Box::new(|_| {});
         if error {
             // The direct-native entry deliberately wraps exceptions as Java
             // strings. An interpreted call preserves the Kahlua Value error.
