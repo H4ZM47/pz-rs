@@ -450,6 +450,25 @@ fn survivor_constructor_rand_order() {
 }
 
 #[test]
+fn a_falling_helmet_leaves_the_inventory_and_the_worn_items() {
+    let (sm, mut chars) = fixture();
+    let hat = item_constant(&sm, "item_body_location", "HAT");
+    let mut c = player(&sm, &mut chars);
+    let g = chars.body_locations.get_group("Human").unwrap();
+    g.borrow_mut().get_or_create_location(Some(hat.clone())).unwrap();
+    c.init_worn_items(&sm, g);
+    // ChanceToFall 100: Rand.Next(100) is never above it.
+    give_item(&sm, &mut c, ItemClass::Clothing, "Helmet", 7, |_| {}, |s| s.chance_to_fall = 100);
+    assert!(c.set_worn_item(&sm, None, Some(hat.clone()), Some(7), true, None).unwrap());
+    let ctx = Recorder::default();
+    let fallen = c.items.helmet_fall_from_worn_items(&sm, &ctx, false);
+    assert_eq!(fallen.iter().map(|i| i.borrow().id).collect::<Vec<_>>(), [7]);
+    assert!(c.items.item(7).is_none());
+    assert!(c.items.worn_ids().is_empty());
+    assert!(pz_inventory::shared::container_of(&fallen[0]).is_none());
+}
+
+#[test]
 fn set_worn_item_follows_the_group() {
     let (sm, mut chars) = fixture();
     let [hat, full_hat, tee, coat] = ["HAT", "FULL_HAT", "TSHIRT", "JACKET"].map(|f| item_constant(&sm, "item_body_location", f));
