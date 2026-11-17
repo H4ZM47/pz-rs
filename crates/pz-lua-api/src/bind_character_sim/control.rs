@@ -93,31 +93,32 @@ fn debug_cheat(name: &str) -> bool {
         && pz_core::debug::debug_options().borrow().get_boolean(name)
 }
 
-thread_local! {
-    /// The `IsoObject` fields of each character (`sitOnFurnitureObject`,
-    /// `bed`), by the character's address and the field name: they hold
-    /// Lua world objects, which the character body cannot keep.
-    static OBJECT_FIELDS: std::cell::RefCell<std::collections::HashMap<(usize, &'static str), Value>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+/// The `IsoObject` fields of a character: `bed` and `sitOnFurnitureObject`.
+/// They live on the character, so they go with it.
+#[derive(Clone, Copy)]
+enum ObjectField {
+    Bed,
+    SitOnFurniture,
 }
 
-/// The object field `name` of `chr`; nil when none is set.
-fn object_field(chr: &LuaGameCharacterRef, name: &'static str) -> Value {
-    let key = (Rc::as_ptr(chr) as usize, name);
-    OBJECT_FIELDS.with(|s| s.borrow().get(&key).cloned().unwrap_or(Value::Nil))
+/// The object field `field` of `chr`; nil when none is set.
+fn object_field(chr: &LuaGameCharacterRef, field: ObjectField) -> Value {
+    let chr = chr.borrow();
+    let slot = match field {
+        ObjectField::Bed => &chr.bed,
+        ObjectField::SitOnFurniture => &chr.sit_on_furniture_object,
+    };
+    slot.clone().unwrap_or(Value::Nil)
 }
 
-/// Set the object field `name` of `chr` (nil clears it).
-fn set_object_field(chr: &LuaGameCharacterRef, name: &'static str, object: Value) {
-    let key = (Rc::as_ptr(chr) as usize, name);
-    OBJECT_FIELDS.with(|s| {
-        let mut s = s.borrow_mut();
-        if object.is_nil() {
-            s.remove(&key);
-        } else {
-            s.insert(key, object);
-        }
-    });
+/// Set the object field `field` of `chr` (nil clears it).
+fn set_object_field(chr: &LuaGameCharacterRef, field: ObjectField, object: Value) {
+    let mut chr = chr.borrow_mut();
+    let slot = match field {
+        ObjectField::Bed => &mut chr.bed,
+        ObjectField::SitOnFurniture => &mut chr.sit_on_furniture_object,
+    };
+    *slot = (!object.is_nil()).then_some(object);
 }
 
 /// The `LuaManager.GlobalObject` functions about player control.
@@ -229,21 +230,21 @@ pub(super) fn register(b: &ClassBuilder) {
     });
     // `getSitOnFurnitureObject()`: `sitOnFurnitureObject`.
     b.method("getSitOnFurnitureObject", |c| {
-        let v = object_field(&chr_of(c)?, "sitOnFurnitureObject");
+        let v = object_field(&chr_of(c)?, ObjectField::SitOnFurniture);
         Ok(c.push(v))
     });
     // `setSitOnFurnitureObject(object)`.
     b.method("setSitOnFurnitureObject", |c| {
-        set_object_field(&chr_of(c)?, "sitOnFurnitureObject", c.arg(1));
+        set_object_field(&chr_of(c)?, ObjectField::SitOnFurniture, c.arg(1));
         Ok(0)
     });
     // `getBed()` / `setBed(object)`: `bed`.
     b.method("getBed", |c| {
-        let v = object_field(&chr_of(c)?, "bed");
+        let v = object_field(&chr_of(c)?, ObjectField::Bed);
         Ok(c.push(v))
     });
     b.method("setBed", |c| {
-        set_object_field(&chr_of(c)?, "bed", c.arg(1));
+        set_object_field(&chr_of(c)?, ObjectField::Bed, c.arg(1));
         Ok(0)
     });
     // `getForceWakeUpTime()` / `setForceWakeUpTime(hour)`: `forceWakeUpTime`.
@@ -269,7 +270,7 @@ pub(super) fn register(b: &ClassBuilder) {
     // `isSitOnFurnitureObject(object)`: false without a furniture object,
     // else the same object or `furniture.isConnectedSpriteGridObject(object)`.
     b.method("isSitOnFurnitureObject", |c| {
-        let furniture = object_field(&chr_of(c)?, "sitOnFurnitureObject");
+        let furniture = object_field(&chr_of(c)?, ObjectField::SitOnFurniture);
         let object = c.arg(1);
         let r = if furniture.is_nil() {
             false
