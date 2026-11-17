@@ -119,6 +119,55 @@ fn edge(b: &ClassBuilder, name: &str, f: EdgeQuery) {
     });
 }
 
+/// An object of the square has an attached sprite whose name contains one
+/// of `parts` (`haveGraffiti`, `haveGrime`).
+fn have_overlay(x: i32, y: i32, z: i32, parts: &[&str]) -> LuaResult<bool> {
+    let sprites = crate::bind_sprites::manager()?;
+    let sprites = sprites
+        .try_borrow()
+        .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+    with_square(x, y, z, |square| {
+        Ok(square.objects.iter().any(|slot| {
+            let object = slot.borrow();
+            object.attached_anim_sprite.iter().flatten().any(|instance| {
+                sprites.sprites[instance.sprite]
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| parts.iter().any(|part| name.contains(part)))
+            })
+        }))
+    })
+}
+
+/// `haveBlood()`: with blood decals on, a wall splat on an object of the
+/// square or a floor splat of the chunk within one square of it.
+fn have_blood(t: &mut Thread, x: i32, y: i32, z: i32) -> LuaResult<bool> {
+    let get_core = t.globals().rawget(&Value::str("getCore"));
+    let core = t.call1(&get_core, &[])?;
+    let option = t.table_get(&core, &Value::str("getOptionBloodDecals"))?;
+    if t.call1(&option, &[core])?.as_num().unwrap_or(0.0) == 0.0 {
+        return Ok(false);
+    }
+    let on_wall = with_square(x, y, z, |square| {
+        Ok(square
+            .objects
+            .iter()
+            .any(|slot| slot.borrow().wall_blood_splats.as_ref().is_some_and(|s| !s.is_empty())))
+    })?;
+    if on_wall {
+        return Ok(true);
+    }
+    let (wx, wy) = (x.div_euclid(8), y.div_euclid(8));
+    cell(|cell| {
+        let chunk = cell.chunks.get(&(wx, wy)).ok_or_else(npe)?;
+        Ok(chunk.saved.floor_blood_splats.iter().any(|splat| {
+            let sx = fastfloor(splat.x + (wx * 8) as f32);
+            let sy = fastfloor(splat.y + (wy * 8) as f32);
+            sx - 1 <= x && sx + 1 >= x && sy - 1 <= y && sy + 1 >= y
+        }))
+    })
+}
+
 pub(super) fn register(b: &ClassBuilder) {
     get(b, "isOutside", |c| {
         let (x, y, z) = self_square(c)?;
@@ -260,23 +309,26 @@ pub(super) fn register(b: &ClassBuilder) {
     // `overlay_graffiti`, `overlay_messages` or `constructedobjects_signs_01_4`.
     get(b, "haveGraffiti", |c| {
         let (x, y, z) = self_square(c)?;
-        let sprites = crate::bind_sprites::manager()?;
-        let sprites = sprites
-            .try_borrow()
-            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
-        let found = with_square(x, y, z, |square| {
-            Ok(square.objects.iter().any(|slot| {
-                let object = slot.borrow();
-                object.attached_anim_sprite.iter().flatten().any(|instance| {
-                    sprites.sprites[instance.sprite].name.as_deref().is_some_and(|name| {
-                        ["overlay_graffiti", "overlay_messages", "constructedobjects_signs_01_4"]
-                            .iter()
-                            .any(|part| name.contains(part))
-                    })
-                })
-            }))
-        })?;
+        let found = have_overlay(
+            x,
+            y,
+            z,
+            &["overlay_graffiti", "overlay_messages", "constructedobjects_signs_01_4"],
+        )?;
         Ok(found.into())
+    });
+    get(b, "haveBlood", |c| {
+        let (x, y, z) = self_square(c)?;
+        Ok(have_blood(c.thread, x, y, z)?.into())
+    });
+    get(b, "haveGrime", |c| {
+        let (x, y, z) = self_square(c)?;
+        Ok(have_overlay(x, y, z, &["overlay_grime"])?.into())
+    });
+    // `haveStains()`: `haveBlood() || haveGrime()`.
+    get(b, "haveStains", |c| {
+        let (x, y, z) = self_square(c)?;
+        Ok((have_blood(c.thread, x, y, z)? || have_overlay(x, y, z, &["overlay_grime"])?).into())
     });
     // `getAnimalTrack()`: the first IsoAnimalTrack of the objects.
     get(b, "getAnimalTrack", |c| {

@@ -260,7 +260,7 @@ fn menu_reads_of_an_outdoor_square() {
         assert(a:getNextNonItemObjectIndex(1) == -1)
         assert(not a:getProperties():has("fuelAmount"))
         assert(a:getRoom() == nil and a:getBuilding() == nil)
-        assert(a:getDeadBody() == nil and a:getAnimalTrack() == nil and not a:haveGraffiti())
+        assert(a:getDeadBody() == nil and a:getAnimalTrack() == nil and not a:haveGraffiti() and not a:haveGrime())
         local o = a:getObjects():get(0)
         assert(o:getProperties() == nil and o:getAttachedAnimSprite() == nil)
         assert(not o:hasFluid())
