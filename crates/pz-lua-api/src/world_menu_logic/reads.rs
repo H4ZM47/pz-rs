@@ -1,6 +1,10 @@
 //! Reads of world objects that `ISWorldObjectContextMenuLogic` makes and
 //! that no other binding answers yet.
 
+use std::any::Any;
+use std::rc::Rc;
+
+use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_world::objects::ObjectSprite;
 
@@ -8,7 +12,34 @@ use super::Cx;
 use crate::bind_world_object::{borrowed, object_from_value, object_square, unsupported, LuaWorldObject, ISO_OBJECT};
 use crate::expose::expose_class;
 
+const SPRITE_INSTANCE: &str = "zombie.iso.sprite.IsoSpriteInstance";
+
+/// An `IsoSpriteInstance` of an object's `attachedAnimSprite`, copied when
+/// Lua reads the list.
+struct SpriteInstance {
+    sprite: pz_world::sprite::SpriteIdx,
+}
+
+impl LuaObject for SpriteInstance {
+    fn class_name(&self) -> &str {
+        SPRITE_INSTANCE
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 pub(super) fn register(thread: &mut Thread) {
+    let instance = expose_class(thread, SPRITE_INSTANCE, Some("java.lang.Object"));
+    // getParentSprite(): `parentSprite`.
+    instance.method("getParentSprite", |c| {
+        let sprite = match c.arg(0) {
+            Value::Object(o) => o.as_any().downcast_ref::<SpriteInstance>().map(|i| i.sprite),
+            _ => None,
+        };
+        let sprite = sprite.ok_or_else(|| crate::bind_java_util::class_cast(&c.arg(0), SPRITE_INSTANCE))?;
+        Ok(c.push(crate::bind_sprites::sprite_value(Some(sprite), false)))
+    });
     let object = expose_class(thread, ISO_OBJECT, None);
     // getSquare(): `square`.
     object.method("getSquare", |c| {
@@ -22,18 +53,18 @@ pub(super) fn register(thread: &mut Thread) {
         let sprite = tile_sprite(receiver(&this)?, "IsoObject.getProperties")?;
         Ok(c.push(crate::bind_sprites::sprite_value(sprite, true)))
     });
-    // getAttachedAnimSprite(): `attachedAnimSprite`.
+    // getAttachedAnimSprite(): `attachedAnimSprite`, as a copy.
     object.method("getAttachedAnimSprite", |c| {
         let this = c.arg(0);
         let object = receiver(&this)?;
         let body = object.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
-        let list = match &body.attached_anim_sprite {
-            None => Value::Nil,
-            Some(list) if list.is_empty() => crate::bind_java_util::list_value(Vec::new()),
-            Some(_) => {
-                return Err(unsupported("IsoObject.getAttachedAnimSprite: IsoSpriteInstance has no Lua object"))
-            }
-        };
+        let list = body.attached_anim_sprite.as_ref().map_or(Value::Nil, |list| {
+            let items = list
+                .iter()
+                .map(|instance| Value::Object(Rc::new(SpriteInstance { sprite: instance.sprite })))
+                .collect();
+            crate::bind_java_util::list_value(items)
+        });
         Ok(c.push(list))
     });
     object.method("hasFluid", |c| {

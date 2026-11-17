@@ -175,9 +175,9 @@ pub(super) fn fetch(cx: &mut Cx<'_>, fetch: &TableRef, v: &Value, player: f64, d
         if props.is_nil() {
             false
         } else {
-            let key = cx.static_field("TilePropertyKey", "CAN_ATTACH_ANIMAL");
-            let key = cx.call(&key, "toString", &[])?;
-            cx.is(&props, "has", &[key])?
+            // `TilePropertyKey.CAN_ATTACH_ANIMAL.toString()`: the id of its
+            // `ResourceLocation`, `namespace:path` in lower case.
+            cx.is(&props, "has", &[Value::str("base:canattachanimal")])?
         }
     };
     if attach_animal {
