@@ -56,7 +56,7 @@ thread_local! {
 
 // A Lua call can unwind to an interpreter drain while this actual WORLD
 // cell is still borrowed by its Rust caller. Do not collect at that boundary.
-fn with_world_state_cell<R>(f: impl FnOnce(&RefCell<WorldState>) -> R) -> R {
+pub(crate) fn with_world_state_cell<R>(f: impl FnOnce(&RefCell<WorldState>) -> R) -> R {
     let _collection_deferral = pz_kahlua::gc::defer_collection();
     WORLD.with(f)
 }

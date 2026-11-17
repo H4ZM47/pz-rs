@@ -41,6 +41,63 @@ fn window_field(c: &NativeCall<'_>, f: fn(&pz_world::objects::IsoWindow) -> bool
     }
 }
 
+/// `IsoWindow.ToggleWindow(chr)` of a window on the map: a permanently locked,
+/// smashed or barricaded window stays as it is; otherwise it unlocks, flips
+/// `open` and takes its open or closed sprite, and the square and its
+/// neighbours recalculate.
+///
+/// TODO(port): the house alarm of `handleAlarm`, the `OnContainerUpdate`
+/// event, `PolygonalMap2.squareChanged` and the music intensity event.
+fn toggle_window(c: &NativeCall<'_>) -> LuaResult<()> {
+    let this = c.arg(0);
+    let world = crate::bind_world_object::object_from_value(&this)
+        .ok_or_else(|| crate::bind_java_util::class_cast(&this, ISO_WINDOW))?;
+    let square = crate::bind_world_object::object_square(world)?;
+    let Some((x, y, z)) = crate::bind_world::square_coords(&square) else {
+        return Ok(());
+    };
+    let sprites = crate::bind_sprites::manager()?;
+    let sprites = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
+    crate::bind_world::with_world_state_cell(|w| {
+        let mut w = w.try_borrow_mut().map_err(|_| borrowed("IsoWorld"))?;
+        let pz_lua_api_world = &mut *w;
+        let (Some(cell), Some(meta)) = (pz_lua_api_world.cell.as_mut(), pz_lua_api_world.meta_grid.as_ref()) else {
+            return Err(crate::bind_world_object::unsupported("IsoWindow.ToggleWindow without a world"));
+        };
+        let Some(square) = cell.get_grid_square(x, y, z) else {
+            return Ok(());
+        };
+        let (skip, sprite, native_class) = {
+            let sq = square.try_borrow().map_err(|_| borrowed("IsoGridSquare"))?;
+            let body = world.object.try_borrow().map_err(|_| borrowed("IsoWindow body"))?;
+            let ObjectKind::Window(w) = &body.kind else {
+                return Err(unsupported("IsoWindow.ToggleWindow on another object kind"));
+            };
+            let hooks = pz_world::world_state::ObjectHooks::new(cell, &sprites);
+            let skip = w.perma_locked || w.destroyed || hooks.object_barricaded(&sq, &body);
+            let sprite = if w.open { w.closed_sprite } else { w.open_sprite };
+            (skip, sprite, body.kind.native_class_name())
+        };
+        if skip {
+            return Ok(());
+        }
+        let old = {
+            let mut body = world.object.try_borrow_mut().map_err(|_| borrowed("IsoWindow body"))?;
+            if let ObjectKind::Window(w) = &mut body.kind {
+                w.locked = false;
+                w.open = !w.open;
+            }
+            std::mem::replace(&mut body.sprite, sprite.into())
+        };
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_payload(Box::new(old));
+        cell.retire_components(retired);
+        pz_world::object_slot::observe_object(&world.object, native_class);
+        cell.recalc_all_with_neighbours(x, y, z, meta, &sprites);
+        Ok(())
+    })
+}
+
 pub(crate) fn register(thread: &mut Thread) {
     let object = expose_class(thread, ISO_OBJECT, None);
     // `getProperties()`: the sprite's property container.
@@ -87,6 +144,10 @@ pub(crate) fn register(thread: &mut Thread) {
     });
 
     let window = expose_class(thread, ISO_WINDOW, Some(ISO_OBJECT));
+    window.method("ToggleWindow", |c| {
+        toggle_window(c)?;
+        Ok(0)
+    });
     window.method("IsOpen", |c| Ok(c.push(window_field(c, |w| w.open)?)));
     window.method("isOpen", |c| Ok(c.push(window_field(c, |w| w.open)?)));
     window.method("getNorth", |c| Ok(c.push(window_field(c, |w| w.north)?)));
