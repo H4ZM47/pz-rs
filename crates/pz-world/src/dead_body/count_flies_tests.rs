@@ -164,6 +164,7 @@ impl World {
                 fake_dead: false,
                 ragdoll: None,
                 burn_timer: 0.0,
+                runtime: None,
             })));
         corpse_count::corpse_added(&mut self.cell, &self.meta, x, y, 0).unwrap();
     }

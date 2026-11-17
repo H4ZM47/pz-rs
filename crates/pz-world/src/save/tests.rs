@@ -128,6 +128,7 @@ fn body(parts: usize) -> IsoDeadBody {
         fake_dead: false,
         ragdoll: None,
         burn_timer: 0.0,
+        runtime: None,
     }
 }
 
@@ -1539,4 +1540,51 @@ fn mannequin_save_rejects_native_worn_byte_overflow() {
     let object = IsoObject::new(1, ObjectKind::Mannequin(Box::new(mannequin)), None);
     let error = save_object(&mut Writer::new(), &context, &object).unwrap_err();
     assert_eq!(error.0, "too many worn items");
+}
+
+#[test]
+fn corpse_live_inventory_save_maps_worn_items_through_saved_order() {
+    use pz_inventory::{InventoryItem, ItemClass, ItemTemplate, SavedItem};
+    use std::rc::Rc;
+    struct Reg([Rc<ItemTemplate>; 2]);
+    impl ItemRegistry for Reg {
+        fn template(&self, id: i16) -> Option<Rc<ItemTemplate>> {
+            id.checked_sub(1)
+                .and_then(|i| self.0.get(i as usize))
+                .cloned()
+        }
+    }
+    let env = Reg([
+        Rc::new(ItemTemplate::new(ItemClass::Key, "Base", "CorpseA")),
+        Rc::new(ItemTemplate::new(ItemClass::Key, "Base", "CorpseB")),
+    ]);
+    let a1 = InventoryItem::create(env.0[0].clone(), 1);
+    let mut b = InventoryItem::create(env.0[1].clone(), 2);
+    b.id = 22;
+    let a2 = InventoryItem::create(env.0[0].clone(), 1);
+    let mut c = ItemContainer::new(Some("inventorymale"));
+    c.id = 5;
+    c.items = [a1, b, a2].map(|i| SavedItem::Item(Box::new(i))).into();
+    let mut body = IsoDeadBody::for_tests(1.5, 2.5, 0.0);
+    body.container = Some(c);
+    body.worn_items = vec![("base:shirt".into(), 1)];
+    // Lua reached the container: the worn entry names B's item object.
+    let live = body.runtime_container().unwrap();
+    let b = live.borrow().items[1].clone();
+    assert!(Rc::ptr_eq(body.runtime.as_ref().unwrap().worn[0].1.as_ref().unwrap(), &b));
+    let tables = SaveTables::for_tests();
+    let mut w = Writer::new();
+    body.save(&mut w, 3, &env).unwrap();
+    let mut r = Reader::new(&w.buf);
+    assert_eq!(r.i8().unwrap(), 1);
+    assert_eq!(r.i8().unwrap(), 3);
+    let loaded = IsoDeadBody::load(&mut r, WORLD_VERSION, &tables, (64.0, 192.0), &env).unwrap();
+    assert_eq!(r.pos, w.buf.len());
+    let saved = loaded.container.unwrap();
+    assert_eq!(saved.id, 5);
+    // CompressIdenticalItems groups types: A1,A2,B instead of A1,B,A2.
+    assert_eq!(saved.items.iter().map(|i| i.id()).collect::<Vec<_>>()[2], 22);
+    assert_eq!(loaded.worn_items, [("base:shirt".into(), 2)]);
+    // The live container is still the corpse's.
+    assert!(Rc::ptr_eq(&body.runtime.as_ref().unwrap().container, &live));
 }

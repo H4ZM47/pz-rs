@@ -729,12 +729,20 @@ all installed assets, render paths or foreign platforms.
       IsoDeadBody(chr)`: position, look, inventory, worn items),
       `zombie_remove_from_world` and removal from `IsoWorld::zombies`, then
       `MutationEnv::place_new_corpse` (`staticMovingObjects`,
-      `CorpseCount`, render invalidation) and `OnContainerUpdate`. Not
-      wired: `DoZombieInventory` and `DoDeath` (`onKilled`), `dropHeldItems`,
+      `CorpseCount`, render invalidation), then `OnContainerUpdate` and
+      `OnDeadBodySpawn` with the corpse's Lua object. Not wired:
+      `DoZombieInventory` and `DoDeath` (`onKilled`), `dropHeldItems`,
       `ObjectIDManager`, `FliesSound`, the ragdoll pose, and the Lua
-      objects for `OnZombieDead`, `OnCharacterDeath` and `OnDeadBodySpawn`
-      (reported as unsupported when they have listeners). `die()` from the
-      population pass (`RealZombies::die`) is not collected.
+      objects for `OnZombieDead` and `OnCharacterDeath` (reported as
+      unsupported when they have listeners). `die()` from the population
+      pass (`RealZombies::die`) is not collected.
+- [x] Corpse objects: each corpse in `staticMovingObjects` is one shared
+      `DeadBodyRef`, and `bind_dead_body` gives it one Lua object
+      (`getStaticMovingObjects`, the events above). Its first `getContainer`
+      moves the saved container into a live one whose parent is the corpse
+      (`dead_body::inventory`); saving writes a snapshot of it. Not wired:
+      `PickCorpse`, the hand items, `getModData`, highlights, and the rest
+      of `IsoDeadBody`'s Lua methods.
 - [x] Corpse rendering: `WorldRender::render_corpses` draws each square's
       `staticMovingObjects` as `IsoDeadBody.render` does: the square's
       interpolated light, `BodyParams.init` (outside, room, lights), the

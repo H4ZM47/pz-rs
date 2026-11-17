@@ -33,6 +33,7 @@ pub mod bind_fs;
 pub mod bind_global_objects;
 pub mod bind_globals;
 pub mod bind_item_container;
+pub mod bind_dead_body;
 pub mod bind_world_object;
 pub(crate) mod bind_item_age;
 pub mod bind_item_name;
@@ -216,6 +217,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_items::register(&mut mgr.thread);
     bind_item_age::install_events(mgr.events.clone());
     bind_item_container::register(&mut mgr.thread);
+    bind_dead_body::register(&mut mgr.thread);
     bind_misc::register(&mut mgr.thread, mgr.fs.clone(), mgr.events.clone());
     bind_sandbox::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
     {

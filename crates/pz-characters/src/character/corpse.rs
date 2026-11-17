@@ -129,6 +129,7 @@ impl<I: 'static> GameCharacter<I> {
             fake_dead,
             ragdoll: None,
             burn_timer: 0.0,
+            runtime: None,
         };
         // `chr.setInventory(new ItemContainer())`, `clearWornItems()`,
         // `clearAttachedItems()`.

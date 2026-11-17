@@ -933,15 +933,11 @@ impl IsoWorld {
         let placed = self.place_new_corpses(bodies);
         for r in placed {
             match r {
-                Ok(Some(_)) => {
-                    // The original passes the body, which has no Lua object;
-                    // vanilla's listener (`ISInventoryPage`) ignores it.
-                    lua.trigger_event("OnContainerUpdate", &[]);
-                    if lua.events.callbacks("OnDeadBodySpawn") > 0 {
-                        self.log_update_error(
-                            "unsupported: OnDeadBodySpawn (IsoDeadBody has no Lua object)".into(),
-                        );
-                    }
+                Ok(Some(body)) => {
+                    // `IsoDeadBody(chr, false, true)`: both with the body.
+                    let body = pz_lua_api::bind_dead_body::dead_body_value(&body);
+                    lua.trigger_event("OnContainerUpdate", std::slice::from_ref(&body));
+                    lua.trigger_event("OnDeadBodySpawn", &[body]);
                 }
                 Ok(None) => (),
                 Err(e) => self.log_update_error(format!("IsoDeadBody: {e}")),

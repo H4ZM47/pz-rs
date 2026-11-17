@@ -289,6 +289,14 @@ pub(crate) fn copy_objects(
                     cause,
                 })?;
         }
+        if let Some(r) = &corpse.runtime {
+            check
+                .container_ref(&r.container)
+                .map_err(|cause| SquareArchiveError::Inventory {
+                    location: ArchiveLocation::Corpse(index),
+                    cause,
+                })?;
+        }
     }
     check
         .optional_table(&square.mod_data)

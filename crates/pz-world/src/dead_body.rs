@@ -11,6 +11,7 @@
 //! square/index or ID.
 
 pub mod corpse_count;
+pub mod inventory;
 pub mod flies_sound;
 
 #[cfg(test)]

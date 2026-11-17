@@ -565,6 +565,7 @@ fn body() -> IsoDeadBody {
         fake_dead: false,
         ragdoll: None,
         burn_timer: 0.0,
+        runtime: None,
     }
 }
 

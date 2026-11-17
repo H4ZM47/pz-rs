@@ -231,3 +231,52 @@ fn light_level_reads_installed_source_and_defaults_to_white() {
     );
     install_square_light(None);
 }
+
+#[test]
+fn static_moving_objects_are_the_square_corpses() {
+    let mut f = Fixture::new();
+    crate::bind_item_container::register(&mut f.thread);
+    crate::bind_dead_body::register(&mut f.thread);
+    f.square(|sq| {
+        let mut body = pz_world::save::visual::IsoDeadBody::for_tests(1.5, 1.5, 0.0);
+        let mut c = pz_inventory::ItemContainer::new(Some("inventorymale"));
+        c.id = 3;
+        body.container = Some(c);
+        sq.static_moving.push(Rc::new(RefCell::new(body)));
+    });
+    f.run(
+        r#"
+        local list = a:getStaticMovingObjects()
+        assert(list:size() == 1)
+        local b = list:get(0)
+        assert(b == a:getStaticMovingObjects():get(0))
+        assert(b:isZombie() and not b:isFemale() and not b:isAnimal() and not b:isSkeleton())
+        assert(b:getX() == 1.5 and b:getY() == 1.5 and b:getZ() == 0)
+        assert(b:getSquare() == a)
+        assert(b:getStaticMovingObjectIndex() == 0)
+        assert(b:DistTo(4, 5) == 6)
+        assert(b:DistToSquared(3.5, 1.5) == 4)
+        assert(b:DistToSquared(b) == 0)
+        local c = b:getContainer()
+        assert(c:getType() == "inventorymale")
+        assert(c:getParent() == b)
+        assert(c == b:getContainer())
+    "#,
+    );
+    // The saved container became the live one.
+    f.square(|sq| {
+        let body = sq.static_moving[0].borrow();
+        assert!(body.container.is_none());
+        assert_eq!(body.runtime.as_ref().unwrap().container.borrow().id, 3);
+    });
+    // A corpse taken off the square has no index.
+    let body = {
+        let mut out = None;
+        f.square(|sq| out = Some(sq.static_moving.remove(0)));
+        out.unwrap()
+    };
+    let v = crate::bind_dead_body::dead_body_value(&body);
+    f.thread.globals().set_str("gone", v);
+    f.run("assert(gone:getStaticMovingObjectIndex() == -1)");
+    f.run("assert(a:getStaticMovingObjects():size() == 0)");
+}
