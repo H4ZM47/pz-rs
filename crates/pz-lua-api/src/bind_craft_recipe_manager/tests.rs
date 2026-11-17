@@ -591,3 +591,33 @@ fn the_window_logic_counts_crafts_and_consumes_the_populated_inputs() {
     d.populate_inputs(&[4, 5], true, t).unwrap();
     assert_eq!(d.st.inputs.iter().map(|i| i.items.clone()).collect::<Vec<_>>(), [vec![], vec![4, 5]]);
 }
+
+#[test]
+fn a_known_recipe_one_level_short_could_benefit_from_a_recipe_at_hand() {
+    let sm = manager(
+        "craftRecipe Skilled { time = 10, Tags = InHandCraft, SkillRequired = Woodwork:3, inputs { item 1 [Base.Apple], } outputs { item 1 Base.Apple, } }
+         craftRecipe Learned { time = 10, Tags = InHandCraft, needToBeLearn = true, SkillRequired = Woodwork:3, inputs { item 1 [Base.Apple], } outputs { item 1 Base.Apple, } }
+         craftRecipe Plain { time = 10, Tags = InHandCraft, needToBeLearn = true, inputs { item 1 [Base.Apple], } outputs { item 1 Base.Apple, } }",
+    );
+    let recipe = |n: &str| sm.get_script(ScriptType::CraftRecipe, &format!("Base.{n}")).unwrap().downcast::<CraftRecipe>().unwrap();
+    let (skilled, learned, plain) = (recipe("Skilled"), recipe("Learned"), recipe("Plain"));
+    let (skilled, learned, plain) = (skilled.borrow(), learned.borrow(), plain.borrow());
+    let chr = |level: i32| Chr {
+        player: true,
+        levels: vec![("Woodwork", level)],
+        known: vec!["Learned", "Plain"],
+        ..Chr::default()
+    };
+
+    assert!(could_benefit_from_recipe_at_hand(&learned, &chr(2)));
+    assert!(could_benefit_from_recipe_at_hand(&learned, &chr(3)), "no skill is short");
+    assert!(!could_benefit_from_recipe_at_hand(&learned, &chr(1)), "two levels short");
+    assert!(!could_benefit_from_recipe_at_hand(&skilled, &chr(2)), "need not be learned");
+    assert!(!could_benefit_from_recipe_at_hand(&plain, &chr(2)), "no required skill");
+    assert!(!could_benefit_from_recipe_at_hand(&learned, &Chr { known: vec![], ..chr(2) }), "unknown");
+    assert!(!could_benefit_from_recipe_at_hand(&learned, &Chr { player: false, ..chr(2) }));
+
+    assert!(character_has_required_skills(&learned, &chr(3)));
+    assert!(!character_has_required_skills(&learned, &chr(2)));
+    assert!(character_has_required_skills(&plain, &chr(0)));
+}

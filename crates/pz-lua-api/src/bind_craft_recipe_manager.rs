@@ -179,6 +179,55 @@ fn validate_benefit_from_recipe_at_hand(recipe: &CraftRecipe, chr: &dyn RecipeCh
     Err(crate::bind_world_object::unsupported("CraftRecipe.validateBenefitFromRecipeAtHand"))
 }
 
+/// `CraftRecipe.couldBenefitFromRecipeAtHand(chr)`: a known recipe that
+/// must be learned, for a player who lacks at most one level of each
+/// required skill and of at least one. A recipe without required skills
+/// gives false.
+fn could_benefit_from_recipe_at_hand(recipe: &CraftRecipe, chr: &dyn RecipeCharacter) -> bool {
+    if !recipe.need_to_be_learn() || !is_recipe_actually_known(recipe, chr) || !chr.is_player() {
+        return false;
+    }
+    let skills = recipe.skill_required.as_deref().unwrap_or_default();
+    if skills.is_empty() {
+        return false;
+    }
+    skills.iter().all(|s| {
+        let level = chr.perk_level(s.perk());
+        level >= s.level() || s.level() - level == 1
+    })
+}
+
+/// `CraftRecipe.characterHasRequiredSkills(chr)`.
+fn character_has_required_skills(recipe: &CraftRecipe, chr: &dyn RecipeCharacter) -> bool {
+    recipe.skill_required.iter().flatten().all(|s| chr.perk_level(s.perk()) >= s.level())
+}
+
+/// The `CraftRecipe` members that read the character argument.
+fn register_recipe_character_checks(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Characters>>) {
+    let b = expose_class(thread, crate::bind_scripts::CRAFT_RECIPE_CLASS, None);
+    let checks: [(&str, fn(&CraftRecipe, &dyn RecipeCharacter) -> bool, bool); 2] = [
+        ("couldBenefitFromRecipeAtHand", could_benefit_from_recipe_at_hand, false),
+        ("characterHasRequiredSkills", character_has_required_skills, true),
+    ];
+    for (name, check, nil_is_false) in checks {
+        let (sm, chars) = (sm.clone(), chars.clone());
+        crate::bind_scripts::method(&b, name, move |c, h| {
+            let chr_value = c.arg(1);
+            let character = match &chr_value {
+                Value::Nil if nil_is_false => return Ok(Value::Bool(false)),
+                Value::Nil => return Err(npe("IsoGameCharacter")),
+                Value::Object(o) => (&**o as &dyn Any)
+                    .downcast_ref::<CharacterObject>()
+                    .ok_or_else(|| LuaError::runtime("expected IsoGameCharacter"))?,
+                _ => return Err(LuaError::runtime("expected IsoGameCharacter")),
+            };
+            let chr =
+                LuaRecipeCharacter { sm: &sm, chars: &chars, character, value: chr_value.clone(), env: c.thread.globals().clone() };
+            Ok(Value::Bool(h.read(|r: &CraftRecipe| check(r, &chr))?))
+        });
+    }
+}
+
 /// `CraftRecipeManager.validateHasRequiredSkill(recipe, chr, containers)`.
 fn validate_has_required_skill(
     recipe: &CraftRecipe,
@@ -581,6 +630,7 @@ pub(crate) fn container_items(containers: &Value) -> LuaResult<Vec<ItemRef>> {
 
 pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Characters>>) {
     logic::register(thread, sm.clone(), chars.clone());
+    register_recipe_character_checks(thread, sm.clone(), chars.clone());
     let b = expose_class(thread, CRAFT_RECIPE_MANAGER_CLASS, None);
     let query_sm = sm.clone();
     b.static_fn("queryRecipes", move |c| {

@@ -6,8 +6,8 @@
 //! Not exposed yet: members taking characters, players or inventory items
 //! (`canUseItem`, `canOutputItem`, `OnTestItem`, `hasRecipeAtHand`,
 //! `isFavourite`, `addXP`, `hasPlayerLearned`, `canResearch`,
-//! `checkMetaRecipe`, `checkAutoLearn*Skills`, `characterHasRequiredSkills`,
-//! `getHighestRelevantSkill*`, `*BenefitFromRecipeAtHand`,
+//! `checkMetaRecipe`, `checkAutoLearn*Skills`, `getHighestRelevantSkill*`,
+//! `canBenefitFromRecipeAtHand`, `validateBenefitFromRecipeAtHand`,
 //! `generateDebugText`, `getFavouriteModDataString`,
 //! the input item tests, `isFluidMatch`, `isEnergyMatch`; TODO(inventory,
 //! IsoGameCharacter)), perks (`getPerk`, `involvesSkill`,
@@ -15,7 +15,8 @@
 //! `getFluid`, ...; TODO(Fluid, Energy)), `getOverlayMapper`,
 //! `getOutputMapper`, `getLuaCallString`/`hasLuaCall` (enum not exposed),
 //! `getRecipeGroup` (TODO(CraftRecipeGroup)), `setTags`, `setProp1`/`setProp2`, `getTagBits`/`getModTags`, and a mod's
-//! name in `getModName` (TODO(ChooseGameInfo)).
+//! name in `getModName` (TODO(ChooseGameInfo)). `couldBenefitFromRecipeAtHand`
+//! and `characterHasRequiredSkills` are bound in `bind_craft_recipe_manager`.
 
 use super::{
     get, handle_arg, method, opt_str, script_list, script_value, set, string_list, void, IntoLua, ScriptHandle,
