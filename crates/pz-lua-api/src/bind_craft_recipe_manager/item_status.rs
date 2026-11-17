@@ -17,7 +17,7 @@ use pz_kahlua::LuaResult;
 use pz_scripts::objects::entity::components::crafting::{CraftRecipe, InputFlag, InputScript, LuaCall};
 use pz_scripts::objects::entity::components::resources::ResourceType;
 use pz_scripts::objects::items::Item;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 /// `Food` state the status tests read.
@@ -388,28 +388,74 @@ fn consume_input_item_internal(
         && passes_food_and_cooking_tests(input, item)?)
 }
 
-/// `CraftRecipeManager.consumeInputItem(input, item, true, cache, chr)` for
-/// an `Item` input (`validateInputScript` is false for other inputs; its
-/// exceptions are for debug builds and non-test calls on a client).
-///
-/// `cache` is the `fluidConsumed` of the `CacheData` (an
-/// `InputScriptData`), or `None` for a null cache. A failed test
-/// `softReset`s the cache.
+/// The `CacheData` of an `InputScriptData`, as the input checks use it:
+/// the applied items (by key), the fluid consumed so far, and
+/// `moveToOutputs`.
+#[derive(Clone, Debug, Default)]
+pub struct InputCache {
+    /// `appliedItems` (item keys); `mostRecentItem` is the last one.
+    pub applied: Vec<usize>,
+    /// `fluidConsumed`.
+    pub fluid_consumed: f32,
+    /// `moveToOutputs`.
+    pub move_to_outputs: bool,
+}
+
+impl InputCache {
+    /// `softReset()`: the applied items and the amounts consumed.
+    pub fn soft_reset(&mut self) {
+        self.applied.clear();
+        self.fluid_consumed = 0.0;
+    }
+
+    /// `clearCache()`: `softReset` and `moveToOutputs`.
+    pub fn clear(&mut self) {
+        self.soft_reset();
+        self.move_to_outputs = false;
+    }
+}
+
+/// `CraftRecipeManager.consumeInputItem(input, item, true, cache, chr)`: the
+/// test-only form.
 pub fn consume_input_item_test(
     input: &InputScript,
     recipe: &CraftRecipe,
     item: &dyn CraftItem,
     chr: &dyn RecipeCharacter,
     on_test: &mut dyn FnMut(&str, usize) -> bool,
-    cache: Option<&Cell<f32>>,
+    cache: Option<&mut InputCache>,
+) -> LuaResult<bool> {
+    consume_input_item(input, recipe, item, chr, on_test, cache, true)
+}
+
+/// `CraftRecipeManager.consumeInputItem(input, item, testOnly, cache, chr)`
+/// for an `Item` input (`validateInputScript` is false for other inputs; its
+/// exceptions are for debug builds and non-test calls on a client).
+///
+/// `cache` is the `InputScriptData` (its `CacheData`), or `None` for a null
+/// cache. A passed item is added to the cache's applied items, and the
+/// cache keeps `isKeep()` as `moveToOutputs`; a failed item `softReset`s the
+/// cache. Only a test reads the queued amount (`itemGetQueuedAmount`). When
+/// not testing, a `ConsumeFromItem` line would take the uses, fluid or
+/// energy from the item; that is not ported.
+pub fn consume_input_item(
+    input: &InputScript,
+    recipe: &CraftRecipe,
+    item: &dyn CraftItem,
+    chr: &dyn RecipeCharacter,
+    on_test: &mut dyn FnMut(&str, usize) -> bool,
+    mut cache: Option<&mut InputCache>,
+    test: bool,
 ) -> LuaResult<bool> {
     if input.resource_type() != ResourceType::Item {
         return Ok(false);
     }
-    let ok = consume_item_tests(input, recipe, item, chr, on_test, cache)?;
-    if !ok {
-        if let Some(c) = cache {
-            c.set(0.0);
+    let ok = consume_item_tests(input, recipe, item, chr, on_test, cache.as_deref_mut(), test)?;
+    if let Some(c) = cache {
+        if ok {
+            c.move_to_outputs = input.is_keep();
+        } else {
+            c.soft_reset();
         }
     }
     Ok(ok)
@@ -421,20 +467,29 @@ fn consume_item_tests(
     item: &dyn CraftItem,
     chr: &dyn RecipeCharacter,
     on_test: &mut dyn FnMut(&str, usize) -> bool,
-    cache: Option<&Cell<f32>>,
+    mut cache: Option<&mut InputCache>,
+    test: bool,
 ) -> LuaResult<bool> {
     if !consume_input_item_internal(input, recipe, item, chr, on_test)? {
         return Ok(false);
     }
-    let queued = chr.item_queued_amount(item)?;
-    if queued == f32::MAX || !input.has_consume_from_item() && item.current_uses() < queued as i32 {
+    // `consumeInputItemInternal` ends with `cache.addAppliedItem(item)`.
+    if let Some(c) = cache.as_deref_mut() {
+        c.applied.push(item.key());
+    }
+    let queued = if test { chr.item_queued_amount(item)? } else { 0.0 };
+    if test && (queued == f32::MAX || !input.has_consume_from_item() && item.current_uses() < queued as i32) {
         return Ok(false);
     }
     if let Some(from) = input.consume_from_item_script() {
+        if !test {
+            return Err(unsupported("CraftRecipeManager.consumeInputItem (ConsumeFromItem, not a test)"));
+        }
         let from = io_input(recipe, from)?;
+        let fluid = cache.map(|c| &mut c.fluid_consumed);
         let ok = match from.resource_type() {
             ResourceType::Item => consume_input_item_uses(from, item, queued as i32),
-            ResourceType::Fluid => consume_input_fluid(from, recipe, item.fluid_container()?, cache, queued)?,
+            ResourceType::Fluid => consume_input_fluid(from, recipe, item.fluid_container()?, fluid, queued)?,
             ResourceType::Energy => consume_input_energy_from_item(from, item, queued as i32)?,
             ResourceType::Any => true,
         };
@@ -446,7 +501,6 @@ fn consume_item_tests(
         // `createOutputItemUsesInternal` and the others.
         return Err(unsupported("CraftRecipeManager.consumeInputItem (CreateToItem)"));
     }
-    // `cache.setMoveToOutputs(isKeep)` only records the input mode.
     Ok(true)
 }
 
@@ -481,7 +535,7 @@ fn consume_input_fluid(
     from: &InputScript,
     recipe: &CraftRecipe,
     fc: Option<FluidState>,
-    cache: Option<&Cell<f32>>,
+    cache: Option<&mut f32>,
     queued: f32,
 ) -> LuaResult<bool> {
     let Some(fc) = fc.filter(|fc| !fc.is_empty()) else {
@@ -498,8 +552,8 @@ fn consume_input_fluid(
     if parent.is_item_count() && fc.amount < amount + queued {
         return Ok(false);
     }
-    if let Some(c) = cache {
-        amount = from.amount() - c.get();
+    if let Some(c) = cache.as_deref() {
+        amount = from.amount() - *c;
     }
     if !is_fluid_match(from, &fc)? {
         return Ok(false);
@@ -509,7 +563,7 @@ fn consume_input_fluid(
         return Ok(false);
     }
     if let Some(c) = cache {
-        c.set(c.get() + consumed);
+        *c += consumed;
     }
     Ok(true)
 }

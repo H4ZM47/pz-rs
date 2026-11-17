@@ -328,15 +328,14 @@ fn context_click_needs_every_input_from_the_containers() {
     let nail = |k| it(&sm, k, "Nails");
     assert!(!perform(&sm, "SpikeBat", &bat, &[bat.clone()], &chr).unwrap());
     assert!(!perform(&sm, "SpikeBat", &bat, &[bat.clone(), nail(2)], &chr).unwrap());
-    let err = perform(&sm, "SpikeBat", &bat, &[nail(2), bat.clone(), nail(3)], &chr).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (SpikeBat)"), "{err:?}");
+    assert!(perform(&sm, "SpikeBat", &bat, &[nail(2), bat.clone(), nail(3)], &chr).unwrap());
     // The clicked item counts even when no container holds it.
-    let err = perform(&sm, "SpikeBat", &bat, &[nail(2), nail(3)], &chr).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (SpikeBat)"), "{err:?}");
-    // Too dark to read, once the inputs are covered.
+    assert!(perform(&sm, "SpikeBat", &bat, &[nail(2), nail(3)], &chr).unwrap());
+    // Too dark to read.
     assert!(!perform(&sm, "SpikeBat", &bat, &[nail(2), nail(3)], &Chr { dark: true, ..player() }).unwrap());
+    // A surface recipe then needs the craft surface in range.
     let err = perform(&sm, "Hammer", &nail(2), &[nail(2)], &Chr { dark: true, ..player() }).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (Hammer)"), "{err:?}");
+    assert!(is_unsupported(&err, "isCharacterInRangeOfWorkbench"), "{err:?}");
 }
 
 #[test]
@@ -345,21 +344,19 @@ fn an_item_covers_one_input_only() {
     let chr = player();
     let bat = it(&sm, 1, "BaseballBat");
     assert!(!perform(&sm, "TwoBats", &bat, &[bat.clone()], &chr).unwrap());
-    let err = perform(&sm, "TwoBats", &bat, &[bat.clone(), it(&sm, 2, "BaseballBat")], &chr).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (TwoBats)"), "{err:?}");
+    assert!(perform(&sm, "TwoBats", &bat, &[bat.clone(), it(&sm, 2, "BaseballBat")], &chr).unwrap());
     // Uses add up: three one-use apples or one three-use apple.
     let apple = |k, uses| It { uses, ..it(&sm, k, "Apple") };
     assert!(!perform(&sm, "Uses", &apple(1, 1), &[apple(1, 1), apple(2, 1)], &chr).unwrap());
-    assert!(perform(&sm, "Uses", &apple(1, 1), &[apple(1, 1), apple(2, 1), apple(3, 1)], &chr).is_err());
-    assert!(perform(&sm, "Uses", &apple(1, 3), &[apple(1, 3)], &chr).is_err());
+    assert!(perform(&sm, "Uses", &apple(1, 1), &[apple(1, 1), apple(2, 1), apple(3, 1)], &chr).unwrap());
+    assert!(perform(&sm, "Uses", &apple(1, 3), &[apple(1, 3)], &chr).unwrap());
 }
 
 #[test]
 fn input_tags_list_the_items_that_have_them() {
     let sm = manager("");
     let chr = player();
-    let err = perform(&sm, "Glue", &it(&sm, 1, "BaseballBat"), &[], &chr).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (Glue)"), "{err:?}");
+    assert!(perform(&sm, "Glue", &it(&sm, 1, "BaseballBat"), &[], &chr).unwrap());
     assert!(!accepts(&sm, "Glue", &it(&sm, 1, "Apple"), &chr).unwrap());
     assert!(!accepts(&sm, "Glue", &It { script: None, ..it(&sm, 1, "BaseballBat") }, &chr).unwrap());
 }
@@ -370,12 +367,11 @@ fn an_undamaged_bat_lists_no_hand_recipe_without_nails() {
     // Glue is covered by the bat itself and cannot be done in the dark.
     let dark = Chr { dark: true, ..player() };
     assert!(unique(&sm, "BaseballBat", &dark).unwrap().is_empty());
-    let err = unique(&sm, "BaseballBat", &player()).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs ("), "{err:?}");
-    // FixBat needs a damaged bat.
+    assert_eq!(unique(&sm, "BaseballBat", &player()).unwrap(), ["Glue"]);
+    // FixBat needs a damaged bat, and then the craft surface.
     let bat = It { condition: 3, ..it(&sm, 1, "BaseballBat") };
     let err = unique_with(&sm, &bat, &dark, &[]).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (FixBat)"), "{err:?}");
+    assert!(is_unsupported(&err, "isCharacterInRangeOfWorkbench"), "{err:?}");
 }
 
 #[test]
@@ -393,8 +389,7 @@ fn on_test_rejections_skip_the_recipe() {
     .unwrap();
     assert!(list.is_empty());
     assert_eq!(calls, [("Recipe.OnTest.No".to_string(), 7)]);
-    let err = unique_with(&sm, &apple, &chr, &[]).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (Tested)"), "{err:?}");
+    assert_eq!(unique_with(&sm, &apple, &chr, &[]).unwrap(), ["Tested"]);
 }
 
 #[test]
@@ -479,10 +474,12 @@ fn lua_get_unique_recipe_items() {
     assert!(err.contains("NullPointerException"), "{err}");
     let err = run(&mut t, "return CraftRecipeManager.getUniqueRecipeItems(bat, player, nil)").unwrap_err();
     assert!(err.contains("NullPointerException"), "{err}");
-    // SpikeBat lacks the nails; Glue is covered by the bat, and the
-    // player's light is not ported.
-    let err = run(&mut t, "return CraftRecipeManager.getUniqueRecipeItems(bat, player, ArrayList.new())").unwrap_err();
-    assert!(err.contains("tooDarkToRead"), "{err}");
+    // SpikeBat lacks the nails; Glue is covered by the bat. The character
+    // is not a local player, so it is never too dark to read.
+    let out =
+        run(&mut t, "return CraftRecipeManager.getUniqueRecipeItems(bat, player, ArrayList.new()):get(0):getName()")
+            .unwrap();
+    assert!(out[0].raw_equals(&Value::str("Glue")), "{out:?}");
 }
 
 #[test]
@@ -551,6 +548,5 @@ fn consume_from_item_fluids_count_the_fluid_of_each_item() {
     assert!(!perform(&sm, "Fill", &low, &[low.clone()], &chr).unwrap());
     let a = with_fluid(apple(1), &[("Water", 0.3)], 1.0);
     let b = with_fluid(apple(2), &[("Water", 0.3)], 1.0);
-    let err = perform(&sm, "Fill", &a, &[a.clone(), b], &chr).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (Fill)"), "{err:?}");
+    assert!(perform(&sm, "Fill", &a, &[a.clone(), b], &chr).unwrap());
 }

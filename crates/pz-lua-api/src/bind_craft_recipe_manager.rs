@@ -9,7 +9,6 @@
 //! Not ported yet, and reported with `unsupported` when reached:
 //! - `CraftRecipeData.createRecipeOutputs` (and after it the craft surface
 //!   and workstation tests) for a recipe whose inputs the containers cover;
-//! - `IsoPlayer.tooDarkToRead` for such a recipe;
 //! - `CraftRecipe.validateBenefitFromRecipeAtHand` for a learned recipe
 //!   whose skill requirement the character does not meet
 //!   (`tooDarkToRead`, `hasRecipeAtHand`);
@@ -307,7 +306,7 @@ pub(crate) fn cached_recipe_info(
             .ok_or_else(|| LuaError::runtime("expected IsoGameCharacter"))?,
         _ => return Err(npe("IsoGameCharacter")),
     };
-    let lua_chr = LuaRecipeCharacter { chars, character, value: chr_value.clone(), env: thread.globals().clone() };
+    let lua_chr = LuaRecipeCharacter { sm, chars, character, value: chr_value.clone(), env: thread.globals().clone() };
     if !is_valid_recipe_for_character(recipe, Some(&lua_chr), false)? {
         return Ok((false, false));
     }
@@ -324,6 +323,7 @@ pub(crate) fn cached_recipe_info(
 
 /// The `IsoGameCharacter` argument, read through the shared characters.
 struct LuaRecipeCharacter<'a> {
+    sm: &'a ScriptManager,
     chars: &'a RefCell<Characters>,
     character: &'a CharacterObject,
     value: Value,
@@ -371,6 +371,48 @@ impl RecipeCharacter for LuaRecipeCharacter<'_> {
             }
         }
         Ok(0.0)
+    }
+    /// `IsoPlayer.tooDarkToRead()` (`is_player` has passed).
+    ///
+    /// The characters hold no `AttachedItems` yet, so only the hands can
+    /// light the page. `getWornItemsVisionModifier()` is the value
+    /// `updateWornItemsVisionModifier` keeps when the worn items change; it
+    /// is computed here from the worn items.
+    fn too_dark_to_read(&self) -> LuaResult<bool> {
+        let ctx = crate::bind_character_sim::current_sim_context();
+        let chr = self.character.0.borrow();
+        if !chr.is_local_player(ctx.as_ref()) {
+            return Ok(false);
+        }
+        let Some((x, y, z)) = chr.current_square_xyz() else {
+            return Ok(false);
+        };
+        if crate::bind_world::square_value(x, y, z).is_nil() {
+            return Ok(false);
+        }
+        let index = chr.player.player_index;
+        let lit = |i: Option<crate::bind_items::ItemRef>| i.is_some_and(|i| i.borrow().is_emitting_light());
+        if lit(chr.items.primary_hand_item()) || lit(chr.items.secondary_hand_item()) {
+            return Ok(false);
+        }
+        let light = crate::bind_world::square_queries::square_lighting(index, x, y, z).light_level;
+        let mut modifier = 1.0f32;
+        for item in chr.items.worn() {
+            let Some(script) = pz_characters::character::items::script_item(self.sm, &item.borrow()) else {
+                continue;
+            };
+            let v = script.borrow().vision_modifier;
+            if v != 1.0 && v > 0.0 {
+                modifier /= v;
+            }
+        }
+        // `fcmpg`: a NaN level is not dark.
+        let dark = (light / modifier + light) / 2.0 < 0.43;
+        if dark && chr.path.vehicle.is_some() {
+            // `getVehicle().getBatteryCharge() == 0`.
+            return Err(crate::bind_world_object::unsupported("IsoPlayer.tooDarkToRead (BaseVehicle.getBatteryCharge)"));
+        }
+        Ok(dark)
     }
 }
 
@@ -563,8 +605,13 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
             _ => return Err(LuaError::runtime("expected IsoGameCharacter")),
         };
         let containers = container_items(&c.arg(2))?;
-        let lua_chr =
-            LuaRecipeCharacter { chars: &chars, character, value: chr_value.clone(), env: c.thread.globals().clone() };
+        let lua_chr = LuaRecipeCharacter {
+            sm: &sm,
+            chars: &chars,
+            character,
+            value: chr_value.clone(),
+            env: c.thread.globals().clone(),
+        };
         let item = LuaCraftItem::new(&sm, item, &chr_value)?;
         let containers =
             containers.into_iter().map(|i| LuaCraftItem::new(&sm, i, &chr_value)).collect::<LuaResult<Vec<_>>>()?;
