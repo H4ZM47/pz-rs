@@ -29,6 +29,7 @@ use std::rc::{Rc, Weak};
 mod cell_drag;
 pub mod lua_world;
 mod reachability;
+mod player_vehicles;
 pub mod square_queries;
 pub mod power;
 
@@ -493,6 +494,7 @@ pub fn register_with_events(thread: &mut Thread, events: crate::events::EventMan
 }
 
 fn register_world(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::events::Event>>>) {
+    player_vehicles::register(thread);
     register_array_list(thread);
     register_room_def(thread);
     register_room_rect(thread);
