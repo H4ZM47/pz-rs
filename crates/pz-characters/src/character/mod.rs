@@ -339,6 +339,8 @@ pub struct GameCharacter<I: 'static> {
     pub is_reading: bool,
     /// `numSurvivorsInVicinity`.
     pub num_survivors_in_vicinity: i32,
+    /// `isVisibleToPlayer[playerIndex]` (`updateSeenVisibility`).
+    pub is_visible_to_player: [bool; 4],
     /// `clothingDiscomfortModifier`.
     pub clothing_discomfort_modifier: f32,
     /// `IsoPlayer.sleepingPillsTaken`.
@@ -497,6 +499,7 @@ impl<I: 'static> GameCharacter<I> {
             time_since_last_smoke: 0.0,
             is_reading: false,
             num_survivors_in_vicinity: 0,
+            is_visible_to_player: [false; 4],
             clothing_discomfort_modifier: 0.0,
             sleeping_pills_taken: 0,
             last_pills_taken: 0,

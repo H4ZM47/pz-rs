@@ -23,6 +23,8 @@ pub(crate) const TRAITS: &[&str] = &[
     "HIGH_THIRST",
     "LOW_THIRST",
     "DEAF",
+    "HARD_OF_HEARING",
+    "KEEN_HEARING",
     "HEMOPHOBIC",
     "NEEDS_LESS_SLEEP",
     "NEEDS_MORE_SLEEP",

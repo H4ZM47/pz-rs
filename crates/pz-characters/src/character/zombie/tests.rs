@@ -78,6 +78,8 @@ struct Plane {
     sounds: WorldSoundManager,
     light: f32,
     pathed: Vec<(i32, i32, i32)>,
+    /// `isCouldSee` and `isCanSee` of every square.
+    see: bool,
 }
 
 struct Cells;
@@ -99,6 +101,19 @@ impl StateWorld<()> for Plane {
     }
     fn characters_near(&self, _x: f32, _y: f32, _z: f32, _r: f32) -> Vec<i32> {
         self.chars.iter().map(|c| c.id).collect()
+    }
+    fn take_character(&mut self, id: i32) -> Option<GameCharacter<()>> {
+        let i = self.chars.iter().position(|c| c.id == id)?;
+        Some(self.chars.remove(i))
+    }
+    fn put_character(&mut self, chr: GameCharacter<()>) {
+        self.chars.push(chr);
+    }
+    fn square_could_see(&self, _sq: (i32, i32, i32), _p: i32) -> bool {
+        self.see
+    }
+    fn square_can_see(&self, _sq: (i32, i32, i32), _p: i32) -> bool {
+        self.see
     }
     fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
         Some(SquareInfo { x, y, z, solid_floor: true, ..Default::default() })
@@ -430,4 +445,67 @@ fn creating_a_zombie_without_names_throws() {
         r.err().map(|e| e.to_string()).as_deref(),
         Some("java.lang.IndexOutOfBoundsException: Index 0 out of bounds for length 0")
     );
+}
+
+#[test]
+fn a_player_sees_and_counts_a_zombie_next_to_it() {
+    let (sm, mut chars) = fixture();
+    let ctx = Lore::new(9);
+    let mut z = zombie(&sm, &mut chars, &ctx);
+    z.vars.x = 11.5;
+    z.vars.y = 10.5;
+    z.path.current_square = Some((11, 10, 0));
+    z.set_forward_direction(-1.0, 0.0);
+    let mut p = player(&sm, &mut chars);
+    p.id = 1;
+    p.vars.x = 10.5;
+    p.vars.y = 10.5;
+    p.path.current_square = Some((10, 10, 0));
+    p.set_forward_direction(1.0, 0.0);
+    let mut world = Plane { chars: vec![p], light: 1.0, see: true, ..Default::default() };
+    // updateSeenVisibility: lit, in front, one square away.
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+    z.update_seen_visibility(&mut cx).unwrap();
+    assert_eq!(z.is_visible_to_player, [true, false, false, false]);
+    world.chars.push(z);
+    // No zombie seen for 600 ticks: the next one is a surprise.
+    world.chars[0].player.time_since_last_stab = 600.0;
+
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+    crate::character::player::los::update_player_los(1, &mut cx).unwrap();
+    let p = &world.chars[0];
+    // TestZombieSpotPlayer: the zombie spotted the player, which is now
+    // its target.
+    assert_eq!(world.chars[1].vars.target, Some(1));
+    assert_eq!(p.player.closest_zombie, 1.0);
+    // One visible, plus 2 for a new one within 4 squares on the floor.
+    assert_eq!(p.stats.num_visible_zombies, 3);
+    assert_eq!(p.stats.last_num_visible_zombies, 3);
+    assert_eq!(p.stats.num_very_close_zombies(), 1);
+    assert_eq!(p.stats.music_zombies_targeting_nearby_not_moving, 1);
+    assert_eq!(p.player.ticks_since_seen_zombie, 0);
+    assert_eq!(p.player.last_seen_zombie_time, 0.0);
+    assert_eq!(p.player.spotted_list, vec![1, 7]);
+    assert_eq!(p.player.last_spotted, vec![1, 7]);
+    assert_eq!(p.player.clear_spotted_timer, -2);
+    assert!(ctx.events.borrow().iter().any(|e| e == "SetGameSpeed(1)"), "{:?}", ctx.events.borrow());
+    assert!(ctx.events.borrow().iter().any(|e| e.contains("ZombieSurprisedPlayer")));
+
+    // Seen before: no bonus, and no second surprise.
+    ctx.events.borrow_mut().clear();
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+    crate::character::player::los::update_player_los(1, &mut cx).unwrap();
+    let p = &world.chars[0];
+    assert_eq!(p.stats.num_visible_zombies, 1);
+    assert_eq!(p.stats.num_very_close_zombies(), 1);
+    assert!(!ctx.events.borrow().iter().any(|e| e.contains("ZombieSurprisedPlayer")));
+
+    // Asleep: the zombie still spots the player, who counts nothing.
+    world.chars[0].asleep = true;
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+    crate::character::player::los::update_player_los(1, &mut cx).unwrap();
+    let p = &world.chars[0];
+    assert_eq!(p.stats.num_visible_zombies, 0);
+    assert_eq!(p.stats.num_very_close_zombies(), 0);
+    assert_eq!(p.player.spotted_list, vec![1]);
 }

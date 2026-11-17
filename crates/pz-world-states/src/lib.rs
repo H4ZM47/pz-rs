@@ -757,18 +757,26 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     fn character_mut(&mut self, id: i32) -> Option<&mut GameCharacter<I>> {
         self.character_list::<I>()?.iter_mut().find(|c| c.id == id)
     }
+    /// The last character fills the taken one's place, so a take and its
+    /// put are O(1) (the zombie update takes every zombie each frame).
     fn take_character(&mut self, id: i32) -> Option<GameCharacter<I>> {
         let list = self.character_list::<I>()?;
         let i = list.iter().position(|c| c.id == id)?;
-        let chr = list.remove(i);
+        let chr = list.swap_remove(i);
         self.taken.push((id, i));
         Some(chr)
     }
+    /// Puts the character back at its index and the one that filled it
+    /// back at the end: puts in the reverse order of the takes restore the
+    /// list order exactly.
     fn put_character(&mut self, chr: GameCharacter<I>) {
-        let at = self.taken.iter().position(|t| t.0 == chr.id).map(|k| self.taken.remove(k).1);
+        let at = self.taken.iter().rposition(|t| t.0 == chr.id).map(|k| self.taken.remove(k).1);
         let Some(list) = self.character_list::<I>() else { return };
-        let i = at.unwrap_or(list.len()).min(list.len());
-        list.insert(i, chr);
+        list.push(chr);
+        let last = list.len() - 1;
+        if let Some(i) = at.filter(|i| *i < last) {
+            list.swap(i, last);
+        }
     }
     fn characters_near(&self, x: f32, y: f32, _z: f32, radius: f32) -> Vec<i32> {
         let Some(list) = self.characters.as_deref().and_then(|c| c.downcast_ref::<Vec<GameCharacter<I>>>()) else {

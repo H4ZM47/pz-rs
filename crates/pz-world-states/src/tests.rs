@@ -1702,6 +1702,12 @@ fn characters_by_id() {
     let z = StateWorld::<()>::take_character(&mut a, 11).unwrap();
     assert!(StateWorld::<()>::character_mut(&mut a, 11).is_none());
     StateWorld::<()>::put_character(&mut a, z);
+    // Nested takes, put back in reverse order, keep the order too.
+    let z10 = StateWorld::<()>::take_character(&mut a, 10).unwrap();
+    let z12 = StateWorld::<()>::take_character(&mut a, 12).unwrap();
+    assert_eq!(StateWorld::<()>::characters_near(&a, 10.5, 10.5, 0.0, 100.0), vec![11]);
+    StateWorld::<()>::put_character(&mut a, z12);
+    StateWorld::<()>::put_character(&mut a, z10);
     drop(a);
     assert_eq!(list.iter().map(|z| z.id).collect::<Vec<_>>(), vec![10, 11, 12]);
     assert_eq!(list[1].health, 0.5);
