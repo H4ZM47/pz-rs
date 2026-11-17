@@ -118,8 +118,8 @@ fn toggle_window(c: &NativeCall<'_>) -> LuaResult<()> {
     let sprites = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
     crate::bind_world::with_world_state_cell(|w| {
         let mut w = w.try_borrow_mut().map_err(|_| borrowed("IsoWorld"))?;
-        let pz_lua_api_world = &mut *w;
-        let (Some(cell), Some(meta)) = (pz_lua_api_world.cell.as_mut(), pz_lua_api_world.meta_grid.as_ref()) else {
+        let state = &mut *w;
+        let (Some(cell), Some(meta)) = (state.cell.as_mut(), state.meta_grid.as_ref()) else {
             return Err(crate::bind_world_object::unsupported("IsoWindow.ToggleWindow without a world"));
         };
         let Some(square) = cell.get_grid_square(x, y, z) else {
