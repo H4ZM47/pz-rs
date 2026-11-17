@@ -718,10 +718,10 @@ impl<'a> RecipeData<'a> {
     /// manual)` without manual input selection (the items `getInputCraftCount`
     /// lists are only read for it) and with no resources
     /// (`getResourceCraftCount` gives 0).
-    pub fn possible_craft_count(&mut self, items: &[usize], on_test: &mut OnTest) -> LuaResult<i32> {
+    pub fn possible_craft_count(&mut self, items: &[usize], manual: bool, on_test: &mut OnTest) -> LuaResult<i32> {
         let mut count = 100;
         for input in 0..self.inputs.len() {
-            count = count.min(self.input_craft_count(input, items, on_test)?);
+            count = count.min(self.input_craft_count(input, items, manual, on_test)?);
             if count == 0 {
                 break;
             }
@@ -729,8 +729,9 @@ impl<'a> RecipeData<'a> {
         Ok(count)
     }
 
-    /// `getInputCraftCount(data, items, outItems, false)`.
-    fn input_craft_count(&mut self, input: usize, items: &[usize], on_test: &mut OnTest) -> LuaResult<i32> {
+    /// `getInputCraftCount(data, items, outItems, manual)`. With manual
+    /// input selection only the item types the input holds count.
+    fn input_craft_count(&mut self, input: usize, items: &[usize], manual: bool, on_test: &mut OnTest) -> LuaResult<i32> {
         let script = self.inputs[input];
         let from = self.consume_from_item_script(input);
         let from_fluid = from.is_some_and(|f| f.resource_type() == ResourceType::Fluid);
@@ -738,6 +739,9 @@ impl<'a> RecipeData<'a> {
         for &key in items {
             // `InputScript.canUseItem(item, chr)`.
             if !self.consume_input_item(input, key, on_test, false, true)? {
+                continue;
+            }
+            if manual && !self.has_applied_item_type(input, key) {
                 continue;
             }
             let item = self.item(key);
@@ -771,6 +775,28 @@ impl<'a> RecipeData<'a> {
             }
         }
         Ok((total / amount as f64).floor() as i32)
+    }
+
+    /// `InputScriptData.hasAppliedItemType(item.getScriptItem())`: an
+    /// applied item of the input has the same script item.
+    fn has_applied_item_type(&self, input: usize, key: usize) -> bool {
+        let script = self.item(key).script_item();
+        self.st.inputs[input].cache.applied.iter().any(|&k| match (self.item(k).script_item(), &script) {
+            (Some(a), Some(b)) => Rc::ptr_eq(&a, b),
+            (None, None) => true,
+            _ => false,
+        })
+    }
+
+    /// `getAppliedInputItemTypes(set)`: the full types of `getAllInputItems`.
+    pub fn applied_input_item_types(&self) -> Vec<String> {
+        self.all_input_items().into_iter().map(|k| self.item(k).full_type()).collect()
+    }
+
+    /// The items whose full type is one of `types`
+    /// (`BaseCraftingLogic.populateInputs` with manual input item types).
+    pub fn items_of_types(&self, keys: &[usize], types: &[String]) -> Vec<usize> {
+        keys.iter().copied().filter(|&k| types.contains(&self.item(k).full_type())).collect()
     }
 
     /// `InputScriptData.verifyInputItems(allItems)`, last item first: an

@@ -4,8 +4,8 @@
 //! perform), the craft action and `performCurrentRecipe`, and the
 //! `CraftRecipeData` and `CraftRecipeData.InputScriptData` Lua objects.
 //!
-//! Not ported, and reported with `unsupported` when reached: manual input
-//! selection, the input item nodes, the recipe-at-hand items of a recipe
+//! Not ported, and reported with `unsupported` when reached: offering and
+//! removing manual input items, the input item nodes, the recipe-at-hand items of a recipe
 //! that needs learning, a floor container that `updateFloorContainer` has
 //! to change, vehicle part containers, `CraftRecipeData.addXP`, keep inputs
 //! in `processDestroyAndUsedItems`, and `PlayerCraftHistory.cleanupHistory`.
@@ -260,18 +260,11 @@ pub(super) fn base_set_recipe(thread: &mut Thread, o: &Rc<dyn LuaObject>, recipe
         with_data(thread, o, &[], |d, all, t| d.consume_inputs_internal(true, Some(all), true, true, t))?;
     }
     // `inputItemNodeCollection.setRecipe(recipe)` builds the nodes that
-    // only manual input selection reads, and `manualInputAllowedItemTypes`
-    // is only filled with manual input selection.
+    // only the manual input item list reads.
+    state(o).borrow_mut().manual_input_allowed_item_types.clear();
     auto_populate_inputs(thread, o)?;
     trigger_event(thread, o, "onRecipeChanged", &[script_value(recipe.as_ref())]);
     trigger_event(thread, o, "onRebuildInputItemNodes", &[]);
-    Ok(())
-}
-
-fn manual_unsupported(o: &Rc<dyn LuaObject>, what: &str) -> LuaResult<()> {
-    if state(o).borrow().manual_select_inputs {
-        return Err(unsupported(format!("{what} (manual input selection)")));
-    }
     Ok(())
 }
 
@@ -279,8 +272,8 @@ fn manual_unsupported(o: &Rc<dyn LuaObject>, what: &str) -> LuaResult<()> {
 /// `allItems`, cached.
 fn recalculate_possible_craft_count(thread: &mut Thread, o: &Rc<dyn LuaObject>) -> LuaResult<i32> {
     let count = if selected(o).is_some() {
-        manual_unsupported(o, "HandcraftLogic.getPossibleCraftCount")?;
-        with_data(thread, o, &[], |d, all, t| d.possible_craft_count(all, t))?
+        let manual = state(o).borrow().manual_select_inputs;
+        with_data(thread, o, &[], |d, all, t| d.possible_craft_count(all, manual, t))?
     } else {
         // `CraftRecipeData.getPossibleCraftCount` with no inputs.
         100
@@ -296,8 +289,10 @@ pub(super) fn auto_populate_inputs(thread: &mut Thread, o: &Rc<dyn LuaObject>) -
     if selected(o).is_some() {
         // `populateInputs(player, getAllViableInputInventoryItems(),
         // sourceResources, false)`.
+        let types = state(o).borrow().manual_input_allowed_item_types.clone();
         with_data(thread, o, &[], |d, _, t| {
             let viable = d.st.all_viable_items.clone();
+            let viable = if types.is_empty() { viable } else { d.items_of_types(&viable, &types) };
             d.populate_inputs(&viable, false, t)?;
             d.consume_inputs_internal(true, None, true, false, t)
         })?;
@@ -308,11 +303,14 @@ pub(super) fn auto_populate_inputs(thread: &mut Thread, o: &Rc<dyn LuaObject>) -
     Ok(())
 }
 
-/// `BaseCraftingLogic.populateInputs(player, items, resources, true)` (the
-/// allowed item types are only set with manual input selection).
+/// `BaseCraftingLogic.populateInputs(player, items, resources, true)`.
 fn populate_inputs_clearing(thread: &mut Thread, o: &Rc<dyn LuaObject>, items: &[ItemRef]) -> LuaResult<()> {
     let keys: Vec<usize> = items.iter().map(key).collect();
-    with_data(thread, o, items, |d, _, t| d.populate_inputs(&keys, true, t))?;
+    let types = state(o).borrow().manual_input_allowed_item_types.clone();
+    with_data(thread, o, items, |d, _, t| {
+        let keys = if types.is_empty() { keys } else { d.items_of_types(&keys, &types) };
+        d.populate_inputs(&keys, true, t)
+    })?;
     state(o).borrow_mut().cached_can_perform_dirty = true;
     Ok(())
 }
@@ -329,12 +327,21 @@ pub(super) fn set_containers_with_recipe(thread: &mut Thread, o: &Rc<dyn LuaObje
     populate_inputs_clearing(thread, o, &items)
 }
 
+/// `manualInputAllowedItemTypes.addAll(types)`: a set.
+fn add_allowed_item_types(o: &Rc<dyn LuaObject>, types: Vec<String>) {
+    let mut st = state(o).borrow_mut();
+    for t in types {
+        if !st.manual_input_allowed_item_types.contains(&t) {
+            st.manual_input_allowed_item_types.push(t);
+        }
+    }
+}
+
 /// `refresh()`.
 fn refresh(thread: &mut Thread, o: &Rc<dyn LuaObject>) -> LuaResult<()> {
     if selected(o).is_none() {
         return Ok(());
     }
-    manual_unsupported(o, "HandcraftLogic.refresh")?;
     let input_items = with_data(thread, o, &[], |d, all, t| {
         for input in 0..d.input_scripts().len() {
             d.verify_input_items(input, all, t)?;
@@ -346,8 +353,11 @@ fn refresh(thread: &mut Thread, o: &Rc<dyn LuaObject>) -> LuaResult<()> {
     let items = items_for_keys(o, &input_items);
     populate_inputs_clearing(thread, o, &items)?;
     // The manual input types are saved, cleared and restored around
-    // `autoPopulateInputs`; without manual selection they are empty.
-    auto_populate_inputs(thread, o)
+    // `autoPopulateInputs`.
+    let types = std::mem::take(&mut state(o).borrow_mut().manual_input_allowed_item_types);
+    auto_populate_inputs(thread, o)?;
+    add_allowed_item_types(o, types);
+    Ok(())
 }
 
 /// `canPerformCurrentRecipe()`.
@@ -890,11 +900,12 @@ pub(super) fn register(b: &ClassBuilder) {
         if !contains {
             return Ok(c.push(false));
         }
-        if item {
-            manual_unsupported(&o, "HandcraftLogic.isInputSatisfied")?;
-        }
         let i = index.ok_or_else(npe)?;
-        let v = state(&o).borrow().data.inputs[i].cached_can_consume;
+        let v = if item && state(&o).borrow().manual_select_inputs {
+            with_data(c.thread, &o, &[], |d, _, t| d.is_satisfied(i, t))?
+        } else {
+            state(&o).borrow().data.inputs[i].cached_can_consume
+        };
         Ok(c.push(v))
     });
     b.method("getInputUses", |c| {
@@ -923,7 +934,11 @@ pub(super) fn register(b: &ClassBuilder) {
     });
     b.method("updateManualInputAllowedItemTypes", |c| {
         let o = logic_arg(c)?;
-        manual_unsupported(&o, "HandcraftLogic.updateManualInputAllowedItemTypes")?;
+        state(&o).borrow_mut().manual_input_allowed_item_types.clear();
+        if state(&o).borrow().manual_select_inputs {
+            let types = with_data(c.thread, &o, &[], |d, _, _| Ok(d.applied_input_item_types()))?;
+            add_allowed_item_types(&o, types);
+        }
         Ok(0)
     });
     b.method("isUsingRecipeAtHandBenefit", |c| {

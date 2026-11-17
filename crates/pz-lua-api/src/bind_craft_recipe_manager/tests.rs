@@ -573,8 +573,12 @@ fn the_window_logic_counts_crafts_and_consumes_the_populated_inputs() {
     assert_eq!(d.st.inputs.iter().map(|i| i.items.clone()).collect::<Vec<_>>(), [vec![1], vec![2, 3]]);
     assert!(d.consume_inputs_internal(true, None, true, false, t).unwrap());
     // One bat, four nails (two per craft).
-    assert_eq!(d.possible_craft_count(&all, t).unwrap(), 1);
-    assert_eq!(d.possible_craft_count(&all[1..], t).unwrap(), 0);
+    assert_eq!(d.possible_craft_count(&all, false, t).unwrap(), 1);
+    assert_eq!(d.possible_craft_count(&all[1..], false, t).unwrap(), 0);
+    // With manual input selection only the applied item types count.
+    assert_eq!(d.possible_craft_count(&all, true, t).unwrap(), 1);
+    assert_eq!(d.applied_input_item_types(), ["Base.BaseballBat", "Base.Nails", "Base.Nails"]);
+    assert_eq!(d.items_of_types(&all, &["Base.Nails".to_string()]), [2, 3, 4, 5]);
     assert!(d.can_perform(Some(&all), true, true, t).unwrap());
     assert!(matches!(d.st.to_output[..], [handcraft::OutputItem::Script(_)]));
 
@@ -584,6 +588,10 @@ fn the_window_logic_counts_crafts_and_consumes_the_populated_inputs() {
     assert_eq!(d.st.consumed_used_items, [1, 2, 3]);
     assert_eq!(d.consumed_items(), [1, 2, 3]);
     assert_eq!(d.all_input_items(), [1, 2, 3]);
+
+    // The nails are gone from the applied items: no input can be covered.
+    d.st.inputs[1].cache.applied.clear();
+    assert_eq!(d.possible_craft_count(&all, true, t).unwrap(), 0);
 
     // `refresh`: the inputs that are not kept drop their items.
     d.verify_input_items(1, &all, t).unwrap();

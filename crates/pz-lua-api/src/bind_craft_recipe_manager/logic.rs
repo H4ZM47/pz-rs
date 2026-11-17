@@ -180,6 +180,9 @@ struct State {
     events: Vec<(&'static str, Vec<Handler>)>,
     manual_select_inputs: bool,
     show_manual_select_inputs: bool,
+    /// `manualInputAllowedItemTypes`: with it set, `populateInputs` only
+    /// offers items of these full types.
+    manual_input_allowed_item_types: Vec<String>,
     manual_select_input_script_filter: Value,
     compare_mode: CompareMode,
     containers: Vec<Value>,
@@ -721,6 +724,7 @@ fn construct(c: &mut NativeCall<'_>, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<
         events: EVENTS.iter().map(|&name| (name, Vec::new())).collect(),
         manual_select_inputs: false,
         show_manual_select_inputs: false,
+        manual_input_allowed_item_types: Vec::new(),
         manual_select_input_script_filter: Value::Nil,
         compare_mode: CompareMode::Name,
         containers: Vec::new(),
