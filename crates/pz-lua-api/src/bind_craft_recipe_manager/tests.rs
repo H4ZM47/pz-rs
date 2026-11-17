@@ -550,3 +550,44 @@ fn consume_from_item_fluids_count_the_fluid_of_each_item() {
     let b = with_fluid(apple(2), &[("Water", 0.3)], 1.0);
     assert!(perform(&sm, "Fill", &a, &[a.clone(), b], &chr).unwrap());
 }
+
+/// The crafting window's path through `CraftRecipeData`: `setRecipe`'s
+/// `canConsumeInputs`, `autoPopulateInputs`, the craft count, `canPerform`,
+/// then `perform`'s real consume and outputs.
+#[test]
+fn the_window_logic_counts_crafts_and_consumes_the_populated_inputs() {
+    let sm = manager("");
+    let chr = player();
+    let r = recipe(&sm, "SpikeBat");
+    let r = r.borrow();
+    let items =
+        [it(&sm, 1, "BaseballBat"), it(&sm, 2, "Nails"), it(&sm, 3, "Nails"), it(&sm, 4, "Nails"), it(&sm, 5, "Nails"), it(&sm, 6, "Apple")];
+    let refs: Vec<&dyn CraftItem> = items.iter().map(|i| i as &dyn CraftItem).collect();
+    let all: Vec<usize> = items.iter().map(|i| i.key).collect();
+    let t = &mut |_: &str, _: usize| true;
+    let mut d = handcraft::RecipeData::new(&r, &refs, &chr);
+    assert!(d.consume_inputs_internal(true, Some(&all), true, true, t).unwrap());
+    assert_eq!(d.st.all_viable_items, [1, 2, 3]);
+    let viable = d.st.all_viable_items.clone();
+    d.populate_inputs(&viable, false, t).unwrap();
+    assert_eq!(d.st.inputs.iter().map(|i| i.items.clone()).collect::<Vec<_>>(), [vec![1], vec![2, 3]]);
+    assert!(d.consume_inputs_internal(true, None, true, false, t).unwrap());
+    // One bat, four nails (two per craft).
+    assert_eq!(d.possible_craft_count(&all, t).unwrap(), 1);
+    assert_eq!(d.possible_craft_count(&all[1..], t).unwrap(), 0);
+    assert!(d.can_perform(Some(&all), true, true, t).unwrap());
+    assert!(matches!(d.st.to_output[..], [handcraft::OutputItem::Script(_)]));
+
+    assert!(d.consume_inputs_internal(false, Some(&all), false, false, t).unwrap());
+    assert!(d.create_outputs_internal(false).unwrap());
+    assert!(matches!(&d.st.to_output[..], [handcraft::OutputItem::Create(s)] if Rc::ptr_eq(s, &script_item(&sm, "BaseballBat"))));
+    assert_eq!(d.st.consumed_used_items, [1, 2, 3]);
+    assert_eq!(d.consumed_items(), [1, 2, 3]);
+    assert_eq!(d.all_input_items(), [1, 2, 3]);
+
+    // `refresh`: the inputs that are not kept drop their items.
+    d.verify_input_items(1, &all, t).unwrap();
+    assert!(d.st.inputs[1].items.is_empty());
+    d.populate_inputs(&[4, 5], true, t).unwrap();
+    assert_eq!(d.st.inputs.iter().map(|i| i.items.clone()).collect::<Vec<_>>(), [vec![], vec![4, 5]]);
+}

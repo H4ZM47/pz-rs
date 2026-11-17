@@ -11,8 +11,7 @@
 //! `generateDebugText`, `getFavouriteModDataString`, `getTime(character)`,
 //! the input item tests, `isFluidMatch`, `isEnergyMatch`; TODO(inventory,
 //! IsoGameCharacter)), perks (`getPerk`, `involvesSkill`,
-//! `getHighestPerkRequirement`; TODO(PerkFactory)), `getIconTexture`
-//! (TODO(Texture)), fluids and energies (`getPossibleInputFluids`,
+//! `getHighestPerkRequirement`; TODO(PerkFactory)), fluids and energies (`getPossibleInputFluids`,
 //! `getFluid`, ...; TODO(Fluid, Energy)), `getOverlayMapper`,
 //! `getOutputMapper`, `getLuaCallString`/`hasLuaCall` (enum not exposed),
 //! `getRecipeGroup` (TODO(CraftRecipeGroup)), `setTags`, `setProp1`/`setProp2`, `getTagBits`/`getModTags`, and a mod's
@@ -32,7 +31,7 @@ use pz_scripts::objects::entity::components::crafting::{
 use pz_scripts::objects::entity::components::resources::ResourceType;
 use pz_scripts::objects::entity::ComponentType;
 use pz_scripts::objects::items::Item;
-use pz_scripts::ScriptManager;
+use pz_scripts::{ScriptManager, ScriptRef};
 use std::rc::Rc;
 
 pub const INPUT_SCRIPT_CLASS: &str = "zombie.scripting.entity.components.crafting.InputScript";
@@ -61,6 +60,32 @@ fn io_value(recipe: &ScriptHandle, i: usize) -> LuaResult<Value> {
             .child(OUTPUT_SCRIPT_CLASS, &format!("io{i}"), move |r: &CraftRecipe| r.io_lines().get(i)?.as_output()),
         None => Value::Nil,
     })
+}
+
+/// `getIconTexture`: the `iconTexture` that `OnScriptsLoaded` looks up from
+/// `iconName`, else what `OnPostWorldDictionaryInit` takes: the normal texture
+/// of the first possible item of the first item output, then of the first
+/// item input.
+fn icon_texture(r: &CraftRecipe) -> LuaResult<Value> {
+    if let Some(name) = r.icon_name() {
+        let texture = pz_render::try_get_texture_ref(name).map_err(crate::bind_render::texture_error)?;
+        if texture.is_some() {
+            return Ok(crate::bind_render::texture_value_ref(texture.as_ref()));
+        }
+    }
+    let first = |items: &[ScriptRef]| {
+        let item = items.first()?.downcast::<Item>()?;
+        let texture = item.borrow().normal_texture_slot().cloned();
+        texture
+    };
+    let output = r
+        .outputs()
+        .filter(|o| o.resource_type() == ResourceType::Item)
+        .find_map(|o| first(r.output_mapper_for(o)?.result_items()));
+    let texture = output.or_else(|| {
+        r.inputs().filter(|i| i.resource_type() == ResourceType::Item).find_map(|i| first(i.possible_input_items()))
+    });
+    Ok(crate::bind_render::texture_value_ref(texture.as_ref()))
 }
 
 fn opt_io(recipe: &ScriptHandle, i: Option<usize>) -> LuaResult<Value> {
@@ -148,6 +173,7 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     get(&b, "getTranslationName", |r: &CraftRecipe| r.translation_name().map(str::to_string));
     set(&b, "overrideTranslationName", |r: &mut CraftRecipe, v: Option<String>| r.override_translation_name(v));
     get(&b, "getIconName", |r: &CraftRecipe| r.icon_name().map(str::to_string));
+    method(&b, "getIconTexture", |_, h| h.read(icon_texture)?);
     get(&b, "getModID", |r: &CraftRecipe| r.mod_id().map(str::to_string));
     get(&b, "getModName", |r: &CraftRecipe| if r.is_vanilla() { "Project Zomboid" } else { "<unknown_mod>" });
     get(&b, "isVanilla", |r: &CraftRecipe| r.is_vanilla());
