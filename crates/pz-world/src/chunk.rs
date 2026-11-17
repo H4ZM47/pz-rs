@@ -520,6 +520,62 @@ impl Default for ChunkSaveData {
 }
 
 impl IsoChunk {
+    /// `addBloodSplat(x, y, z, type)` with world coordinates, into the
+    /// saved `floorBloodSplats` (the bounded queue drops its first splat
+    /// when full; that splat's fade belongs to the renderer). It is kept
+    /// only on a square of this chunk whose `isSolidFloor()` (the
+    /// `TreatAsSolidFloor` cache) holds. Returns the square's level for
+    /// `invalidateRenderChunkLevel(z, BLOOD)`.
+    ///
+    /// TODO(port): the server's `AddBlood` packet.
+    pub fn add_blood_splat(
+        &mut self,
+        x: f32,
+        y: f32,
+        z: f32,
+        kind: i32,
+        world_age_hours: f64,
+        solid_floor: impl Fn(&crate::IsoGridSquare) -> bool,
+    ) -> Option<i32> {
+        let (cx, cy) = ((self.wx * 8) as f32, (self.wy * 8) as f32);
+        if x < cx || x >= cx + 8.0 || y < cy || y >= cy + 8.0 {
+            return None;
+        }
+        let sq = self.get_grid_square(
+            crate::java::fastfloor(x - cx),
+            crate::java::fastfloor(y - cy),
+            crate::java::fastfloor(z),
+        )?;
+        let level = {
+            let sq = sq.borrow();
+            if !solid_floor(&sq) {
+                return None;
+            }
+            sq.z
+        };
+        let mut splat = FloorBloodSplat {
+            x: x - cx,
+            y: y - cy,
+            z,
+            kind: kind as i8,
+            world_age: world_age_hours as f32,
+            index: 0,
+        };
+        let s = &mut self.saved;
+        if kind < 8 {
+            s.next_splat_index += 1;
+            splat.index = s.next_splat_index as i8;
+            if s.next_splat_index >= 10 {
+                s.next_splat_index = 0;
+            }
+        }
+        if s.floor_blood_splats.len() >= 1000 {
+            s.floor_blood_splats.remove(0);
+        }
+        s.floor_blood_splats.push(splat);
+        Some(level)
+    }
+
     /// `addModded(status)`.
     pub fn add_modded(&mut self, status: ChunkGenerationStatus) {
         self.generation_status.add(status);
@@ -1259,6 +1315,8 @@ impl IsoCell {
 
 #[cfg(test)]
 mod hot_save_tests;
+#[cfg(test)]
+mod blood_tests;
 
 #[cfg(test)]
 mod generation_status_tests {

@@ -16,6 +16,7 @@ use pz_iso_render::chunk::dirty;
 use pz_iso_render::cutaways::{CutawayPlayer, Cutaways};
 use pz_iso_render::frame::{plan_chunks, world_frame_full, FrameSize};
 use pz_iso_render::objects::FrameObjects;
+use pz_iso_render::weather::{SurfaceSettings, SurfaceTextures, Surfaces};
 use pz_iso_render::{Camera, ChunkRenderer, CutawayWorld};
 use pz_lighting::jni::{IsoDirection, VisionConeInput};
 use pz_lua_api::bind_character_sim::LuaGameCharacter;
@@ -88,6 +89,9 @@ pub struct WorldRender {
     seams: Vec<Texture>,
     cutaway_stencils: Vec<Texture>,
     drop_shadow: Option<Texture>,
+    /// The `blood_floor_*` tiles (`Texture.getSharedTexture` in
+    /// `renderOneLevel_Blood`).
+    blood_textures: BloodTextures,
     sprites: SpriteCache,
     pub world: RenderWorld,
     pub lighting: WorldLighting,
@@ -155,6 +159,12 @@ impl WorldRender {
             seams,
             cutaway_stencils,
             drop_shadow: tm.shared_texture_flags(fs, "media/textures/NewShadow.png", 0),
+            blood_textures: BloodTextures(
+                pz_iso_render::blood::FLOOR_BLOOD_TYPES
+                    .iter()
+                    .filter_map(|&name| Some((name, tm.shared_texture(fs, name)?)))
+                    .collect(),
+            ),
             sprites: SpriteCache::new(),
             world: RenderWorld::new(),
             lighting: WorldLighting::new(),
@@ -366,6 +376,19 @@ impl WorldRender {
         fs: &GameFs,
         tm: &mut TextureManager,
     ) -> HostResult<()> {
+        // The world chunks' splats, before chunks leave: a chunk that left
+        // has no copy to add to.
+        let lock_fps = pz_lua_api::bind_climate::climate_settings().lock_fps;
+        for b in events.blood.drain(..) {
+            if let Some(level) = self
+                .world
+                .add_blood_splat(b.wx, b.wy, b.x, b.y, b.z, b.kind, b.world_age, lock_fps)
+            {
+                for c in self.caches.iter_mut() {
+                    c.invalidate(b.wx, b.wy, level, dirty::BLOOD);
+                }
+            }
+        }
         for (wx, wy) in events.removed.drain(..) {
             self.world.remove_chunk(wx, wy);
             self.lighting.remove_chunk(wx, wy);
@@ -724,7 +747,31 @@ impl WorldRender {
             state: &state,
             world: &self.world,
         };
-        let r = ChunkRenderer::new(cam, &maps, (v.width, v.height)).with_cutaways(Some(cv));
+        // TODO(port): the climate, water, puddles, sky reflection, rain
+        // and fish splash inputs; with their defaults only the floor blood
+        // draws.
+        let (blood_decals, world_age_hours) = surface_values();
+        let surfaces = Surfaces {
+            settings: SurfaceSettings {
+                blood_decals,
+                lock_fps: pz_lua_api::bind_climate::climate_settings().lock_fps,
+                ..Default::default()
+            },
+            climate: Default::default(),
+            water: Default::default(),
+            puddles: Default::default(),
+            sky: Default::default(),
+            world_age_hours,
+            meta_grid_min_x: 0,
+            world: &self.world,
+            textures: &self.blood_textures,
+            frame: Default::default(),
+            rain: None,
+            fish: None,
+        };
+        let r = ChunkRenderer::new(cam, &maps, (v.width, v.height))
+            .with_cutaways(Some(cv))
+            .with_surfaces(Some(surfaces));
         // `renderWeatherFX` draws after the cell, in the world projection.
         // TODO(port): `render_weather_fx` from `ClimateRenderValues` with
         // the weather mask.
@@ -741,6 +788,27 @@ impl WorldRender {
         );
         out.extend(cmds);
     }
+}
+
+/// The floor blood tiles by name.
+struct BloodTextures(std::collections::HashMap<&'static str, Texture>);
+
+impl SurfaceTextures for BloodTextures {
+    fn texture(&self, name: &str) -> Option<Texture> {
+        self.0.get(name).cloned()
+    }
+}
+
+/// `Core.getOptionBloodDecals()` and `GameTime.getWorldAgeHours()`; a
+/// borrowed owner draws no blood this frame.
+fn surface_values() -> (i32, f32) {
+    let decals = pz_lua_api::bind_core::shared_core()
+        .try_borrow()
+        .map_or(0, |c| c.get_option_blood_decals());
+    let age = pz_lua_api::bind_climate::shared_game_time()
+        .try_borrow()
+        .map_or(0.0, |t| t.world_age_hours() as f32);
+    (decals, age)
 }
 
 impl IsoWorld {

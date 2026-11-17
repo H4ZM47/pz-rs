@@ -53,6 +53,22 @@ impl GameRand for StandardRand {
 pub struct RenderChunkEvents {
     pub added: Vec<(i32, i32)>,
     pub removed: Vec<(i32, i32)>,
+    /// Floor blood splats the world chunks kept (`IsoChunk.addBloodSplat`),
+    /// in order, for the renderer's copy and `invalidateRenderChunkLevel`.
+    pub blood: Vec<BloodSplatAdded>,
+}
+
+/// One `IsoChunk.addBloodSplat` a world chunk kept: chunk `(wx, wy)`,
+/// world position, `type` and `GameTime.getWorldAgeHours()`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BloodSplatAdded {
+    pub wx: i32,
+    pub wy: i32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub kind: i32,
+    pub world_age: f32,
 }
 
 /// What the main menu's Lua leaves on `IsoWorld.instance` for a new game
