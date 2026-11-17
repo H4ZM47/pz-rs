@@ -220,3 +220,6 @@ pub(crate) fn register(thread: &mut Thread) {
     window.method("isSmashed", |c| Ok(c.push(window_field(c, |w| w.destroyed)?)));
     window.method("isGlassRemoved", |c| Ok(c.push(window_field(c, |w| w.glass_removed)?)));
 }
+
+#[cfg(test)]
+mod tests;
