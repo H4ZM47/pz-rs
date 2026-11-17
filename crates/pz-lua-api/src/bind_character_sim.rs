@@ -2055,6 +2055,12 @@ fn register_character(
         let v = chr_of(c)?.borrow().is_god_mod(&*ctx);
         Ok(c.push(v))
     });
+    // `getCheats().isSet(CheatType.MOVABLES)`.
+    b.method("isMovablesCheat", |c| {
+        let ctx = CONTEXT.with(|c| c.borrow().clone());
+        let v = chr_of(c)?.borrow().cheats.is_set(&*ctx, "MOVABLES");
+        Ok(c.push(v))
+    });
     b.method("isAsleep", |c| {
         let v = chr_of(c)?.borrow().is_asleep();
         Ok(c.push(v))
@@ -3044,6 +3050,31 @@ pub(crate) mod tests {
         run(&mut t, "assert(player:getVehicle() == nil)").unwrap();
         chr.borrow_mut().player.input.joypad_bind = 3;
         run(&mut t, "assert(player:getJoypadBind() == 3)").unwrap();
+    }
+
+    #[test]
+    fn movables_cheat_reads_the_player_cheats() {
+        struct Restore(Rc<dyn SimContext>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                install_sim_context(self.0.clone());
+            }
+        }
+        struct Debug;
+        impl SimContext for Debug {
+            fn is_debug(&self) -> bool {
+                true
+            }
+        }
+        let _restore = Restore(current_sim_context());
+        let (mut t, chr, _) = setup();
+        run(&mut t, "assert(player:isMovablesCheat() == false)").unwrap();
+        install_sim_context(Rc::new(Debug));
+        chr.borrow_mut().cheats.set(&Debug, "MOVABLES", true);
+        run(&mut t, "assert(player:isMovablesCheat() == true)").unwrap();
+        // `PlayerCheats.isSet` also needs debug, client or server.
+        install_sim_context(_restore.0.clone());
+        run(&mut t, "assert(player:isMovablesCheat() == false)").unwrap();
     }
 
     #[test]
