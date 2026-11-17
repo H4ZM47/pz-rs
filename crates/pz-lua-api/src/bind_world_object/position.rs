@@ -13,16 +13,46 @@ fn receiver(c: &NativeCall<'_>) -> LuaResult<IsoObjectRef> {
         .ok_or_else(|| LuaError::runtime("expected IsoObject receiver"))
 }
 
-/// The object's square position: `square.getX/Y/Z()` as a float. A null
-/// square throws a NullPointerException, as in the original.
-fn square_position(object: &IsoObjectRef) -> LuaResult<(i32, i32, i32)> {
-    let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
-    let square = body.square_slot().ok_or_else(|| LuaError::Runtime {
-        message: "Cannot invoke \"zombie.iso.IsoGridSquare.getX()\" because \"this.square\" is null".into(),
-        class: "java.lang.NullPointerException",
-    })?;
-    let square = square.borrow();
-    Ok((square.x, square.y, square.z))
+const SQUARE_GETTERS: [&str; 3] = ["getX", "getY", "getZ"];
+
+/// `square.getX/Y/Z()` of the object's square, as a float. The square is
+/// the object's native link. Without one, it is what the receiver's
+/// `getSquare()` returns, because other bindings can know the square that
+/// the object was read from. A null square throws a NullPointerException,
+/// as in the original.
+fn square_coord(c: &mut NativeCall<'_>, axis: usize) -> LuaResult<f64> {
+    let getter = SQUARE_GETTERS[axis];
+    let object = receiver(c)?;
+    let linked = object
+        .try_borrow()
+        .map_err(|_| borrowed("IsoObject body"))?
+        .square_slot()
+        .map(|sq| {
+            let sq = sq.borrow();
+            [sq.x, sq.y, sq.z]
+        });
+    if let Some(xyz) = linked {
+        return Ok(xyz[axis] as f32 as f64);
+    }
+    let this = c.arg(0);
+    let get_square = c.thread.table_get(&this, &Value::str("getSquare"))?;
+    let square = if get_square.is_nil() { Value::Nil } else { c.thread.call1(&get_square, &[this])? };
+    if square.is_nil() {
+        return Err(LuaError::Runtime {
+            message: format!("Cannot invoke \"zombie.iso.IsoGridSquare.{getter}()\" because \"this.square\" is null"),
+            class: "java.lang.NullPointerException",
+        });
+    }
+    let f = c.thread.table_get(&square, &Value::str(getter))?;
+    if f.is_nil() {
+        return Err(LuaError::runtime(format!(
+            "{}.{getter} is not bound",
+            pz_kahlua::stdlib::java_class_name(&square)
+        )));
+    }
+    let v = c.thread.call1(&f, &[square])?;
+    let n = pz_kahlua::exec::raw_tonumber(&v).ok_or_else(|| LuaError::runtime(format!("IsoGridSquare.{getter} is not a number")))?;
+    Ok(n as i32 as f32 as f64)
 }
 
 /// `isGrave()` for a tile sprite: a `CustomName` that contains "Grave" or
@@ -51,16 +81,16 @@ fn is_grave(object: &IsoObjectRef) -> LuaResult<bool> {
 pub(super) fn register(thread: &mut Thread) {
     let object = crate::expose::expose_class(thread, ISO_OBJECT, None);
     object.method("getX", |c| {
-        let (x, _, _) = square_position(&receiver(c)?)?;
-        Ok(c.push(Value::Num(x as f32 as f64)))
+        let x = square_coord(c, 0)?;
+        Ok(c.push(Value::Num(x)))
     });
     object.method("getY", |c| {
-        let (_, y, _) = square_position(&receiver(c)?)?;
-        Ok(c.push(Value::Num(y as f32 as f64)))
+        let y = square_coord(c, 1)?;
+        Ok(c.push(Value::Num(y)))
     });
     object.method("getZ", |c| {
-        let (_, _, z) = square_position(&receiver(c)?)?;
-        Ok(c.push(Value::Num(z as f32 as f64)))
+        let z = square_coord(c, 2)?;
+        Ok(c.push(Value::Num(z)))
     });
     object.method("isGrave", |c| {
         let grave = is_grave(&receiver(c)?)?;
@@ -93,7 +123,7 @@ mod tests {
         let square = Rc::new(RefCell::new(IsoGridSquare::new(10, 20, 1)));
         let mut retired = pz_entity::RetiredComponents::new();
         let mut objects = Vec::new();
-        for (id, sprite, on_square) in [(1, grave, true), (2, bench, true), (3, bench, false)] {
+        for (id, sprite, on_square) in [(1, grave, true), (2, bench, true), (3, bench, false), (4, bench, false)] {
             let mut o = IsoObject::new(id, ObjectKind::Object, Some(sprite));
             if on_square {
                 o.replace_square(Some(&square), &mut retired);
@@ -104,19 +134,30 @@ mod tests {
         let mut t = Thread::new(TableRef::new());
         stdlib::install(&mut t, None).unwrap();
         super::super::register_classes(&mut t);
-        for (name, o) in ["grave", "bench", "loose"].iter().zip(&objects) {
+        // Another binding knows the square that object 4 was read from.
+        let object = crate::expose::expose_class(&mut t, super::ISO_OBJECT, None);
+        object.method("getSquare", |c| {
+            let id = super::receiver(c)?.borrow().id;
+            let square = if id == 4 { c.thread.globals().get_str("readFrom") } else { Value::Nil };
+            Ok(c.push(square))
+        });
+        for (name, o) in ["grave", "bench", "loose", "read"].iter().zip(&objects) {
             super::super::ensure_class(o, super::ISO_OBJECT).unwrap();
             t.globals().set_str(name, super::super::object_value(o).unwrap());
         }
-        let src = "return grave:getX(), grave:getY(), grave:getZ(), grave:isGrave(), bench:isGrave(),
-            pcall(loose.getX, loose)";
+        let src = "readFrom = {getX = function() return 7 end, getY = function() return 8 end,
+                getZ = function() return 0 end}
+            return grave:getX(), grave:getY(), grave:getZ(), grave:isGrave(), bench:isGrave(),
+            read:getX(), read:getY(), read:getZ(), pcall(loose.getX, loose)";
         let proto = pz_kahlua::compiler::compile(src, Some("t"), Some("t"), None).unwrap();
         let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(proto), t.globals().clone()));
         let r = t.call(&f, &[]).unwrap_or_else(|e| panic!("{e}"));
         crate::bind_sprites::install_sprite_manager(old);
         let shown: Vec<String> = r.iter().map(pz_kahlua::exec::java_value_of).collect();
         assert_eq!(shown[..3], ["10.0", "20.0", "1.0"], "{shown:?}");
-        assert!(r[3].truthy() && !r[4].truthy() && !r[5].truthy(), "{shown:?}");
+        assert!(r[3].truthy() && !r[4].truthy(), "{shown:?}");
+        assert_eq!(shown[5..8], ["7.0", "8.0", "0.0"], "{shown:?}");
+        assert!(!r[8].truthy() && shown[9].contains("this.square\" is null"), "{shown:?}");
     }
 
     #[test]
