@@ -48,6 +48,7 @@ pub mod bind_misc;
 pub mod bind_misc_classes;
 pub mod bind_mods;
 pub mod bind_nutrition;
+pub mod bind_performance;
 pub mod bind_players;
 pub mod bind_popman;
 pub mod bind_registry;
@@ -200,6 +201,7 @@ pub fn register_all(mgr: &mut LuaManager) {
         Some(mgr.events.clone()),
         bind_core::shared_core(),
     );
+    bind_performance::register(&mut mgr.thread, bind_core::shared_core());
     bind_fs::register(mgr);
     bind_render::register(mgr);
     bind_video::register(mgr);
