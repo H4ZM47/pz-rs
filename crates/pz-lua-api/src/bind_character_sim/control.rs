@@ -94,17 +94,30 @@ fn debug_cheat(name: &str) -> bool {
 }
 
 thread_local! {
-    /// `IsoGameCharacter.sitOnFurnitureObject` of each character, by the
-    /// character's address: the field holds a Lua world object, which the
-    /// character body cannot keep.
-    static SIT_ON_FURNITURE: std::cell::RefCell<std::collections::HashMap<usize, Value>> =
+    /// The `IsoObject` fields of each character (`sitOnFurnitureObject`,
+    /// `bed`), by the character's address and the field name: they hold
+    /// Lua world objects, which the character body cannot keep.
+    static OBJECT_FIELDS: std::cell::RefCell<std::collections::HashMap<(usize, &'static str), Value>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-/// `chr.sitOnFurnitureObject`; nil when none is set.
-fn sit_on_furniture_object(chr: &LuaGameCharacterRef) -> Value {
-    let key = Rc::as_ptr(chr) as usize;
-    SIT_ON_FURNITURE.with(|s| s.borrow().get(&key).cloned().unwrap_or(Value::Nil))
+/// The object field `name` of `chr`; nil when none is set.
+fn object_field(chr: &LuaGameCharacterRef, name: &'static str) -> Value {
+    let key = (Rc::as_ptr(chr) as usize, name);
+    OBJECT_FIELDS.with(|s| s.borrow().get(&key).cloned().unwrap_or(Value::Nil))
+}
+
+/// Set the object field `name` of `chr` (nil clears it).
+fn set_object_field(chr: &LuaGameCharacterRef, name: &'static str, object: Value) {
+    let key = (Rc::as_ptr(chr) as usize, name);
+    OBJECT_FIELDS.with(|s| {
+        let mut s = s.borrow_mut();
+        if object.is_nil() {
+            s.remove(&key);
+        } else {
+            s.insert(key, object);
+        }
+    });
 }
 
 /// The `LuaManager.GlobalObject` functions about player control.
@@ -115,6 +128,45 @@ pub(super) fn register_globals(thread: &mut Thread) {
         let v = if debug_cheat("Cheat.Player.FastLooseXp") { 30000 } else { 10 };
         Ok(c.push(v))
     });
+    // `IsoPlayer.allPlayersAsleep()`: at least one living local player,
+    // and all of them asleep.
+    let player = crate::expose::expose_class(thread, super::ISO_PLAYER_CLASS, Some(super::ISO_GAME_CHARACTER_CLASS));
+    player.static_fn("allPlayersAsleep", |c| {
+        let (mut living, mut asleep) = (0, 0);
+        for i in 0..crate::bind_players::num_players().max(0) as usize {
+            let Some(p) = crate::bind_players::player(i) else { continue };
+            let p = p.try_borrow().map_err(|_| LuaError::runtime("IsoPlayer is in use"))?;
+            if !p.is_dead() {
+                living += 1;
+                if p.is_asleep() {
+                    asleep += 1;
+                }
+            }
+        }
+        Ok(c.push(living > 0 && living == asleep))
+    });
+    // `getSleepingEvent()`: `SleepingEvent.instance`.
+    let event = crate::expose::expose_class(thread, SLEEPING_EVENT, Some("java.lang.Object"));
+    event.method("setPlayerFallAsleep", |_| {
+        Err(crate::bind_world_object::unsupported(
+            "SleepingEvent.setPlayerFallAsleep: SleepingEventData, the nightmares, the delay to sleep and the zombie intruders",
+        ))
+    });
+    crate::expose::global(thread, "getSleepingEvent", |c| Ok(c.push(Value::Object(Rc::new(SleepingEvent)))));
+}
+
+const SLEEPING_EVENT: &str = "zombie.ai.sadisticAIDirector.SleepingEvent";
+
+/// `SleepingEvent.instance`.
+struct SleepingEvent;
+
+impl pz_kahlua::value::LuaObject for SleepingEvent {
+    fn class_name(&self) -> &str {
+        SLEEPING_EVENT
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// The methods on `IsoGameCharacter` (and so every character class).
@@ -177,27 +229,47 @@ pub(super) fn register(b: &ClassBuilder) {
     });
     // `getSitOnFurnitureObject()`: `sitOnFurnitureObject`.
     b.method("getSitOnFurnitureObject", |c| {
-        let v = sit_on_furniture_object(&chr_of(c)?);
+        let v = object_field(&chr_of(c)?, "sitOnFurnitureObject");
         Ok(c.push(v))
     });
     // `setSitOnFurnitureObject(object)`.
     b.method("setSitOnFurnitureObject", |c| {
-        let key = Rc::as_ptr(&chr_of(c)?) as usize;
-        let object = c.arg(1);
-        SIT_ON_FURNITURE.with(|s| {
-            let mut s = s.borrow_mut();
-            if object.is_nil() {
-                s.remove(&key);
-            } else {
-                s.insert(key, object);
-            }
-        });
+        set_object_field(&chr_of(c)?, "sitOnFurnitureObject", c.arg(1));
+        Ok(0)
+    });
+    // `getBed()` / `setBed(object)`: `bed`.
+    b.method("getBed", |c| {
+        let v = object_field(&chr_of(c)?, "bed");
+        Ok(c.push(v))
+    });
+    b.method("setBed", |c| {
+        set_object_field(&chr_of(c)?, "bed", c.arg(1));
+        Ok(0)
+    });
+    // `getForceWakeUpTime()` / `setForceWakeUpTime(hour)`: `forceWakeUpTime`.
+    b.method("getForceWakeUpTime", |c| {
+        let v = float_value(chr_of(c)?.borrow().force_wake_up_time);
+        Ok(c.push(v))
+    });
+    b.method("setForceWakeUpTime", |c| {
+        let v = float_arg(c, 1);
+        chr_of(c)?.borrow_mut().force_wake_up_time = v;
+        Ok(0)
+    });
+    // `IsoPlayer.getAsleepTime()` / `setAsleepTime(hours)`: `asleepTime`.
+    b.method("getAsleepTime", |c| {
+        let v = float_value(chr_of(c)?.borrow().asleep_time);
+        Ok(c.push(v))
+    });
+    b.method("setAsleepTime", |c| {
+        let v = float_arg(c, 1);
+        chr_of(c)?.borrow_mut().asleep_time = v;
         Ok(0)
     });
     // `isSitOnFurnitureObject(object)`: false without a furniture object,
     // else the same object or `furniture.isConnectedSpriteGridObject(object)`.
     b.method("isSitOnFurnitureObject", |c| {
-        let furniture = sit_on_furniture_object(&chr_of(c)?);
+        let furniture = object_field(&chr_of(c)?, "sitOnFurnitureObject");
         let object = c.arg(1);
         let r = if furniture.is_nil() {
             false

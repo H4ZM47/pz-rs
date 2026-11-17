@@ -318,17 +318,29 @@ pub fn fire_events(thread: &mut Thread, ctx: LuaClimateContext) {
 
 /// The players' side of `GameTime.update` when time passes (single
 /// player): each living `IsoPlayer.players[0..numPlayers]` gets
-/// `setHoursSurvived(getHoursSurvived() + time)`.
+/// `setHoursSurvived(getHoursSurvived() + time)`; then each asleep player
+/// gets `setAsleepTime(getAsleepTime() + time)` and the others
+/// `setAsleepTime(0)`.
 ///
-/// TODO(port): the asleep players' `setAsleepTime(getAsleepTime() + time)`
-/// and `SleepingEvent.update(player)`, and `setAsleepTime(0)` for the
-/// others.
+/// TODO(port): `SleepingEvent.update(player)` for the asleep players (the
+/// rain, snow, temperature and wetness while asleep, the nightmare and
+/// intruder wake-ups).
 fn players_time_passed(time: f32) {
-    for i in 0..crate::bind_players::num_players().max(0) as usize {
-        let Some(player) = crate::bind_players::player(i) else { continue };
+    let players: Vec<_> = (0..crate::bind_players::num_players().max(0) as usize)
+        .filter_map(crate::bind_players::player)
+        .collect();
+    for player in &players {
         let mut player = player.borrow_mut();
         if !player.is_dead() {
             player.hours_survived += f64::from(time);
+        }
+    }
+    for player in &players {
+        let mut player = player.borrow_mut();
+        if player.is_asleep() {
+            player.asleep_time += time;
+        } else {
+            player.asleep_time = 0.0;
         }
     }
 }
