@@ -4,7 +4,7 @@
 //!
 //! Not exposed yet: members taking characters or inventory items
 //! (`EvolvedRecipe.addItem`, `getItemsCanBeUse`, `getItemRecipe`,
-//! `hasMinimumWater`, `isResultItem`, `isSpiceAdded`, `needToBeCooked`,
+//! `hasMinimumWater`, `isSpiceAdded`, `needToBeCooked`,
 //! `isItemUsableInRecipe`; `Fixing.usedInFixer`, `haveGlobalItem`,
 //! `haveThisFixer`, `countUses`, `getRequiredItems`, `getRequiredFixerItems`)
 //! and `RequiredSkill.getPerk` (TODO(inventory, IsoGameCharacter,
@@ -171,6 +171,15 @@ pub fn register(thread: &mut Thread, _sm: &Rc<ScriptManager>) {
     get(&b, "getAddIngredientSound", |e: &EvolvedRecipe| e.add_ingredient_sound().map(str::to_string));
     method(&b, "getResultItem", |_, h| {
         h.read(|e: &EvolvedRecipe| e.result_item().map(str::to_string).map_err(java_error))?.map(IntoLua::into_lua)
+    });
+    // `isResultItem(item)`: false for null, else `getResultItem()` against the
+    // item's type.
+    method(&b, "isResultItem", |c, h| {
+        let item_type = match c.arg(1) {
+            Value::Nil => None,
+            v => Some(crate::bind_world_object::item_argument(&v)?.borrow().get_type().to_string()),
+        };
+        h.read(|e: &EvolvedRecipe| e.is_result_item_type(item_type.as_deref()).map_err(java_error))?.map(Value::from)
     });
     get_obj(&b, "getPossibleItems", |h, e: &EvolvedRecipe| {
         list(e.possible_items().iter().map(|r| item_recipe_value(h, r.name())).collect())
