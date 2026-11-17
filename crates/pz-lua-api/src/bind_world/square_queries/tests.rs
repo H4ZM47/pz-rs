@@ -321,3 +321,25 @@ fn corpse_inventory_weight_counts_worn_and_attached_items() {
     f.square(|sq| sq.static_moving[0].borrow_mut().runtime = None);
     f.run("assert(a:getStaticMovingObjects():get(0):getInventoryWeight() == 0)");
 }
+
+#[test]
+fn corpse_has_the_iso_object_methods() {
+    let mut f = Fixture::new();
+    crate::bind_item_container::register(&mut f.thread);
+    crate::bind_dead_body::register(&mut f.thread);
+    // A method of `IsoObject` registered after the corpse class.
+    let object = crate::expose::expose_class(&mut f.thread, crate::bind_world_object::ISO_OBJECT, None);
+    object.method("parentMethod", |c| Ok(c.push(Value::Num(7.0))));
+    f.square(|sq| {
+        let body = pz_world::save::visual::IsoDeadBody::for_tests(1.5, 1.5, 0.0);
+        sq.static_moving.push(Rc::new(RefCell::new(body)));
+    });
+    f.run(
+        r#"
+        local b = a:getStaticMovingObjects():get(0)
+        assert(b:parentMethod() == 7)
+        assert(not b:isPropaneBBQ() and not b:hasPropaneTank())
+        assert(not b:isFireInteractionObject() and not b:isLit())
+    "#,
+    );
+}
