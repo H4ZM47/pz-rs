@@ -22,7 +22,7 @@ fn attr(it: &InventoryItem, name: &str) -> Option<AttributeValue> {
     it.get_attribute(e.entity()?, name)
 }
 
-fn int_of(v: &AttributeValue) -> i32 {
+pub(crate) fn int_of(v: &AttributeValue) -> i32 {
     match v {
         AttributeValue::Int(i) => *i,
         AttributeValue::Short(i) => *i as i32,
@@ -102,7 +102,7 @@ pub fn sharpness(it: &InventoryItem) -> f32 {
     }
 }
 
-fn actual_attribute_ref(
+pub(crate) fn actual_attribute_ref(
     item: &ItemRef,
     context: &dyn EntityContext,
     name: &str,
@@ -137,7 +137,7 @@ fn actual_attribute_ref(
     Ok(attributes.get_ref_by_type(&type_ref)?.cloned())
 }
 
-fn actual_attribute_value(
+pub(crate) fn actual_attribute_value(
     attribute: &pz_entity::runtime_attributes::AttributeRef,
 ) -> Result<AttributeValue, pz_entity::RuntimeError> {
     attribute
