@@ -17,6 +17,7 @@
 mod handcraft;
 pub mod item_status;
 mod logic;
+mod recipe_code;
 
 use crate::bind_character_sim::CharacterObject;
 use crate::bind_item_container::LuaItemContainer;
@@ -715,6 +716,7 @@ pub(crate) fn container_items(containers: &Value) -> LuaResult<Vec<ItemRef>> {
 pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Characters>>) {
     logic::register(thread, sm.clone(), chars.clone());
     register_recipe_character_checks(thread, sm.clone(), chars.clone());
+    recipe_code::register(thread, sm.clone());
     let b = expose_class(thread, CRAFT_RECIPE_MANAGER_CLASS, None);
     let query_sm = sm.clone();
     b.static_fn("queryRecipes", move |c| {

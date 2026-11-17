@@ -537,6 +537,29 @@ fn a_queued_handcraft_action_holds_back_its_manual_inputs() {
 }
 
 #[test]
+fn generic_packing_takes_an_undamaged_item_of_the_script_colour() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let sm = manager("");
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    crate::bind_items::register(&mut t);
+    crate::bind_scripts::register(&mut t, sm.clone());
+    register(&mut t, sm.clone(), Rc::new(RefCell::new(Characters::default())));
+    let bat = item(&sm, ItemClass::Weapon, "BaseballBat");
+    t.globals().set_str("bat", crate::bind_items::try_item_value(&bat).unwrap());
+    let packs = |t: &mut Thread| run(t, "return RecipeCodeOnTest.genericPacking(bat, nil)").unwrap()[0].clone();
+    assert!(packs(&mut t).raw_equals(&Value::Bool(true)));
+    bat.borrow_mut().color_red = 0.5;
+    assert!(packs(&mut t).raw_equals(&Value::Bool(false)), "another colour");
+    bat.borrow_mut().color_red = 1.0;
+    let max = bat.borrow().condition_max;
+    bat.borrow_mut().condition = max - 1;
+    assert!(packs(&mut t).raw_equals(&Value::Bool(false)), "damaged");
+    assert!(run(&mut t, "return RecipeCodeOnTest.genericPacking(nil, nil)").is_err());
+}
+
+#[test]
 fn lua_query_recipes() {
     let _collection = pz_kahlua::gc::defer_collection();
     let sm = manager("");
