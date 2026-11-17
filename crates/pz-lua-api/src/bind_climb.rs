@@ -41,6 +41,64 @@ fn window_field(c: &NativeCall<'_>, f: fn(&pz_world::objects::IsoWindow) -> bool
     }
 }
 
+/// The engine of a query-only states world: nothing it is asked for draws
+/// a random number or changes the world.
+struct QueryRand;
+
+impl pz_world::java::GameRand for QueryRand {
+    fn next(&mut self, _max: i32) -> i32 {
+        0
+    }
+}
+
+struct QueryEngine(QueryRand);
+
+impl pz_world_states::StatesEngine for QueryEngine {
+    fn rand(&mut self) -> &mut dyn pz_world::java::GameRand {
+        &mut self.0
+    }
+}
+
+/// `IsoWindow.canClimbThrough(chr)` of a window on the map, answered by the
+/// character states' world over the current cell.
+fn can_climb_through(c: &NativeCall<'_>) -> LuaResult<bool> {
+    let this = c.arg(0);
+    if crate::bind_world_object::object_from_value(&this).is_none() {
+        return Err(crate::bind_java_util::class_cast(&this, ISO_WINDOW));
+    }
+    let Some(object) = crate::bind_world_object::object_ref(&this)? else {
+        return Ok(false);
+    };
+    let thumper = match c.arg(1) {
+        Value::Nil => return Err(crate::bind_world_object::unsupported("IsoWindow.canClimbThrough(null)")),
+        Value::Object(o) => match o.as_any().downcast_ref::<crate::bind_character_sim::CharacterObject>() {
+            Some(chr) => pz_world_states::Thumper::of(&chr.0.borrow()),
+            None => return Err(unsupported("IsoWindow.canClimbThrough of a non-character")),
+        },
+        _ => return Err(unsupported("IsoWindow.canClimbThrough of a non-character")),
+    };
+    let sprites = crate::bind_sprites::manager()?;
+    let mut sprites = sprites.try_borrow_mut().map_err(|_| borrowed("IsoSpriteManager"))?;
+    crate::bind_world::with_world_state_cell(|w| {
+        let mut w = w.try_borrow_mut().map_err(|_| borrowed("IsoWorld"))?;
+        let state = &mut *w;
+        let (Some(cell), Some(meta)) = (state.cell.as_mut(), state.meta_grid.as_ref()) else {
+            return Err(unsupported("IsoWindow.canClimbThrough without a world"));
+        };
+        let mut runtime = pz_world_states::StatesRuntime::default();
+        let mut engine = QueryEngine(QueryRand);
+        let adapter = pz_world_states::StatesWorldAdapter::new(
+            cell,
+            meta,
+            &mut sprites,
+            pz_world_states::ThumpSettings::default(),
+            &mut runtime,
+            &mut engine,
+        );
+        Ok(adapter.window_climb_for(&thumper, object).is_some_and(|climb| climb.portal_can_climb))
+    })
+}
+
 /// `IsoWindow.ToggleWindow(chr)` of a window on the map: a permanently locked,
 /// smashed or barricaded window stays as it is; otherwise it unlocks, flips
 /// `open` and takes its open or closed sprite, and the square and its
@@ -147,6 +205,10 @@ pub(crate) fn register(thread: &mut Thread) {
     window.method("ToggleWindow", |c| {
         toggle_window(c)?;
         Ok(0)
+    });
+    window.method("canClimbThrough", |c| {
+        let can = can_climb_through(c)?;
+        Ok(c.push(can))
     });
     window.method("IsOpen", |c| Ok(c.push(window_field(c, |w| w.open)?)));
     window.method("isOpen", |c| Ok(c.push(window_field(c, |w| w.open)?)));

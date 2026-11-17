@@ -24,6 +24,16 @@ fn object_arg(c: &pz_kahlua::NativeCall<'_>, i: usize) -> LuaResult<pz_pathfind:
 }
 
 pub(super) fn register(b: &ClassBuilder) {
+    // `IsoPlayer.isBlockMovement()` / `setBlockMovement(boolean)`.
+    b.method("isBlockMovement", |c| {
+        let blocked = chr_of(c)?.borrow().vars.block_movement;
+        Ok(c.push(blocked))
+    });
+    b.method("setBlockMovement", |c| {
+        let blocked = c.arg(1).truthy();
+        chr_of(c)?.borrow_mut().vars.block_movement = blocked;
+        Ok(0)
+    });
     // `climbOverFence(dir)`.
     b.method("climbOverFence", |c| {
         let dir = direction_arg(c, 1)?;
