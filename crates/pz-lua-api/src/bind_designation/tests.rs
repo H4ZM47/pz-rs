@@ -126,6 +126,9 @@ fn has_error(value: LuaResult<Vec<Value>>, class: &'static str) {
         "{value:?}"
     );
 }
+fn held_list(thread: &mut Thread) -> Value {
+    call(thread, "return DesignationZoneAnimal.getAllZones()").unwrap().remove(0)
+}
 fn zones_len(registry: &DesignationRegistryRef, animal: bool) -> usize {
     let body = registry.borrow();
     let list = if animal {
@@ -330,8 +333,8 @@ fn native_list_apis_report_missing_typed_backend_without_snapshot_or_fake_empty_
     );
     for source in [
         "DesignationZoneAnimal.addNewRoof(1,2,3)",
-        "return DesignationZoneAnimal.getAllZones()",
-        "return DesignationZone.getAllZonesByType('AnimalZone')",
+        "return DesignationZoneAnimal.getAllZones():add(zone)",
+        "return DesignationZoneAnimal.getAllDZones(nil, zone, nil)",
         "return DesignationZone.allZones",
         "return DesignationZoneAnimal.designationAnimalZoneList",
         "return DesignationZone.lastUpdate",
@@ -439,4 +442,45 @@ fn real_lua_animal_constructor_publishes_real_counter_and_pool_before_null_cell_
     )
     .unwrap();
     assert!(queried[0].raw_equals(&value) && queried[1].raw_equals(&value));
+}
+
+#[test]
+fn all_zones_reads_the_actual_animal_list_and_by_type_builds_a_new_list() {
+    let _restore = Restore::new();
+    let (mut thread, registry, _host, _calls) = fixture();
+    crate::bind_java_util::register(&mut thread);
+    let empty = call(
+        &mut thread,
+        "local l = DesignationZoneAnimal.getAllZones()
+         return l:size(), l:isEmpty(), l == DesignationZoneAnimal.getAllZones()",
+    )
+    .unwrap();
+    assert_eq!(empty[0].as_num(), Some(0.0));
+    assert!(empty[1].truthy() && empty[2].truthy());
+    let Value::Object(list) = &held_list(&mut thread) else { panic!("list userdata") };
+    assert!(crate::bind_globals::instance_of(&Value::Object(list.clone()), "ArrayList"));
+    // A zone added after the list was handed out shows in the same list.
+    let held = call(&mut thread, "held = DesignationZoneAnimal.getAllZones() return held").unwrap();
+    seed_offline_zone(&mut thread, &registry, "Pasture", 3, 4, 0, 2, 2);
+    let r = call(
+        &mut thread,
+        "return held:size(), held:get(0) == zone, held:contains(zone), held:indexOf(zone), held:contains('x'),
+                pcall(held.get, held, 1)",
+    )
+    .unwrap();
+    assert_eq!(r[0].as_num(), Some(1.0));
+    assert!(r[1].truthy() && r[2].truthy() && !r[4].truthy() && !r[5].truthy());
+    assert_eq!(r[3].as_num(), Some(0.0));
+    assert!(held[0].raw_equals(&call(&mut thread, "return DesignationZoneAnimal.getAllZones()").unwrap()[0]));
+    let r = call(
+        &mut thread,
+        "local a = DesignationZone.getAllZonesByType('AnimalZone')
+         local b = DesignationZoneAnimal.getAllZonesByType('Other')
+         return a:size(), a:get(0) == zone, b:size(), a == DesignationZone.getAllZonesByType('AnimalZone')",
+    )
+    .unwrap();
+    assert_eq!(r[0].as_num(), Some(1.0));
+    assert!(r[1].truthy());
+    assert_eq!(r[2].as_num(), Some(0.0));
+    assert!(!r[3].truthy(), "getAllZonesByType makes a new list each call");
 }

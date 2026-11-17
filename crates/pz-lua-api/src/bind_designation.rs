@@ -1,8 +1,9 @@
 //! Lua identity over the actual designation registry and zone allocations.
 //!
 //! Mutable native ArrayLists are not replaced by snapshots or closure views.
-//! Their exposure remains an explicit capability until a typed list backend is
-//! available. The registry/host context owns only weak session references.
+//! `getAllZones` exposes the animal zone list through a typed read view
+//! ([`zone_list`]); the other list exposures remain an explicit capability
+//! until a mutable backend is available. The registry/host context owns only weak session references.
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -576,19 +577,14 @@ pub fn register(thread: &mut Thread) {
             Ok(0)
         });
     }
-    // Returning a snapshot here would replace the Native mutable allocation.
-    for (class, names) in [
-        (&base, &["getAllZonesByType"][..]),
-        (&animal, &["getAllZones", "getAllDZones"][..]),
-    ] {
-        for name in names {
-            class.static_fn(name, |_| {
-                Err(unsupported(
-                    "actual mutable Designation ArrayList Lua backend",
-                ))
-            });
-        }
-    }
+    // getAllZones returns a view of the actual native list, never a
+    // snapshot; getAllZonesByType builds a new list, as the original does.
+    zone_list::register(thread);
+    animal.static_fn("getAllZones", zone_list::get_all_zones);
+    base.static_fn("getAllZonesByType", zone_list::get_all_zones_by_type);
+    animal.static_fn("getAllDZones", |_| {
+        Err(unsupported("Designation connected-zone traversal"))
+    });
     for name in [
         "getAnimals",
         "getCorpses",
@@ -722,6 +718,8 @@ pub fn register(thread: &mut Thread) {
         class.statics.set_metatable(Some(meta));
     }
 }
+
+mod zone_list;
 
 #[cfg(test)]
 mod tests;
