@@ -1150,7 +1150,24 @@ fn register_nodes(thread: &mut Thread) {
         n.expanded.set(state);
         Ok(0)
     });
-    n.method("getIconTexture", |_| Err(unsupported("CraftRecipeListNode.getIconTexture (CraftRecipeGroup icon)")));
+    // `getIconTexture()`: what `createRecipeNode` takes from the recipe
+    // (`CraftRecipe.getIconTexture()`), or what `createGroupNode` takes
+    // from the group (`CraftRecipeGroup.getIconTexture()`, which is
+    // `Texture.getTexture(iconPath)`).
+    n.method("getIconTexture", move |c| {
+        let n = node(c)?;
+        let v = if let Some(recipe) = &n.recipe {
+            let recipe = recipe.downcast::<CraftRecipe>().ok_or_else(class_cast)?;
+            let v = crate::bind_scripts::recipe_icon_texture(&recipe.borrow())?;
+            v
+        } else if let Some(group) = n.group {
+            let texture = pz_render::try_get_texture_ref(group.icon_path()).map_err(crate::bind_render::texture_error)?;
+            crate::bind_render::texture_value_ref(texture.as_ref())
+        } else {
+            Value::Nil
+        };
+        Ok(c.push(v))
+    });
     n.method("getGroup", |_| Err(unsupported("CraftRecipeListNode.getGroup (CraftRecipeGroup)")));
     n.method("toggleExpandedState", |_| Err(unsupported("CraftRecipeListNode.toggleExpandedState")));
 }

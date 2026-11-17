@@ -97,7 +97,7 @@ fn io_value(recipe: &ScriptHandle, i: usize) -> LuaResult<Value> {
 /// `iconName`, else what `OnPostWorldDictionaryInit` takes: the normal texture
 /// of the first possible item of the first item output, then of the first
 /// item input.
-fn icon_texture(r: &CraftRecipe) -> LuaResult<Value> {
+pub(crate) fn icon_texture(r: &CraftRecipe) -> LuaResult<Value> {
     if let Some(name) = r.icon_name() {
         let texture = pz_render::try_get_texture_ref(name).map_err(crate::bind_render::texture_error)?;
         if texture.is_some() {
