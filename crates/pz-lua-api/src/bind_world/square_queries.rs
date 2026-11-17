@@ -76,6 +76,33 @@ pub fn square_is_outside(x: i32, y: i32, z: i32) -> LuaResult<bool> {
     with_square(x, y, z, |square| Ok(square.is_exterior(&sprites)))
 }
 
+/// The square of `object` among `around` and its eight neighbours on the same
+/// level, which are the only squares `canReachTo` can accept from `around`.
+///
+/// The original reads the `square` field of the object. The port records it
+/// only for world items, so every other object is looked up by identity in the
+/// object lists of those nine squares.
+pub(crate) fn object_square_near(
+    object: &pz_world::IsoObjectRef,
+    around: (i32, i32, i32),
+) -> LuaResult<Option<(i32, i32, i32)>> {
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            let (x, y, z) = (around.0 + dx, around.1 + dy, around.2);
+            if !square_exists(x, y, z) {
+                continue;
+            }
+            let found = with_square(x, y, z, |square| {
+                Ok(square.objects.iter().any(|slot| Rc::ptr_eq(slot.owner_slot(), object)))
+            })?;
+            if found {
+                return Ok(Some((x, y, z)));
+            }
+        }
+    }
+    Ok(None)
+}
+
 type EdgeQuery = fn(
     &pz_world::square::CollideEnv<'_>,
     &pz_world::IsoGridSquare,

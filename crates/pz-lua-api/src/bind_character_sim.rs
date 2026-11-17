@@ -77,6 +77,7 @@ mod direction_tests;
 #[cfg(test)]
 mod grapple_tests;
 mod control;
+mod crafting_surface;
 mod key_ring;
 pub(crate) mod known_poison;
 mod reading;
@@ -91,6 +92,8 @@ mod timed_action_phases_tests;
 mod timed_actions_tests;
 #[cfg(test)]
 mod floor_bridge_tests;
+#[cfg(test)]
+mod crafting_surface_tests;
 #[cfg(test)]
 mod class_identity_tests;
 
@@ -1816,6 +1819,10 @@ fn register_character(
     reading::register(&b);
     read_flags::register(&b);
     b.method("createKeyRing", key_ring::create_key_ring);
+    b.method(
+        "canUseAsGenericCraftingSurface",
+        crafting_surface::can_use_as_generic_crafting_surface,
+    );
     b.method("getModData", |c| {
         let table = chr_of(c)?.borrow_mut().get_mod_data();
         Ok(c.push(table))
