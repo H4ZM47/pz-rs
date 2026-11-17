@@ -1,8 +1,10 @@
 //! `IsoObject.getX/getY/getZ` and `isGrave`, which the world context menu
 //! handlers read for each clicked object (`ISTrapMenu.doTrapMenu`,
-//! `ISFarmingMenu.canDigHere`).
+//! `ISFarmingMenu.canDigHere`), and `IsoGridSquare.hasGrave`
+//! (`ISFarmingMenu.canDigHereSquare`).
 
-use super::{borrowed, object_from_value, unsupported, ISO_OBJECT};
+use super::{borrowed, host_error, object_from_value, unsupported, ISO_OBJECT};
+use pz_entity::runtime_load::RuntimeHostError;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_world::objects::ObjectSprite;
 use pz_world::IsoObjectRef;
@@ -78,7 +80,33 @@ fn is_grave(object: &IsoObjectRef) -> LuaResult<bool> {
     Ok(is_grave_sprite(custom, sprite.name.as_deref()))
 }
 
+/// `IsoGridSquare.hasGrave()`: whether any object of the square
+/// `isGrave()`.
+fn square_has_grave(square: &Value) -> LuaResult<bool> {
+    let (x, y, z) =
+        crate::bind_world::square_coords(square).ok_or_else(|| LuaError::runtime("expected IsoGridSquare receiver"))?;
+    let objects = crate::bind_world::try_with_world_read(|w| {
+        let Some(square) = w.cell.as_ref().and_then(|cell| cell.get_grid_square(x, y, z)) else {
+            return Ok(Vec::new());
+        };
+        let square = square.try_borrow().map_err(|_| RuntimeHostError::Borrowed("IsoGridSquare"))?;
+        Ok(square.objects.iter().map(|slot| slot.ref_handle()).collect::<Vec<_>>())
+    })
+    .map_err(host_error)?;
+    for object in &objects {
+        if is_grave(object)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(super) fn register(thread: &mut Thread) {
+    let square = crate::expose::expose_class(thread, "zombie.iso.IsoGridSquare", None);
+    square.method("hasGrave", |c| {
+        let grave = square_has_grave(&c.arg(0))?;
+        Ok(c.push(Value::Bool(grave)))
+    });
     let object = crate::expose::expose_class(thread, ISO_OBJECT, None);
     object.method("getX", |c| {
         let x = square_coord(c, 0)?;
@@ -152,12 +180,39 @@ mod tests {
         let proto = pz_kahlua::compiler::compile(src, Some("t"), Some("t"), None).unwrap();
         let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(proto), t.globals().clone()));
         let r = t.call(&f, &[]).unwrap_or_else(|e| panic!("{e}"));
-        crate::bind_sprites::install_sprite_manager(old);
         let shown: Vec<String> = r.iter().map(pz_kahlua::exec::java_value_of).collect();
         assert_eq!(shown[..3], ["10.0", "20.0", "1.0"], "{shown:?}");
         assert!(r[3].truthy() && !r[4].truthy(), "{shown:?}");
         assert_eq!(shown[5..8], ["7.0", "8.0", "0.0"], "{shown:?}");
         assert!(!r[8].truthy() && shown[9].contains("this.square\" is null"), "{shown:?}");
+
+        // `hasGrave` reads the objects of the current cell's square.
+        let mut cell = pz_world::IsoCell::default();
+        let mut chunk = pz_world::IsoChunk::new(0, 0);
+        for (x, sprites) in [(1, vec![bench, grave]), (2, vec![bench])] {
+            let mut sq = IsoGridSquare::new(x, 2, 0);
+            for (i, sprite) in sprites.into_iter().enumerate() {
+                sq.objects.push(ObjectSlot::new(IsoObject::new(10 + i as u32, ObjectKind::Object, Some(sprite))));
+            }
+            chunk.set_square(x, 2, 0, Some(sq.into()));
+        }
+        cell.chunks.insert((0, 0), chunk);
+        crate::bind_world::set_cell(Some(cell));
+        t.globals().set_str("graveSquare", crate::bind_world::square_value(1, 2, 0));
+        t.globals().set_str("benchSquare", crate::bind_world::square_value(2, 2, 0));
+        let proto = pz_kahlua::compiler::compile(
+            "return graveSquare:hasGrave(), benchSquare:hasGrave()",
+            Some("t"),
+            Some("t"),
+            None,
+        )
+        .unwrap();
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(proto), t.globals().clone()));
+        let r = t.call(&f, &[]);
+        crate::bind_world::set_cell(None);
+        crate::bind_sprites::install_sprite_manager(old);
+        let r = r.unwrap_or_else(|e| panic!("{e}"));
+        assert!(r[0].truthy() && !r[1].truthy(), "{r:?}");
     }
 
     #[test]
