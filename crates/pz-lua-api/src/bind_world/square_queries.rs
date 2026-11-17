@@ -256,6 +256,28 @@ pub(super) fn register(b: &ClassBuilder) {
         }
         Ok(Value::Nil)
     });
+    // `haveGraffiti()`: an object with an attached sprite named
+    // `overlay_graffiti`, `overlay_messages` or `constructedobjects_signs_01_4`.
+    get(b, "haveGraffiti", |c| {
+        let (x, y, z) = self_square(c)?;
+        let sprites = crate::bind_sprites::manager()?;
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        let found = with_square(x, y, z, |square| {
+            Ok(square.objects.iter().any(|slot| {
+                let object = slot.borrow();
+                object.attached_anim_sprite.iter().flatten().any(|instance| {
+                    sprites.sprites[instance.sprite].name.as_deref().is_some_and(|name| {
+                        ["overlay_graffiti", "overlay_messages", "constructedobjects_signs_01_4"]
+                            .iter()
+                            .any(|part| name.contains(part))
+                    })
+                })
+            }))
+        })?;
+        Ok(found.into())
+    });
     // `getAnimalTrack()`: the first IsoAnimalTrack of the objects.
     get(b, "getAnimalTrack", |c| {
         let (x, y, z) = self_square(c)?;
