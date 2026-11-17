@@ -399,6 +399,68 @@ pub(crate) fn with_states_and_characters<R>(
     characters: Option<&mut Vec<LuaGameCharacter>>,
     f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
 ) -> Option<R> {
+    with_states_characters_and_path(sprites, runtime, models, sim, floor_world, characters, None, f)
+}
+
+/// What `PathFindBehavior2` reads of the game: the sandbox through the
+/// frame's [`FrameSim`], `BentFences` and the speed controls.
+struct EnginePathHooks<'s> {
+    sim: &'s FrameSim,
+    bent_fences: bool,
+    game_speed: i32,
+}
+
+impl<'s> EnginePathHooks<'s> {
+    fn new(sim: &'s FrameSim) -> Self {
+        let bent_fences = pz_lua_api::bind_bent_fences::shared_bent_fences().borrow().is_enabled();
+        let game_speed = pz_ui::with_ui(|ui| ui.speed_controls.clone())
+            .and_then(|e| e.ext::<pz_lua_api::hud::speed_controls::SpeedControls>().map(|s| s.get_current_game_speed()))
+            .unwrap_or(1);
+        EnginePathHooks { sim, bent_fences, game_speed }
+    }
+}
+
+impl pz_pathfind::mover::PathWorldHooks for EnginePathHooks<'_> {
+    // The sandbox and the clock as the characters read them (`SimContext`).
+    fn lore_speed(&self) -> i32 {
+        pz_characters::character::context::SimContext::lore_speed(self.sim)
+    }
+    fn easy_climbing(&self) -> bool {
+        pz_characters::character::context::SimContext::easy_climbing(self.sim)
+    }
+    fn bent_fences_enabled(&self) -> bool {
+        self.bent_fences
+    }
+    fn is_client(&self) -> bool {
+        pz_characters::character::context::SimContext::is_client(self.sim)
+    }
+    fn is_server(&self) -> bool {
+        pz_characters::character::context::SimContext::is_server(self.sim)
+    }
+    fn game_time_multiplier(&self) -> f32 {
+        pz_characters::character::context::SimContext::multiplier(self.sim)
+    }
+    fn thirty_fps_multiplier(&self) -> f32 {
+        pz_characters::character::context::SimContext::thirty_fps_multiplier(self.sim)
+    }
+    fn current_game_speed(&self) -> i32 {
+        self.game_speed
+    }
+}
+
+/// [`with_states_and_characters`] where the states also find paths
+/// through `path` (the zombie update).
+#[allow(clippy::too_many_arguments)]
+fn with_states_characters_and_path<R>(
+    sprites: &Rc<RefCell<IsoSpriteManager>>,
+    runtime: &mut StatesRuntime,
+    models: Option<&mut WorldModels>,
+    sim: &FrameSim,
+    floor_world: Option<&Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
+    characters: Option<&mut Vec<LuaGameCharacter>>,
+    path: Option<&mut pz_pathfind::host::PathHost>,
+    f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
+) -> Option<R> {
     let mut movers = player_squares();
     // The players lent to `characters` (their cells hold stand-ins).
     if let Some(list) = characters.as_ref() {
@@ -430,6 +492,10 @@ pub(crate) fn with_states_and_characters<R>(
         );
         if let Some(characters) = characters {
             adapter = adapter.with_characters(characters);
+        }
+        let hooks = EnginePathHooks::new(sim);
+        if let Some(path) = path {
+            adapter = adapter.with_path(path, &hooks);
         }
         Some(f(&mut adapter))
     })
@@ -729,15 +795,17 @@ impl IsoWorld {
             zombies,
             models,
             floor_world,
+            pathfind,
             ..
         } = self;
-        let errors = sprites.as_mut().and_then(|sprites| with_states_and_characters(
+        let errors = sprites.as_mut().and_then(|sprites| with_states_characters_and_path(
             sprites,
             states_runtime,
             models.as_mut(),
             sim,
             floor_world.as_ref(),
             Some(zombies),
+            pathfind.as_mut(),
             |w| {
                 pz_lua_api::bind_states::with_state_registry(|reg| {
                     let chars = chars.borrow();
