@@ -12,6 +12,7 @@ pub mod clock;
 pub mod debug_console;
 pub mod health;
 pub mod host;
+pub mod iso_utils;
 pub mod moodles;
 pub mod new_window;
 pub mod picking;
@@ -331,6 +332,7 @@ pub fn register(thread: &mut Thread) {
     register_radial_menu(thread);
     text_draw::register(thread);
     world_markers::register(thread);
+    iso_utils::register(thread);
     register_vehicle_gauge(thread);
     let mu = expose_class(thread, MOODLES_UI, Some(UIELEMENT));
     mu.static_fn("getInstance", |c| Ok(c.push(el_value(moodles::instance()))));
