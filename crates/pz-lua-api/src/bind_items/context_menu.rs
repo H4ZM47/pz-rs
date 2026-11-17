@@ -111,6 +111,28 @@ pub(super) fn register(thread: &mut Thread) {
         });
     }
 
+    // `attachmentsProvided`, `attachmentReplacement` and `attachmentType`:
+    // `InstanceItem` copies them from the script (the list is the
+    // script's own); null without a script.
+    type AttachmentGetter = fn(&Item) -> Value;
+    for (name, get) in [
+        (
+            "getAttachmentsProvided",
+            (|s| opt_string_list(s.attachments_provided.as_ref())) as AttachmentGetter,
+        ),
+        ("getAttachmentReplacement", |s| {
+            s.attachment_replacement.as_deref().map(Value::from).unwrap_or_default()
+        }),
+        ("getAttachmentType", |s| {
+            s.attachment_type.as_deref().map(Value::from).unwrap_or_default()
+        }),
+    ] {
+        item.method(name, move |c| {
+            let script = this(c)?.borrow().template.script.clone();
+            Ok(c.push(script.map_or(Value::Nil, |s| get(&s.0.borrow()))))
+        });
+    }
+
     item.method("getScriptItem", |c| {
         let script = this(c)?.borrow().template.script.clone();
         let v = match script {
