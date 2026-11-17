@@ -2,6 +2,7 @@ use super::*;
 use crate::component::ComponentCodec;
 use crate::env::ItemEnv;
 use crate::io::{Reader, Writer};
+use crate::item::WeaponData;
 use crate::{InventoryItem, ItemClass, ItemTemplate};
 use pz_entity::runtime_load::{load_native_with, RuntimeLoadOptions};
 use pz_entity::{BasicContext, Component, Components, FluidContainer, RuntimeComponent};
@@ -1497,4 +1498,61 @@ fn durability_factory_reuses_native_body_and_overwrites_material_with_script_nul
             detach_component_for_transfer(item, kind, &mut retired).unwrap();
         }
     }
+}
+
+fn weapon(class: ItemClass, name: &str) -> InventoryItem {
+    let mut template = ItemTemplate::new(class, "Base", name);
+    template.texture_capture = Some(crate::item_texture::CapturedScriptTextures::new(
+        None,
+        vec![],
+    ));
+    InventoryItem::create(Rc::new(template), 1)
+}
+
+fn saved_weapon(edit: impl FnOnce(&mut WeaponData)) -> Writer {
+    let mut source = weapon(ItemClass::Weapon, "LiveBat");
+    let crate::ItemKind::Weapon(w) = &mut source.kind else {
+        unreachable!()
+    };
+    edit(w);
+    let mut record = Writer::new();
+    source.save(&mut record, &PlainEnv).unwrap();
+    record
+}
+
+#[test]
+fn actual_weapon_without_parts_loads_hand_weapon_fields() {
+    let record = saved_weapon(|w| {
+        w.max_damage = 3.25;
+        w.hit_chance = 41;
+    });
+    let actual = shared::try_new_item(weapon(ItemClass::Weapon, "LiveBat")).unwrap();
+    let mut reader = Reader::new(&record.buf[3..]);
+    let retired = load_item_ref(&actual, &mut reader, 249, &PlainEnv).unwrap();
+    assert!(retired.is_empty());
+    assert_eq!(reader.pos, record.buf.len() - 3);
+    let body = actual.borrow();
+    let crate::ItemKind::Weapon(w) = &body.kind else {
+        panic!("the actual item stays a HandWeapon")
+    };
+    assert_eq!(w.max_damage, 3.25);
+    assert_eq!(w.hit_chance, 41);
+}
+
+#[test]
+fn actual_weapon_parts_are_a_fatal_gap_not_a_dropped_item() {
+    let record = saved_weapon(|w| {
+        w.attachments
+            .push(weapon(ItemClass::WeaponPart, "LiveScope"));
+    });
+    let actual = shared::try_new_item(weapon(ItemClass::Weapon, "LiveBat")).unwrap();
+    let mut reader = Reader::new(&record.buf[3..]);
+    let failure = load_item_ref(&actual, &mut reader, 249, &PlainEnv).unwrap_err();
+    assert!(matches!(
+        failure.error,
+        RuntimeHostError::Unsupported {
+            operation: "HandWeapon.load weapon parts of an actual item",
+            ..
+        }
+    ));
 }
