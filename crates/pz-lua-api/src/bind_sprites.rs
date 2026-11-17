@@ -87,7 +87,7 @@ impl LuaObject for SpriteObj {
     }
 }
 
-fn sprite_value(idx: Option<SpriteIdx>, props: bool) -> Value {
+pub(crate) fn sprite_value(idx: Option<SpriteIdx>, props: bool) -> Value {
     idx.map_or(Value::Nil, |idx| {
         Value::Object(Rc::new(SpriteObj { idx, props }))
     })

@@ -276,6 +276,21 @@ pub(crate) fn object_square(object: &LuaWorldObject) -> LuaResult<Value> {
     Ok(if holds { crate::bind_world::square_value(x, y, z) } else { Value::Nil })
 }
 
+/// The pathfinding identity of the world object behind `value`: the square
+/// it is read from (see [`object_square`]) and its id. `None` when the
+/// object is off the map.
+pub(crate) fn object_ref(value: &Value) -> LuaResult<Option<pz_pathfind::mover::ObjectRef>> {
+    let Some(object) = object_from_value(value) else {
+        return Ok(None);
+    };
+    let square = object_square(object)?;
+    let Some((x, y, z)) = crate::bind_world::square_coords(&square) else {
+        return Ok(None);
+    };
+    let id = object.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?.id;
+    Ok(Some(pz_pathfind::mover::ObjectRef { x, y, z, id }))
+}
+
 pub(crate) fn item_argument(value: &Value) -> LuaResult<pz_inventory::shared::ItemRef> {
     if let Value::Object(value) = value {
         if let Some(item) =

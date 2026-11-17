@@ -49,7 +49,7 @@ fn npe() -> LuaError {
 
 /// An `IsoDirections` constant or its ordinal (`setDir(int)`:
 /// `IsoDirections.fromIndex(dir)`, `VALUES[index & 7]`).
-fn direction_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<IsoDirections> {
+pub(super) fn direction_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<IsoDirections> {
     match c.arg(i) {
         Value::Object(o) => o
             .as_any()

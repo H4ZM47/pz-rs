@@ -29,6 +29,7 @@ use std::rc::{Rc, Weak};
 mod cell_drag;
 pub mod lua_world;
 mod reachability;
+mod square_walk;
 pub mod square_queries;
 pub mod power;
 
@@ -1915,6 +1916,7 @@ fn square_building(x: i32, y: i32, z: i32) -> LuaResult<Option<usize>> {
 fn register_grid_square(thread: &mut Thread) {
     let b = expose_class(thread, "zombie.iso.IsoGridSquare", Some("java.lang.Object"));
     reachability::register(&b);
+    square_walk::register(&b);
     square_queries::register(&b);
     power::register(&b);
     static_get(&b, "getMatrixBit", |c| {

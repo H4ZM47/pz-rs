@@ -1460,8 +1460,13 @@ fn fire_player_events(
             PlayerEvent::StopActionQueue(reason) => {
                 pz_lua_api::timed_actions::cancel(&mut lua.thread, p, reason);
             }
-            // TODO(port): reload/rack, contextual actions, the reticle mode,
-            // dirt and the cursor.
+            PlayerEvent::ContextualAction(action) => {
+                if let Err(e) = pz_lua_api::contextual_action::perform(lua, p, &action) {
+                    (lua.thread.log)(&format!("IsoPlayer.performContextualAction: {e}"));
+                }
+            }
+            // TODO(port): reload/rack, the reticle mode, dirt and the
+            // cursor.
             _ => {}
         }
     }

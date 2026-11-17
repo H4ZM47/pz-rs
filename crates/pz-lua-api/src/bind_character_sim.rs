@@ -76,6 +76,7 @@ use std::rc::Rc;
 mod direction_tests;
 #[cfg(test)]
 mod grapple_tests;
+mod climb;
 mod control;
 mod key_ring;
 pub(crate) mod known_poison;
@@ -1811,6 +1812,7 @@ fn register_character(
         }
     }
     control::register(&b);
+    climb::register(&b);
     control::register_globals(thread);
     known_poison::register(&b, sm, chars);
     reading::register(&b);
