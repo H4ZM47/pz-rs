@@ -85,6 +85,32 @@ pub struct ContextQuery {
     pub ignore_auto_vault: bool,
 }
 
+/// What `IsoDoor.ToggleDoorActual` asks of the character that toggles the
+/// door.
+pub struct DoorActor<'a> {
+    /// `getCurrentSquare()`.
+    pub square: (i32, i32, i32),
+    /// `getInventory().haveThisKeyId(id) != null`.
+    pub have_key: &'a dyn Fn(i32) -> bool,
+}
+
+/// `ItemContainer.haveThisKeyId(keyId)`: a key with the id, or a key ring
+/// that holds one, among the container's items.
+pub fn have_this_key_id(container: &pz_inventory::shared::ContainerRef, key_id: i32) -> bool {
+    use pz_inventory::item::ItemKind;
+    let items = container.borrow().items.clone();
+    items.iter().any(|item| {
+        let item = item.borrow();
+        match &item.kind {
+            ItemKind::Key { key_id: id, .. } if *id == key_id => true,
+            ItemKind::Container(data) if item.type_ == "KeyRing" || item.is_key_ring() => {
+                data.container.slot().is_some_and(|bag| have_this_key_id(bag, key_id))
+            }
+            _ => false,
+        }
+    })
+}
+
 /// The square checks of `doContextHutch`, `doContextButcherHook`,
 /// `doContextAnimalInteraction` and `doContextRestOnFurniture`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,7 +196,10 @@ impl<I: 'static> GameCharacter<I> {
             // `performContextualAction`: a door is toggled by the world; the
             // rest is told to the engine.
             if ca.action == ContextualActionKind::ToggleDoor {
-                if let Err(error) = cx.world.context_toggle_door(self.id, ca) {
+                let inventory = self.items.inventory.clone();
+                let have_key = move |key_id: i32| have_this_key_id(&inventory, key_id);
+                let actor = DoorActor { square: q.square, have_key: &have_key };
+                if let Err(error) = cx.world.context_toggle_door(self.id, ca, &actor) {
                     cx.record_host_error(error);
                     return false;
                 }
@@ -438,7 +467,7 @@ mod tests {
             }
             Ok(vec![ContextualAction::new(ContextualActionKind::ToggleDoor, Some(dir), Some(q.square), Some(obj.id as i64))])
         }
-        fn context_toggle_door(&mut self, _chr: i32, action: &ContextualAction) -> HostResult<()> {
+        fn context_toggle_door(&mut self, _chr: i32, action: &ContextualAction, _actor: &DoorActor<'_>) -> HostResult<()> {
             self.toggled.push(action.object);
             Ok(())
         }
@@ -517,5 +546,39 @@ mod tests {
         assert_eq!(pick_best(&[a.clone(), b.clone()]).unwrap().action, ContextualActionKind::ToggleDoor);
         a.priority = 120;
         assert_eq!(pick_best(&[a.clone(), b]).unwrap().action, ContextualActionKind::ClimbOverFence);
+    }
+
+    #[test]
+    fn a_key_is_found_in_the_inventory_and_in_a_key_ring() {
+        use std::rc::Rc;
+
+        use pz_inventory::item::{InventoryItem, ItemKind};
+        use pz_inventory::template::{ItemClass, ItemTemplate};
+
+        let make = |class: ItemClass, name: &str, id: i32, key: i32| {
+            let mut item = InventoryItem::create(Rc::new(ItemTemplate::new(class, "Base", name)), 1);
+            item.id = id;
+            if let ItemKind::Key { key_id, .. } = &mut item.kind {
+                *key_id = key;
+            }
+            pz_inventory::shared::new_item(item)
+        };
+        let (sm, mut chars) = fixture();
+        let c = player(&sm, &mut chars);
+        assert!(!have_this_key_id(&c.items.inventory, 5));
+        pz_inventory::shared::add_item(&c.items.inventory, &make(ItemClass::Key, "Key1", 10, 5));
+        assert!(have_this_key_id(&c.items.inventory, 5));
+        assert!(!have_this_key_id(&c.items.inventory, 6));
+        // A key on a ring counts, a bag that is not a ring does not.
+        let ring = make(ItemClass::Container, "KeyRing", 11, -1);
+        let bag = make(ItemClass::Container, "Bag", 12, -1);
+        for (bag, key_id) in [(&ring, 6), (&bag, 7)] {
+            if let ItemKind::Container(data) = &bag.borrow().kind {
+                pz_inventory::shared::add_item(data.container.slot().unwrap(), &make(ItemClass::Key, "Key1", 20 + key_id, key_id));
+            }
+            pz_inventory::shared::add_item(&c.items.inventory, bag);
+        }
+        assert!(have_this_key_id(&c.items.inventory, 6));
+        assert!(!have_this_key_id(&c.items.inventory, 7));
     }
 }

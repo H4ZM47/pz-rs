@@ -173,6 +173,7 @@ const SPRITES: &[Spec] = &[
     ("sheet_w", "normal", &[("climbSheetW", "")]),
     ("sheet_top_w", "normal", &[("climbSheetTopW", "")]),
     ("solid_block", "normal", &[("solid", "")]),
+    ("door_n_forcelocked", "doorN", &[("doorN", ""), ("collideN", ""), ("forceLocked", "")]),
 ];
 
 fn manager() -> IsoSpriteManager {
@@ -190,6 +191,7 @@ fn manager() -> IsoSpriteManager {
         "ItemHeight",
         "Surface",
         "Bush",
+        "forceLocked",
     ] {
         map.entry(k);
     }
@@ -1720,6 +1722,33 @@ mod context {
         w.add(x, y, if open { "door_n_open" } else { "door_n" }, k, true)
     }
 
+    /// A player at `square` holding the keys with the ids `keys` toggles
+    /// the door.
+    fn toggle_at(
+        w: &mut World,
+        d: ObjectRef,
+        square: (i32, i32, i32),
+        keys: &[i32],
+    ) -> pz_inventory::floor_drop::HostResult<()> {
+        let have_key = |id: i32| keys.contains(&id);
+        let actor = pz_characters::character::player::context::DoorActor { square, have_key: &have_key };
+        w.adapter().toggle_player_door(d, 1, &actor)
+    }
+
+    /// The same, from the square south of the door's edge.
+    fn toggle(w: &mut World, d: ObjectRef, keys: &[i32]) -> pz_inventory::floor_drop::HostResult<()> {
+        toggle_at(w, d, (d.x, d.y, d.z), keys)
+    }
+
+    fn lock(w: &World, r: ObjectRef, key_id: i32) {
+        let object = w.object(r).unwrap();
+        let mut o = object.borrow_mut();
+        o.key_id = key_id;
+        if let ObjectKind::Door(d) = &mut o.kind {
+            d.locked = true;
+        }
+    }
+
     fn found(w: &mut World, q: &ContextQuery, dir: IsoDirections) -> Option<ObjectRef> {
         w.adapter().context_door_or_window_object_at(q, dir)
     }
@@ -1741,14 +1770,14 @@ mod context {
         let q = query(10, 10);
         assert_eq!(found(&mut w, &q, IsoDirections::N), Some(d));
         assert_eq!(toggles(&mut w, &q, IsoDirections::N, d), vec![Kind::ToggleDoor]);
-        w.adapter().toggle_player_door(d, 1).unwrap();
+        toggle(&mut w, d, &[]).unwrap();
         assert!(is_open(&w, d));
         assert_eq!(w.object(d).unwrap().borrow().sprite, Some(w.m.named_map["door_n_open"]));
         assert!(w.engine.played.last().unwrap().ends_with("Open"));
         // The open door is still found from the square, and closes again.
         assert_eq!(found(&mut w, &q, IsoDirections::N), Some(d));
         assert_eq!(toggles(&mut w, &q, IsoDirections::N, d), vec![Kind::ToggleDoor]);
-        w.adapter().toggle_player_door(d, 1).unwrap();
+        toggle(&mut w, d, &[]).unwrap();
         assert!(!is_open(&w, d));
         assert_eq!(w.object(d).unwrap().borrow().sprite, Some(w.m.named_map["door_n"]));
         assert!(w.engine.played.last().unwrap().ends_with("Close"));
@@ -1785,21 +1814,122 @@ mod context {
         let mut w = World::new();
         let d = north_door(&mut w, 10, 10, false);
         w.add(10, 10, "solid_block", ObjectKind::Object, false);
-        w.adapter().toggle_player_door(d, 1).unwrap();
+        toggle(&mut w, d, &[]).unwrap();
         assert!(!is_open(&w, d));
         assert!(w.engine.played.is_empty());
+    }
+
+    /// Puts `(x, y)` in room `room`; a square without a room is outside.
+    fn set_room(w: &mut World, x: i32, y: i32, room: i64) {
+        let sq = w.cell.get_grid_square_mut(x, y, 0).unwrap();
+        sq.borrow_mut().room_id = room;
+        sq.borrow_mut().recalc_properties(&w.m);
+    }
+
+    #[test]
+    fn a_locked_door_stays_shut_without_its_key() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        lock(&w, d, 77);
+        toggle(&mut w, d, &[]).unwrap();
+        assert!(!is_open(&w, d));
+        assert!(w.engine.played.last().unwrap().ends_with("Locked"));
+        // Another key does not fit.
+        toggle(&mut w, d, &[78]).unwrap();
+        assert!(!is_open(&w, d));
+        assert!(matches!(&w.object(d).unwrap().borrow().kind, ObjectKind::Door(k) if k.locked && k.locked_by_key));
+    }
+
+    #[test]
+    fn a_locked_door_opens_with_its_key_and_stays_unlocked() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        lock(&w, d, 77);
+        toggle(&mut w, d, &[3, 77]).unwrap();
+        assert!(is_open(&w, d));
+        assert!(w.engine.played.iter().any(|s| s.ends_with("Unlock")));
+        assert!(w.engine.played.last().unwrap().ends_with("Open"));
+        assert!(matches!(&w.object(d).unwrap().borrow().kind, ObjectKind::Door(k) if !k.locked && !k.locked_by_key));
+        // Closed again, it opens without the key.
+        toggle(&mut w, d, &[]).unwrap();
+        assert!(!is_open(&w, d));
+        toggle(&mut w, d, &[]).unwrap();
+        assert!(is_open(&w, d));
+    }
+
+    #[test]
+    fn a_door_locked_without_a_key_id_cannot_be_opened() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        lock(&w, d, -1);
+        toggle(&mut w, d, &[77]).unwrap();
+        assert!(!is_open(&w, d));
+        assert!(w.engine.played.last().unwrap().ends_with("Locked"));
+    }
+
+    #[test]
+    fn a_door_is_opened_from_inside_without_a_key() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        lock(&w, d, 77);
+        for y in [9, 10] {
+            set_room(&mut w, 10, y, 5);
+        }
+        // Standing in the room, on either side of the door.
+        toggle_at(&mut w, d, (10, 9, 0), &[]).unwrap();
+        assert!(is_open(&w, d));
+        // From another room, or from outside, the door stays locked.
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        lock(&w, d, 77);
+        set_room(&mut w, 10, 10, 5);
+        set_room(&mut w, 11, 10, 6);
+        toggle_at(&mut w, d, (11, 10, 0), &[]).unwrap();
+        assert!(!is_open(&w, d));
+    }
+
+    #[test]
+    fn a_force_locked_door_is_not_opened_from_inside() {
+        let mut w = World::new();
+        let mut k = door(true, 500);
+        if let ObjectKind::Door(d) = &mut k {
+            d.closed_sprite = Some(w.m.named_map["door_n"]);
+            d.open_sprite = Some(w.m.named_map["door_n_open"]);
+        }
+        let d = w.add(10, 10, "door_n_forcelocked", k, true);
+        lock(&w, d, 77);
+        for y in [9, 10] {
+            set_room(&mut w, 10, y, 5);
+        }
+        toggle_at(&mut w, d, (10, 10, 0), &[]).unwrap();
+        assert!(!is_open(&w, d));
+    }
+
+    #[test]
+    fn a_custom_lock_asks_for_the_key() {
+        use pz_inventory::lua_table::{LuaTable, LuaValue};
+        use pz_world::save::lua_table::LuaKey;
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        w.object(d).unwrap().borrow_mut().key_id = 31;
+        w.object(d).unwrap().borrow_mut().mod_data = Some(LuaTable {
+            entries: vec![(LuaKey::Str("CustomLock".into()), LuaValue::Bool(true))],
+        });
+        toggle(&mut w, d, &[]).unwrap();
+        assert!(!is_open(&w, d));
+        toggle(&mut w, d, &[31]).unwrap();
+        assert!(is_open(&w, d));
     }
 
     #[test]
     fn doors_the_port_does_not_cover_fail_loudly() {
         let mut w = World::new();
-        let d = north_door(&mut w, 10, 10, false);
-        if let ObjectKind::Door(dd) = &mut w.object(d).unwrap().borrow_mut().kind {
-            dd.locked = true;
-        }
-        let err = w.adapter().toggle_player_door(d, 1).unwrap_err();
-        assert!(matches!(err, pz_inventory::floor_drop::RuntimeHostError::Unsupported { .. }));
-        assert!(!is_open(&w, d));
+        let k = ObjectKind::Object;
+        let o = w.add(10, 10, "door_n", k, true);
+        assert!(matches!(
+            toggle(&mut w, o, &[]).unwrap_err(),
+            pz_inventory::floor_drop::RuntimeHostError::Unsupported { .. }
+        ));
     }
 
     #[test]

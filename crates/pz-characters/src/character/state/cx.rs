@@ -591,7 +591,12 @@ pub trait StateWorld<I> {
     }
     /// `performContextualAction` of `ToggleDoor`: `IsoDoor.ToggleDoor(chr)`
     /// or `IsoThumpable.ToggleDoor(chr)` on the action's object.
-    fn context_toggle_door(&mut self, _chr: i32, _action: &crate::character::player::ContextualAction) -> HostResult<()> {
+    fn context_toggle_door(
+        &mut self,
+        _chr: i32,
+        _action: &crate::character::player::ContextualAction,
+        _actor: &crate::character::player::context::DoorActor<'_>,
+    ) -> HostResult<()> {
         Err(RuntimeHostError::Unsupported { operation: "IsoDoor.ToggleDoor", kind: None })
     }
 

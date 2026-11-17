@@ -811,9 +811,14 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         self.is_safe_to_climb_over(q.square, dir)
     }
 
-    fn context_toggle_door(&mut self, chr: i32, action: &ContextualAction) -> pz_inventory::floor_drop::HostResult<()> {
+    fn context_toggle_door(
+        &mut self,
+        chr: i32,
+        action: &ContextualAction,
+        actor: &pz_characters::character::player::context::DoorActor<'_>,
+    ) -> pz_inventory::floor_drop::HostResult<()> {
         let (Some((x, y, z)), Some(id)) = (action.square, action.object) else { return Ok(()) };
-        self.toggle_player_door(ObjectRef { x, y, z, id: id as u32 }, chr)
+        self.toggle_player_door(ObjectRef { x, y, z, id: id as u32 }, chr, actor)
     }
 
     fn sloped_surface_height(&self, sq: (i32, i32, i32), dx: f32, dy: f32) -> f32 {
