@@ -5,8 +5,8 @@
 //! `registerNavZones`), spawn origins, water flow, `Core` game settings
 //! and the `luaPos*` fields; `IsoMetaGrid.registerGeometryZone` /
 //! `registerWorldGenZone` / `getLotDirectories`; the `Zone` objects they
-//! return; and the globals `getLotDirectories`, `fileExists` and
-//! `createRegionFile`.
+//! return; and the globals `getLotDirectories`, `fileExists`,
+//! `createRegionFile` and `setSpawnRegion`.
 //!
 //! What has no engine object yet is kept here for the engine to collect:
 //! `ZombiePopulationManager.spawnOrigins` ([`take_spawn_origins`], read by
@@ -242,7 +242,7 @@ fn ret_zone(
 }
 
 /// `getWorld()`, `getLotDirectories()`, `fileExists()`,
-/// `createRegionFile()` and the `IsoWorld`
+/// `createRegionFile()`, `setSpawnRegion()` and the `IsoWorld`
 /// / `IsoMetaGrid` methods map loading calls.
 pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>) {
     global(thread, "getWorld", |c| Ok(c.push(obj(Key::World))));
@@ -271,6 +271,12 @@ pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>) {
             Ok(c.push(create_region_file(&fs.borrow())?))
         });
     }
+    // `GlobalObject.setSpawnRegion`: `IsoWorld.instance.setSpawnRegion`
+    // unless `GameClient.client`, which is never set here.
+    global(thread, "setSpawnRegion", |c| {
+        set_spawn_region(str_arg(c, 0).as_deref());
+        Ok(0)
+    });
     let b = expose_class(thread, "zombie.iso.IsoWorld", Some("java.lang.Object"));
     register_world_zones(&b, fs.clone());
     register_world_settings(&b);
@@ -444,9 +450,7 @@ fn register_world_settings(b: &ClassBuilder) {
     });
     void(b, "setSpawnRegion", |c| {
         self_world(c)?;
-        if let Some(v) = str_arg(c, 1) {
-            FIELDS.with(|w| w.borrow_mut().spawn_region = v.to_string());
-        }
+        set_spawn_region(str_arg(c, 1).as_deref());
         Ok(())
     });
     get(b, "getSpawnRegion", |c| {
@@ -455,6 +459,13 @@ fn register_world_settings(b: &ClassBuilder) {
             &FIELDS.with(|w| w.borrow().spawn_region.clone()),
         ))
     });
+}
+
+/// `IsoWorld.setSpawnRegion(name)`: a null name is ignored.
+fn set_spawn_region(name: Option<&str>) {
+    if let Some(v) = name {
+        FIELDS.with(|w| w.borrow_mut().spawn_region = v.to_string());
+    }
 }
 
 fn self_meta_grid(c: &NativeCall<'_>) -> LuaResult<()> {
