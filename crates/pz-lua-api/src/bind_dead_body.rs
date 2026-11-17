@@ -20,6 +20,7 @@ use pz_world::save::visual::DeadBodyRef;
 use crate::expose::{expose_class, int_arg, num_arg, ClassBuilder};
 
 pub const ISO_DEAD_BODY: &str = "zombie.iso.objects.IsoDeadBody";
+const ISO_MOVING_OBJECT: &str = "zombie.iso.IsoMovingObject";
 
 pub struct LuaDeadBody {
     pub body: DeadBodyRef,
@@ -33,7 +34,7 @@ impl LuaObject for LuaDeadBody {
         self
     }
     fn super_classes(&self) -> &[&'static str] {
-        &["zombie.iso.IsoMovingObject", "zombie.iso.IsoObject", "zombie.entity.GameEntity"]
+        &[ISO_MOVING_OBJECT, "zombie.iso.IsoObject", "zombie.entity.GameEntity"]
     }
 }
 
@@ -157,7 +158,21 @@ fn container(c: &NativeCall<'_>, body: &DeadBodyRef) -> LuaResult<Value> {
 }
 
 pub(crate) fn register(thread: &mut Thread) {
-    let b = expose_class(thread, ISO_DEAD_BODY, None);
+    // `IsoDeadBody extends IsoMovingObject extends IsoObject`: the corpse
+    // finds the parents' methods through the class tables.
+    crate::bind_world_object::register_classes(thread);
+    expose_class(thread, ISO_MOVING_OBJECT, Some(crate::bind_world_object::ISO_OBJECT));
+    let b = expose_class(thread, ISO_DEAD_BODY, Some(ISO_MOVING_OBJECT));
+    // The `IsoObject` methods the loot window calls on a container's
+    // parent. A corpse is not an `IsoFireplace` or `IsoBarbecue`, so
+    // `isFireInteractionObject()`, `isPropaneBBQ()` and `hasPropaneTank()`
+    // are false; `IsoObject.isLit()` is false.
+    for name in ["isFireInteractionObject", "isPropaneBBQ", "hasPropaneTank", "isLit"] {
+        get(&b, name, |c| {
+            this(c)?;
+            Ok(Value::Bool(false))
+        });
+    }
     get(&b, "isFemale", |c| Ok(Value::Bool(this(c)?.try_borrow().map_err(|_| borrowed())?.female)));
     get(&b, "isZombie", |c| Ok(Value::Bool(this(c)?.try_borrow().map_err(|_| borrowed())?.was_zombie)));
     // `!StringUtils.isNullOrEmpty(animalType)`.
@@ -204,6 +219,33 @@ pub(crate) fn register(thread: &mut Thread) {
     get(&b, "getContainer", |c| {
         let body = this(c)?;
         container(c, &body)
+    });
+    // `getInventoryWeight()`: 0 without a container; else per item the
+    // hotbar weight of an attached item not equipped, the equipped weight
+    // of an equipped one, or the unequipped weight.
+    get(&b, "getInventoryWeight", |c| {
+        let body = this(c)?;
+        let container = body.try_borrow_mut().map_err(|_| borrowed())?.runtime_container();
+        let Some(container) = container else {
+            return Ok(Value::Num(0.0));
+        };
+        let items = container.borrow().items.clone();
+        let e = crate::bind_items::item_env();
+        let ctx = e.context();
+        let mut total = 0.0f32;
+        for item in &items {
+            let equipped = body.try_borrow().map_err(|_| borrowed())?.is_equipped(item);
+            let owner = e.owner(item);
+            let i = item.borrow();
+            if i.attached_slot > -1 && !equipped {
+                total += i.get_hotbar_equipped_weight(ctx, owner.as_ref());
+            } else if equipped {
+                total += i.get_equipped_weight(ctx, owner.as_ref());
+            } else {
+                total += i.get_unequipped_weight(ctx, owner.as_ref());
+            }
+        }
+        Ok(Value::Num(f64::from(total)))
     });
     // `checkClothing(item)`: worn and attached items no longer in the
     // container leave `wornItems`/`attachedItems` (the body texture follows

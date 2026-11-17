@@ -281,3 +281,65 @@ fn static_moving_objects_are_the_square_corpses() {
     f.run("assert(gone:getStaticMovingObjectIndex() == -1)");
     f.run("assert(a:getStaticMovingObjects():size() == 0)");
 }
+
+#[test]
+fn corpse_inventory_weight_counts_worn_and_attached_items() {
+    use pz_inventory::{InventoryItem, ItemClass, ItemTemplate, SavedItem};
+    let mut env = crate::bind_items::GameItemEnv::new(None);
+    env.encumbrance_multiplier = Some(0.3);
+    crate::bind_items::install_item_env(Rc::new(env));
+    let mut f = Fixture::new();
+    crate::bind_item_container::register(&mut f.thread);
+    crate::bind_dead_body::register(&mut f.thread);
+    let item = |ty: &str, weight: f32, slot: i32| {
+        let mut t = ItemTemplate::new(ItemClass::Normal, "Base", ty);
+        t.actual_weight = weight;
+        let mut i = InventoryItem::create(Rc::new(t), 1);
+        i.attached_slot = slot;
+        SavedItem::Item(Box::new(i))
+    };
+    f.square(|sq| {
+        let mut body = pz_world::save::visual::IsoDeadBody::for_tests(1.5, 1.5, 0.0);
+        let mut c = pz_inventory::ItemContainer::new(Some("inventorymale"));
+        // Unequipped, worn (equipped) and attached but not worn.
+        c.items.push(item("Rock", 2.0, -1));
+        c.items.push(item("Shirt", 1.0, -1));
+        c.items.push(item("Knife", 1.0, 0));
+        body.container = Some(c);
+        body.worn_items = vec![("Shirt".into(), 1)];
+        sq.static_moving.push(Rc::new(RefCell::new(body)));
+    });
+    f.run(
+        r#"
+        local b = a:getStaticMovingObjects():get(0)
+        local w = b:getInventoryWeight()
+        assert(math.abs(w - 3.0) < 1e-5)
+        assert(math.abs(b:getContainer():getCapacityWeight() - w) < 1e-6)
+    "#,
+    );
+    // Without a container the weight is 0.
+    f.square(|sq| sq.static_moving[0].borrow_mut().runtime = None);
+    f.run("assert(a:getStaticMovingObjects():get(0):getInventoryWeight() == 0)");
+}
+
+#[test]
+fn corpse_has_the_iso_object_methods() {
+    let mut f = Fixture::new();
+    crate::bind_item_container::register(&mut f.thread);
+    crate::bind_dead_body::register(&mut f.thread);
+    // A method of `IsoObject` registered after the corpse class.
+    let object = crate::expose::expose_class(&mut f.thread, crate::bind_world_object::ISO_OBJECT, None);
+    object.method("parentMethod", |c| Ok(c.push(Value::Num(7.0))));
+    f.square(|sq| {
+        let body = pz_world::save::visual::IsoDeadBody::for_tests(1.5, 1.5, 0.0);
+        sq.static_moving.push(Rc::new(RefCell::new(body)));
+    });
+    f.run(
+        r#"
+        local b = a:getStaticMovingObjects():get(0)
+        assert(b:parentMethod() == 7)
+        assert(not b:isPropaneBBQ() and not b:hasPropaneTank())
+        assert(not b:isFireInteractionObject() and not b:isLit())
+    "#,
+    );
+}
