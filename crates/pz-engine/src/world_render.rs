@@ -658,7 +658,12 @@ impl WorldRender {
                     objects.moving.push(object);
                 }
             }
-            self.render_corpses(view, v, &cam, models, &mut objects, &mut corpse_jobs);
+            // Port extension: the 3D view draws no corpses, and its frame
+            // does not carry the atlas jobs, so it must not make atlas
+            // entries ready.
+            if cam3.is_none() {
+                self.render_corpses(view, v, &cam, models, &mut objects, &mut corpse_jobs);
+            }
         }
         // Port extension: the 3D view (pz-world3d) replaces the isometric
         // frame for player 0 when it is on.

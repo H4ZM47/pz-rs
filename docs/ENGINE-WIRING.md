@@ -743,7 +743,8 @@ all installed assets, render paths or foreign platforms.
       posed by `BodyParams`/`diedBoneTransforms` and drawn into the atlas)
       and its shadow. New and loaded corpses use the same path. The
       texture jobs run in `WorldModels::prepare`, so a new body shows one
-      frame later. Not wired: animal corpses (reported once), attached
+      frame later. The 3D view (a port extension) draws no corpses and
+      prepares no atlas entries. Not wired: animal corpses (reported once), attached
       models, the hand items' models, highlights, the alpha fade and the
       release of atlas entries.
 - [x] `ZombiePopulationManager::update_main` with PopulationHost and
