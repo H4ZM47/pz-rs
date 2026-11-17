@@ -722,9 +722,19 @@ all installed assets, render paths or foreign platforms.
       `characters_near` from the real zombies: `CombatManager` finds the
       zombie, `AttackCollisionCheck` hits it, and it plays its hit reaction,
       falls and dies. Not wired: the zombies' own update and anim events
-      reaching the player (the zombie's attack), and `SimEvent::Die`
-      (`IsoGameCharacter.die` → `becomeCorpse` → `new IsoDeadBody(chr)`),
-      so a killed zombie stays on the ground as a character.
+      reaching the player (the zombie's attack).
+- [x] Zombie corpses: a zombie that raises `SimEvent::Die` in its update,
+      postupdate or animation events (`IsoGameCharacter.die`) becomes a
+      corpse after that phase: `GameCharacter::become_dead_body` (`new
+      IsoDeadBody(chr)`: position, look, inventory, worn items),
+      `zombie_remove_from_world` and removal from `IsoWorld::zombies`, then
+      `MutationEnv::place_new_corpse` (`staticMovingObjects`,
+      `CorpseCount`, render invalidation) and `OnContainerUpdate`. Not
+      wired: `DoZombieInventory` and `DoDeath` (`onKilled`), `dropHeldItems`,
+      `ObjectIDManager`, `FliesSound`, the ragdoll pose, and the Lua
+      objects for `OnZombieDead`, `OnCharacterDeath` and `OnDeadBodySpawn`
+      (reported as unsupported when they have listeners). `die()` from the
+      population pass (`RealZombies::die`) is not collected.
 - [x] `ZombiePopulationManager::update_main` with PopulationHost and
       `ZombieOps` (`RealZombies`) (#73/#77; `RealZombies::create_survivor`
       returns `CreateSurvivor`'s `ScriptResult`, and `WorldPopulation::update`
