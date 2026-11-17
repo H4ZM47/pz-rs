@@ -1883,6 +1883,15 @@ fn register_character(
         let gender = character_gender(&chr_of(c)?);
         Ok(c.push(gender == pz_characters::CharacterGender::Female))
     });
+    // setFemale(b): setCharacterGender(FEMALE or MALE), which sets the
+    // descriptor's gender and does nothing without a descriptor.
+    b.method("setFemale", |c| {
+        let female = bool_arg(c, 1);
+        if let Some(d) = &chr_of(c)?.borrow().descriptor {
+            d.borrow_mut().set_female(female);
+        }
+        Ok(0)
+    });
     b.method("createKeyRing", key_ring::create_key_ring);
     b.method("getModData", |c| {
         let table = chr_of(c)?.borrow_mut().get_mod_data();
@@ -2511,6 +2520,24 @@ pub(crate) mod tests {
         sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
         sm
+    }
+
+    #[test]
+    fn set_female_sets_the_descriptor_gender() {
+        let (mut t, player, _log) = setup();
+        let desc = player.borrow().descriptor.clone().unwrap();
+        t.globals().set_str("desc", survivor_desc_value(&desc));
+        run(
+            &mut t,
+            r#"
+            s = IsoSurvivor.new(desc, nil, 0, 0, 0)
+            s:setFemale(false)
+            assert(not s:isFemale() and not desc:isFemale())
+            s:setFemale(true)
+            assert(s:isFemale() and desc:isFemale())
+            "#,
+        )
+        .unwrap();
     }
 
     #[test]
