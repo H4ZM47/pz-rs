@@ -22,7 +22,7 @@ use crate::map_files::{header_name, lotpack_name};
 use crate::meta_grid::IsoMetaGrid;
 use crate::objects::{ObjectId, ObjectLoadHooks, ObjectLoadSettings, ObjectTables};
 use crate::save::lua_table::LuaTable;
-use crate::save::visual::IsoDeadBody;
+use crate::save::visual::DeadBodyRef;
 use crate::sprite::IsoSpriteManager;
 use crate::sprite::{PropertyContainer, SurfaceInfo};
 use crate::square::IsoDirections;
@@ -70,7 +70,7 @@ pub struct IsoGridSquare {
     /// not agree with the main objects list or item/object backlinks.
     pub world_objects: crate::WorldObjectsRef,
     /// `staticMovingObjects`: corpses.
-    pub static_moving: Vec<IsoDeadBody>,
+    pub static_moving: Vec<DeadBodyRef>,
     /// `table` (square mod data).
     pub mod_data: Option<LuaTable>,
     pub overlay_done: bool,
@@ -145,7 +145,12 @@ impl IsoGridSquare {
             next_object_id: self.next_object_id,
             erosion: self.erosion.clone(),
             world_objects: copied.world_objects,
-            static_moving: self.static_moving.clone(),
+            // New corpse objects: an archive copy shares no live corpse.
+            static_moving: self
+                .static_moving
+                .iter()
+                .map(|b| std::rc::Rc::new(std::cell::RefCell::new(b.borrow().clone())))
+                .collect(),
             mod_data: self.mod_data.clone(),
             overlay_done: self.overlay_done,
             have_sheet_rope: self.have_sheet_rope,

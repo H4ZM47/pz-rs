@@ -933,7 +933,7 @@ impl IsoWorld {
         let placed = self.place_new_corpses(bodies);
         for r in placed {
             match r {
-                Ok(true) => {
+                Ok(Some(_)) => {
                     // The original passes the body, which has no Lua object;
                     // vanilla's listener (`ISInventoryPage`) ignores it.
                     lua.trigger_event("OnContainerUpdate", &[]);
@@ -943,7 +943,7 @@ impl IsoWorld {
                         );
                     }
                 }
-                Ok(false) => (),
+                Ok(None) => (),
                 Err(e) => self.log_update_error(format!("IsoDeadBody: {e}")),
             }
         }
@@ -955,7 +955,7 @@ impl IsoWorld {
     fn place_new_corpses(
         &mut self,
         bodies: Vec<pz_world::save::visual::IsoDeadBody>,
-    ) -> Vec<Result<bool, String>> {
+    ) -> Vec<Result<Option<pz_world::save::visual::DeadBodyRef>, String>> {
         if bodies.is_empty() {
             return Vec::new();
         }

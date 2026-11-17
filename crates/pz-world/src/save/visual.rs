@@ -290,6 +290,10 @@ impl MovingBase {
     }
 }
 
+/// A corpse in the world: the one `IsoDeadBody` object that the square's
+/// `staticMovingObjects`, Lua and the engine share.
+pub type DeadBodyRef = std::rc::Rc<std::cell::RefCell<IsoDeadBody>>;
+
 /// `IsoDeadBody`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IsoDeadBody {

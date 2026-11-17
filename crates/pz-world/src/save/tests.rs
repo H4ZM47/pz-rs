@@ -275,7 +275,7 @@ fn sample_chunk(m: &IsoSpriteManager, t: &SaveTables) -> IsoChunk {
         ))
         .into(),
     );
-    sq.static_moving.push(body(t.blood_body_parts));
+    sq.static_moving.push(std::rc::Rc::new(std::cell::RefCell::new(body(t.blood_body_parts))));
     sq.burnt_out = true;
     ch
 }
@@ -324,6 +324,7 @@ fn chunk_round_trip() {
     assert_eq!(sq1.static_moving.len(), 1);
     assert_eq!(
         sq1.static_moving[0]
+            .borrow()
             .container
             .as_ref()
             .unwrap()

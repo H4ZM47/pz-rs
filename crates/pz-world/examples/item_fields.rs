@@ -336,7 +336,7 @@ fn main() {
                 }
             }
             for bd in &sq.borrow().static_moving {
-                if let Some(c) = &bd.container {
+                if let Some(c) = &bd.borrow().container {
                     dump(&c.items, &mut lines, &mut raw);
                 }
             }

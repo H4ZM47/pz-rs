@@ -130,7 +130,7 @@ impl World {
             .unwrap()
             .borrow_mut()
             .static_moving
-            .push(IsoDeadBody {
+            .push(std::rc::Rc::new(std::cell::RefCell::new(IsoDeadBody {
                 base: MovingBase {
                     offset_x: 0.0,
                     offset_y: 0.0,
@@ -164,7 +164,7 @@ impl World {
                 fake_dead: false,
                 ragdoll: None,
                 burn_timer: 0.0,
-            });
+            })));
         corpse_count::corpse_added(&mut self.cell, &self.meta, x, y, 0).unwrap();
     }
 
