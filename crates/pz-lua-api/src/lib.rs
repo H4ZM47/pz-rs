@@ -13,6 +13,7 @@ pub mod bind_attached_items;
 pub mod bind_body;
 pub mod bind_body_damage;
 pub mod bind_character_sim;
+pub mod bind_eat;
 pub mod bind_characters;
 pub mod bind_audio;
 pub mod bind_erosion;
@@ -236,6 +237,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
     bind_character_sim::register_shared(&mut mgr.thread);
+    bind_eat::register_shared(&mut mgr.thread);
     timed_actions::register(&mut mgr.thread);
     bind_body::register_shared(&mut mgr.thread);
     bind_nutrition::register_shared(&mut mgr.thread);

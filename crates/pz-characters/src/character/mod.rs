@@ -43,6 +43,7 @@ pub mod collide;
 pub mod collision;
 pub mod combat;
 pub mod context;
+pub mod eat;
 pub mod fall;
 pub mod fire;
 pub mod firearm;
@@ -343,6 +344,9 @@ pub struct GameCharacter<I: 'static> {
     pub clothing_discomfort_modifier: f32,
     /// `IsoPlayer.sleepingPillsTaken`.
     pub sleeping_pills_taken: i32,
+    /// `effectiveEdibleBuffTimer`: seconds until food can cure a food
+    /// sickness again (counts down in `updateInternal`).
+    pub effective_edible_buff_timer: f32,
     /// `IsoPlayer.lastPillsTaken` (calendar millis).
     pub last_pills_taken: i64,
     /// `IsoPlayer.maxWeightDelta`.
@@ -499,6 +503,7 @@ impl<I: 'static> GameCharacter<I> {
             num_survivors_in_vicinity: 0,
             clothing_discomfort_modifier: 0.0,
             sleeping_pills_taken: 0,
+            effective_edible_buff_timer: 0.0,
             last_pills_taken: 0,
             max_weight_delta: 1.0,
             bleeding_level: 0,

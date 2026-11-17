@@ -616,3 +616,42 @@ fn broken_is_independent_state_and_setter_publishes_before_callback_outcome() {
     i.set_condition_while_loading(0);
     assert!(i.is_broken());
 }
+
+#[test]
+fn food_thirst_endurance_and_sickness_follow_the_food_state() {
+    let mut food = InventoryItem::create(Rc::new(ItemTemplate::new(ItemClass::Food, "Base", "Soup")), 1);
+    if let ItemKind::Food(d) = &mut food.kind {
+        d.thirst_change = -0.2;
+        d.end_change = 0.1;
+        d.food_sickness_change = -10;
+        d.off_age = 1_000;
+        d.off_age_max = 2_000;
+    }
+    let state = |food: &InventoryItem| (food.get_thirst_change(), food.get_endurance_change(), food.get_food_sickness_change());
+    assert_eq!(state(&food), (-0.2, 0.1, -10));
+    if let ItemKind::Food(d) = &mut food.kind {
+        d.cooked = true;
+    }
+    assert_eq!(state(&food), (-0.2 / 1.1, 0.1 * 1.3, -13));
+    if let ItemKind::Food(d) = &mut food.kind {
+        d.burnt = true;
+    }
+    assert_eq!(state(&food), (-0.2 / 5.0, 0.1 / 3.0, -3));
+    // Not food: no change.
+    let rock = InventoryItem::create(Rc::new(ItemTemplate::new(ItemClass::Normal, "Base", "Rock")), 2);
+    assert_eq!(state(&rock), (0.0, 0.0, 0));
+}
+
+#[test]
+fn food_values_scale_with_multiply_and_a_zero_hunger_use_up_empties_it() {
+    let mut food = InventoryItem::create(Rc::new(ItemTemplate::new(ItemClass::Food, "Base", "Soup")), 1);
+    if let ItemKind::Food(d) = &mut food.kind {
+        d.hung_change = -0.4;
+        d.calories = 200.0;
+    }
+    food.multiply_food_values(0.5);
+    assert_eq!(food.get_hung_change(), -0.2);
+    assert_eq!(food.get_calories(), 100.0);
+    food.set_hung_change(0.0);
+    assert_eq!(food.get_hung_change(), 0.0);
+}

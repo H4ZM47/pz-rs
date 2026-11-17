@@ -1428,7 +1428,12 @@ impl<I: 'static> GameCharacter<I> {
             self.sleeping_pills_taken = 0;
         }
         self.update_movement_momentum(ctx);
-        // effectiveEdibleBuffTimer: TODO(food buffs).
+        if self.effective_edible_buff_timer > 0.0 {
+            self.effective_edible_buff_timer -= ctx.multiplier() * 0.015;
+            if self.effective_edible_buff_timer < 0.0 {
+                self.effective_edible_buff_timer = 0.0;
+            }
+        }
         self.update_dirt(out, sm, chars, ctx, cx)?;
         let aimed = self.vars.use_hand_weapon.and_then(|i| self.items.item(i)).is_some_and(|i| i.borrow().is_aimed_firearm());
         if aimed && self.is_player_aiming() {
