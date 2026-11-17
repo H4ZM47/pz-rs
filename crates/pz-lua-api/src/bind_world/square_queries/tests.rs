@@ -231,3 +231,16 @@ fn light_level_reads_installed_source_and_defaults_to_white() {
     );
     install_square_light(None);
 }
+
+#[test]
+fn an_object_read_from_a_square_reports_it_until_it_leaves() {
+    let mut f = Fixture::new();
+    crate::bind_world_object::register_classes(&mut f.thread);
+    crate::world_menu_logic::register(&mut f.thread);
+    let slot = pz_world::ObjectSlot::new(pz_world::IsoObject::new(7, pz_world::ObjectKind::Object, None));
+    crate::bind_world_object::ensure_class(&slot.ref_handle(), crate::bind_world_object::ISO_OBJECT).unwrap();
+    f.square(|sq| sq.objects.push(slot));
+    f.run("o = a:getObjects():get(0); assert(o:getSquare() == a)");
+    f.square(|sq| drop(sq.objects.pop()));
+    f.run("assert(o:getSquare() == nil)");
+}

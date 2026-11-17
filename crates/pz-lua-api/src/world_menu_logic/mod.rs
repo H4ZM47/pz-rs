@@ -12,6 +12,7 @@
 mod entries;
 mod fetch;
 mod helpers;
+mod reads;
 
 use pz_kahlua::{LuaError, LuaResult, NativeCall, NativeFunction, TableRef, Thread, Value};
 
@@ -21,6 +22,7 @@ use crate::expose::expose_class;
 const CLASS: &str = "zombie.iso.ISWorldObjectContextMenuLogic";
 
 pub(crate) fn register(thread: &mut Thread) {
+    reads::register(thread);
     let class = expose_class(thread, CLASS, None);
     // fetch(fetch, object, player, doSquare)
     class.static_fn("fetch", |c| {

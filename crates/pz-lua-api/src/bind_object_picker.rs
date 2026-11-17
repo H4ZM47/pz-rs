@@ -65,7 +65,12 @@ pub fn world_object_value(square: [i32; 3], index: i32) -> LuaResult<Option<Valu
             .map(|slot| slot.ref_handle()))
     })
     .map_err(crate::bind_world_object::host_error)?;
-    object.as_ref().map(crate::bind_world_object::object_value).transpose()
+    let Some(object) = object else {
+        return Ok(None);
+    };
+    let value = crate::bind_world_object::object_value(&object)?;
+    crate::bind_world_object::remember_square(&value, square);
+    Ok(Some(value))
 }
 
 /// `IsoObject.getObjectIndex()` for the Lua object `value` that was
