@@ -260,6 +260,10 @@ pub(super) fn register_player(b: &ClassBuilder) {
         chr_of(c)?.borrow_mut().vars.block_movement = v;
         Ok(0)
     });
+    b.method("isBlockMovement", |c| {
+        let v = chr_of(c)?.borrow().vars.block_movement;
+        Ok(c.push(v))
+    });
     b.method("isIgnoreContextKey", |c| {
         let v = chr_of(c)?.borrow().player.ignore_context_key;
         Ok(c.push(v))
