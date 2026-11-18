@@ -455,3 +455,55 @@ fn broken_load_omits_wire_field_and_only_condition_flag_recomputes_it() {
         .is_err());
     assert!(target.broken);
 }
+
+/// `Item.InstanceItem` copies the context-menu fields from the script and
+/// gives the item `Translator.getText("ContextMenu_" + customContextMenu)`.
+#[test]
+fn creation_copies_context_menu_fields() {
+    struct Plain(Rc<ItemTemplate>);
+    impl ItemEnv for Plain {
+        fn template(&self, _id: i16) -> Option<Rc<ItemTemplate>> {
+            Some(self.0.clone())
+        }
+    }
+    struct Translated(Rc<ItemTemplate>);
+    impl ItemEnv for Translated {
+        fn template(&self, _id: i16) -> Option<Rc<ItemTemplate>> {
+            Some(self.0.clone())
+        }
+        fn get_text(&self, key: &str) -> String {
+            format!("<{key}>")
+        }
+    }
+    let mut t = ItemTemplate::new(ItemClass::Weapon, "Base", "Remote");
+    t.requires_equipped_both_hands = true;
+    t.can_be_remote = true;
+    t.remote_controller = true;
+    t.custom_context_menu = Some("Drink".into());
+    t.can_be_placed = true;
+    t.sensor_range = 3;
+    t.explosion_timer = 50;
+    t.fire_mode_possibilities = Some(Rc::new(vec!["Single".into(), "Auto".into()]));
+    let t = Rc::new(t);
+
+    let item = crate::env::create_item(&Translated(t.clone()), 1).unwrap();
+    assert!(item.requires_equipped_both_hands && item.can_be_remote && item.remote_controller);
+    assert_eq!(item.custom_menu_option.as_deref(), Some("<ContextMenu_Drink>"));
+    let ItemKind::Weapon(w) = &item.kind else {
+        panic!("not a weapon")
+    };
+    assert!(w.can_be_placed);
+    assert_eq!((w.sensor_range, w.explosion_timer), (3, 50));
+    assert!(Rc::ptr_eq(
+        w.fire_mode_possibilities.as_ref().unwrap(),
+        t.fire_mode_possibilities.as_ref().unwrap()
+    ));
+
+    // Without a translator the text is the key itself.
+    let plain = crate::env::create_item(&Plain(t), 1).unwrap();
+    assert_eq!(plain.custom_menu_option.as_deref(), Some("ContextMenu_Drink"));
+    // A script without the fields leaves the defaults.
+    let rock = new_item(&env(), 1);
+    assert!(!rock.requires_equipped_both_hands && !rock.can_be_remote && !rock.remote_controller);
+    assert_eq!(rock.custom_menu_option, None);
+}

@@ -1671,7 +1671,7 @@ fn fc_is_water_source(fc: &pz_entity::FluidContainer) -> bool {
 
 /// `InventoryItem.isWaterSource()` (STUB: `isMultiTileMoveable` is false,
 /// moveable sprite grids are not in pz-inventory).
-fn is_water_source(i: &InventoryItem) -> bool {
+pub(crate) fn is_water_source(i: &InventoryItem) -> bool {
     has_fluid_container(i) && fluid_container(i).is_some_and(|fc| fc_is_water_source(&fc))
 }
 

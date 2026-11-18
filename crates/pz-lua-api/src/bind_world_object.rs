@@ -364,5 +364,33 @@ pub(crate) fn fluid_component(value: &Value) -> LuaResult<Option<ComponentRef>> 
     ))
 }
 
+/// `GameEntity.hasComponent(type)` on the real allocation of each userdata.
+/// An encoded component is still a component of the entity.
+pub(crate) fn has_component(value: &Value, kind: pz_entity::ComponentType) -> LuaResult<bool> {
+    let present = |presence| !matches!(presence, pz_entity::EntryPresence::Absent);
+    if let Some(world) = object_from_value(value) {
+        class_of(&world.object)?;
+        let body = world
+            .object
+            .try_borrow()
+            .map_err(|_| borrowed("world hasComponent"))?;
+        return Ok(present(body.components.runtime().presence(kind)));
+    }
+    if let Value::Object(value) = value {
+        if let Some(item) =
+            (&**value as &dyn Any).downcast_ref::<crate::bind_items::LuaInventoryItem>()
+        {
+            let body = item
+                .item
+                .try_borrow()
+                .map_err(|_| borrowed("inventory hasComponent"))?;
+            return Ok(present(body.components.runtime().presence(kind)));
+        }
+    }
+    Err(unsupported(
+        "GameEntity getter requires an actual item or world-object userdata",
+    ))
+}
+
 #[cfg(test)]
 mod tests;

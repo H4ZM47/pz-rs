@@ -114,6 +114,31 @@ pub(super) fn register(thread: &mut Thread) {
         });
     }
 
+    type Flag = fn(&ItemRef) -> HostResult<bool>;
+    for (name, get) in [
+        ("canBeWrite", literature::can_be_write_ref as Flag),
+        ("isEmptyPages", literature::is_empty_pages_ref),
+    ] {
+        builder.method(name, move |call| {
+            let mut pins = InputPins::new(call);
+            getter_arity(call)?;
+            let item = literature_receiver(call)?;
+            pins.keep(&item);
+            let value = get(&item).map_err(crate::bind_world_object::host_error)?;
+            Ok(call.push(value))
+        });
+    }
+
+    builder.method("getLockedBy", |call| {
+        let mut pins = InputPins::new(call);
+        getter_arity(call)?;
+        let item = literature_receiver(call)?;
+        pins.keep(&item);
+        let value = literature::get_locked_by_ref(&item)
+            .map_err(crate::bind_world_object::host_error)?;
+        Ok(call.push(value.map(Value::from).unwrap_or(Value::Nil)))
+    });
+
     builder.method("getLearnedRecipes", |call| {
         let mut pins = InputPins::new(call);
         getter_arity(call)?;

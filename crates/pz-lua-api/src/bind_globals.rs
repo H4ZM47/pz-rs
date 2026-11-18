@@ -57,6 +57,8 @@ pub fn register(thread: &mut Thread) {
         "isMultiplayer",
         "isServerSoftReset",
         "getDebug",
+        // `GameClient.client && connection.getRole() == Roles.getDefaultForAdmin()`.
+        "isAdmin",
     ];
     for name in ret_false {
         global(thread, name, |c| Ok(c.push(false)));
