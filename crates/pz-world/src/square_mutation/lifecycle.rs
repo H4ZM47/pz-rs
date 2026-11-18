@@ -554,7 +554,7 @@ fn fire_perm(r: &Receiver) -> pz_entity::runtime_load::HostResult<bool> {
 }
 
 fn container_types(o: &IsoObject) -> Vec<Option<String>> {
-    o.containers().map(|c| c.kind.clone()).collect()
+    o.container_types()
 }
 
 /// `getContainerByEitherType("fridge", "freezer")`'s index.
@@ -844,7 +844,7 @@ fn add_to_world_on(
         }
         K::Stove => {
             base_add(env, r)?;
-            if with_obj(env, r, |o| o.container.is_none()).unwrap_or(true) {
+            if with_obj(env, r, |o| !o.has_main_container()).unwrap_or(true) {
                 return Ok(());
             }
             call(env, r, WorldCall::ProcessIsoObjectAdd);

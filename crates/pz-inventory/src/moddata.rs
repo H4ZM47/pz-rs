@@ -232,6 +232,40 @@ fn adopt_archive_at(archive: &LuaTable, depth: usize) -> ModDataResult<TableRef>
     Ok(table)
 }
 
+/// A loaded archive table as a new live table.
+pub fn adopt_archive(archive: &LuaTable) -> ModDataResult<TableRef> {
+    adopt_archive_at(archive, 0)
+}
+
+/// A live table as an archive value that saves the same bytes: entries in
+/// table order; keys the codec cannot save are dropped and values it cannot
+/// save become `Unsaveable` (written as nothing, as `table_save` skips them).
+pub fn live_to_archive(table: &TableRef) -> ModDataResult<LuaTable> {
+    live_to_archive_at(table, 0)
+}
+fn live_to_archive_at(table: &TableRef, depth: usize) -> ModDataResult<LuaTable> {
+    if depth > 64 {
+        return Err(ModDataError::Unsupported("live ModData archive depth limit"));
+    }
+    let mut out = LuaTable::default();
+    for (key, value) in table.try_entries()? {
+        let key = match key {
+            Value::Str(s) => LuaKey::Str(s.to_string()),
+            Value::Num(n) => LuaKey::Num(n),
+            _ => continue,
+        };
+        let value = match value {
+            Value::Str(s) => LuaValue::Str(s.to_string()),
+            Value::Num(n) => LuaValue::Num(n),
+            Value::Bool(b) => LuaValue::Bool(b),
+            Value::Table(t) => LuaValue::Table(live_to_archive_at(&t, depth + 1)?),
+            _ => LuaValue::Unsaveable,
+        };
+        out.entries.push((key, value));
+    }
+    Ok(out)
+}
+
 /// Deep-copy only mutable table allocations. Key, value and metatable table
 /// edges share one memo; opaque values remain actual reference values.
 fn copy_table_graph(source: &TableRef) -> ModDataResult<TableRef> {
