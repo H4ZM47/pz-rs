@@ -1103,6 +1103,26 @@ impl MutationEnv<'_> {
         self.invalidate_render(pos, dirty::CORPSE_ADDED);
     }
 
+    /// The square side of the `IsoDeadBody(chr)` constructor: the new
+    /// corpse goes into `staticMovingObjects`, then
+    /// `CorpseCount.corpseAdded(xi, yi, zi)` and
+    /// `invalidateRenderChunkLevel(DIRTY_CORPSE_ADDED)`. It is not
+    /// `addCorpse`: the burnt-out flag stays. `false` when the square is
+    /// not loaded (the original keeps the body off any square).
+    ///
+    /// TODO(port): `ObjectIDManager.addObject` and
+    /// `FliesSound.corpseAdded`.
+    pub fn place_new_corpse(&mut self, pos: SquarePos, body: IsoDeadBody) -> HostResult<bool> {
+        let Some(sq_owner) = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2) else {
+            return Ok(false);
+        };
+        let (x, y, z) = (body.base.x.floor() as i32, body.base.y.floor() as i32, body.base.z.floor() as i32);
+        sq_owner.borrow_mut().static_moving.push(body);
+        crate::dead_body::corpse_count::corpse_added(self.cell, self.meta, x, y, z)?;
+        self.invalidate_render(pos, dirty::CORPSE_ADDED);
+        Ok(true)
+    }
+
     /// `removeCorpse(body, false)` in single player: the corpse at
     /// `staticMovingObjects[index]` leaves the world and the square.
     pub fn remove_corpse(&mut self, pos: SquarePos, index: usize) -> Option<IsoDeadBody> {
