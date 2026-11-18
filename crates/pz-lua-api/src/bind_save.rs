@@ -750,6 +750,12 @@ fn register_save_changes(mgr: &mut LuaManager) {
         Ok(Value::Nil)
     });
 
+    // `sanitizeWorldName(name)` (a null name throws).
+    global(&mut mgr.thread, "sanitizeWorldName", |c| {
+        let name = str_arg(c, 0).ok_or_else(null_pointer)?;
+        Ok(c.push(savefile::sanitize_world_name(&name)))
+    });
+
     fs_global(mgr, "renameSavefile", |c, fs| {
         let (mode, old, new) = (str_arg(c, 0), str_arg(c, 1), str_arg(c, 2));
         Ok(savefile::rename_savefile(

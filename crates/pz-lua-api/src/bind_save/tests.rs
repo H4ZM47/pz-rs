@@ -312,6 +312,12 @@ fn save_folder_changes() {
         deleteAllGameModeSaves("LastStand")
         deleteDatabase("Sandbox/coop")
         setSavefilePlayer1("Sandbox", "w1", 5)
+        assert(sanitizeWorldName("  my world/1:\\?*<>| ") == "__my_world1_")
+        assert(sanitizeWorldName("\tw\n") == "w")
+        assert(not pcall(sanitizeWorldName, nil))
+        setSpawnRegion("Muldraugh, KY")
+        setSpawnRegion(nil)
+        assert(getWorld():getSpawnRegion() == "Muldraugh, KY")
         "#,
     );
     assert!(!s.join("Sandbox/del").exists());
