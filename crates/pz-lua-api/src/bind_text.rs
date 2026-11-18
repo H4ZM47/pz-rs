@@ -300,7 +300,7 @@ pub fn with_translator<R>(f: impl FnOnce(&Translator) -> R) -> Option<R> {
 }
 
 /// `Translator.getText(key)` (the key itself when no translator is set).
-pub(crate) fn translate(key: &str) -> String {
+pub fn translate(key: &str) -> String {
     with_translator(|t| t.get_text(key, &[])).unwrap_or_else(|| key.to_string())
 }
 
