@@ -162,17 +162,12 @@ pub(super) fn register(b: &ClassBuilder) {
             .collect::<LuaResult<Vec<_>>>()?;
         Ok(crate::bind_java_util::list_value(items))
     });
-    // `getStaticMovingObjects()`: corpses. `IsoDeadBody` has no Lua object
-    // yet, so only an empty list can be answered faithfully.
+    // `getStaticMovingObjects()`: the corpses on the square.
     get(b, "getStaticMovingObjects", |c| {
         let (x, y, z) = self_square(c)?;
-        let count = with_square(x, y, z, |square| Ok(square.static_moving.len()))?;
-        if count != 0 {
-            return Err(crate::bind_world_object::unsupported(
-                "IsoGridSquare.getStaticMovingObjects: IsoDeadBody is not exposed to Lua",
-            ));
-        }
-        Ok(crate::bind_java_util::list_value(Vec::new()))
+        let bodies = with_square(x, y, z, |square| Ok(square.static_moving.clone()))?;
+        let values = bodies.iter().map(crate::bind_dead_body::dead_body_value).collect();
+        Ok(crate::bind_java_util::list_value(values))
     });
     // `getVehicleContainer()`: the first vehicle of the chunks within four
     // squares that intersects this square.

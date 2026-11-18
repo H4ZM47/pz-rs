@@ -290,6 +290,10 @@ impl MovingBase {
     }
 }
 
+/// A corpse in the world: the one `IsoDeadBody` object that the square's
+/// `staticMovingObjects`, Lua and the engine share.
+pub type DeadBodyRef = std::rc::Rc<std::cell::RefCell<IsoDeadBody>>;
+
 /// `IsoDeadBody`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IsoDeadBody {
@@ -320,6 +324,52 @@ pub struct IsoDeadBody {
     pub ragdoll: Option<Vec<BoneTransform>>,
     /// `burnTimer`: seconds burnt on a burning square (not saved).
     pub burn_timer: f32,
+    /// The live container once Lua reached it; `container`, `worn_items`
+    /// and `attached_items` are empty then.
+    pub runtime: Option<crate::dead_body::inventory::CorpseInventory>,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl IsoDeadBody {
+    /// A male zombie's corpse at `(x, y, z)` with no container.
+    pub fn for_tests(x: f32, y: f32, z: f32) -> Self {
+        IsoDeadBody {
+            base: MovingBase {
+                offset_x: 0.0,
+                offset_y: 0.0,
+                x,
+                y,
+                z,
+                dir: 0,
+                mod_data: None,
+            },
+            female: false,
+            was_zombie: true,
+            animal: None,
+            object_id: (1, 0),
+            persistent_outfit_id: 0,
+            desc: None,
+            visual: CorpseVisual::Human(Box::new(HumanVisual::new(0))),
+            container: None,
+            worn_items: vec![],
+            attached_items: vec![],
+            death_time: 0.0,
+            reanimate_time: 0.0,
+            fall_on_front: false,
+            killed_by_fall: false,
+            was_skeleton: false,
+            angle: 0.0,
+            zombie_rot_stage_at_death: 0,
+            animal_rot_stage_at_death: 0,
+            rotten_texture: String::new(),
+            skel_inv_icon: String::new(),
+            crawling: false,
+            fake_dead: false,
+            ragdoll: None,
+            burn_timer: 0.0,
+            runtime: None,
+        }
+    }
 }
 
 impl IsoDeadBody {
@@ -479,6 +529,7 @@ impl IsoDeadBody {
             fake_dead,
             ragdoll,
             burn_timer: 0.0,
+            runtime: None,
         })
     }
 
@@ -539,20 +590,27 @@ impl IsoDeadBody {
                 w.i8(*rot_stage);
             }
         }
-        match &self.container {
-            Some(c) => {
+        match &self.inventory_snapshot()? {
+            Some(s) => {
                 w.i8(1);
-                w.i32(c.id);
-                save_container(w, c, items)?;
-                w.i8(self.worn_items.len() as i8);
-                for (loc, i) in &self.worn_items {
+                w.i32(s.container.id);
+                let saved = s.container.save_saved(w, items, None)?;
+                let index = |i: i16| match s.positions {
+                    true => usize::try_from(i)
+                        .ok()
+                        .and_then(|i| saved.iter().position(|&e| e == i))
+                        .map_or(-1, |i| i as i16),
+                    false => i,
+                };
+                w.i8(s.worn.len() as i8);
+                for (loc, i) in &s.worn {
                     w.string(loc);
-                    w.i16(*i);
+                    w.i16(index(*i));
                 }
-                w.i8(self.attached_items.len() as i8);
-                for (loc, i) in &self.attached_items {
+                w.i8(s.attached.len() as i8);
+                for (loc, i) in &s.attached {
                     w.string(loc);
-                    w.i16(*i);
+                    w.i16(index(*i));
                 }
             }
             None => w.i8(0),

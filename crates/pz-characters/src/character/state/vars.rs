@@ -179,6 +179,8 @@ pub struct CharacterVars {
     pub ignore_movement: bool,
     pub ignore_stagger_back: bool,
     pub damaged_by_vehicle: bool,
+    /// `doDeathSound`.
+    pub do_death_sound: bool,
     pub climbing: bool,
     /// `climbRopeTime`.
     pub climb_rope_time: f32,
@@ -423,6 +425,7 @@ impl Default for CharacterVars {
             ignore_movement: false,
             ignore_stagger_back: false,
             damaged_by_vehicle: false,
+            do_death_sound: true,
             climbing: false,
             climb_rope_time: 0.0,
             climb_data: None,

@@ -33,6 +33,9 @@ use pz_render::{flags, Texture, TextureManager};
 
 use crate::ui_models::Assets;
 
+mod corpses;
+pub use corpses::{CorpseDraw, CorpseSquare};
+
 /// Camera-dependent character state. Lighting comes from the actual
 /// square's lighting result, rather than a fixed white model light.
 pub struct CharacterView<'a> {
@@ -83,6 +86,7 @@ pub struct WorldModels {
     tm: Rc<RefCell<TextureManager>>,
     assets: Option<Assets>,
     characters: HashMap<i32, CharacterModel>,
+    corpses: corpses::Corpses,
     retired_textures: Vec<Texture>,
 }
 
@@ -94,6 +98,7 @@ impl WorldModels {
             tm,
             assets: None,
             characters: HashMap::new(),
+            corpses: corpses::Corpses::default(),
             retired_textures: Vec::new(),
         }
     }
@@ -295,15 +300,22 @@ impl WorldModels {
     pub fn prepare(&mut self, combiner: &mut dyn Combiner) {
         release_textures(&mut self.retired_textures, combiner);
         let fs = self.fs.borrow();
+        if let Some(a) = self.assets.as_ref() {
+            if let Err(e) = self.corpses.create_textures(a, &fs) {
+                eprintln!("ERROR: DeadBodyAtlas: {e}");
+            }
+        }
         let mut tm = self.tm.borrow_mut();
         let model_flags = flags::COMPRESS | flags::LIMIT_TEXTURE_SIZE_1;
-        for model in self.characters.values_mut() {
-            let Some(slot) = model.slot.as_mut() else {
-                continue;
-            };
+        let slots = self
+            .characters
+            .values_mut()
+            .filter_map(|m| Some((m.slot.as_mut()?, &mut m.jobs)))
+            .chain(self.corpses.slots_mut());
+        for (slot, jobs) in slots {
             let mut file =
                 |tm: &mut TextureManager, p: &str| tm.shared_texture_flags(&fs, p, model_flags);
-            if let Some(jobs) = model.jobs.take() {
+            if let Some(jobs) = jobs.take() {
                 let done = run_jobs(&jobs, &mut file, combiner, &mut tm);
                 for inst in &mut slot.instances {
                     if let TextureSource::Smart(j) = inst.tex {
@@ -389,6 +401,7 @@ impl WorldModels {
         for (_, model) in self.characters.drain() {
             retire(model, &mut self.retired_textures);
         }
+        self.corpses.retire(&mut self.retired_textures);
     }
 
     /// Release the world's composites while its GPU still exists.

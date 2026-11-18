@@ -81,6 +81,7 @@ pub(crate) fn bare_hands_stats() -> WeaponStats {
         min_angle: 0.65,
         max_angle: 1.0,
         max_hit_count: 1,
+        splat_number: 1,
         use_endurance: true,
         categories: vec![],
         ..WeaponStats::default()
@@ -347,7 +348,11 @@ impl<I: 'static> GameCharacter<I> {
         if self.vars.performing_shove_animation {
             self.vars.do_shove = true;
         }
-        let (w, weapon_item) = self.attack_weapon(sm);
+        // `getWeapon(owner)` is `getAttackingWeapon()`, and
+        // `getAttackVars().setWeapon(weapon)`: `postupdate` cleared the
+        // attack vars after `enter` filled them.
+        let (w, weapon_item) = self.attacking_weapon(sm);
+        self.attack_vars.weapon = if w.bare_hands { None } else { Some(w.id) };
         cx.ctx.event(SimEvent::WeaponSwingHitPoint);
         let ignore_damage = self.vars.do_shove && !self.vars.shove_stomp_anim;
         self.attack_vars.aim_at_floor = self.vars.aim_at_floor;

@@ -212,8 +212,8 @@ pub enum SimEvent {
     /// killer by id).
     Kill { attacker: Option<i32> },
     /// `onKilled(killer, weapon, isGory)` (the subclass reaction, run by
-    /// the owner of the corpse code).
-    Killed { attacker: Option<i32> },
+    /// the owner of the corpse code) for the character `victim`.
+    Killed { attacker: Option<i32>, victim: i32 },
     /// `LuaEventManager.triggerEvent("OnWeaponHitCharacter", wielder,
     /// target, weapon, damageSplit)` (characters by id).
     WeaponHitCharacter { wielder: i32, target: i32, damage: f32 },
@@ -249,10 +249,10 @@ pub enum SimEvent {
     CharacterSplatBloodFloorBig { chr: i32 },
     /// `chr.playBloodSplatterSound()`.
     BloodSplatterSound { chr: i32 },
-    /// `new IsoZombieGiblets(A, cell, x, y, z, velX, velY)`: the giblet's
-    /// own draws are made (`vel` includes them; `invisible` is its
-    /// `Rand.Next(3) != 0`).
-    Giblet { x: f32, y: f32, z: f32, vel_x: f32, vel_y: f32, invisible: bool },
+    /// `new IsoZombieGiblets(type, cell, x, y, z, velX, velY)` (`eye`:
+    /// `GibletType.Eye`, else `A`): the giblet's own draws are made (`vel`
+    /// includes them; `invisible` is its `Rand.Next(3) != 0`).
+    Giblet { x: f32, y: f32, z: f32, vel_x: f32, vel_y: f32, invisible: bool, eye: bool },
     /// `EffectsManager.startMuzzleFlash(chr, 1)`.
     MuzzleFlash { chr: i32 },
     /// `IsoBulletTracerEffects.addEffect(chr, range[, end, square])`: the
