@@ -764,3 +764,50 @@ fn output_mapper_entrees_match_the_input_items() {
     d.st.inputs[1].cache.applied = vec![4, 3];
     assert_eq!(name(d.mapper_output_item(mapper, false)).as_deref(), Some("Base.Nails"));
 }
+
+/// `haveFilter` / `noFilter` and `haveOxygenTank` / `noOxygenTank`: a gas
+/// mask with a `filterType` and an SCBA with a `tankType`; `have*` casts the
+/// item to `Clothing`, `no*` is true for any other item.
+#[test]
+fn filter_and_tank_tests_read_the_clothing_mod_data() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let sm = manager("");
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    crate::bind_items::register(&mut t);
+    crate::bind_scripts::register(&mut t, sm.clone());
+    register(&mut t, sm.clone(), Rc::new(RefCell::new(Characters::default())));
+    let clothing = |name: &str, tag: &str| {
+        struct Env;
+        impl pz_inventory::ItemEnv for Env {}
+        let mut definition = pz_scripts::objects::items::Item::new();
+        definition.set_module(&sm.get_module("Base").unwrap());
+        definition.init_load_pp(&sm, name);
+        definition.load(&sm, name, &format!("item {name} {{}}")).unwrap();
+        let mut template = ItemTemplate::new(ItemClass::Clothing, "Base", name);
+        template.script = Some(ScriptItemRef(Rc::new(RefCell::new(definition))));
+        template.tags.push(tag.into());
+        pz_inventory::env::create_from_template_ref(&Env, Rc::new(template), 1).unwrap()
+    };
+    let mask = clothing("Mask", "base:gasmask");
+    let scba = clothing("Scba", "base:scba");
+    let bat = item(&sm, ItemClass::Weapon, "BaseballBat");
+    for (name, v) in [("mask", &mask), ("scba", &scba), ("bat", &bat)] {
+        t.globals().set_str(name, crate::bind_items::try_item_value(v).unwrap());
+    }
+    let test = |t: &mut Thread, src: &str| run(t, &format!("return RecipeCodeOnTest.{src}")).unwrap()[0].truthy();
+    assert!(!test(&mut t, "haveFilter(mask, nil)"));
+    assert!(test(&mut t, "noFilter(mask, nil)"));
+    assert!(test(&mut t, "noOxygenTank(scba, nil)"));
+    run(&mut t, "mask:getModData().filterType = 'Base.Filter'; scba:getModData().tankType = 'Base.Tank'").unwrap();
+    assert!(test(&mut t, "haveFilter(mask, nil)"));
+    assert!(!test(&mut t, "noFilter(mask, nil)"));
+    assert!(test(&mut t, "haveOxygenTank(scba, nil)"));
+    assert!(!test(&mut t, "noOxygenTank(scba, nil)"));
+    assert!(!test(&mut t, "haveOxygenTank(mask, nil)"), "not an SCBA");
+    // Not a `Clothing`.
+    assert!(test(&mut t, "noFilter(bat, nil)"));
+    assert!(test(&mut t, "noOxygenTank(bat, nil)"));
+    assert!(run(&mut t, "return RecipeCodeOnTest.haveFilter(bat, nil)").is_err());
+}

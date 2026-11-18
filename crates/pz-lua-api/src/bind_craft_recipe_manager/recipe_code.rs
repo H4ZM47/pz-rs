@@ -20,6 +20,38 @@ pub(super) fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
         let v = generic_packing(c.thread, &sm, &item)?;
         Ok(c.push(v))
     });
+    // `haveFilter` / `haveOxygenTank`: `((Clothing) item).hasFilter()` /
+    // `hasTank()`. `noFilter` / `noOxygenTank`: true unless a `Clothing`
+    // has one.
+    for (name, method, have) in [
+        ("haveFilter", "hasFilter", true),
+        ("noFilter", "hasFilter", false),
+        ("haveOxygenTank", "hasTank", true),
+        ("noOxygenTank", "hasTank", false),
+    ] {
+        b.static_fn(name, move |c| {
+            let item = crate::bind_world_object::item_argument(&c.arg(0))?;
+            let v = clothing_has(c.thread, &item, method, have)?;
+            Ok(c.push(v))
+        });
+    }
+}
+
+/// `((Clothing) item).<method>()` when `have`, else `!(item instanceof
+/// Clothing) || !item.<method>()`.
+fn clothing_has(thread: &mut Thread, item: &ItemRef, method: &str, have: bool) -> LuaResult<bool> {
+    let clothing = matches!(item.borrow().kind, ItemKind::Clothing(_) | ItemKind::AlarmClockClothing(..));
+    if !clothing {
+        if have {
+            return Err(LuaError::runtime("java.lang.ClassCastException: not a Clothing"));
+        }
+        return Ok(true);
+    }
+    // Through the binding, which prepares the item's mod data.
+    let value = crate::bind_items::try_item_value(item)?;
+    let f = thread.table_get(&value, &Value::str(method))?;
+    let has = thread.call1(&f, &[value])?.truthy();
+    Ok(has == have)
 }
 
 fn npe() -> LuaError {
