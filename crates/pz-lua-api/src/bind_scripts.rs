@@ -26,6 +26,8 @@ mod models;
 mod recipes;
 mod vehicles;
 
+pub(crate) use crafting::icon_texture as recipe_icon_texture;
+
 use crate::bind_java_util::{list_value, JavaList};
 use crate::bind_registry::{java_error, key_arg, key_value};
 use crate::expose::{
@@ -1448,10 +1450,21 @@ mod tests {
         let sm = ScriptManager::new();
         sm.builtin_tables.borrow_mut().perk_ids = ["Woodwork", "Cooking"].map(String::from).to_vec();
         sm.builtin_tables.borrow_mut().metabolics = vec![("Default".into(), 1.5), ("Napping".into(), 0.5)];
-        for (reg, id) in [("item_tag", "t:shiny"), ("item_tag", "t:dull"), ("item_type", "t:normal")] {
+        let ids = [
+            ("item_tag", "t:shiny"),
+            ("item_tag", "t:dull"),
+            ("item_type", "t:normal"),
+            ("item_type", "t:drainable"),
+            ("item_type", "t:food"),
+        ];
+        for (reg, id) in ids {
             sm.registries.get(reg).unwrap().borrow_mut().register_id(id, false).unwrap();
         }
-        sm.statics.items.borrow_mut().constants.insert("item_tag", "SHINY", "t:shiny");
+        let mut statics = sm.statics.items.borrow_mut();
+        statics.constants.insert("item_tag", "SHINY", "t:shiny");
+        statics.constants.insert("item_type", "DRAINABLE", "t:drainable");
+        statics.constants.insert("item_type", "FOOD", "t:food");
+        drop(statics);
         sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
         Rc::new(sm)
@@ -1686,4 +1699,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_recipe_panel_reads_partial_uses_skill_perks_and_output_items() {
+        let scripts = "module Base {
+            item Stone { Weight = 1, }
+            item Thread { ItemType = t:drainable, UseDelta = 0.1, }
+            item Apple { ItemType = t:food, HungerChange = -5, }
+            craftRecipe Sew { time = 10, Tags = InHandCraft, SkillRequired = Woodwork:1,
+                inputs { item 1 [Base.Thread], item 1 [Base.Apple] mode:destroy, } outputs { item 1 Base.Stone, } }
+        }";
+        let sm = load("partial", &[("media/scripts/test.txt", scripts)]);
+        // Resolves the output mapper results.
+        sm.post_world_dictionary_init();
+        let mut t = thread(sm);
+        run(
+            &mut t,
+            r#"
+            Perks = { Woodwork = 'W' }
+            local sm = getScriptManager()
+            local r = sm:getCraftRecipe("Base.Sew")
+            local thread, apple, stone = sm:FindItem("Base.Thread"), sm:FindItem("Base.Apple"), sm:FindItem("Base.Stone")
+            local sew, eat = r:getInputs():get(0), r:getInputs():get(1)
+            assert(sew:isUsesPartialItem(thread), "a drainable")
+            assert(sew:isUsesPartialItem(apple), "a food")
+            assert(not sew:isUsesPartialItem(stone))
+            assert(not sew:isUsesPartialItem(nil))
+            assert(not eat:isUsesPartialItem(apple), "a destroy input")
+            assert(r:getRequiredSkill(0):getPerk() == 'W')
+            local mapper = r:getOutputs():get(0):getOutputMapper()
+            assert(mapper:getOutputItem(nil):getFullName() == "Base.Stone")
+            assert(mapper:getOutputItem(nil, true):getFullName() == "Base.Stone", "a mapper without inputs")
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn craft_recipe_time_drops_a_twentieth_per_level_above_the_requirement() {
+        let scripts = "module Base {
+            item Stone { Weight = 1, }
+            craftRecipe Chip { time = 100, Tags = InHandCraft, SkillRequired = Woodwork:2, xpAward = Cooking:5,
+                inputs { item 1 [Base.Stone], } outputs { item 1 Base.Stone, } }
+        }";
+        let sm = load("time", &[("media/scripts/test.txt", scripts)]);
+        let mut t = thread(sm);
+        run(
+            &mut t,
+            r#"
+            Perks = { Woodwork = 'W', Cooking = 'C' }
+            local levels = { W = 1, C = 0 }
+            local chr = { getPerkLevel = function(self, p) return levels[p] end }
+            local r = getScriptManager():getCraftRecipe("Base.Chip")
+            assert(r:getTime() == 100)
+            assert(r:getTime(chr) == 100, "below the requirement")
+            levels.W = 2
+            assert(r:getTime(chr) == 100, "at the requirement")
+            levels.W = 5
+            assert(r:getTime(chr) == 85, "3 levels above")
+            levels.C = 7
+            assert(r:getTime(chr) == 75, "the xp award perk counts")
+            "#,
+        )
+        .unwrap();
+    }
 }

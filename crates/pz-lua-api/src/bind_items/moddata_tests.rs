@@ -298,3 +298,22 @@ fn actual_native_item_load_replaces_table_while_retained_lua_table_stays_intact(
     "#,
     ));
 }
+
+#[test]
+fn equip_sounds_come_from_the_script_item() {
+    let mut thread = thread();
+    let mut definition = pz_scripts::objects::items::Item::new();
+    definition.equip_sound = Some("BatEquip".into());
+    let mut template = ItemTemplate::new(ItemClass::Weapon, "Base", "Bat");
+    template.script = Some(pz_inventory::template::ScriptItemRef(Rc::new(RefCell::new(definition))));
+    let bat = shared::try_new_item(InventoryItem::create(Rc::new(template), 1)).unwrap();
+    thread.globals().set_str("bat", try_item_value(&bat).unwrap());
+    let out = run(&mut thread, "return bat:getEquipSound(), bat:getUnequipSound()");
+    assert!(out[0].raw_equals(&Value::str("BatEquip")), "{out:?}");
+    assert!(out.get(1).is_none_or(Value::is_nil), "{out:?}");
+    // Without a script item the original dereferences null.
+    item(&mut thread, "NoScript");
+    let f = pz_kahlua::stdlib::load_string("return item:getEquipSound()", Some("t"), thread.globals().clone()).unwrap();
+    let err = thread.pcall(&f, &[]).unwrap_err();
+    assert!(format!("{err:?}").contains("NullPointerException"), "{err:?}");
+}

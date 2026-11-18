@@ -604,6 +604,16 @@ pub fn register(thread: &mut Thread) {
         cleanup(&this(c)?);
         Ok(0)
     });
+    // `BaseAction.restoreWeaponType`: the `Weapon` variable from
+    // `WeaponType.getWeaponType(chr)` (the hand items).
+    b.method("restoreWeaponType", |c| {
+        let chr = owner(&this(c)?);
+        let sm = crate::bind_registry::shared_script_manager();
+        let mut chr = chr.borrow_mut();
+        let weapon = chr.weapon_type(&sm);
+        chr.set_var_str("Weapon", weapon.type_name());
+        Ok(0)
+    });
     for name in [
         "setOverrideHandModels",
         "setOverrideHandModelsObject",
