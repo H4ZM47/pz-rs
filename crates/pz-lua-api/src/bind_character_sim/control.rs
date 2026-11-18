@@ -160,6 +160,11 @@ pub(super) fn register(b: &ClassBuilder) {
         let v = chr_of(c)?.borrow().sit_on_ground;
         Ok(c.push(v))
     });
+    // `isSittingOnFurniture()`: `isSitOnFurniture`.
+    b.method("isSittingOnFurniture", |c| {
+        let v = chr_of(c)?.borrow().sitting_on_furniture;
+        Ok(c.push(v))
+    });
     b.method("getIgnoreMovement", |c| {
         let v = chr_of(c)?.borrow().vars.ignore_movement;
         Ok(c.push(v))
