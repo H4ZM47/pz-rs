@@ -590,7 +590,7 @@ fn register_thermal_node(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let i = with_node(c, |n| n.body_part_index())?;
         // `BodyPartType.getDisplayName`: `Translator.getText(displayNameKey)`.
         let key = s.builtin_tables.borrow().body_parts.get(i).and_then(|p| p.display_name_key.clone());
-        Ok(c.push(key.as_deref().map(Characters::translate).map(Value::from).unwrap_or_default()))
+        Ok(c.push(key.as_deref().map(crate::bind_text::translate).map(Value::from).unwrap_or_default()))
     });
 }
 
