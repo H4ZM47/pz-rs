@@ -58,6 +58,7 @@ pub mod nutrition;
 pub mod path_mover;
 pub mod player;
 pub mod reading;
+pub mod safety;
 pub mod save;
 pub mod state;
 pub mod states;
@@ -249,6 +250,8 @@ pub struct GameCharacter<I: 'static> {
     pub descriptor: Option<SurvivorDescRef<I>>,
     /// `cheats`.
     pub cheats: PlayerCheats,
+    /// `safety`.
+    pub safety: safety::Safety,
     /// `bodyDamage`.
     pub body_damage: BodyDamage,
     /// `IsoPlayer.nutrition` (players only).
@@ -452,6 +455,7 @@ impl<I: 'static> GameCharacter<I> {
             perk_list: Vec::new(),
             descriptor: None,
             cheats: PlayerCheats::default(),
+            safety: safety::Safety::default(),
             body_damage,
             nutrition: player.then(Nutrition::default),
             fitness: player.then(Fitness::default),

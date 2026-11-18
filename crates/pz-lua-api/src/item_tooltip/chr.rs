@@ -236,6 +236,26 @@ pub fn is_no_recipes(cx: &mut Cx<'_>, item: &ItemRef) -> LuaResult<bool> {
 
 /// `isUnwanted(player)`.
 pub fn is_unwanted(cx: &mut Cx<'_>, item: &ItemRef) -> LuaResult<bool> {
+    let player = cx.player.clone();
+    is_unwanted_for(cx.t, item, &player)
+}
+
+/// The public `InventoryItem.isUnwanted(player)`: a null player is the
+/// original's NullPointerException.
+pub(crate) fn unwanted_by(t: &mut Thread, item: &ItemRef, player: &Value) -> LuaResult<bool> {
+    if player.is_nil() {
+        return Err(pz_kahlua::LuaError::Runtime {
+            message: "Cannot invoke \"zombie.characters.IsoPlayer.isUnwanted(String)\" because \"player\" is null".into(),
+            class: "java.lang.NullPointerException",
+        });
+    }
+    is_unwanted_for(t, item, player)
+}
+
+/// `InventoryItem.isUnwanted(player)`: `player.isUnwanted(id)` for the
+/// item's media id, `literatureTitle`, `printMedia` or `collectibleKey`
+/// mod data, else its script's full type.
+pub(crate) fn is_unwanted_for(t: &mut Thread, item: &ItemRef, player: &Value) -> LuaResult<bool> {
     let (media, full) = {
         let it = item.borrow();
         let full = sv(&it, |s| s.module_dot_type.clone());
@@ -255,10 +275,9 @@ pub fn is_unwanted(cx: &mut Cx<'_>, item: &ItemRef) -> LuaResult<bool> {
         }
     }
     let id = keyed.unwrap_or(full);
-    let player = cx.player.clone();
     Ok(call_or(
-        cx.t,
-        &player,
+        t,
+        player,
         "isUnwanted",
         &[Value::str(&id)],
         Value::Bool(false),

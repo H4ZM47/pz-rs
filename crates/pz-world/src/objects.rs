@@ -809,6 +809,9 @@ pub struct IsoObject {
     pub attached_anim_sprite: Option<Vec<IsoSpriteInstance>>,
     pub container: Option<ItemContainer>,
     pub secondary_containers: Vec<ItemContainer>,
+    /// Once installed this is authoritative and the two codec fields above
+    /// are empty (see [`crate::object_containers`]).
+    pub runtime_containers: Option<crate::object_containers::RuntimeContainers>,
     pub outline_on_mouseover: bool,
     pub tint_r: f32,
     pub tint_g: f32,
@@ -831,6 +834,9 @@ pub struct IsoObject {
     pub wall_blood_splats: Option<Vec<WallBloodSplat>>,
     /// `table` (mod data).
     pub mod_data: Option<LuaTable>,
+    /// Once installed this is authoritative and `mod_data` is empty (see
+    /// [`crate::object_mod_data`]).
+    pub runtime_mod_data: Option<crate::object_mod_data::LiveModData>,
     pub special_tooltip: bool,
     pub key_id: i32,
     pub uses_external_water_source: bool,
@@ -859,6 +865,7 @@ impl Clone for IsoObject {
             attached_anim_sprite: self.attached_anim_sprite.clone(),
             container: self.container.clone(),
             secondary_containers: self.secondary_containers.clone(),
+            runtime_containers: self.runtime_containers.clone(),
             outline_on_mouseover: self.outline_on_mouseover.clone(),
             tint_r: self.tint_r.clone(),
             tint_g: self.tint_g.clone(),
@@ -873,7 +880,12 @@ impl Clone for IsoObject {
             custom_color: self.custom_color.clone(),
             do_not_sync: self.do_not_sync.clone(),
             wall_blood_splats: self.wall_blood_splats.clone(),
-            mod_data: self.mod_data.clone(),
+            // Archive copy: a live table is copied as its saved value.
+            mod_data: match &self.runtime_mod_data {
+                Some(table) => pz_inventory::moddata::live_to_archive(&table.0).ok(),
+                None => self.mod_data.clone(),
+            },
+            runtime_mod_data: None,
             special_tooltip: self.special_tooltip.clone(),
             key_id: self.key_id.clone(),
             uses_external_water_source: self.uses_external_water_source.clone(),
@@ -916,6 +928,7 @@ impl IsoObject {
             attached_anim_sprite: None,
             container: None,
             secondary_containers: Vec::new(),
+            runtime_containers: None,
             outline_on_mouseover: false,
             tint_r: 1.0,
             tint_g: 1.0,
@@ -931,6 +944,7 @@ impl IsoObject {
             do_not_sync: false,
             wall_blood_splats: None,
             mod_data: None,
+            runtime_mod_data: None,
             special_tooltip: false,
             key_id: -1,
             uses_external_water_source: false,
@@ -957,12 +971,8 @@ impl IsoObject {
             .map(|a| a.iter().map(|i| i.sprite).collect())
     }
 
-    /// `getContainerCount()`.
-    pub fn container_count(&self) -> usize {
-        self.container.is_some() as usize + self.secondary_containers.len()
-    }
-
-    /// `getContainerByIndex` order.
+    /// The codec containers in `getContainerByIndex` order; empty once
+    /// the shared ones are installed (use [`Self::saved_containers`]).
     pub fn containers(&self) -> impl Iterator<Item = &ItemContainer> {
         self.container
             .iter()
