@@ -340,6 +340,7 @@ fn corpse_has_the_iso_object_methods() {
         assert(b:parentMethod() == 7)
         assert(not b:isPropaneBBQ() and not b:hasPropaneTank())
         assert(not b:isFireInteractionObject() and not b:isLit())
+        assert(b:getName() == nil and b:getSprite() == nil)
     "#,
     );
 }
