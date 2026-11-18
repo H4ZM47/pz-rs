@@ -22,6 +22,8 @@
 
 mod crafting;
 mod item;
+mod item_recipes;
+pub(crate) use item_recipes::RecipeKnowledge;
 mod models;
 mod recipes;
 mod vehicles;
