@@ -463,3 +463,12 @@ fn timed_actions_multiplier_progress_infinite_force_completion_and_animation_cle
     )
     .unwrap();
 }
+
+#[test]
+fn timed_actions_restore_weapon_type_from_the_empty_hands() {
+    let (mut thread, chr) = setup();
+    chr.borrow_mut().set_var_str("Weapon", "spear");
+    run(&mut thread, "a = make('weapon', 10); a.action:restoreWeaponType()").unwrap();
+    // `WeaponType.UNARMED.getType()` is the empty string.
+    assert_eq!(chr.borrow().variable_string("Weapon"), "");
+}

@@ -879,6 +879,27 @@ fn register_pz_math(thread: &mut Thread) {
         );
         Ok(c.push((a + (b - a) * t) as f64))
     });
+    // `max` / `min` with 2 to 5 `int` or `float` arguments: integral numbers
+    // reach the `int` overload, others the `float` one.
+    for (name, is_max) in [("max", true), ("min", false)] {
+        m.static_fn(name, move |c| {
+            let n = c.nargs().min(5);
+            if n < 2 {
+                return Err(pz_kahlua::LuaError::runtime(format!(
+                    "No implementation found for PZMath.{name}"
+                )));
+            }
+            let args: Vec<f64> = (0..n).map(|i| num_arg(c, i)).collect();
+            let pick = |a: f64, b: f64| if is_max == (a > b) { a } else { b };
+            let ints = (0..n).all(|i| matches!(c.arg(i), Value::Num(v) if v.fract() == 0.0));
+            let out = if ints {
+                args.iter().map(|&v| v as i32 as f64).reduce(pick).unwrap()
+            } else {
+                args.iter().map(|&v| v as f32 as f64).reduce(pick).unwrap()
+            };
+            Ok(c.push(out))
+        });
+    }
     m.static_fn("radToDeg", |c| {
         let r = num_arg(c, 0) as f32;
         Ok(c.push((57.295776f32 * r) as f64))

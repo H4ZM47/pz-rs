@@ -1,0 +1,503 @@
+use super::*;
+use pz_inventory::template::ScriptItemRef;
+use pz_inventory::{ItemClass, ItemTemplate};
+use pz_kahlua::TableRef;
+use pz_scripts::ScriptObject;
+
+const SCRIPTS: &str = "module Base {
+    item Apple { }
+    item BaseballBat { Tags = t:glue, }
+    item Nails { }
+    craftRecipe SpikeBat { time = 10, Tags = InHandCraft, inputs { item 1 [Base.BaseballBat], item 2 [Base.Nails], } outputs { item 1 Base.BaseballBat, } }
+    craftRecipe Bench { time = 10, Tags = EntityRecipe, inputs { item 1 [Base.Apple], } outputs { item 1 Base.Apple, } }
+    craftRecipe Hammer { time = 10, Tags = AnySurfaceCraft;CanBeDoneInDark, inputs { item 1 [Base.Nails], } outputs { item 1 Base.Nails, } }
+    craftRecipe Loose { time = 10, inputs { item 1 [Base.Nails], } outputs { item 1 Base.Nails, } }
+    craftRecipe Glue { time = 10, Tags =  inHANDcraft ;Outdoors, inputs { item 1 tags[t:glue], } outputs { item 1 Base.Nails, } }
+}";
+
+fn manager(extra: &str) -> Rc<ScriptManager> {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("pz-craft-recipe-manager-{}-{n}", std::process::id()));
+    let file = dir.join("media/scripts/test.txt");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, SCRIPTS).unwrap();
+    std::fs::write(dir.join("media/scripts/extra.txt"), format!("module Base {{ {extra} }}")).unwrap();
+    let sm = ScriptManager::new();
+    sm.builtin_tables.borrow_mut().perk_ids = vec!["Woodwork".into()];
+    let glue = pz_scripts::registry::ResourceLocation::of("t:glue").unwrap();
+    sm.registries.get("item_tag").unwrap().borrow_mut().register(glue, "GLUE", None).unwrap();
+    sm.enable_texture_capture();
+    sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    // Resolves the input items (`InputScript.OnPostWorldDictionaryInit`).
+    sm.post_world_dictionary_init();
+    Rc::new(sm)
+}
+
+fn names(list: &[ScriptRef]) -> Vec<String> {
+    list.iter().map(|s| s.downcast::<CraftRecipe>().unwrap().borrow().name().unwrap().to_string()).collect()
+}
+
+fn script_item(sm: &ScriptManager, name: &str) -> Rc<RefCell<Item>> {
+    sm.get_script(ScriptType::Item, &format!("Base.{name}")).unwrap().downcast::<Item>().unwrap()
+}
+
+#[derive(Default)]
+struct Chr {
+    levels: Vec<(&'static str, i32)>,
+    player: bool,
+    know_all: bool,
+    known: Vec<&'static str>,
+    /// `itemGetQueuedAmount` for every item.
+    queued: f32,
+    dark: bool,
+}
+
+impl RecipeCharacter for Chr {
+    fn perk_level(&self, perk: &str) -> i32 {
+        self.levels.iter().find(|(p, _)| *p == perk).map_or(0, |(_, l)| *l)
+    }
+    fn is_player(&self) -> bool {
+        self.player
+    }
+    fn is_know_all_recipes(&self) -> bool {
+        self.know_all
+    }
+    fn knows(&self, name: &str) -> bool {
+        self.known.contains(&name)
+    }
+    fn item_queued_amount(&self, _item: &dyn CraftItem) -> LuaResult<f32> {
+        Ok(self.queued)
+    }
+    fn too_dark_to_read(&self) -> LuaResult<bool> {
+        Ok(self.dark)
+    }
+}
+
+fn player() -> Chr {
+    Chr { player: true, ..Chr::default() }
+}
+
+/// An item with its status, by script name.
+#[derive(Clone)]
+struct It {
+    key: usize,
+    script: Option<Rc<RefCell<Item>>>,
+    full_type: String,
+    uses: i32,
+    max_uses: i32,
+    class: item_status::CraftItemClass,
+    no_recipes: bool,
+    favorite: bool,
+    food: Option<item_status::FoodState>,
+    broken: bool,
+    dead_body: bool,
+    worn: bool,
+    equipped: bool,
+    condition: i32,
+    condition_max: i32,
+}
+
+fn it(sm: &ScriptManager, key: usize, name: &str) -> It {
+    It {
+        key,
+        script: Some(script_item(sm, name)),
+        full_type: format!("Base.{name}"),
+        uses: 1,
+        max_uses: 1,
+        class: item_status::CraftItemClass::Other,
+        no_recipes: false,
+        favorite: false,
+        food: None,
+        broken: false,
+        dead_body: false,
+        worn: false,
+        equipped: false,
+        condition: 10,
+        condition_max: 10,
+    }
+}
+
+impl CraftItem for It {
+    fn key(&self) -> usize {
+        self.key
+    }
+    fn script_item(&self) -> Option<Rc<RefCell<Item>>> {
+        self.script.clone()
+    }
+    fn full_type(&self) -> String {
+        self.full_type.clone()
+    }
+    fn current_uses(&self) -> i32 {
+        self.uses
+    }
+    fn max_uses(&self) -> i32 {
+        self.max_uses
+    }
+    fn class(&self) -> item_status::CraftItemClass {
+        self.class
+    }
+    fn is_no_recipes(&self) -> LuaResult<bool> {
+        Ok(self.no_recipes)
+    }
+    fn is_favorite(&self) -> bool {
+        self.favorite
+    }
+    fn food(&self) -> Option<item_status::FoodState> {
+        self.food
+    }
+    fn is_broken(&self) -> bool {
+        self.broken
+    }
+    fn in_dead_body(&self) -> bool {
+        self.dead_body
+    }
+    fn is_worn(&self) -> bool {
+        self.worn
+    }
+    fn is_equipped(&self) -> bool {
+        self.equipped
+    }
+    fn condition(&self) -> i32 {
+        self.condition
+    }
+    fn condition_max(&self) -> i32 {
+        self.condition_max
+    }
+    fn is_full_uses(&self) -> bool {
+        self.uses >= self.max_uses
+    }
+    fn is_empty_uses(&self) -> bool {
+        self.uses <= 0
+    }
+    fn container_is_empty(&self) -> bool {
+        true
+    }
+    fn is_fluid_container(&self) -> LuaResult<bool> {
+        Ok(false)
+    }
+}
+
+fn unique_with(sm: &ScriptManager, item: &It, chr: &Chr, containers: &[It]) -> LuaResult<Vec<String>> {
+    let refs: Vec<&dyn CraftItem> = containers.iter().map(|i| i as &dyn CraftItem).collect();
+    Ok(names(&unique_recipe_items(sm, item, chr, &refs, &mut |_, _| true)?))
+}
+
+fn unique(sm: &ScriptManager, item: &str, chr: &Chr) -> LuaResult<Vec<String>> {
+    let item = it(sm, 1, item);
+    unique_with(sm, &item, chr, std::slice::from_ref(&item))
+}
+
+fn is_unsupported(err: &LuaError, what: &str) -> bool {
+    matches!(err, LuaError::Runtime { class: "pz.host.Unsupported", .. }) && format!("{err:?}").contains(what)
+}
+
+#[test]
+fn queries_match_any_whitelisted_tag_in_script_order() {
+    let sm = manager("");
+    let q = |s: &str| names(&query_recipes(&sm, s).unwrap());
+    // `getAllCraftRecipes()` order, kept by every query.
+    let all = names(&sm.collection(ScriptType::CraftRecipe).get_all_scripts());
+    let ordered =
+        |want: &[&str]| -> Vec<String> { all.iter().filter(|n| want.contains(&n.as_str())).cloned().collect() };
+    assert_eq!(q("*"), all);
+    assert_eq!(all.len(), 5);
+    assert_eq!(
+        names(&query_recipes_for_tags(&sm, &["InHandCraft", "AnySurfaceCraft"]).unwrap()),
+        ordered(&["SpikeBat", "Hammer", "Glue"])
+    );
+    assert_eq!(q(" inhandcraft "), ordered(&["SpikeBat", "Glue"]));
+    assert_eq!(q("InHandCraft-Outdoors"), ["SpikeBat"]);
+    assert_eq!(q("-InHandCraft;AnySurfaceCraft"), ordered(&["Bench", "Loose"]));
+    assert_eq!(q("untagged"), ["Loose"]);
+    assert!(q(" ").is_empty());
+    assert!(q("Unknown").is_empty());
+    assert!(q(";").is_empty());
+}
+
+const FLAG_RECIPES: &str = "
+    craftRecipe Damaged { time = 10, inputs { item 1 [Base.Apple] flags[IsDamaged], } outputs { item 1 Base.Apple, } }
+    craftRecipe Undamaged { time = 10, inputs { item 1 [Base.Apple] flags[IsUndamaged], } outputs { item 1 Base.Apple, } }
+    craftRecipe Worn { time = 10, inputs { item 1 [Base.Apple] flags[IsWorn], } outputs { item 1 Base.Apple, } }
+    craftRecipe NotWorn { time = 10, inputs { item 1 [Base.Apple] flags[IsNotWorn], } outputs { item 1 Base.Apple, } }
+    craftRecipe Rotten { time = 10, inputs { item 1 [Base.Apple] flags[AllowRottenItem;AllowFavorite], } outputs { item 1 Base.Apple, } }
+    craftRecipe Destroyed { time = 10, inputs { item 1 [Base.Apple] flags[AllowDestroyedItem], } outputs { item 1 Base.Apple, } }
+    craftRecipe Sharp { time = 10, inputs { item 1 [Base.Apple] flags[IsNotDull], } outputs { item 1 Base.Apple, } }
+    craftRecipe Uses { time = 10, inputs { item 3 [Base.Apple], } outputs { item 1 Base.Apple, } }
+    craftRecipe TwoBats { time = 10, Tags = InHandCraft, inputs { item 1 [Base.BaseballBat], item 1 [Base.BaseballBat], } outputs { item 1 Base.Apple, } }
+    craftRecipe FixBat { time = 10, Tags = AnySurfaceCraft;CanBeDoneInDark, inputs { item 1 [Base.BaseballBat] mode:keep flags[IsDamaged], } outputs { } }
+";
+
+fn recipe(sm: &ScriptManager, name: &str) -> Rc<RefCell<CraftRecipe>> {
+    sm.get_script(ScriptType::CraftRecipe, &format!("Base.{name}")).unwrap().downcast::<CraftRecipe>().unwrap()
+}
+
+/// `consumeInputItem(firstInput, item, true, null, chr)`.
+fn accepts(sm: &ScriptManager, name: &str, item: &It, chr: &Chr) -> LuaResult<bool> {
+    let r = recipe(sm, name);
+    let r = r.borrow();
+    let out = item_status::consume_input_item_test(r.inputs().next().unwrap(), &r, item, chr, &mut |_, _| true);
+    out
+}
+
+/// `setRecipeFromContextClick` and `canPerformCurrentRecipe` for one recipe.
+fn perform(sm: &ScriptManager, name: &str, clicked: &It, containers: &[It], chr: &Chr) -> LuaResult<bool> {
+    let r = recipe(sm, name);
+    let r = r.borrow();
+    let mut items: Vec<&dyn CraftItem> = containers.iter().map(|i| i as &dyn CraftItem).collect();
+    let at = match containers.iter().position(|i| i.key == clicked.key) {
+        Some(at) => at,
+        None => {
+            items.push(clicked);
+            items.len() - 1
+        }
+    };
+    handcraft::can_perform_from_context_click(&r, &items, containers.len(), at, chr, &mut |_, _| true)
+}
+
+#[test]
+fn items_no_hand_recipe_lists_give_an_empty_list() {
+    let sm = manager("");
+    // Apple is only in an EntityRecipe input.
+    assert!(unique(&sm, "Apple", &player()).unwrap().is_empty());
+}
+
+#[test]
+fn status_tests_follow_the_input_flags() {
+    let sm = manager(FLAG_RECIPES);
+    let chr = player();
+    let apple = it(&sm, 1, "Apple");
+    let damaged = It { condition: 3, ..apple.clone() };
+    assert!(!accepts(&sm, "Damaged", &apple, &chr).unwrap());
+    assert!(accepts(&sm, "Damaged", &damaged, &chr).unwrap());
+    assert!(accepts(&sm, "Undamaged", &apple, &chr).unwrap());
+    assert!(!accepts(&sm, "Undamaged", &damaged, &chr).unwrap());
+
+    let worn = It { worn: true, ..apple.clone() };
+    let equipped = It { equipped: true, ..apple.clone() };
+    assert!(!accepts(&sm, "Worn", &apple, &chr).unwrap());
+    assert!(accepts(&sm, "Worn", &worn, &chr).unwrap());
+    assert!(!accepts(&sm, "NotWorn", &worn, &chr).unwrap());
+    assert!(!accepts(&sm, "NotWorn", &equipped, &chr).unwrap());
+    // A dead body's items pass the clothing tests.
+    assert!(accepts(&sm, "Worn", &It { dead_body: true, ..apple.clone() }, &chr).unwrap());
+
+    let rotten = It { food: Some(item_status::FoodState { rotten: true, ..Default::default() }), ..apple.clone() };
+    let favorite = It { favorite: true, ..apple.clone() };
+    let broken = It { broken: true, ..apple.clone() };
+    assert!(!accepts(&sm, "Undamaged", &rotten, &chr).unwrap());
+    assert!(accepts(&sm, "Rotten", &rotten, &chr).unwrap());
+    assert!(!accepts(&sm, "Undamaged", &favorite, &chr).unwrap());
+    assert!(accepts(&sm, "Rotten", &favorite, &chr).unwrap());
+    assert!(!accepts(&sm, "Undamaged", &broken, &chr).unwrap());
+    assert!(accepts(&sm, "Destroyed", &broken, &chr).unwrap());
+
+    // `isNoRecipes` is read for a player only.
+    let no_recipes = It { no_recipes: true, ..apple.clone() };
+    assert!(!accepts(&sm, "Undamaged", &no_recipes, &chr).unwrap());
+    assert!(accepts(&sm, "Undamaged", &no_recipes, &Chr::default()).unwrap());
+
+    let err = accepts(&sm, "Sharp", &apple, &chr).unwrap_err();
+    assert!(is_unsupported(&err, "SharpnessStatusTests"), "{err:?}");
+    // Not listed: no status test runs.
+    assert!(!accepts(&sm, "Sharp", &it(&sm, 1, "Nails"), &chr).unwrap());
+}
+
+#[test]
+fn queued_uses_reduce_what_an_item_offers() {
+    let sm = manager(FLAG_RECIPES);
+    let apple = it(&sm, 1, "Apple");
+    assert!(accepts(&sm, "Undamaged", &apple, &player()).unwrap());
+    // `consumesEntireItem` gives `Float.MAX_VALUE`.
+    assert!(!accepts(&sm, "Undamaged", &apple, &Chr { queued: f32::MAX, ..player() }).unwrap());
+    assert!(!accepts(&sm, "Undamaged", &apple, &Chr { queued: 2.0, ..player() }).unwrap());
+    assert!(accepts(&sm, "Undamaged", &It { uses: 2, ..apple }, &Chr { queued: 2.0, ..player() }).unwrap());
+}
+
+#[test]
+fn context_click_needs_every_input_from_the_containers() {
+    let sm = manager(FLAG_RECIPES);
+    let chr = player();
+    let bat = it(&sm, 1, "BaseballBat");
+    let nail = |k| it(&sm, k, "Nails");
+    assert!(!perform(&sm, "SpikeBat", &bat, &[bat.clone()], &chr).unwrap());
+    assert!(!perform(&sm, "SpikeBat", &bat, &[bat.clone(), nail(2)], &chr).unwrap());
+    let err = perform(&sm, "SpikeBat", &bat, &[nail(2), bat.clone(), nail(3)], &chr).unwrap_err();
+    assert!(is_unsupported(&err, "createRecipeOutputs (SpikeBat)"), "{err:?}");
+    // The clicked item counts even when no container holds it.
+    let err = perform(&sm, "SpikeBat", &bat, &[nail(2), nail(3)], &chr).unwrap_err();
+    assert!(is_unsupported(&err, "createRecipeOutputs (SpikeBat)"), "{err:?}");
+    // Too dark to read, once the inputs are covered.
+    assert!(!perform(&sm, "SpikeBat", &bat, &[nail(2), nail(3)], &Chr { dark: true, ..player() }).unwrap());
+    let err = perform(&sm, "Hammer", &nail(2), &[nail(2)], &Chr { dark: true, ..player() }).unwrap_err();
+    assert!(is_unsupported(&err, "createRecipeOutputs (Hammer)"), "{err:?}");
+}
+
+#[test]
+fn an_item_covers_one_input_only() {
+    let sm = manager(FLAG_RECIPES);
+    let chr = player();
+    let bat = it(&sm, 1, "BaseballBat");
+    assert!(!perform(&sm, "TwoBats", &bat, &[bat.clone()], &chr).unwrap());
+    let err = perform(&sm, "TwoBats", &bat, &[bat.clone(), it(&sm, 2, "BaseballBat")], &chr).unwrap_err();
+    assert!(is_unsupported(&err, "createRecipeOutputs (TwoBats)"), "{err:?}");
+    // Uses add up: three one-use apples or one three-use apple.
+    let apple = |k, uses| It { uses, ..it(&sm, k, "Apple") };
+    assert!(!perform(&sm, "Uses", &apple(1, 1), &[apple(1, 1), apple(2, 1)], &chr).unwrap());
+    assert!(perform(&sm, "Uses", &apple(1, 1), &[apple(1, 1), apple(2, 1), apple(3, 1)], &chr).is_err());
+    assert!(perform(&sm, "Uses", &apple(1, 3), &[apple(1, 3)], &chr).is_err());
+}
+
+#[test]
+fn input_tags_list_the_items_that_have_them() {
+    let sm = manager("");
+    let chr = player();
+    let err = perform(&sm, "Glue", &it(&sm, 1, "BaseballBat"), &[], &chr).unwrap_err();
+    assert!(is_unsupported(&err, "createRecipeOutputs (Glue)"), "{err:?}");
+    assert!(!accepts(&sm, "Glue", &it(&sm, 1, "Apple"), &chr).unwrap());
+    assert!(!accepts(&sm, "Glue", &It { script: None, ..it(&sm, 1, "BaseballBat") }, &chr).unwrap());
+}
+
+#[test]
+fn an_undamaged_bat_lists_no_hand_recipe_without_nails() {
+    let sm = manager(FLAG_RECIPES);
+    // Glue is covered by the bat itself and cannot be done in the dark.
+    let dark = Chr { dark: true, ..player() };
+    assert!(unique(&sm, "BaseballBat", &dark).unwrap().is_empty());
+    let err = unique(&sm, "BaseballBat", &player()).unwrap_err();
+    assert!(is_unsupported(&err, "createRecipeOutputs ("), "{err:?}");
+    // FixBat needs a damaged bat.
+    let bat = It { condition: 3, ..it(&sm, 1, "BaseballBat") };
+    let err = unique_with(&sm, &bat, &dark, &[]).unwrap_err();
+    assert!(is_unsupported(&err, "createRecipeOutputs (FixBat)"), "{err:?}");
+}
+
+#[test]
+fn on_test_rejections_skip_the_recipe() {
+    let sm = manager(
+        "craftRecipe Tested { time = 10, Tags = InHandCraft, OnTest = Recipe.OnTest.No, inputs { item 1 [Base.Apple], } outputs { item 1 Base.Apple, } }",
+    );
+    let chr = player();
+    let apple = it(&sm, 7, "Apple");
+    let mut calls = Vec::new();
+    let list = unique_recipe_items(&sm, &apple, &chr, &[], &mut |name, key| {
+        calls.push((name.to_string(), key));
+        false
+    })
+    .unwrap();
+    assert!(list.is_empty());
+    assert_eq!(calls, [("Recipe.OnTest.No".to_string(), 7)]);
+    let err = unique_with(&sm, &apple, &chr, &[]).unwrap_err();
+    assert!(is_unsupported(&err, "createRecipeOutputs (Tested)"), "{err:?}");
+}
+
+#[test]
+fn skill_and_learning_checks_skip_recipes() {
+    let sm = manager(
+        "craftRecipe Skilled { time = 10, Tags = InHandCraft, SkillRequired = Woodwork:3, inputs { item 1 [Base.Apple], } outputs { item 1 Base.Apple, } }
+         craftRecipe Learned { time = 10, Tags = InHandCraft, needToBeLearn = true, SkillRequired = Woodwork:3, inputs { item 1 [Base.Apple], } outputs { item 1 Base.Apple, } }",
+    );
+    let skilled = sm.get_script(ScriptType::CraftRecipe, "Base.Skilled").unwrap().downcast::<CraftRecipe>().unwrap();
+    let learned = sm.get_script(ScriptType::CraftRecipe, "Base.Learned").unwrap().downcast::<CraftRecipe>().unwrap();
+    let (skilled, learned) = (skilled.borrow(), learned.borrow());
+    let valid = |r: &CraftRecipe, c: &Chr, containers: bool| is_valid_recipe_for_character(r, Some(c), containers);
+
+    let novice = Chr { player: true, ..Chr::default() };
+    let expert = Chr { player: true, levels: vec![("Woodwork", 3)], ..Chr::default() };
+    assert!(valid(&skilled, &expert, true).unwrap());
+    assert!(!valid(&skilled, &novice, false).unwrap());
+    // A recipe that need not be learned gets no benefit from a recipe at hand.
+    assert!(!valid(&skilled, &novice, true).unwrap());
+    assert!(is_valid_recipe_for_character(&skilled, None, true).unwrap());
+
+    // Unknown: no benefit, and not known.
+    assert!(!valid(&learned, &novice, true).unwrap());
+    assert!(!valid(&learned, &expert, true).unwrap());
+    let known = Chr { player: true, levels: vec![("Woodwork", 3)], known: vec!["Learned"], ..Chr::default() };
+    assert!(valid(&learned, &known, true).unwrap());
+    let all = Chr { player: true, levels: vec![("Woodwork", 3)], know_all: true, ..Chr::default() };
+    assert!(valid(&learned, &all, true).unwrap());
+    // Known but short of the skill: the recipe-at-hand benefit is not ported.
+    let short = Chr { player: true, known: vec!["Learned"], ..Chr::default() };
+    let err = valid(&learned, &short, true).unwrap_err();
+    assert!(is_unsupported(&err, "validateBenefitFromRecipeAtHand"), "{err:?}");
+    assert!(!valid(&learned, &Chr { player: false, ..short }, true).unwrap());
+
+    assert!(unique(&sm, "Apple", &novice).unwrap().is_empty());
+}
+
+fn item(sm: &ScriptManager, class: ItemClass, name: &str) -> crate::bind_items::ItemRef {
+    struct Env;
+    impl pz_inventory::ItemEnv for Env {}
+    let mut definition = pz_scripts::objects::items::Item::new();
+    definition.set_module(&sm.get_module("Base").unwrap());
+    definition.init_load_pp(sm, name);
+    definition.load(sm, name, &format!("item {name} {{}}")).unwrap();
+    let mut template = ItemTemplate::new(class, "Base", name);
+    template.script = Some(ScriptItemRef(Rc::new(RefCell::new(definition))));
+    pz_inventory::env::create_from_template_ref(&Env, Rc::new(template), 1).unwrap()
+}
+
+fn run(t: &mut Thread, src: &str) -> Result<Vec<Value>, String> {
+    let f = pz_kahlua::stdlib::load_string(src, Some("test"), t.globals().clone()).unwrap();
+    t.pcall_ex(&f, &[]).map_err(|(_, _, e)| format!("{e:?}"))
+}
+
+#[test]
+fn lua_get_unique_recipe_items() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let sm = manager("");
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    crate::bind_items::register(&mut t);
+    crate::bind_scripts::register(&mut t, sm.clone());
+    register(&mut t, sm.clone(), Rc::new(RefCell::new(Characters::default())));
+
+    let player = Rc::new(RefCell::new(crate::bind_character_sim::LuaGameCharacter::new(
+        &ScriptManager::new(),
+        pz_characters::CharacterKind::Player,
+    )));
+    let player = Value::Object(Rc::new(CharacterObject::try_new(&player).unwrap()));
+    for (name, value) in [
+        ("player", player),
+        ("apple", crate::bind_items::try_item_value(&item(&sm, ItemClass::Food, "Apple")).unwrap()),
+        ("bat", crate::bind_items::try_item_value(&item(&sm, ItemClass::Weapon, "BaseballBat")).unwrap()),
+    ] {
+        t.globals().set_str(name, value);
+    }
+    let out =
+        run(&mut t, "return CraftRecipeManager.getUniqueRecipeItems(apple, player, ArrayList.new()):size()").unwrap();
+    assert!(out[0].raw_equals(&Value::Num(0.0)), "{out:?}");
+    let err = run(&mut t, "return CraftRecipeManager.getUniqueRecipeItems(bat, nil, ArrayList.new())").unwrap_err();
+    assert!(err.contains("NullPointerException"), "{err}");
+    let err = run(&mut t, "return CraftRecipeManager.getUniqueRecipeItems(bat, player, nil)").unwrap_err();
+    assert!(err.contains("NullPointerException"), "{err}");
+    // SpikeBat lacks the nails; Glue is covered by the bat, and the
+    // player's light is not ported.
+    let err = run(&mut t, "return CraftRecipeManager.getUniqueRecipeItems(bat, player, ArrayList.new())").unwrap_err();
+    assert!(err.contains("tooDarkToRead"), "{err}");
+}
+
+#[test]
+fn lua_query_recipes() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let sm = manager("");
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    crate::bind_scripts::register(&mut t, sm.clone());
+    register(&mut t, sm.clone(), Rc::new(RefCell::new(Characters::default())));
+    let out = run(
+        &mut t,
+        r#"
+        local list = CraftRecipeManager.queryRecipes("InHandCraft;AnySurfaceCraft")
+        return list:size(), list:get(0):getName(), CraftRecipeManager.queryRecipes(nil):size(),
+            CraftRecipeManager.queryRecipes("*"):size()
+        "#,
+    )
+    .unwrap();
+    let want = [Value::Num(3.0), Value::str("Hammer"), Value::Num(0.0), Value::Num(5.0)];
+    assert!(out.iter().zip(&want).all(|(a, b)| a.raw_equals(b)) && out.len() == 4, "{out:?}");
+}
