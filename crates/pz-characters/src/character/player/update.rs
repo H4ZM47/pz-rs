@@ -1361,9 +1361,10 @@ impl<I: 'static> GameCharacter<I> {
             self.update_ballistics_target(ctx, &mut *cx.world);
         }
         // TODO(grappling): LetGoOfGrappled when not in a grappler state.
-        if self.is_dead() {
-            return Ok(false);
-        }
+        // `isDead()` with the character off its square's moving objects
+        // (`die()` on a server) returns here. The port's character is on
+        // its current square while it has one (checked above), so a dead
+        // player goes on: its states fall it down and `die()` it.
         // checkSCBADrain: TODO(items). Toxic buildings: TODO(world).
         let fps = ctx.thirty_fps_multiplier();
         if self.player.lunge_fall_timer > 0.0 {

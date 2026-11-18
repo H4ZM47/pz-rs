@@ -56,28 +56,31 @@ impl<I: 'static> GameCharacter<I> {
         } else {
             (false, false)
         };
-        let desc = if zombie {
-            self.descriptor.as_ref().map(|d| {
-                let d = d.borrow();
-                SurvivorDesc {
-                    id: d.id,
-                    forename: d.forename.clone().unwrap_or_default(),
-                    surname: d.surname.clone().unwrap_or_default(),
-                    torso: d.torso.clone().unwrap_or_default(),
-                    female: d.character_gender == CharacterGender::Female,
-                    profession: d.character_profession.as_ref().map(|p| p.location.id()).unwrap_or_default(),
-                    extra: d.extra.clone(),
-                    xp_boosts: d.xp_boost_map.clone(),
-                    voice_prefix: d.voice_prefix.clone().unwrap_or_default(),
-                    voice_pitch: d.voice_pitch,
-                    voice_type: d.voice_type,
-                }
-            })
-        } else {
-            // TODO(port): a player's descriptor and the
-            // `FemaleZombie`/`MaleZombie` voice prefix.
-            None
-        };
+        // `desc = new SurvivorDesc(chr.getDescriptor())`, for a zombie with
+        // a descriptor and for any other character. A player's copy then
+        // gets the `FemaleZombie` voice prefix after `VoiceFemale`, else
+        // `MaleZombie`.
+        let player = self.is_player();
+        let desc = self.descriptor.as_ref().map(|d| {
+            let d = d.borrow();
+            let mut voice_prefix = d.voice_prefix.clone().unwrap_or_default();
+            if player {
+                voice_prefix = if voice_prefix == "VoiceFemale" { "FemaleZombie" } else { "MaleZombie" }.into();
+            }
+            SurvivorDesc {
+                id: d.id,
+                forename: d.forename.clone().unwrap_or_default(),
+                surname: d.surname.clone().unwrap_or_default(),
+                torso: d.torso.clone().unwrap_or_default(),
+                female: d.character_gender == CharacterGender::Female,
+                profession: d.character_profession.as_ref().map(|p| p.location.id()).unwrap_or_default(),
+                extra: d.extra.clone(),
+                xp_boosts: d.xp_boost_map.clone(),
+                voice_prefix,
+                voice_pitch: d.voice_pitch,
+                voice_type: d.voice_type,
+            }
+        });
         let visual = self.human_visual.clone().unwrap_or_else(|| HumanVisual::new(blood_part::MAX));
         let zombie_rot_stage_at_death = i32::from(visual.zombie_rot_stage);
         // `setContainer(chr.getInventory())`, `setWornItems(chr.getWornItems())`:
@@ -147,6 +150,7 @@ impl<I: 'static> GameCharacter<I> {
         if !place(body) {
             return Ok(false);
         }
+        self.vars.died_body = true;
         // `chr.setInventory(new ItemContainer())`, `clearWornItems()`,
         // `clearAttachedItems()`.
         self.items.inventory = SharedContainer { explored: true, ..Default::default() }.into_ref();

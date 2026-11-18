@@ -719,6 +719,42 @@ mod tests {
     }
 
     #[test]
+    fn killing_a_player_runs_its_on_killed_once() {
+        let (sm, mut chars) = body_fixture();
+        let ctx = Ctx::default();
+        let mut w = Floor::default();
+        let mut c = player(&sm, &mut chars);
+        c.path.current_square = Some((4, 5, 0));
+        give_item(&sm, &mut c, ItemClass::Normal, "Spoon", 2, |_| {}, |_| {});
+        c.set_primary_hand_item(&sm, Some(2));
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+        c.kill_by(None, &mut cx);
+        c.kill_by(None, &mut cx);
+        let _ = cx;
+        assert!(c.is_dead() && c.vars.on_kill_done);
+        // OnDeath dropped the spoon.
+        assert_eq!(w.floor.put.iter().map(|d| d.1).collect::<Vec<_>>(), [2]);
+        let named: Vec<String> = events(&ctx)
+            .into_iter()
+            .filter(|e| !e.starts_with("ContainerUpdate") && !e.starts_with("ItemFall"))
+            .collect();
+        // `onKilled` -> `DoDeath`: `OnDeath`, then the death sound and the
+        // gory splatter (no weapon: the giblets).
+        assert_eq!(
+            named[..6],
+            [
+                format!("{:?}", SimEvent::Killed { attacker: None, victim: c.id }),
+                format!("{:?}", SimEvent::CharacterDeath),
+                format!("{:?}", SimEvent::StopAllActionQueue),
+                format!("{:?}", SimEvent::PlayerDeath { local: true }),
+                format!("{:?}", SimEvent::PlayerVoiceSoundNamed("DeathAlone".into())),
+                format!("{:?}", SimEvent::BloodSplatterSound { chr: c.id }),
+            ]
+        );
+        assert!(named[6..].iter().all(|e| e.starts_with("Giblet")));
+    }
+
+    #[test]
     fn failed_death_drop_preserves_earlier_wake_prefix_and_stops_later_death_event() {
         let (sm, mut chars) = body_fixture();
         let ctx = Ctx::default();

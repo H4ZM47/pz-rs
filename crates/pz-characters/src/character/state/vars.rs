@@ -188,6 +188,10 @@ pub struct CharacterVars {
     /// first rope climb).
     pub climb_data: Option<ClimbData>,
     pub on_kill_done: bool,
+    /// `diedBody != null`: `becomeCorpse()` made the character's corpse
+    /// (the corpse itself is the world's). The character is then off the
+    /// world (`removeFromWorld`).
+    pub died_body: bool,
     /// `getAttackedBy()` (by character id).
     pub attacked_by: Option<i32>,
     /// `lastHitCharacter`.
@@ -430,6 +434,7 @@ impl Default for CharacterVars {
             climb_rope_time: 0.0,
             climb_data: None,
             on_kill_done: false,
+            died_body: false,
             attacked_by: None,
             on_fire: false,
             fire_kill_rate: 0.0038,

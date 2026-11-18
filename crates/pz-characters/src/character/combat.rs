@@ -1178,7 +1178,8 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `Kill(killer, weapon, isGory, null)`: `onKilled` once, which for a
     /// zombie is `DoZombieInventory` and `OnZombieDead` (the owner's, from
-    /// [`SimEvent::Killed`]) and then `DoDeath`.
+    /// [`SimEvent::Killed`]) and then `DoDeath`; for a player it is
+    /// `DoDeath`.
     pub fn kill_with(
         &mut self,
         killer: Option<i32>,
@@ -1198,6 +1199,12 @@ impl<I: 'static> GameCharacter<I> {
                 let unknown = killer.map(crate::character::death::Killer::unknown);
                 let info = info.filter(|k| Some(k.id) == killer).or(unknown.as_ref());
                 self.zombie_on_killed(info, weapon, gory, cx);
+            } else if self.is_player() {
+                // TODO(port): a killer not in the world (the character
+                // updating) is read as a non-player with no weapon.
+                let unknown = killer.map(crate::character::death::Killer::unknown);
+                let info = info.filter(|k| Some(k.id) == killer).or(unknown.as_ref());
+                self.player_on_killed(info, gory, cx);
             }
             self.vars.on_kill_done = true;
         }
