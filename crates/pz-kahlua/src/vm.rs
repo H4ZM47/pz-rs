@@ -269,6 +269,9 @@ pub struct Thread {
     pub out: Box<dyn FnMut(&str)>,
     /// Sink for Lua error dumps (`DebugType.General.error`).
     pub log: Box<dyn FnMut(&str)>,
+    /// `ExceptionLogger.logException(e)` for an exception a Lua frame
+    /// raised ([`crate::error_log::throwable_string`] is its `toString()`).
+    pub log_exception: Box<dyn FnMut(&LuaError)>,
     pub(crate) exec_level: usize,
     /// Development aid: called with the name of every global read that
     /// resolves to nil.
