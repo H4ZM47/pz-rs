@@ -360,3 +360,15 @@ fn ten_thousand_live_world_allocations_and_cache_hits_use_amortized_weak_pruning
     assert_eq!(CLASS_PRUNES.with(|count| count.get()), classes_after);
     assert_eq!(USERDATA_PRUNES.with(|count| count.get()), userdata_after);
 }
+
+#[test]
+fn special_tooltip_flag_is_read_and_set_through_lua() {
+    let _restore = Restore::new();
+    let mut t = thread();
+    let item = item();
+    let (object, _) = floor(&item, false);
+    t.globals().set_str("o", object_value(&object).unwrap());
+    let values = run(&mut t, "local before = o:haveSpecialTooltip(); o:setSpecialTooltip(true); return before, o:haveSpecialTooltip()");
+    assert!(matches!(values[..], [Value::Bool(false), Value::Bool(true)]));
+    assert!(object.borrow().special_tooltip);
+}
