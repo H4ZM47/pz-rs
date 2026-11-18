@@ -104,7 +104,17 @@ pub fn boot(fs: &pz_fs::GameFs, core: &pz_core::core::Core) -> Result<(), String
         draw: None,
         known_file: Rc::new(move |p| known.contains(p)),
     });
+    init_perk_translations();
     Ok(())
+}
+
+/// `PerkFactory.initTranslations()`, which `Translator.loadFiles` ends
+/// with: the shared perks' names are translated again with the new tables.
+fn init_perk_translations() {
+    crate::bind_characters::shared_characters()
+        .borrow_mut()
+        .perks
+        .init_translations(&translate);
 }
 
 /// `TextManager.instance` as `UIElement` sees it.
@@ -420,11 +430,15 @@ fn register_translator(thread: &mut Thread) {
     t.static_fn("getDisplayItemName", get_display_item_name);
     t.static_fn("getItemNameFromFullType", get_item_name_from_full_type);
     t.static_fn("loadFiles", |_| {
-        if let Some(Err(e)) = with_translator_mut(|t| t.load_files()) {
-            return Err(LuaError::Runtime {
-                message: e.to_string(),
-                class: "java.lang.RuntimeException",
-            });
+        match with_translator_mut(|t| t.load_files()) {
+            Some(Err(e)) => {
+                return Err(LuaError::Runtime {
+                    message: e.to_string(),
+                    class: "java.lang.RuntimeException",
+                })
+            }
+            Some(Ok(())) => init_perk_translations(),
+            None => {}
         }
         Ok(0)
     });
@@ -965,5 +979,31 @@ mod tests {
         );
         let quads = pz_ui::with_ui(|m| m.sprite.cmds.len());
         assert_eq!(quads, 2);
+    }
+
+    #[test]
+    fn loading_translations_names_the_perks() {
+        let chars = Rc::new(RefCell::new(pz_characters::Characters::default()));
+        crate::bind_characters::install_characters(chars.clone());
+        let perk = {
+            let mut c = chars.borrow_mut();
+            let p = c.perks.new_perk("Woodwork").unwrap();
+            c.perks.add_perk(&p, "Woodwork", None, [1; 10], false, &|k| k.to_string())
+        };
+        assert_eq!(perk.borrow().name, "IGUI_perks_Woodwork");
+        let mut t = Translator::new(TranslatorEnv::default());
+        t.table_mut(Table::IgUi)
+            .insert("IGUI_perks_Woodwork".into(), format_fixer("Carpentry"));
+        install(TextState {
+            translator: Rc::new(RefCell::new(t)),
+            text_manager: Rc::default(),
+            draw: None,
+            known_file: Rc::new(|_| false),
+        });
+        init_perk_translations();
+        assert_eq!(perk.borrow().name, "Carpentry");
+        let by_name = chars.borrow().perks.perk_from_name("Carpentry");
+        assert!(by_name.is_some_and(|p| Rc::ptr_eq(&p, &perk)));
+        assert!(chars.borrow().perks.perk_from_name("IGUI_perks_Woodwork").is_none());
     }
 }
