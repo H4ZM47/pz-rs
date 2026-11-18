@@ -18,6 +18,7 @@ pub mod bind_audio;
 pub mod bind_erosion;
 pub mod bind_colors;
 pub mod bind_core;
+pub mod bind_craft_recipe_manager;
 pub mod bind_date;
 pub mod bind_designation;
 pub mod bind_credits;
@@ -241,6 +242,11 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_nutrition::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
     bind_appearance::register(&mut mgr.thread);
+    bind_craft_recipe_manager::register(
+        &mut mgr.thread,
+        bind_registry::shared_script_manager(),
+        bind_characters::shared_characters(),
+    );
     bind_item_visual::register(&mut mgr.thread);
     bind_climate::register(mgr);
     bind_puddles::register(&mut mgr.thread);
