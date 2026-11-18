@@ -530,9 +530,59 @@ impl IsoWorld {
         // TODO(port): `ProcessIsoObject`.
         self.update_characters(lua, sim)?;
         // TODO(port): `ProcessStaticUpdaters`, `ObjectDeletionAddition`,
-        // `IsoDeadBody.updateBodies`, `FishSchoolManager.update`, the rain
-        // scroll and `updateWeatherFx`.
+        // `IsoDeadBody.updateBodies`, `FishSchoolManager.update` and the
+        // rain scroll.
+        self.update_weather_fx();
         Ok(())
+    }
+
+    /// `IsoCell.updateWeatherFx()`: `IsoWeatherFX.update` once per tick
+    /// (the effects exist once `initWeatherFx` ran at world init). The
+    /// camera character is last frame's: player 0's square and mask.
+    fn update_weather_fx(&mut self) {
+        let Some((fx, square)) = with_world(|w| {
+            let fx = w.weather_fx.clone()?;
+            let p = pz_lua_api::bind_players::player(0)?;
+            let p = p.borrow();
+            let at = (p.vars.x.floor() as i32, p.vars.y.floor() as i32, p.vars.z.floor() as i32);
+            let exists = w.cell.as_ref()?.get_grid_square(at.0, at.1, at.2).is_some();
+            Some((fx, exists.then_some(at)))
+        }) else {
+            return;
+        };
+        // `camCharacterSquare.has(IsoFlagType.exterior)` from the square's
+        // render view (its sprites' flags).
+        let (indoors, has_mask) = match self.render.try_borrow() {
+            Ok(r) => match r.as_ref() {
+                Some(r) => (
+                    square
+                        .and_then(|at| r.world.squares.get(&at))
+                        .is_some_and(|sq| !sq.has(|f| f.exterior)),
+                    r.fx_mask_to_draw[0],
+                ),
+                None => (false, false),
+            },
+            Err(_) => return,
+        };
+        let multiplier = {
+            let gt = pz_lua_api::bind_climate::shared_game_time();
+            let g = gt.borrow();
+            g.get_multiplier(&pz_lua_api::bind_climate::LuaClimateContext::new())
+        };
+        let frame = {
+            let core = pz_lua_api::bind_core::shared_core();
+            let core = core.borrow();
+            pz_iso_render::weather_fx::WeatherFxFrame {
+                multiplier,
+                player_indoors: indoors,
+                player_has_mask_to_draw: has_mask,
+                zoom: core.get_zoom(0),
+                zoom_enabled: core.is_zoom_enabled(),
+                precipitation_speed: core.get_option_precipitation_speed_multiplier(),
+            }
+        };
+        let Ok(mut fx) = fx.try_borrow_mut() else { return };
+        pz_core::random::with_standard(|rand| fx.update(rand, &frame));
     }
 
     /// `IsoCell.ProcessRemoveItems`, before and after its item-update phase.

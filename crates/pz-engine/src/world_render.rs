@@ -15,6 +15,10 @@ use pz_iso_render::chunk::dirty;
 use pz_iso_render::cutaways::{CutawayPlayer, Cutaways};
 use pz_iso_render::frame::{plan_chunks, world_frame_full, FrameSize};
 use pz_iso_render::objects::FrameObjects;
+use pz_iso_render::weather_fx::{IsoWeatherFx, WeatherFxView};
+use pz_iso_render::weather_fx_mask::{
+    render_weather_fx, FxMaskCharacters, FxMaskFrame, FxMaskPlayer, FxMaskSprites, WeatherFxMask,
+};
 use pz_iso_render::{Camera, ChunkRenderer, CutawayWorld};
 use pz_lighting::jni::{IsoDirection, VisionConeInput};
 use pz_lua_api::bind_character_sim::LuaGameCharacter;
@@ -26,9 +30,10 @@ use pz_world::isoregion::IsoRegions;
 use pz_world::square::IsoDirections;
 use pz_world_render::{
     check_changed_buildings, default_player, ClimateSettings, GameTextures, NoWorldHooks,
-    PendingRender, PlayerFrameInput, PuddleInputs, RenderInvalidation, RenderWorld, SpriteCache,
-    WorldLighting, WorldView,
+    master_region, PendingRender, PlayerFrameInput, PuddleInputs, RenderInvalidation, RenderWorld,
+    SpriteCache, WorldFxMask, WorldLighting, WorldView,
 };
+use std::cell::RefCell;
 use std::time::Instant;
 
 #[cfg(test)]
@@ -98,6 +103,13 @@ pub struct WorldRender {
     lighting_error: bool,
     /// What the square mutations changed since the last frame.
     pub pending: PendingRender,
+    /// `WeatherFxMask.playerFxMasks`.
+    fx_masks: [WeatherFxMask; MAX_PLAYERS],
+    /// `WeatherFxMask.init`'s stand-in sprites, built on the first frame.
+    fx_sprites: Option<FxMaskSprites>,
+    /// `WeatherFxMask.playerHasMaskToDraw(player)` after the last frame's
+    /// `initMask`, for `IsoWeatherFX.update`.
+    pub fx_mask_to_draw: [bool; MAX_PLAYERS],
     /// Port extension: the 3D view (off by default).
     pub view3d: pz_world3d::view::ViewState,
     /// Last frame's O and middle-button state, for presses.
@@ -160,6 +172,9 @@ impl WorldRender {
             start: Instant::now(),
             lighting_error: false,
             pending: PendingRender::new(),
+            fx_masks: std::array::from_fn(|_| WeatherFxMask::default()),
+            fx_sprites: None,
+            fx_mask_to_draw: [false; MAX_PLAYERS],
             view3d: Default::default(),
             view3d_held: (false, false),
             view3d_cursor_free: false,
@@ -399,6 +414,37 @@ impl WorldRender {
         Ok(())
     }
 
+    /// `WeatherFxMask.init`: the floor and wall sprites the mask is drawn
+    /// with and the white texture, once.
+    fn init_fx_sprites(&mut self, view: &WorldView<'_>, fs: &GameFs, tm: &mut TextureManager) {
+        if self.fx_sprites.is_some() {
+            return;
+        }
+        let mut tex = GameTextures {
+            fs,
+            textures: tm,
+            depth: &self.depth,
+            assignments: &self.assignments,
+            geometry: &self.geometry,
+        };
+        let cache = &mut self.sprites;
+        let mut sprite = |name: &str| {
+            let idx = *view.sprites.named_map.get(name)?;
+            Some(cache.get(view.sprites, idx, &mut tex))
+        };
+        let [floor, n, w, nw, se] = FxMaskSprites::SPRITES;
+        let mut sprites = FxMaskSprites {
+            floor: sprite(floor),
+            wall_n: sprite(n),
+            wall_w: sprite(w),
+            wall_nw: sprite(nw),
+            wall_se: sprite(se),
+            ..Default::default()
+        };
+        sprites.white = tm.shared_texture(fs, FxMaskSprites::WHITE);
+        self.fx_sprites = Some(sprites);
+    }
+
     /// One player's world frame (`FBORenderCell.renderInternal` and what
     /// `IsoWorld.render` draws around it), appended to `out`.
     fn render_player(
@@ -407,6 +453,8 @@ impl WorldRender {
         v: &mut RenderView,
         models: Option<&mut WorldModels>,
         zombies: &[LuaGameCharacter],
+        regions: &IsoRegions,
+        weather_fx: Option<&RefCell<IsoWeatherFx>>,
         out: &mut Vec<DrawCmd>,
     ) {
         let p = v.player;
@@ -624,10 +672,60 @@ impl WorldRender {
             world: &self.world,
         };
         let r = ChunkRenderer::new(cam, &maps, (v.width, v.height)).with_cutaways(Some(cv));
-        // `renderWeatherFX` draws after the cell, in the world projection.
-        // TODO(port): `render_weather_fx` from `ClimateRenderValues` with
-        // the weather mask.
-        let mut late = |_: &mut Vec<DrawCmd>| {};
+        // `WeatherFxMask.initMask()` before the cell; `renderWeatherFX`
+        // (`renderFxMask`) draws after it, in the world projection. The
+        // mask's characters replay this frame's model draws.
+        let fx_world = WorldFxMask {
+            render: &self.world,
+            cell: view.cell,
+            regions,
+        };
+        let fx_chars = FxMaskCharacters {
+            world: &fx_world,
+            objects: &objects,
+        };
+        let (sx, sy, sz) = (v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32);
+        let building = self
+            .world
+            .squares
+            .get(&(sx, sy, sz))
+            .and_then(|sq| sq.cut.building);
+        let mask = &mut self.fx_masks[p];
+        mask.init_mask(
+            &fx_chars,
+            FxMaskPlayer {
+                square: view.cell.get_grid_square(sx, sy, sz).map(|_| [sx, sy, sz]),
+                building,
+                z: v.z,
+                master_region: master_region(view.cell, regions, sx, sy, sz),
+            },
+            weather_fx.is_some(),
+        );
+        self.fx_mask_to_draw[p] = mask.has_mask_to_draw;
+        let fx_sprites = self
+            .fx_sprites
+            .clone()
+            .unwrap_or_default()
+            .with_depth_maps(&maps);
+        let (render_precipitation, fog_quality) = {
+            let core = pz_lua_api::bind_core::shared_core();
+            let core = core.borrow();
+            (core.get_option_render_precipitation(), core.performance.fog_quality)
+        };
+        let fx_view = WeatherFxView {
+            render_precipitation,
+            fog_quality,
+            ..WeatherFxView::new(cam.off_x as f32, cam.off_y as f32, v.width as i32, v.height as i32, v.zoom)
+        };
+        let fx_frame = FxMaskFrame {
+            cam_character_z: v.z,
+            ..Default::default()
+        };
+        let mut late = |out: &mut Vec<DrawCmd>| {
+            let Some(fx) = weather_fx else { return };
+            let Ok(mut fx) = fx.try_borrow_mut() else { return };
+            render_weather_fx(&mut fx, mask, &fx_chars, &fx_sprites, &fx_view, &fx_frame, out);
+        };
         let cmds = world_frame_full(
             &r,
             size,
@@ -733,6 +831,7 @@ impl IsoWorld {
                     .map_err(|_| RuntimeHostError::Borrowed("actual render texture manager"))?;
                 r.sync_chunks(&wv, render_chunks, fs, &mut textures)?;
                 r.apply_pending(&wv, regions, fs, &mut textures)?;
+                r.init_fx_sprites(&wv, fs, &mut textures);
             }
             // Character resources may lazily load hair or equipped-item
             // file textures. Release the shared texture owner first.
@@ -743,7 +842,8 @@ impl IsoWorld {
             if view.player == 0 {
                 r.update_view3d(view.dir.delta());
             }
-            r.render_player(&wv, view, models.as_mut(), zombies, out);
+            let weather_fx = w.weather_fx.clone();
+            r.render_player(&wv, view, models.as_mut(), zombies, regions, weather_fx.as_deref(), out);
             check_changed_buildings(&mut r.lighting, &mut r.caches, &mut r.pending, num_players);
             Ok(())
         })?;
