@@ -248,3 +248,45 @@ fn close_post_save_preserves_successful_and_failed_file_prefixes() {
         );
     }
 }
+
+#[test]
+fn a_save_during_play_writes_the_world_and_fires_only_on_save() {
+    let _deferral = pz_kahlua::gc::defer_collection();
+    let mut fixture = Fixture::new(false, true);
+    let saves = Rc::new(Cell::new(0));
+    let post_saves = Rc::new(Cell::new(0));
+    let (saves_in, post_in) = (saves.clone(), post_saves.clone());
+    let globals = fixture.app.lua.as_ref().unwrap().thread.globals().clone();
+    globals.set_str(
+        "observeSave",
+        Value::Native(NativeFunction::new("observeSave", move |_| {
+            saves_in.set(saves_in.get() + 1);
+            Ok(0)
+        })),
+    );
+    globals.set_str(
+        "observePostSave",
+        Value::Native(NativeFunction::new("observePostSave", move |_| {
+            post_in.set(post_in.get() + 1);
+            Ok(0)
+        })),
+    );
+    pz_lua_api::bind_game_window::take_save_request();
+    fixture.lua("Events.OnSave.Add(function() observeSave() end); Events.OnPostSave.Add(function() observePostSave() end); save(true)");
+    assert!(pz_lua_api::bind_game_window::take_save_request());
+    let App { world, lua, .. } = &mut fixture.app;
+    let mut db = pz_lua_api::player_db::PlayerDb::new(true, "");
+    db.can_save_players = true;
+    world.as_mut().unwrap().player_db = Some(db);
+    world.as_mut().unwrap().save_during_play(lua.as_mut().unwrap()).unwrap();
+    for file in ["map_ver.bin", "map_sand.bin", "statistics.bin", "map.bin", "map_t.bin"] {
+        assert!(fixture.dir.join(file).is_file(), "{file}");
+    }
+    assert_eq!((saves.get(), post_saves.get()), (1, 0));
+    // `IsoCell.save`'s `PlayerDB.savePlayers()`: the next `updateMain`
+    // saves the players.
+    assert!(fixture.app.world.as_ref().unwrap().player_db.as_ref().unwrap().force_save_players);
+    assert!(fixture.app.world.as_ref().unwrap().errors.is_empty());
+    // The world goes on: nothing closed it.
+    assert!(with_world(|world| world.cell.is_some()));
+}

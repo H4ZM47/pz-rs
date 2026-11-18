@@ -475,8 +475,8 @@ impl IsoWorld {
         // `ClimateManager.getInstance().update()` runs with `GameTime.update`
         // in `bind_climate::update_game_time` (`IngameState.UpdateStuff`).
         self.update_world(lua, sim)?;
-        self.update_thread();
-        Ok(())
+        self.update_thread(sim)
+
     }
 
     /// `updateWorld()`: `IsoCell.update`, `IsoRegions.update`, then
@@ -770,13 +770,35 @@ impl IsoWorld {
     }
 
     /// `updateThread()`.
-    fn update_thread(&mut self) {
+    fn update_thread(&mut self, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
         // TODO(port): `updateBuildings` (`IsoBuilding.update`),
         // `ObjectRenderEffects.updateStatic`, `AddCoopPlayer`,
-        // `IsoPlayer.UpdateRemovedEmitters`, `updateDBs`
-        // (`PlayerDB.updateMain`, `VehiclesDB2.updateMain`),
-        // `AnimalZones.updateVirtualAnimals`,
+        // `IsoPlayer.UpdateRemovedEmitters`.
+        self.update_dbs(sim)?;
+        // TODO(port): `AnimalZones.updateVirtualAnimals`,
         // `AnimalTracksDefinitions.loadTracksDefinitions`.
+        Ok(())
+    }
+
+    /// `updateDBs()`: `PlayerDB.updateMain()` when there is a `PlayerDB`.
+    /// The exceptions it throws are logged; a port failure stops the frame.
+    fn update_dbs(&mut self, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
+        let Some(db) = self.player_db.as_mut() else { return Ok(()) };
+        if !db.update_main_due(pz_lua_api::player_db::current_time_millis()) {
+            return Ok(());
+        }
+        // `savePlayersAsync()`. TODO(port): `VehiclesDB2.setForceSave()`
+        // and `VehiclesDB2.updateMain()`: `VehiclesDB2` is not ported.
+        use pz_characters::character::save::CharacterPersistenceError as E;
+        match self.save_local_players(sim, "PlayerDB.savePlayersAsync") {
+            Ok(()) => Ok(()),
+            Err(E::Host(h)) => Err(h.into()),
+            Err(E::Item(pz_inventory::item_texture::ItemPersistenceError::Host(h))) => Err(h.into()),
+            Err(e) => {
+                self.log_exception(format!("PlayerDB.updateMain: {e}"));
+                Ok(())
+            }
+        }
     }
 
     /// The simulation's side effects for Lua (`LuaEventManager.triggerEvent`
@@ -804,6 +826,9 @@ impl IsoWorld {
                 }
                 SimEvent::StopAllActionQueue if chr.is_some() => {
                     pz_lua_api::timed_actions::cancel(&mut lua.thread, chr.unwrap(), "");
+                }
+                SimEvent::SleepingEventWakeUp { fast_wakeup } if chr.is_some() => {
+                    pz_lua_api::bind_character_sim::sleeping_event_wake_up_ui(chr.unwrap(), fast_wakeup);
                 }
                 // TODO(port): the other `SimEvent`s (sounds, visuals, XP,
                 // game speed, the world's side of combat).
@@ -1479,6 +1504,51 @@ impl pz_lua_api::world_save::SaveGameHooks for QuitSaveHooks {
     fn save_chunks(&mut self, _meta: &IsoMetaGrid) {}
 }
 
+/// `f` with the save's view of the world. The live meta grid is lent only
+/// for one file phase: no reference to it, `GameTime` or `Core` crosses
+/// either Lua event.
+fn with_save_game<R>(
+    world: &mut IsoWorld,
+    sandbox: &[u8],
+    can_save_players: bool,
+    f: impl FnOnce(&mut pz_lua_api::world_save::SaveGame<'_>) -> R,
+) -> Option<R> {
+    let gt = pz_lua_api::bind_climate::shared_game_time();
+    let core = pz_lua_api::bind_core::shared_core();
+    with_world(|w| {
+        let has_cell = w.cell.is_some();
+        let meta = w.meta_grid.as_mut()?;
+        let (gt, core) = (gt.borrow(), core.borrow());
+        let world_gen_params = world.world_gen_params.borrow();
+        let players: Vec<bool> = local_players().iter().map(Option::is_some).collect();
+        let mut g = pz_lua_api::world_save::SaveGame {
+            save_dir: &world.save_dir,
+            no_save: core.is_no_save(),
+            has_cell,
+            game_mode: &core.game_mode,
+            game_map: Some(&core.game_map),
+            sandbox,
+            game_time: &gt,
+            core: &core,
+            meta,
+            meta_world: &world.meta_world,
+            spawned_zones: &world.spawned_zones,
+            uuids: &mut world.uuids,
+            players: world.player_db.as_mut(),
+            can_save_players,
+            reanimated: None,
+            world_gen: &world_gen_params,
+            instance_tracker: &world.instance_tracker,
+            cache_dir: Some(&world.cache_dir),
+            meta_tracker: &world.meta_tracker,
+            statistics: &world.statistics,
+            local_players: &players,
+            on_game_thread: true,
+        };
+        Some(f(&mut g))
+    })
+}
+
 impl IsoWorld {
     /// `IngameState.updateInternal` on `Core.exiting`: the local players'
     /// rows, `GameWindow.save(true)` and `OnPostSave`
@@ -1499,64 +1569,32 @@ impl IsoWorld {
     }
 
     fn save_quit_phases(&mut self, lua: &mut LuaManager, require_current_cell: bool) -> pz_characters::character::save::CharacterPersistenceResult<()> {
-        use pz_lua_api::world_save::{
-            save_game_before_event, save_game_cell_actual as save_game_cell, save_game_finish, SaveGame, SaveReport,
-        };
-
-        // Lend the live meta grid only for one file phase. No reference
-        // to it, `GameTime` or `Core` crosses either Lua event.
-        fn with_game<R>(
-            world: &mut IsoWorld,
-            sandbox: &[u8],
-            f: impl FnOnce(&mut SaveGame<'_>) -> R,
-        ) -> Option<R> {
-            let gt = pz_lua_api::bind_climate::shared_game_time();
-            let core = pz_lua_api::bind_core::shared_core();
-            with_world(|w| {
-                let has_cell = w.cell.is_some();
-                let meta = w.meta_grid.as_mut()?;
-                let (gt, core) = (gt.borrow(), core.borrow());
-                let world_gen_params = world.world_gen_params.borrow();
-                let players: Vec<bool> = local_players().iter().map(Option::is_some).collect();
-                let mut g = SaveGame {
-                    save_dir: &world.save_dir,
-                    no_save: core.is_no_save(),
-                    has_cell,
-                    game_mode: &core.game_mode,
-                    game_map: Some(&core.game_map),
-                    sandbox,
-                    game_time: &gt,
-                    core: &core,
-                    meta,
-                    meta_world: &world.meta_world,
-                    spawned_zones: &world.spawned_zones,
-                    uuids: &mut world.uuids,
-                    players: world.player_db.as_mut(),
-                    // `saveLocalPlayersForce` below already queued them.
-                    can_save_players: false,
-                    reanimated: None,
-                    world_gen: &world_gen_params,
-                    instance_tracker: &world.instance_tracker,
-                    cache_dir: Some(&world.cache_dir),
-                    meta_tracker: &world.meta_tracker,
-                    statistics: &world.statistics,
-                    local_players: &players,
-                    on_game_thread: true,
-                };
-                Some(f(&mut g))
-            })
-        }
-
         let sim = FrameSim::capture();
-        let world_version = pz_classfile::Jar::open(self.game_dir.join("projectzomboid.jar"))
-            .ok()
-            .and_then(|j| pz_sandbox::save_bin::world_version(&j).ok())
-            .unwrap_or(crate::iso_world::WORLD_VERSION);
-        let sandbox = crate::iso_world::sandbox(lua)
-            .map(|sb| sb.borrow().save_bin(world_version, &self.preset))
-            .unwrap_or_default();
-        // `PlayerDB.saveLocalPlayersForce()`: each local player's row
-        // (`PlayerData.set`: `IsoPlayer.save`).
+        let sandbox = self.sandbox_save_bytes(lua);
+        // `PlayerDB.saveLocalPlayersForce()`, then `canSavePlayers = false`.
+        self.save_local_players(&sim, "PlayerDB.saveLocalPlayersForce")?;
+        if let Some(db) = self.player_db.as_mut() {
+            db.can_save_players = false;
+        }
+        // `saveLocalPlayersForce` above already queued them.
+        let mut report = self.game_window_save(lua, &sandbox, false)?;
+        // Ordinary quitting keeps its callback even when saving is disabled
+        // or the prelude threw. Window close rereads currentCell at this
+        // separate native block. The WORLD borrow ends before callbacks run.
+        if !require_current_cell || with_world(|w| w.cell.is_some()) {
+            lua.trigger_event("OnPostSave", &[]);
+        }
+        for e in report.errors.drain(..) {
+            self.log_update_error(e);
+        }
+        Ok(())
+    }
+
+    /// `PlayerDB.savePlayersAsync()` with the streamer's store: each local
+    /// player's row (`PlayerData.set`: `IsoPlayer.save`), a new id for a
+    /// player without one, then the row. A player whose save throws is
+    /// logged and skipped; a port failure is returned.
+    fn save_local_players(&mut self, sim: &FrameSim, what: &str) -> pz_characters::character::save::CharacterPersistenceResult<()> {
         let mut rows: Vec<(usize, pz_lua_api::player_db::PlayerData)> = Vec::new();
         {
             let sm = pz_lua_api::bind_registry::shared_script_manager();
@@ -1575,14 +1613,14 @@ impl IsoWorld {
                         self.player_sql_ids[n],
                         &sm,
                         &chars,
-                        &sim,
+                        sim,
                         &env,
                     );
                     match r {
                         Ok(d) => rows.push((n, d)),
                         Err(e) => {
                             if e.is_host_fault() { return Err(e); }
-                            errors.push(format!("PlayerDB.saveLocalPlayersForce: IsoPlayer.save: {e}"));
+                            errors.push(format!("{what}: IsoPlayer.save: {e}"));
                         }
                     }
                 }
@@ -1602,7 +1640,49 @@ impl IsoWorld {
         for ((n, _), d) in rows.iter().zip(&data) {
             self.player_sql_ids[*n] = d.sql_id;
         }
-        let mut report = match with_game(self, &sandbox, |g| save_game_before_event(g)) {
+        Ok(())
+    }
+
+    /// `GameWindow.save(doCharacter)` during play: the Lua `save` global
+    /// and `SleepingEvent.wakeUp`, run after the update that asked for it
+    /// ([`pz_lua_api::bind_game_window::take_save_request`]).
+    /// `doCharacter` reaches only `IsoCell.save`, which does not read it.
+    /// `IsoCell.save` asks `PlayerDB.savePlayers()` with
+    /// `canSavePlayers`, which the world start sets.
+    pub fn save_during_play(&mut self, lua: &mut LuaManager) -> pz_characters::character::save::CharacterPersistenceResult<()> {
+        let sandbox = self.sandbox_save_bytes(lua);
+        let can_save_players = self.player_db.as_ref().is_some_and(|db| db.can_save_players);
+        let mut report = self.game_window_save(lua, &sandbox, can_save_players)?;
+        // `GlobalObject.save` and `wakeUp` log what `GameWindow.save` throws.
+        for e in report.errors.drain(..) {
+            self.log_update_error(e);
+        }
+        Ok(())
+    }
+
+    /// `map_sand.bin`'s bytes (`SandboxOptions.save`).
+    fn sandbox_save_bytes(&self, lua: &mut LuaManager) -> Vec<u8> {
+        let world_version = pz_classfile::Jar::open(self.game_dir.join("projectzomboid.jar"))
+            .ok()
+            .and_then(|j| pz_sandbox::save_bin::world_version(&j).ok())
+            .unwrap_or(crate::iso_world::WORLD_VERSION);
+        crate::iso_world::sandbox(lua)
+            .map(|sb| sb.borrow().save_bin(world_version, &self.preset))
+            .unwrap_or_default()
+    }
+
+    /// `GameWindow.save`: the files before `OnSave`, the event, the cell,
+    /// the population and the rest (`world_save`).
+    fn game_window_save(
+        &mut self,
+        lua: &mut LuaManager,
+        sandbox: &[u8],
+        can_save_players: bool,
+    ) -> pz_characters::character::save::CharacterPersistenceResult<pz_lua_api::world_save::SaveReport> {
+        use pz_lua_api::world_save::{
+            save_game_before_event, save_game_cell_actual as save_game_cell, save_game_finish, SaveReport,
+        };
+        let report = match with_save_game(self, sandbox, can_save_players, |g| save_game_before_event(g)) {
             Some(Ok(mut report)) => {
                 if report.saved {
                     lua.trigger_event("OnSave", &[]);
@@ -1612,14 +1692,14 @@ impl IsoWorld {
                     });
                     self.hand_off_events();
                     let mut hooks = QuitSaveHooks;
-                    match with_game(self, &sandbox, |g| save_game_cell(g,&mut hooks,&mut report)) {
+                    match with_save_game(self, sandbox, can_save_players, |g| save_game_cell(g,&mut hooks,&mut report)) {
                         Some(Ok(()))=>{},
                         Some(Err(error))=>return Err(error.into()),
                         None=>return Err(pz_inventory::floor_drop::RuntimeHostError::InvalidHostState("actual save world disappeared after OnSave").into()),
                     }
                     let sim = FrameSim::capture();
                     self.with_population(&sim, &mut |pop, host, _| pop.save(&host.zombies.infos()));
-                    with_game(self, &sandbox, |g| {
+                    with_save_game(self, sandbox, can_save_players, |g| {
                         save_game_finish(g, &mut hooks, &mut report)
                     });
                 }
@@ -1635,16 +1715,13 @@ impl IsoWorld {
             }
             None => SaveReport::default(),
         };
-        // Ordinary quitting keeps its callback even when saving is disabled
-        // or the prelude threw. Window close rereads currentCell at this
-        // separate native block. The WORLD borrow ends before callbacks run.
-        if !require_current_cell || with_world(|w| w.cell.is_some()) {
-            lua.trigger_event("OnPostSave", &[]);
+        // `IsoCell.save`'s `PlayerDB.savePlayers()`.
+        if report.force_save_players {
+            if let Some(db) = self.player_db.as_mut() {
+                db.save_players();
+            }
         }
-        for e in report.errors.drain(..) {
-            self.log_update_error(e);
-        }
-        Ok(())
+        Ok(report)
     }
 
     /// The stops of `IngameState.exit`: `WorldStreamer.stop` (the queued

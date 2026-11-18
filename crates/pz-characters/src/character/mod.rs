@@ -59,6 +59,7 @@ pub mod path_mover;
 pub mod player;
 pub mod reading;
 pub mod save;
+pub mod sleeping_event;
 pub mod state;
 pub mod states;
 pub mod stats;
@@ -303,6 +304,15 @@ pub struct GameCharacter<I: 'static> {
     pub force_wake_up_time: f32,
     /// `forceWakeUp`.
     pub force_wake_up: bool,
+    /// `IsoPlayer.asleepTime`: hours asleep (not saved).
+    pub asleep_time: f32,
+    /// `bed`: the Lua world object the character sleeps on (not saved).
+    pub bed: Option<pz_kahlua::Value>,
+    /// `sitOnFurnitureObject`: the Lua world object the character sits on
+    /// (not saved).
+    pub sit_on_furniture_object: Option<pz_kahlua::Value>,
+    /// `sleepingEventData` (`getOrCreateSleepingEventData`; not saved).
+    pub sleeping_event_data: Option<sleeping_event::SleepingEventData>,
     /// `sleepingTabletEffect`.
     pub sleeping_tablet_effect: f32,
     /// `sleepingTabletDelta`.
@@ -478,6 +488,10 @@ impl<I: 'static> GameCharacter<I> {
             time_of_sleep: 0.0,
             delay_to_actually_sleep: 0.0,
             force_wake_up_time: -1.0,
+            asleep_time: 0.0,
+            bed: None,
+            sit_on_furniture_object: None,
+            sleeping_event_data: None,
             force_wake_up: false,
             sleeping_tablet_effect: 0.0,
             sleeping_tablet_delta: 1.0,

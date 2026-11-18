@@ -316,6 +316,38 @@ pub fn fire_events(thread: &mut Thread, ctx: LuaClimateContext) {
     }
 }
 
+/// The players' side of `GameTime.update` when time passes (single
+/// player): each living `IsoPlayer.players[0..numPlayers]` gets
+/// `setHoursSurvived(getHoursSurvived() + time)`; then each asleep player
+/// gets `setAsleepTime(getAsleepTime() + time)` and the others
+/// `setAsleepTime(0)`, and `SleepingEvent.instance.update(player)` runs
+/// for each asleep one.
+fn players_time_passed(thread: &mut Thread, time: f32) {
+    let players: Vec<_> = (0..crate::bind_players::num_players().max(0) as usize)
+        .filter_map(crate::bind_players::player)
+        .collect();
+    for player in &players {
+        let mut player = player.borrow_mut();
+        if !player.is_dead() {
+            player.hours_survived += f64::from(time);
+        }
+    }
+    for player in &players {
+        let asleep = {
+            let mut player = player.borrow_mut();
+            if player.is_asleep() {
+                player.asleep_time += time;
+            } else {
+                player.asleep_time = 0.0;
+            }
+            player.is_asleep()
+        };
+        if asleep {
+            crate::bind_character_sim::update_asleep_player(thread, player);
+        }
+    }
+}
+
 /// One engine frame of the clock and climate: `GameTime.update` then
 /// `ClimateManager.update` (firing `OnClimateTick` mid-update), with the
 /// events sent to Lua.
@@ -328,6 +360,11 @@ pub fn update_game_time(thread: &mut Thread) {
         let clock = g.clock(&ctx);
         g.climate.update_begin(&clock, &mut ctx)
     };
+    for e in &ctx.clock_events {
+        if let GameTimeEvent::PlayersTimePassed(time) = *e {
+            players_time_passed(thread, time);
+        }
+    }
     fire_events(thread, std::mem::take(&mut ctx));
     let mut ctx = LuaClimateContext::new();
     if go_on {

@@ -404,6 +404,44 @@ impl PlayerStore {
 pub struct PlayerDb {
     pub store: PlayerStore,
     pub used_ids: BTreeSet<i32>,
+    /// `canSavePlayers`: set when the world has started
+    /// (`IsoWorld.init`), cleared by `saveLocalPlayersForce`.
+    pub can_save_players: bool,
+    /// `forceSavePlayers`: `savePlayers()` asks `updateMain` to save.
+    pub force_save_players: bool,
+    /// `saveToDbPeriod`, `new UpdateLimit(10000L)`.
+    pub save_to_db_period: UpdateLimit,
+}
+
+/// `zombie.core.utils.UpdateLimit` with the clock passed in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UpdateLimit {
+    pub delay: i64,
+    pub last: i64,
+}
+
+impl UpdateLimit {
+    /// `new UpdateLimit(delay)` at `now`.
+    pub fn new(delay: i64, now: i64) -> Self {
+        UpdateLimit { delay, last: now }
+    }
+
+    /// `Check()` at `now`.
+    pub fn check(&mut self, now: i64) -> bool {
+        if now - self.last > self.delay {
+            self.last = if now - self.last > 3 * self.delay { now } else { self.last + self.delay };
+            return true;
+        }
+        false
+    }
+}
+
+/// `System.currentTimeMillis()`.
+pub fn current_time_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 impl PlayerDb {
@@ -413,6 +451,9 @@ impl PlayerDb {
         let mut db = PlayerDb {
             store: PlayerStore::default(),
             used_ids: BTreeSet::new(),
+            can_save_players: false,
+            force_save_players: false,
+            save_to_db_period: UpdateLimit::new(10000, current_time_millis()),
         };
         if no_save {
             return db;
@@ -422,6 +463,24 @@ impl PlayerDb {
         }
         db.used_ids.insert(1);
         db
+    }
+
+    /// `savePlayers()`, from `IsoCell.save`.
+    pub fn save_players(&mut self) {
+        if self.can_save_players {
+            self.force_save_players = true;
+        }
+    }
+
+    /// The test of `updateMain` at `now`: whether `savePlayersAsync` runs
+    /// (`canSavePlayers` and `forceSavePlayers` or `saveToDbPeriod`), with
+    /// `forceSavePlayers` cleared when it does.
+    pub fn update_main_due(&mut self, now: i64) -> bool {
+        if !self.can_save_players || !(self.force_save_players || self.save_to_db_period.check(now)) {
+            return false;
+        }
+        self.force_save_players = false;
+        true
     }
 
     /// `allocateID`: the smallest unused id from 1.
@@ -996,5 +1055,32 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(std::path::Path::new(&dir).parent().unwrap());
+    }
+
+    #[test]
+    fn update_main_saves_when_asked_or_every_ten_seconds() {
+        let mut db = PlayerDb::new(true, "");
+        db.save_to_db_period = UpdateLimit::new(10000, 0);
+        // Before the world starts nothing is saved, and savePlayers is
+        // ignored.
+        db.save_players();
+        assert!(!db.force_save_players);
+        assert!(!db.update_main_due(20000));
+        db.can_save_players = true;
+        db.save_to_db_period = UpdateLimit::new(10000, 0);
+        assert!(!db.update_main_due(5000));
+        // IsoCell.save's savePlayers: the next update saves.
+        db.save_players();
+        assert!(db.update_main_due(5000));
+        assert!(!db.force_save_players);
+        assert!(!db.update_main_due(9000));
+        // The period: after more than 10 s, then 10 s steps.
+        assert!(db.update_main_due(10001));
+        assert_eq!(db.save_to_db_period.last, 10000);
+        assert!(!db.update_main_due(20000));
+        assert!(db.update_main_due(20001));
+        // A pause longer than three periods restarts from now.
+        assert!(db.update_main_due(60000));
+        assert_eq!(db.save_to_db_period.last, 60000);
     }
 }

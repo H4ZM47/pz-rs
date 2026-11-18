@@ -773,6 +773,26 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         Some(self.square_info(&sq))
     }
 
+    fn characters_on_square(&self, sq: (i32, i32, i32)) -> Vec<i32> {
+        self.at(sq).map_or_else(Vec::new, |s| s.borrow().moving_objects.clone())
+    }
+    fn remove_moving_object(&mut self, sq: (i32, i32, i32), chr: i32) {
+        if let Some(s) = self.at(sq) {
+            let mut s = s.borrow_mut();
+            if let Some(i) = s.moving_objects.iter().position(|&id| id == chr) {
+                s.moving_objects.remove(i);
+            }
+        }
+    }
+    fn add_moving_object(&mut self, sq: (i32, i32, i32), chr: i32) {
+        if let Some(s) = self.at(sq) {
+            let mut s = s.borrow_mut();
+            if !s.moving_objects.contains(&chr) {
+                s.moving_objects.push(chr);
+            }
+        }
+    }
+
     fn sloped_surface_height(&self, sq: (i32, i32, i32), dx: f32, dy: f32) -> f32 {
         self.at(sq)
             .map_or(0.0, |s| s.borrow().get_sloped_surface_height_at(dx, dy))

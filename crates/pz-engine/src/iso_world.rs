@@ -790,8 +790,10 @@ impl IsoWorld {
             self.create_new_player(lua, &sm)?;
         }
         // `PlayerDB.getInstance().canSavePlayers = true`.
-        // TODO(port): `PlayerDB.canSavePlayers` (kept by the save path);
-        // `TutorialManager.activeControlZombies`;
+        if let Some(db) = self.player_db.as_mut() {
+            db.can_save_players = true;
+        }
+        // TODO(port): `TutorialManager.activeControlZombies`;
         // `ReanimatedPlayers.loadReanimatedPlayers`.
         if let Some(p) = pz_lua_api::bind_players::player_instance() {
             // TODO(port): `ScriptManager.checkAutoLearn`, `checkMetaRecipes`,
@@ -1069,6 +1071,8 @@ impl IsoWorld {
         use pz_world::designation::DesignationIoError;
         use pz_world::meta_save::MetaCells;
         use pz_lua_api::bind_world::{try_with_world,try_with_world_read};
+        // `SafeHouse.safehouseList` belongs to this world's metadata.
+        pz_lua_api::bind_safehouse::install_safehouses(Vec::new());
         let has_grid=try_with_world_read(|world|Ok(world.meta_grid.is_some()))
             .map_err(|error|format!("metadata current world: {error:?}"))?;
         if !has_grid {return Ok(());}
@@ -1095,6 +1099,9 @@ impl IsoWorld {
                 let notices=reader.take_notices();
                 pz_inventory::component_host::emit_mod_data_notices(&notices)
                     .map_err(|error|format!("metadata StringUTF diagnostics host failure: {error:?}"))?;
+                pz_lua_api::bind_safehouse::install_safehouses(
+                    self.meta_world.safehouses.iter().map(|s| [s.x, s.y, s.w, s.h]).collect(),
+                );
                 match result {
                     Ok(())=>{},
                     Err(DesignationIoError::Io(error))=>self.errors.push(format!("IsoMetaGrid.load: {error}")),

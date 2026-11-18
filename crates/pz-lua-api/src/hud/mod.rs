@@ -243,12 +243,7 @@ pub fn register(thread: &mut Thread) {
     // `setGameSpeed(newSpeed)`: `UIManager.getSpeedControls()
     // .SetCurrentGameSpeed(newSpeed)`, nothing without speed controls.
     crate::expose::global(thread, "setGameSpeed", |c| {
-        let speed = int_arg(c, 0);
-        if let Some(e) = with_ui(|m| m.speed_controls.clone()) {
-            if let Some(sc) = e.ext::<SpeedControls>() {
-                sc.set_current_game_speed(&e, speed);
-            }
-        }
+        set_game_speed(int_arg(c, 0));
         Ok(0)
     });
     m.static_fn("setSpeedControls", |c| {
@@ -639,6 +634,16 @@ fn index_error(i: i32) -> LuaError {
     }
 }
 
+
+/// `UIManager.getSpeedControls().SetCurrentGameSpeed(speed)`, nothing
+/// without speed controls.
+pub fn set_game_speed(speed: i32) {
+    if let Some(e) = with_ui(|m| m.speed_controls.clone()) {
+        if let Some(sc) = e.ext::<SpeedControls>() {
+            sc.set_current_game_speed(&e, speed);
+        }
+    }
+}
 #[cfg(test)]
 pub(crate) mod test_util {
     use pz_kahlua::{TableRef, Thread, Value};
