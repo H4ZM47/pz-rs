@@ -1,5 +1,6 @@
-//! `GameTime.getDeathString(player)` and `getZombieKilledText(player)`,
-//! which `ISPostDeathUI.OnPlayerDeath` shows when the player dies.
+//! `GameTime.getDeathString(player)`, `getZombieKilledText(player)` and
+//! `getGameModeText()`, which `ISPostDeathUI.OnPlayerDeath` shows when the
+//! player dies.
 
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Value};
 use pz_text::jfmt::JavaArg;
@@ -60,6 +61,41 @@ pub(crate) fn zombie_killed_key(kills: i32) -> Option<&'static str> {
     }
 }
 
+/// `Translator.getTextOrNull(key, args)`.
+fn text_or_null(key: &str, args: &[JavaArg]) -> Option<String> {
+    crate::bind_text::with_translator(|t| t.get_text_or_null(key, args)).flatten()
+}
+
+/// `getGameModeText()`: the translated game mode (or challenge) name in
+/// `IGUI_Gametime_GameMode`, with " (DEBUG)" when `Core.debug` is set.
+pub(crate) fn game_mode_text(
+    game_mode: &str,
+    challenge_id: Option<&str>,
+    debug: bool,
+    text_or_null: impl Fn(&str, &[JavaArg]) -> Option<String>,
+) -> String {
+    let mode = match challenge_id.filter(|id| !id.is_empty()) {
+        None => text_or_null(&format!("UI_NewGame_{game_mode}"), &[]),
+        Some(id) => text_or_null(&format!("Challenge_{id}_name"), &[]),
+    }
+    .unwrap_or_else(|| game_mode.to_string());
+    let mut s = text_or_null("IGUI_Gametime_GameMode", &[JavaArg::Str(mode.clone())])
+        .unwrap_or_else(|| format!("Game mode: {mode}"));
+    if debug {
+        s.push_str(" (DEBUG)");
+    }
+    s
+}
+
+pub(super) fn get_game_mode_text(c: &mut NativeCall<'_>) -> LuaResult<usize> {
+    let core = crate::bind_core::shared_core();
+    let s = {
+        let core = core.borrow();
+        game_mode_text(&core.game_mode, core.challenge_id.as_deref(), core.debug, text_or_null)
+    };
+    Ok(c.push(s))
+}
+
 /// The `IsoPlayer` argument at `i`; a null argument throws like the
 /// original's first call on it.
 fn player_arg(c: &NativeCall<'_>, i: usize, method: &str) -> LuaResult<LuaGameCharacterRef> {
@@ -108,6 +144,21 @@ mod tests {
         assert_eq!(time_survived(2.0 * 360.0 * 24.0, words), "2 years");
         assert_eq!(time_survived(0.5, words), "30 minutes, 0 secondes");
         assert_eq!(time_survived(0.0, words), "0 minutes, 0 secondes");
+    }
+
+    #[test]
+    fn game_mode_text_names_the_mode_or_challenge() {
+        use pz_text::jfmt::JavaArg;
+        let known = |k: &str, a: &[JavaArg]| match (k, a) {
+            ("UI_NewGame_Apocalypse", _) => Some("Apocalypse".to_string()),
+            ("IGUI_Gametime_GameMode", [JavaArg::Str(m)]) => Some(format!("Mode: {m}")),
+            _ => None,
+        };
+        assert_eq!(super::game_mode_text("Apocalypse", None, false, known), "Mode: Apocalypse");
+        assert_eq!(super::game_mode_text("Apocalypse", Some(""), true, known), "Mode: Apocalypse (DEBUG)");
+        // An untranslated challenge falls back to the game mode name.
+        assert_eq!(super::game_mode_text("Sandbox", Some("Kingsmouth"), false, known), "Mode: Sandbox");
+        assert_eq!(super::game_mode_text("Sandbox", None, false, |_, _| None), "Game mode: Sandbox");
     }
 
     #[test]

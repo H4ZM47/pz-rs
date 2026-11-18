@@ -742,6 +742,7 @@ fn register_game_time(thread: &mut Thread) {
     b.static_fn("getInstance", |c| Ok(c.push(handle(Obj::GameTime))));
     b.method("getDeathString", death_text::get_death_string);
     b.method("getZombieKilledText", death_text::get_zombie_killed_text);
+    b.method("getGameModeText", death_text::get_game_mode_text);
     fgetter!(b, "getTimeOfDay", |g| g.time_of_day);
     setter!(b, "setTimeOfDay", |g, a| g.time_of_day = a.0 as f32);
     getter!(b, "getDay", |g| g.day);
