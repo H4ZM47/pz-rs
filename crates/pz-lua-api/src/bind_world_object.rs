@@ -248,6 +248,7 @@ pub(crate) fn item_argument(value: &Value) -> LuaResult<pz_inventory::shared::It
 pub(crate) fn register_classes(thread: &mut Thread) {
     crate::expose::expose_class(thread, ISO_OBJECT, Some(GAME_ENTITY));
     crate::expose::expose_class(thread, WORLD_INVENTORY_OBJECT, Some(ISO_OBJECT));
+    master_object::register(thread);
 }
 
 pub(crate) fn object_value(object: &IsoObjectRef) -> LuaResult<Value> {
@@ -364,5 +365,6 @@ pub(crate) fn fluid_component(value: &Value) -> LuaResult<Option<ComponentRef>> 
     ))
 }
 
+mod master_object;
 #[cfg(test)]
 mod tests;
