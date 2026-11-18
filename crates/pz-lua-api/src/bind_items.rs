@@ -819,6 +819,18 @@ fn register_inventory_item(thread: &mut Thread) {
         Ok(0)
     });
     get!(b, "getType", |i| Value::from(i.get_type()));
+    // `getWorldStaticItem()` / `getWorldStaticModel()`: a `worldStaticModel`
+    // mod data string, the indexed model, or the script's.
+    for name in ["getWorldStaticItem", "getWorldStaticModel"] {
+        b.method(name, |c| {
+            let item = this(c)?;
+            let model = item
+                .borrow()
+                .try_get_world_static_model()
+                .map_err(|error| error.to_lua_error())?;
+            Ok(c.push(opt_str(model.as_deref())))
+        });
+    }
     get!(b, "getFullType", |i| Value::from(i.get_full_type()));
     get!(b, "getCategory", |i| Value::from(i.get_category()));
     b.method("getItemType", |c| {
@@ -1851,6 +1863,31 @@ mod tests {
         assert!(matches!(r[5], Value::Bool(true)));
         assert!(matches!(r[6], Value::Bool(true)));
         assert_eq!(item.borrow().condition, 0);
+    }
+
+    #[test]
+    fn world_static_model_from_lua() {
+        let mut thread = item_thread();
+        let gun = make(ItemClass::Weapon, "Pistol", |t| t.world_static_model = Some("PistolGround".into()));
+        let indexed = make(ItemClass::Normal, "Mug", |t| t.world_static_model = Some("MugGround".into()));
+        {
+            let mut m = indexed.borrow_mut();
+            m.world_static_models_by_index = Some(Rc::new(vec!["MugA".into(), "MugB".into()]));
+            m.model_index = 1;
+        }
+        let plain = make(ItemClass::Normal, "Rock", |_| {});
+        for (name, item) in [("gun", &gun), ("mug", &indexed), ("rock", &plain)] {
+            thread.globals().set_str(name, item_value(item));
+        }
+        let r = run(
+            &mut thread,
+            "local before = gun:getWorldStaticItem()\n\
+             gun:getModData().worldStaticModel = 'PistolOverride'\n\
+             return before, gun:getWorldStaticModel(), mug:getWorldStaticItem(), rock:getWorldStaticItem()",
+        );
+        let shown: Vec<String> = r.iter().map(pz_kahlua::exec::java_value_of).collect();
+        assert_eq!(shown[..3], ["PistolGround", "PistolOverride", "MugB"], "{shown:?}");
+        assert!(r[3].is_nil(), "{shown:?}");
     }
 
     /// A Lua thread with the item bindings (and `Radio.getDeviceData`).
