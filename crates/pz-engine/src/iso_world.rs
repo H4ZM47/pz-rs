@@ -931,7 +931,11 @@ impl IsoWorld {
             Ok(bytes) => match s.load_bin(&bytes) {
                 Ok(preset) => {
                     self.preset = preset;
-                    // TODO(port): `handleOldZombiesFile1`.
+                    // `handleOldZombiesFile1()`: off a server, the save's
+                    // `zombies.ini` (older saves kept the zombie options
+                    // there) overrides the `ZombieConfig.` options, as
+                    // `loadServerZombiesFile` reads it.
+                    s.load_server_zombies_file(&self.file_in_save("zombies.ini"));
                     // `applySettings()`.
                     let mut g = gt.borrow_mut();
                     g.start_year = s.first_year() + opt_int(&s, "StartYear") - 1;
