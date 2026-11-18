@@ -148,6 +148,10 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     get(&b, "getTranslationName", |r: &CraftRecipe| r.translation_name().map(str::to_string));
     set(&b, "overrideTranslationName", |r: &mut CraftRecipe, v: Option<String>| r.override_translation_name(v));
     get(&b, "getIconName", |r: &CraftRecipe| r.icon_name().map(str::to_string));
+    method(&b, "getIconTexture", |_, h| {
+        let t = h.read(|r: &CraftRecipe| icon_texture(r))?.map_err(crate::bind_render::texture_error)?;
+        Ok(crate::bind_render::texture_value_ref(t.as_ref()))
+    });
     get(&b, "getModID", |r: &CraftRecipe| r.mod_id().map(str::to_string));
     get(&b, "getModName", |r: &CraftRecipe| if r.is_vanilla() { "Project Zomboid" } else { "<unknown_mod>" });
     get(&b, "isVanilla", |r: &CraftRecipe| r.is_vanilla());
@@ -503,4 +507,58 @@ fn register_output(thread: &mut Thread) {
                 .into_lua()
         })
     });
+}
+
+/// `CraftRecipe.iconTexture`, as `OnScriptsLoaded` and
+/// `OnPostWorldDictionaryInit` set it. The port looks it up when Lua asks,
+/// not at script load, and `overrideIconTexture` is not bound.
+fn icon_texture(r: &CraftRecipe) -> pz_render::TextureResult<Option<pz_render::TextureRef>> {
+    let icon = match r.icon_name() {
+        Some(name) => pz_render::try_get_texture_ref(name)?,
+        None => None,
+    };
+    let first_texture = |items: &[pz_scripts::ScriptRef]| {
+        items.first().and_then(|s| s.downcast::<Item>()).and_then(|i| i.borrow().normal_texture_slot().cloned())
+    };
+    let outputs = r
+        .outputs()
+        .filter(|o| o.resource_type() == ResourceType::Item)
+        .filter_map(|o| r.output_mapper_for(o).map(|m| m.result_items()))
+        .filter(|items| !items.is_empty())
+        .map(first_texture);
+    let inputs = r
+        .inputs()
+        .filter(|i| i.resource_type() == ResourceType::Item && !i.possible_input_items().is_empty())
+        .map(|i| first_texture(i.possible_input_items()));
+    Ok(pick_icon(icon, outputs, inputs))
+}
+
+/// The order `iconTexture` is chosen in: the `Item_<icon>` texture; else
+/// the normal texture of the first possible result of the first item
+/// output that has one; else that of the first possible item of the first
+/// item input that has one (`OnPostWorldDictionaryInit` keeps the first
+/// non-null input texture and skips the later inputs).
+fn pick_icon<T>(
+    icon: Option<T>,
+    outputs: impl Iterator<Item = Option<T>>,
+    inputs: impl Iterator<Item = Option<T>>,
+) -> Option<T> {
+    icon.or_else(|| outputs.flatten().next()).or_else(|| inputs.flatten().next())
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::pick_icon;
+
+    #[test]
+    fn icon_texture_falls_back_to_outputs_then_the_first_input_texture() {
+        let none = || std::iter::empty::<Option<i32>>();
+        assert_eq!(pick_icon(Some(1), [Some(2)].into_iter(), [Some(3)].into_iter()), Some(1));
+        assert_eq!(pick_icon(None, [None, Some(2), Some(5)].into_iter(), [Some(3)].into_iter()), Some(2));
+        assert_eq!(pick_icon(None, none(), [Some(3), Some(4)].into_iter()), Some(3));
+        assert_eq!(pick_icon(None, none(), [None, Some(4), Some(5)].into_iter()), Some(4));
+        assert_eq!(pick_icon(None, none(), [Some(3), None].into_iter()), Some(3));
+        assert_eq!(pick_icon(None, none(), [None, None].into_iter()), None);
+        assert_eq!(pick_icon::<i32>(None, none(), none()), None);
+    }
 }
