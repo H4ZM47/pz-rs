@@ -27,7 +27,9 @@ mod reading;
 pub(crate) mod row_read_flags;
 
 use crate::bind_java_util::JavaList;
-use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg};
+use crate::expose::{
+    bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg, with_this,
+};
 use pz_inventory::api::Offline;
 use pz_inventory::gameplay::{ConditionOutcome, ItemError, UseOutcome};
 use pz_inventory::item::ItemKind;
@@ -1781,11 +1783,23 @@ pub fn register(thread: &mut Thread) {
     ] {
         expose_class(thread, c, Some(INVENTORY_ITEM_CLASS));
     }
-    expose_class(
+    // `getDeviceData` is `Radio`'s own method, so other items have none.
+    let b = expose_class(
         thread,
         "zombie.inventory.types.Radio",
         Some("zombie.inventory.types.Moveable"),
     );
+    b.method("getDeviceData", |c| {
+        let item = with_this::<LuaInventoryItem, _>(c, |i| i.item.clone())?;
+        let v = if matches!(item.borrow().kind, ItemKind::Radio(..)) {
+            Value::Object(Rc::new(crate::bind_radio::LuaDeviceData(
+                crate::bind_radio::DeviceOwner::Item(item.clone()),
+            )))
+        } else {
+            Value::Nil
+        };
+        Ok(c.push(v))
+    });
     let wt = expose_enum(thread, WEAPON_TYPE_CLASS, &WEAPON_TYPES);
     wt.static_fn("getWeaponType", |c| {
         // getWeaponType(HandWeapon).
@@ -1853,14 +1867,13 @@ mod tests {
         assert_eq!(item.borrow().condition, 0);
     }
 
-    /// A Lua thread with the item bindings (and `Radio.getDeviceData`).
+    /// A Lua thread with the item bindings.
     fn item_thread() -> Thread {
         let mut thread = Thread::new(pz_kahlua::TableRef::new());
         pz_kahlua::stdlib::install(&mut thread, None).unwrap();
         crate::bind_java_util::register(&mut thread);
         crate::bind_globals::register(&mut thread);
         register(&mut thread);
-        crate::bind_vehicles::register(&mut thread);
         thread
     }
 
