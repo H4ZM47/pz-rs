@@ -48,6 +48,7 @@ pub mod bind_misc;
 pub mod bind_misc_classes;
 pub mod bind_mods;
 pub mod bind_nutrition;
+pub mod bind_object_picker;
 pub mod bind_players;
 pub mod bind_popman;
 pub mod bind_registry;
@@ -254,6 +255,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_map_objects::register(&mut mgr.thread);
     bind_tile_overlays::register(&mut mgr.thread);
     bind_broken_fences::register(&mut mgr.thread);
+    bind_object_picker::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
     bind_world_gen_utils::register(&mut mgr.thread, mgr.fs.clone());
     bind_world_gen_params::register(&mut mgr.thread);
