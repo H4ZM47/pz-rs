@@ -904,6 +904,26 @@ impl IsoObject {
         self.square.0.take()
     }
 
+    /// `IsoObject.isGenericCraftingSurface`: the sprite's
+    /// `GenericCraftingSurface` property decides when it is exactly `true`
+    /// or `false`; otherwise a surface of 24 to 47 that is not an offset
+    /// surface qualifies. An object without a sprite never does.
+    pub fn is_generic_crafting_surface(
+        &self,
+        sprites: &crate::sprite::IsoSpriteManager,
+    ) -> pz_entity::runtime_load::HostResult<bool> {
+        let Some(sprite) = self.sprite.try_read(sprites)? else {
+            return Ok(false);
+        };
+        match sprite.properties.get(&sprites.alias, "GenericCraftingSurface") {
+            Some("true") => return Ok(true),
+            Some("false") => return Ok(false),
+            _ => {}
+        }
+        let surface = sprite.properties.surface_info(&sprites.alias);
+        Ok((24..=47).contains(&surface.surface) && !surface.is_surface_offset)
+    }
+
     pub fn new(id: ObjectId, kind: ObjectKind, sprite: Option<SpriteIdx>) -> Self {
         IsoObject {
             id,
