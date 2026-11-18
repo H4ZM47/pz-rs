@@ -156,9 +156,14 @@ pub(super) fn register(b: &ClassBuilder) {
         let objects = with_square(x, y, z, |square| {
             Ok(square.objects.iter().map(|slot| slot.ref_handle()).collect::<Vec<_>>())
         })?;
+        let square = crate::bind_world::square_value(x, y, z);
         let items = objects
             .iter()
-            .map(crate::bind_world_object::object_value)
+            .map(|object| {
+                let value = crate::bind_world_object::object_value(object)?;
+                crate::bind_world_object::adopt_square(&value, object, &square)?;
+                Ok(value)
+            })
             .collect::<LuaResult<Vec<_>>>()?;
         Ok(crate::bind_java_util::list_value(items))
     });

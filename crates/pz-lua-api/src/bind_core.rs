@@ -115,6 +115,8 @@ pub(crate) fn try_format_core_is_dev() -> LuaResult<bool> {
 
 #[cfg(test)]
 mod formatting_core_tests;
+#[cfg(test)]
+mod debug_enabled_tests;
 
 /// The Lua object for the Core singleton.
 pub struct CoreObject {
@@ -552,6 +554,12 @@ pub fn register(
     let debug_core = cx.core.clone();
     global(thread, "getDebug", move |c| {
         let debug = debug_core.borrow().get_debug();
+        Ok(c.push(debug))
+    });
+    // GlobalObject.isDebugEnabled(): Core.debug.
+    let debug_core = cx.core.clone();
+    global(thread, "isDebugEnabled", move |c| {
+        let debug = debug_core.borrow().debug;
         Ok(c.push(debug))
     });
     cx

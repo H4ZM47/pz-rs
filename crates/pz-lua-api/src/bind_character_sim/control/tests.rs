@@ -94,3 +94,32 @@ fn player_flags_and_input_component() {
     assert!(p.player.input.ignore_inputs_for_direction && !p.player.input.allow_run);
     assert!(zombie.borrow().player.input.allow_run);
 }
+
+/// `Fishing.Handler.onEquipPrimary` asks `player:isLocal()` on every equip.
+#[test]
+fn every_character_is_local_in_single_player() {
+    let (mut thread, _, _) = setup();
+    run(&mut thread, "assert(player:isLocal() == true) assert(zombie:isLocal() == true)").unwrap();
+}
+
+/// `ISGrabCorpseAction.OnContextKey` asks `playerObj:isGrappling()` on
+/// every press of the interact key.
+#[test]
+fn is_grappling_reads_the_grapple_state() {
+    let (mut thread, player, zombie) = setup();
+    run(&mut thread, "assert(player:isGrappling() == false)").unwrap();
+    player.borrow().set_grappling_target(Some(&zombie.borrow()), Some("test"));
+    run(&mut thread, "assert(player:isGrappling() == true)").unwrap();
+}
+
+/// `xpUpdate.onPlayerMove` rolls `player:isRandXp(1000, 0.05, perk)` on
+/// every step; a perk rolls at most once per interval.
+#[test]
+fn is_rand_xp_rolls_once_per_interval_per_perk() {
+    let (mut thread, _, _) = setup();
+    run(&mut thread, r#"
+        assert(player:isRandXp(100000, 1.0, Perks.Fitness) == true)
+        assert(player:isRandXp(100000, 1.0, Perks.Fitness) == false)
+        assert(player:isRandXp(100000, 1.0, Perks.Sprinting) == true)
+    "#).unwrap();
+}

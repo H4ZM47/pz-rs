@@ -213,6 +213,10 @@ impl HudCamera for WorldHudCamera {
         self.0.borrow().offset(player)
     }
 
+    fn fix_jiggly_square(&self, player: usize) -> (f32, f32) {
+        self.0.borrow().fix_jiggly_square(player)
+    }
+
     fn frame_player_index(&self) -> usize {
         self.0.borrow().frame_player_index
     }

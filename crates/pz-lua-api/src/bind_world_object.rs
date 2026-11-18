@@ -10,12 +10,16 @@ use std::rc::{Rc, Weak};
 
 use pz_entity::runtime_load::RuntimeHostError;
 use pz_entity::{ComponentRef, EntityOwner, RuntimeError};
+use pz_inventory::shared::ContainerRef;
 use pz_kahlua::{LuaError, LuaObject, LuaResult, Thread, Value};
+use pz_world::objects::{ObjectKind, ObjectName};
 use pz_world::{IsoObject, IsoObjectRef};
 
 pub const ISO_OBJECT: &str = "zombie.iso.IsoObject";
 pub const WORLD_INVENTORY_OBJECT: &str = "zombie.iso.objects.IsoWorldInventoryObject";
 const GAME_ENTITY: &str = "zombie.entity.GameEntity";
+const ISO_BARBECUE: &str = "zombie.iso.objects.IsoBarbecue";
+const ISO_FIREPLACE: &str = "zombie.iso.objects.IsoFireplace";
 
 pub struct LuaWorldObject {
     pub(crate) object: IsoObjectRef,
@@ -246,8 +250,303 @@ pub(crate) fn item_argument(value: &Value) -> LuaResult<pz_inventory::shared::It
 }
 
 pub(crate) fn register_classes(thread: &mut Thread) {
-    crate::expose::expose_class(thread, ISO_OBJECT, Some(GAME_ENTITY));
+    let object = crate::expose::expose_class(thread, ISO_OBJECT, Some(GAME_ENTITY));
+    // getContainerCount(): 1 for the main container if there is one, plus
+    // the number of secondary containers.
+    object.method("getContainerCount", |c| {
+        let object = crate::expose::this::<LuaWorldObject>(c)?;
+        let object = object.as_any().downcast_ref::<LuaWorldObject>().unwrap();
+        let count = object
+            .object
+            .try_borrow()
+            .map_err(|_| borrowed("IsoObject body"))?
+            .container_count();
+        Ok(c.push(Value::from(count as f64)))
+    });
+    // getSquare(): the `square` field, null off the map.
+    object.method("getSquare", |c| {
+        let object = receiver_object(c)?;
+        let xyz = object
+            .try_borrow()
+            .map_err(|_| borrowed("IsoObject body"))?
+            .square_slot()
+            .map(|sq| {
+                let sq = sq.borrow();
+                (sq.x, sq.y, sq.z)
+            });
+        Ok(c.push(xyz.map_or(Value::Nil, |(x, y, z)| crate::bind_world::square_value(x, y, z))))
+    });
+    register_door(thread);
+    // getModData(): table, made on first use.
+    object.method("getModData", |c| {
+        let object = receiver_object(c)?;
+        let table = object
+            .try_borrow_mut()
+            .map_err(|_| borrowed("IsoObject body"))?
+            .install_runtime_mod_data()
+            .map_err(|e| LuaError::runtime(e.0))?;
+        Ok(c.push(Value::Table(table)))
+    });
+    // hasModData(): true when the object has a non-empty mod data table.
+    object.method("hasModData", |c| {
+        let object = receiver_object(c)?;
+        let has = object
+            .try_borrow()
+            .map_err(|_| borrowed("IsoObject body"))?
+            .has_mod_data()
+            .map_err(|e| LuaError::runtime(e.0))?;
+        Ok(c.push(Value::Bool(has)))
+    });
+    // getSprite(). STUB: a runtime or unmanaged archive sprite has no Lua
+    // object yet.
+    object.method("getSprite", |c| {
+        let object = receiver_object(c)?;
+        let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
+        match &body.sprite {
+            pz_world::objects::ObjectSprite::None => Ok(c.push(Value::Nil)),
+            pz_world::objects::ObjectSprite::Tile(idx) => {
+                Ok(c.push(crate::bind_sprites::sprite_value(Some(*idx), false)))
+            }
+            _ => Err(unsupported("IsoObject.getSprite: the sprite has no Lua object")),
+        }
+    });
+    // getName(): `name`. STUB: a `WorldDictionary` name id is not resolved.
+    object.method("getName", |c| {
+        let object = receiver_object(c)?;
+        let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
+        let name = match &body.name {
+            None => return Ok(c.push(Value::Nil)),
+            Some(ObjectName::Grass) => "Grass",
+            Some(ObjectName::Str(name)) => name.as_str(),
+            Some(ObjectName::Dict(_)) => {
+                return Err(unsupported("IsoObject.getName: WorldDictionary names are not resolved"))
+            }
+        };
+        Ok(c.push(Value::str(name)))
+    });
+    // isFireInteractionObject(): IsoFireplace or IsoBarbecue.
+    object.method("isFireInteractionObject", |c| {
+        let object = receiver_object(c)?;
+        let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
+        let fire = matches!(body.kind, ObjectKind::Fireplace(_) | ObjectKind::Barbecue(_));
+        Ok(c.push(Value::Bool(fire)))
+    });
+    object.method("isPropaneBBQ", |c| {
+        let object = receiver_object(c)?;
+        Ok(c.push(Value::Bool(is_propane_bbq(&object)?)))
+    });
+    // isLit(): false; IsoBarbecue and IsoFireplace return `lit`.
+    object.method("isLit", |c| {
+        let object = receiver_object(c)?;
+        let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
+        let lit = match &body.kind {
+            ObjectKind::Barbecue(b) => b.lit,
+            ObjectKind::Fireplace(f) => f.lit,
+            _ => false,
+        };
+        Ok(c.push(Value::Bool(lit)))
+    });
+    // hasPropaneTank(): isPropaneBBQ() and IsoBarbecue's `hasPropaneTank`.
+    object.method("hasPropaneTank", |c| {
+        let object = receiver_object(c)?;
+        let has = is_propane_bbq(&object)?
+            && matches!(
+                &object.try_borrow().map_err(|_| borrowed("IsoObject body"))?.kind,
+                ObjectKind::Barbecue(b) if b.has_propane_tank
+            );
+        Ok(c.push(Value::Bool(has)))
+    });
+    // hasFuel() (IsoBarbecue, IsoFireplace): getFuelAmount() > 0.
+    for class in [ISO_BARBECUE, ISO_FIREPLACE] {
+        let fire = crate::expose::expose_class(thread, class, Some(ISO_OBJECT));
+        fire.method("hasFuel", |c| {
+            let object = receiver_object(c)?;
+            let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
+            let fuel = match &body.kind {
+                ObjectKind::Barbecue(b) => b.fuel_amount_minutes,
+                ObjectKind::Fireplace(f) => f.fuel_amount_minutes,
+                _ => 0,
+            };
+            Ok(c.push(Value::Bool(fuel > 0)))
+        });
+    }
+    object.method("getContainer", |c| {
+        let (main, _) = containers(c)?;
+        Ok(c.push(opt_container(main.as_ref())))
+    });
+    object.method("getItemContainer", |c| {
+        let (main, _) = containers(c)?;
+        Ok(c.push(opt_container(main.as_ref())))
+    });
+    // getContainerByIndex(i): container at 0, then secondaryContainers;
+    // null out of range.
+    object.method("getContainerByIndex", |c| {
+        let index = crate::expose::int_arg(c, 1);
+        let (main, secondary) = containers(c)?;
+        let all: Vec<_> = main.iter().chain(secondary.iter()).collect();
+        let found = usize::try_from(index).ok().and_then(|i| all.get(i).copied());
+        Ok(c.push(opt_container(found)))
+    });
+    // getContainerByType(type): the first getContainerByIndex(i) whose
+    // getType().equals(type).
+    object.method("getContainerByType", |c| {
+        let kind = crate::expose::str_arg(c, 1);
+        let found = by_type(c, &[kind])?;
+        Ok(c.push(opt_container(found.as_ref())))
+    });
+    object.method("getContainerByEitherType", |c| {
+        let kinds = [crate::expose::str_arg(c, 1), crate::expose::str_arg(c, 2)];
+        let found = by_type(c, &kinds)?;
+        Ok(c.push(opt_container(found.as_ref())))
+    });
+    // getContainerIndex(c): 0 for the main container (also when both are
+    // absent). For a secondary container, its index, plus 1 when a main
+    // container exists. -1 when the object does not have it.
+    object.method("getContainerIndex", |c| {
+        let arg = c.arg(1);
+        let wanted = if arg.is_nil() {
+            None
+        } else {
+            Some(crate::bind_item_container::container_arg(c, 1)?)
+        };
+        let (main, secondary) = containers(c)?;
+        let same = |a: Option<&ContainerRef>, b: Option<&ContainerRef>| match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        };
+        let index = if same(wanted.as_ref(), main.as_ref()) {
+            0
+        } else {
+            secondary
+                .iter()
+                .position(|s| same(wanted.as_ref(), Some(s)))
+                .map_or(-1, |i| i as i32 + main.is_some() as i32)
+        };
+        Ok(c.push(Value::from(f64::from(index))))
+    });
     crate::expose::expose_class(thread, WORLD_INVENTORY_OBJECT, Some(ISO_OBJECT));
+}
+
+/// The receiver's live containers (`container`, `secondaryContainers`).
+/// On first use they are made from the loaded values. The object is their
+/// parent and its square is their source grid, as the `ItemContainer`
+/// constructor for a map object sets them.
+fn containers(
+    c: &mut pz_kahlua::NativeCall<'_>,
+) -> LuaResult<(Option<ContainerRef>, Vec<ContainerRef>)> {
+    let this = c.arg(0);
+    let object = receiver_object(c)?;
+    let square = {
+        let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
+        match body.square_slot() {
+            Some(square) => {
+                let square = square.try_borrow().map_err(|_| borrowed("IsoGridSquare"))?;
+                crate::bind_world::square_value(square.x, square.y, square.z)
+            }
+            None => Value::Nil,
+        }
+    };
+    let mut body = object.try_borrow_mut().map_err(|_| borrowed("IsoObject body"))?;
+    let installed = body.install_runtime_containers(|container| {
+        crate::bind_item_container::set_parent(container, this.clone());
+        container.borrow_mut().source_grid = (!square.is_nil())
+            .then(|| Rc::new(crate::bind_item_container::LuaRef(square.clone())) as Rc<dyn Any>);
+    });
+    Ok((installed.main.clone(), installed.secondary.clone()))
+}
+
+const ISO_DOOR: &str = "zombie.iso.objects.IsoDoor";
+
+/// `IsoDoor`'s state getters: `IsOpen()` (`isOpen()`, the `open` field),
+/// `getNorth()`, `isLocked()`, `isLockedByKey()`.
+fn register_door(thread: &mut Thread) {
+    let door = crate::expose::expose_class(thread, ISO_DOOR, Some(ISO_OBJECT));
+    fn field(c: &pz_kahlua::NativeCall<'_>, f: fn(&pz_world::objects::IsoDoor) -> bool) -> LuaResult<bool> {
+        let object = receiver_object(c)?;
+        let body = object.try_borrow().map_err(|_| borrowed("IsoDoor body"))?;
+        match &body.kind {
+            pz_world::objects::ObjectKind::Door(d) => Ok(f(d)),
+            _ => Err(unsupported("IsoDoor method on another object kind")),
+        }
+    }
+    door.method("IsOpen", |c| Ok(c.push(field(c, |d| d.open)?)));
+    door.method("isOpen", |c| Ok(c.push(field(c, |d| d.open)?)));
+    door.method("getNorth", |c| Ok(c.push(field(c, |d| d.north)?)));
+    door.method("isLocked", |c| Ok(c.push(field(c, |d| d.locked)?)));
+    door.method("isLockedByKey", |c| Ok(c.push(field(c, |d| d.locked_by_key)?)));
+}
+
+/// Gives `square` to the containers of an object read from that square's
+/// list when they have no source grid. The `ItemContainer` constructor for
+/// a map object always sets it, but objects loaded from the map have no
+/// square link here, and `ItemPicker.fillContainer` needs the source grid.
+pub(crate) fn adopt_square(this: &Value, object: &IsoObjectRef, square: &Value) -> LuaResult<()> {
+    let mut body = object.try_borrow_mut().map_err(|_| borrowed("IsoObject body"))?;
+    if body.runtime_containers.is_none()
+        && body.container.is_none()
+        && body.secondary_containers.is_empty()
+    {
+        return Ok(());
+    }
+    let installed = body.install_runtime_containers(|container| {
+        crate::bind_item_container::set_parent(container, this.clone());
+    });
+    for container in installed.iter() {
+        let mut container = container
+            .try_borrow_mut()
+            .map_err(|_| borrowed("ItemContainer"))?;
+        if container.source_grid.is_none() {
+            container.source_grid =
+                Some(Rc::new(crate::bind_item_container::LuaRef(square.clone())) as Rc<dyn Any>);
+        }
+    }
+    Ok(())
+}
+
+/// `isPropaneBBQ()`: an IsoBarbecue whose sprite has `propaneTank`.
+/// STUB: a runtime or unmanaged archive sprite is not read.
+fn is_propane_bbq(object: &IsoObjectRef) -> LuaResult<bool> {
+    let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
+    if !matches!(body.kind, ObjectKind::Barbecue(_)) {
+        return Ok(false);
+    }
+    match &body.sprite {
+        pz_world::objects::ObjectSprite::None => Ok(false),
+        pz_world::objects::ObjectSprite::Tile(idx) => {
+            let sprites = crate::bind_sprites::manager()?;
+            let sprites = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
+            Ok(sprites.has_prop(&sprites.sprites[*idx], "propaneTank"))
+        }
+        _ => Err(unsupported("IsoObject.isPropaneBBQ: the sprite is not read")),
+    }
+}
+
+fn receiver_object(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<IsoObjectRef> {
+    let receiver = crate::expose::this::<LuaWorldObject>(c)?;
+    Ok(receiver
+        .as_any()
+        .downcast_ref::<LuaWorldObject>()
+        .unwrap()
+        .object
+        .clone())
+}
+
+fn opt_container(container: Option<&ContainerRef>) -> Value {
+    container.map_or(Value::Nil, crate::bind_item_container::container_value)
+}
+
+/// The first container whose type equals one of `kinds` (`String.equals`:
+/// a null argument matches nothing).
+fn by_type(
+    c: &mut pz_kahlua::NativeCall<'_>,
+    kinds: &[Option<Rc<str>>],
+) -> LuaResult<Option<ContainerRef>> {
+    let (main, secondary) = containers(c)?;
+    Ok(main.into_iter().chain(secondary).find(|container| {
+        let container = container.borrow();
+        kinds.iter().flatten().any(|kind| **kind == *container.kind)
+    }))
 }
 
 pub(crate) fn object_value(object: &IsoObjectRef) -> LuaResult<Value> {
