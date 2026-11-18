@@ -4,7 +4,7 @@
 //! `IsoObjectRef`; it never resolves an object through a square, id or index.
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
@@ -20,6 +20,10 @@ const GAME_ENTITY: &str = "zombie.entity.GameEntity";
 pub struct LuaWorldObject {
     pub(crate) object: IsoObjectRef,
     class: &'static str,
+    /// The square (x, y, z) this object was last read from. A map object
+    /// has no `IsoObject.square` link in the world, so `getSquare` uses
+    /// this while the object is still on that square.
+    read_from: Cell<Option<[i32; 3]>>,
 }
 
 impl LuaObject for LuaWorldObject {
@@ -234,6 +238,59 @@ pub(crate) fn object_from_value(value: &Value) -> Option<&LuaWorldObject> {
     }
 }
 
+/// Remember that `value` was read from the objects of the square `xyz`.
+pub(crate) fn remember_square(value: &Value, xyz: [i32; 3]) {
+    if let Some(object) = object_from_value(value) {
+        object.read_from.set(Some(xyz));
+    }
+}
+
+/// `IsoObject.getSquare()`: the object's square link, else the square it
+/// was read from while that square still holds it; `nil` otherwise.
+pub(crate) fn object_square(object: &LuaWorldObject) -> LuaResult<Value> {
+    let linked = object
+        .object
+        .try_borrow()
+        .map_err(|_| borrowed("IsoObject body"))?
+        .square_slot()
+        .map(|sq| {
+            let sq = sq.borrow();
+            [sq.x, sq.y, sq.z]
+        });
+    if let Some([x, y, z]) = linked {
+        return Ok(crate::bind_world::square_value(x, y, z));
+    }
+    let Some([x, y, z]) = object.read_from.get() else {
+        return Ok(Value::Nil);
+    };
+    let holds = crate::bind_world::try_with_world_read(|w| {
+        let Some(square) = w.cell.as_ref().and_then(|cell| cell.get_grid_square(x, y, z)) else {
+            return Ok(false);
+        };
+        let square = square
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("IsoGridSquare"))?;
+        Ok(square.objects.iter().any(|slot| Rc::ptr_eq(&slot.ref_handle(), &object.object)))
+    })
+    .map_err(host_error)?;
+    Ok(if holds { crate::bind_world::square_value(x, y, z) } else { Value::Nil })
+}
+
+/// The pathfinding identity of the world object behind `value`: the square
+/// it is read from (see [`object_square`]) and its id. `None` when the
+/// object is off the map.
+pub(crate) fn object_ref(value: &Value) -> LuaResult<Option<pz_pathfind::mover::ObjectRef>> {
+    let Some(object) = object_from_value(value) else {
+        return Ok(None);
+    };
+    let square = object_square(object)?;
+    let Some((x, y, z)) = crate::bind_world::square_coords(&square) else {
+        return Ok(None);
+    };
+    let id = object.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?.id;
+    Ok(Some(pz_pathfind::mover::ObjectRef { x, y, z, id }))
+}
+
 pub(crate) fn item_argument(value: &Value) -> LuaResult<pz_inventory::shared::ItemRef> {
     if let Value::Object(value) = value {
         if let Some(item) =
@@ -274,6 +331,7 @@ pub(crate) fn object_value(object: &IsoObjectRef) -> LuaResult<Value> {
             let value = Rc::new(LuaWorldObject {
                 object: Rc::clone(object),
                 class,
+                read_from: Cell::new(None),
             });
             cache.insert(key, Rc::downgrade(&value));
             Ok(value)

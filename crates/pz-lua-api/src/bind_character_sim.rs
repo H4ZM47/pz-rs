@@ -76,6 +76,7 @@ use std::rc::Rc;
 mod direction_tests;
 #[cfg(test)]
 mod grapple_tests;
+mod climb;
 mod control;
 mod key_ring;
 pub(crate) mod known_poison;
@@ -1811,6 +1812,7 @@ fn register_character(
         }
     }
     control::register(&b);
+    climb::register(&b);
     control::register_globals(thread);
     known_poison::register(&b, sm, chars);
     reading::register(&b);
@@ -2048,6 +2050,12 @@ fn register_character(
     b.method("isUnlimitedEndurance", |c| {
         let ctx = CONTEXT.with(|c| c.borrow().clone());
         let v = chr_of(c)?.borrow().is_unlimited_endurance(&*ctx);
+        Ok(c.push(v))
+    });
+    // `isBuildCheat()`: `getCheats().isSet(CheatType.BUILD)`.
+    b.method("isBuildCheat", |c| {
+        let ctx = CONTEXT.with(|c| c.borrow().clone());
+        let v = chr_of(c)?.borrow().cheats.is_set(&*ctx, "BUILD");
         Ok(c.push(v))
     });
     b.method("isGodMod", |c| {

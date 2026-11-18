@@ -954,6 +954,16 @@ all installed assets, render paths or foreign platforms.
       `with_host(|h| h.picking = Box::new(WorldPicking { world }))`; use
       `picking::context_pick` for `UIManager.setPicked` on mouse events
       (world-render thread) (#192).
+- [x] World mouse: `pz_engine::world_pick::install(render, sprites,
+      cameras)` after `install_hud_camera` and `uninstall()` on exit. It
+      puts one `EngineWorldMouse` into `UIManager` (`pz_ui::WorldMouse`:
+      `IsoObjectPicker.ContextPick` each frame, `OnObjectRightMouseButton*`
+      with `getObjectIndex`, the right-click state of `IsoPlayer`/the
+      clock) and into `IsoObjectPicker.Instance` for Lua
+      (`bind_object_picker`: `PickDoor/PickWindow/PickWindowFrame/
+      PickThumpable/PickTree`). `PickHoppable`/`PickCorpse`, the left
+      button (`OnObjectLeftMouseButton*`) and dragging moving objects are
+      open (world thread).
 - [ ] Object picking render side: keep a `pz_iso_render::RenderInfos`
       next to the chunk caches, build each player's `ChunkRenderer` with
       `.with_render_infos(&infos, player)` (chunk recording, composite and
@@ -1653,7 +1663,26 @@ registered):
       `animation_player_ready`, `rendered_angle`, `primary_hand_model_ready`,
       `square_trees`, `collapsed_fence`, `tree_slow_factor`, `ground_info`,
       `foot_injury_floor`, `vehicle_useable_part_near`,
-      `context_actions_nswe`/`context_actions_corners`/`context_door_or_window`;
+      the interact key's `context_*` hooks (`context_door_or_window_object`,
+      `context_do_door_or_window`, `context_special`, `context_hoppable`,
+      `context_safe_to_climb_over`, `context_sheet_rope_side`; implemented
+      by `StatesWorldAdapter` in `pz-world-states::context`) and
+      `context_toggle_door` (`pz-world-states::door`: the door the key
+      chose is toggled by the world, which needs the player's current square
+      and a key lookup, `DoorActor`; other chosen actions come back as
+      `PlayerEvent::ContextualAction` for the engine/Lua).
+      `world_update::fire_player_events` hands that event to
+      `pz_lua_api::contextual_action::perform`, which triggers
+      `Hook.ContextualAction` for `ClimbOverFence`, `ClimbThroughWindow`,
+      `OpenWindow`/`CloseWindow` and calls `climbOverWall` itself; the other
+      kinds fail with a message naming them. The Lua side queues the climb
+      (`climbOverFence`, `climbThroughWindow`, ... in
+      `bind_character_sim::climb`) and the player's update runs the queue with
+      the states world (`GameCharacter::run_path_requests`). A short E press
+      opens or closes a window, a held E (0.5 s) climbs through it; the open
+      and close action still needs `faceThisObject` (the queued
+      `FaceObject` request is not handled), and the climb check of
+      `IsoThumpable` and `IsoWindowFrame` is not bound to Lua yet;
       `SimContext::wet_ground_final_value`, `clothing_degradation`
       (#135).
 
