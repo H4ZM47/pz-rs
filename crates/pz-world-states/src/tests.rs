@@ -1683,3 +1683,104 @@ fn sprite_replacement_observes_full_native_class_after_object_guards() {
         );
     });
 }
+#[test]
+fn characters_by_id() {
+    let mut w = World::new();
+    let mut list = vec![zombie(10.5, 10.5, 1), zombie(12.5, 10.5, 1), zombie(20.5, 10.5, 1)];
+    for (i, z) in list.iter_mut().enumerate() {
+        z.id = 10 + i as i32;
+    }
+    {
+        let a = w.adapter();
+        assert!(StateWorld::<()>::characters_near(&a, 10.5, 10.5, 0.0, 3.0).is_empty());
+    }
+    let mut a = w.adapter().with_characters(&mut list);
+    assert_eq!(StateWorld::<()>::characters_near(&a, 10.5, 10.5, 0.0, 3.0), vec![10, 11]);
+    StateWorld::<()>::character_mut(&mut a, 11).unwrap().health = 0.5;
+    assert!(StateWorld::<()>::character_mut(&mut a, 99).is_none());
+    // A taken character goes back to its place in the list.
+    let z = StateWorld::<()>::take_character(&mut a, 11).unwrap();
+    assert!(StateWorld::<()>::character_mut(&mut a, 11).is_none());
+    StateWorld::<()>::put_character(&mut a, z);
+    // Nested takes, put back in reverse order, keep the order too.
+    let z10 = StateWorld::<()>::take_character(&mut a, 10).unwrap();
+    let z12 = StateWorld::<()>::take_character(&mut a, 12).unwrap();
+    assert_eq!(StateWorld::<()>::characters_near(&a, 10.5, 10.5, 0.0, 100.0), vec![11]);
+    StateWorld::<()>::put_character(&mut a, z12);
+    StateWorld::<()>::put_character(&mut a, z10);
+    drop(a);
+    assert_eq!(list.iter().map(|z| z.id).collect::<Vec<_>>(), vec![10, 11, 12]);
+    assert_eq!(list[1].health, 0.5);
+}
+
+/// The game settings the path behaviours read: the defaults.
+struct PathGame;
+
+impl pz_pathfind::mover::PathWorldHooks for PathGame {
+    fn lore_speed(&self) -> i32 {
+        2
+    }
+    fn easy_climbing(&self) -> bool {
+        false
+    }
+    fn bent_fences_enabled(&self) -> bool {
+        false
+    }
+    fn is_client(&self) -> bool {
+        false
+    }
+    fn is_server(&self) -> bool {
+        false
+    }
+    fn game_time_multiplier(&self) -> f32 {
+        1.0
+    }
+    fn thirty_fps_multiplier(&self) -> f32 {
+        1.0
+    }
+    fn current_game_speed(&self) -> i32 {
+        1
+    }
+}
+
+#[test]
+fn the_states_find_paths_through_the_host() {
+    use pz_pathfind::host::PathHost;
+    use pz_pathfind::service::PathfindService;
+    let mut w = World::new();
+    let mut list = vec![zombie(10.5, 10.5, 1), zombie(14.5, 12.5, 1)];
+    list[0].id = 10;
+    list[1].id = 20;
+    let target = list[1].mover_id_of();
+    // Without a host the path calls do nothing.
+    {
+        let mut a = w.adapter().with_characters(&mut list);
+        let mut z = StateWorld::<()>::take_character(&mut a, 10).unwrap();
+        StateWorld::<()>::path_to_character(&mut a, &mut z, target);
+        assert!(StateWorld::<()>::path_behavior(&a, 10).is_none());
+        StateWorld::<()>::put_character(&mut a, z);
+    }
+    let mut host = PathHost::new(PathfindService::new(0, 0, 1, 1, false));
+    let game = PathGame;
+    let mut a = w.adapter().with_characters(&mut list).with_path(&mut host, &game);
+    // The zombie is out of the list while it updates; its target is found
+    // in the list by mover id.
+    let mut z = StateWorld::<()>::take_character(&mut a, 10).unwrap();
+    StateWorld::<()>::path_to_character(&mut a, &mut z, target);
+    let b = StateWorld::<()>::path_behavior(&a, 10).expect("no PathFindBehavior2 for the zombie");
+    assert!(b.is_goal_character());
+    assert_eq!(b.target_char(), Some(target));
+    assert_eq!((b.target_x(), b.target_y()), (14.5, 12.5));
+    // A location goal replaces it.
+    StateWorld::<()>::path_to_location(&mut a, &mut z, 3, 4, 0);
+    let b = StateWorld::<()>::path_behavior(&a, 10).unwrap();
+    assert!(b.is_goal_location());
+    assert_eq!((b.target_x(), b.target_y()), (3.5, 4.5));
+    StateWorld::<()>::put_character(&mut a, z);
+    // A target that is not in the list is not followed.
+    let mut other = zombie(1.5, 1.5, 1);
+    other.id = 30;
+    let gone = zombie(2.5, 2.5, 1).mover_id_of();
+    StateWorld::<()>::path_to_character(&mut a, &mut other, gone);
+    assert!(StateWorld::<()>::path_behavior(&a, 30).map_or(true, |b| !b.is_goal_character()));
+}

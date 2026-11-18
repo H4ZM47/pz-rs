@@ -14,6 +14,7 @@ pub mod attack;
 pub mod context;
 pub mod control;
 pub mod input;
+pub mod los;
 pub mod update;
 pub mod vision;
 
@@ -63,6 +64,13 @@ pub struct PlayerControl {
     pub ticks_since_seen_zombie: i32,
     /// `lastSeenZombieTime` (hours).
     pub last_seen_zombie_time: f64,
+    /// `spottedList`, `lastSpotted` (character ids) and
+    /// `clearSpottedTimer`, from `updateLOS`.
+    pub spotted_list: Vec<i32>,
+    pub last_spotted: Vec<i32>,
+    pub clear_spotted_timer: i32,
+    /// `timeSinceLastStab`.
+    pub time_since_last_stab: f32,
     /// `pressContext`, `timePressedContext`.
     pub press_context: bool,
     pub time_pressed_context: f32,
@@ -175,6 +183,10 @@ impl Default for PlayerControl {
             ticks_since_pressed_movement: 0.0,
             ticks_since_seen_zombie: 9_999_999,
             last_seen_zombie_time: 2.0,
+            spotted_list: Vec::new(),
+            last_spotted: Vec::new(),
+            clear_spotted_timer: -1,
+            time_since_last_stab: 0.0,
             press_context: false,
             time_pressed_context: 0.0,
             is_charging: false,

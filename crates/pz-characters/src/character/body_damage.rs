@@ -2427,6 +2427,9 @@ impl<I: 'static> GameCharacter<I> {
         let types = &chars.sim.body_part_types;
         let idx = |f: &str| types.index(f).map(|i| i as i32);
         let hit_reaction = z.hit_reaction.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| "Bite".to_string());
+        // The hit-reaction transitions of the player's action states need
+        // `isFalse hitpvp`, which an unset variable fails.
+        self.set_var_bool("hitpvp", false);
         let mut out = ZombieAttackOutcome::default();
         let mut pain_type = 0;
         let mut base = 15 + z.melee_combat_mod;

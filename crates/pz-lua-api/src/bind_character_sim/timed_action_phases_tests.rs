@@ -133,17 +133,16 @@ impl Fixture {
         let chars = chars.borrow();
         let mut world = NullWorld;
         let mut cx = StateCx::new(&sm, &chars, &Clock, &mut world);
-        self.chr
-            .borrow_mut()
-            .advance_player_update(
-                phase,
-                input,
-                &mut self.registry,
-                &mut self.groups,
-                &mut self.out,
-                &mut cx,
-            )
-            .unwrap()
+        let mut chr = self.chr.borrow_mut();
+        let mut step = |phase| {
+            chr.advance_player_update(phase, input, &mut self.registry, &mut self.groups, &mut self.out, &mut cx)
+                .unwrap()
+        };
+        match step(phase) {
+            // updateLOS needs a character list; NullWorld has none.
+            PlayerUpdateStep::UpdateLos => step(PlayerUpdatePhase::AfterLos),
+            s => s,
+        }
     }
     fn cancel(&mut self, step: PlayerUpdateStep, expected: &str) -> PlayerUpdatePhase {
         let PlayerUpdateStep::StopActionQueue { reason, resume } = step else {

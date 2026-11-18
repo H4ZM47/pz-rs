@@ -715,6 +715,16 @@ all installed assets, render paths or foreign platforms.
       `bind_input::update`/`after_ui_update` the game loop builds one
       `EnginePlayerInput::capture()` per frame, passes `&input` to each local
       player's `IsoPlayer.update`, then calls `input.write_back()` (#137).
+- [x] Melee targets: a local player's update (and its timed-action tail)
+      and its animation events run with `with_states_and_characters(..,
+      Some(&mut zombies), ..)`, so `StatesWorldAdapter::with_characters`
+      answers `character_mut`, `take_character`/`put_character` and
+      `characters_near` from the real zombies: `CombatManager` finds the
+      zombie, `AttackCollisionCheck` hits it, and it plays its hit reaction,
+      falls and dies. Not wired: the zombies' own update and anim events
+      reaching the player (the zombie's attack), and `SimEvent::Die`
+      (`IsoGameCharacter.die` → `becomeCorpse` → `new IsoDeadBody(chr)`),
+      so a killed zombie stays on the ground as a character.
 - [x] `ZombiePopulationManager::update_main` with PopulationHost and
       `ZombieOps` (`RealZombies`) (#73/#77; `RealZombies::create_survivor`
       returns `CreateSurvivor`'s `ScriptResult`, and `WorldPopulation::update`
