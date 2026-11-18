@@ -822,8 +822,9 @@ pub(super) fn do_gardening_submenu(cx: &mut Cx<'_>, context: &Value, worldobject
         let icon = cx.call(&texture, "splitIcon", &[])?;
         option.as_table().ok_or_else(super::null_pointer)?.set_str("iconTexture", icon);
     }
-    if !fetch.get_str("pickupItem").is_nil() && !in_vehicle(cx)? {
-        return Err(todo("prePickupGroundCoverItem"));
+    let pickup = fetch.get_str("pickupItem");
+    if !pickup.is_nil() && !in_vehicle(cx)? {
+        pre_pickup_ground_cover_item(cx, &sub, worldobjects, player, &pickup)?;
     }
     cx.lua_class(
         "ISFarmingMenu",
@@ -834,6 +835,45 @@ pub(super) fn do_gardening_submenu(cx: &mut Cx<'_>, context: &Value, worldobject
     if is_empty_menu(cx, &sub)? {
         cx.call(context, "removeLastOption", &[])?;
     }
+    Ok(())
+}
+
+/// `prePickupGroundCoverItem(menu, worldobjects, player, object)`: the
+/// "Remove <item>" option for an object whose `CustomName` is a
+/// `GroundCoverItems` key that names an item script.
+pub(super) fn pre_pickup_ground_cover_item(cx: &mut Cx<'_>, menu: &Value, worldobjects: &TableRef, player: f64, object: &Value) -> LuaResult<()> {
+    let custom_name = cx.call(object, "getProperty", &[Value::str("CustomName")])?;
+    let mut name = Value::Nil;
+    if !custom_name.is_nil() {
+        // `(KahluaTable) LuaManager.env.rawget("GroundCoverItems")`.
+        let ground_cover = match cx.t.globals().rawget(&Value::str("GroundCoverItems")) {
+            Value::Table(t) => t,
+            Value::Nil => return Err(super::null_pointer()),
+            v => return Err(crate::bind_java_util::class_cast(&v, "se.krka.kahlua.vm.KahluaTable")),
+        };
+        let item = ground_cover.rawget(&custom_name);
+        if !item.is_nil() {
+            if item.as_str().is_none() {
+                return Err(crate::bind_java_util::class_cast(&item, "java.lang.String"));
+            }
+            let script_manager = cx.global("getScriptManager", &[])?;
+            let script = cx.call(&script_manager, "getItem", &[item])?;
+            if !script.is_nil() {
+                let display = cx.call(&script, "getDisplayName", &[])?;
+                name = cx.global("getText", &[display])?;
+            }
+        }
+    }
+    if name.is_nil() {
+        return Ok(());
+    }
+    let text = cx.text_args("ContextMenu_Remove_GroundItem", &[name])?;
+    let f = cx.func("ISWorldObjectContextMenu.onPickupGroundCoverItem");
+    let option = cx.option(menu, "addGetUpOption", text, Value::Table(worldobjects.clone()), f, &[Value::Num(player), object.clone()])?;
+    let sprite_name = cx.call(object, "getSpriteName", &[])?;
+    let texture = cx.static_call("Texture", "trygetTexture", &[sprite_name])?;
+    let icon = cx.call(&texture, "splitIcon", &[])?;
+    option.as_table().ok_or_else(super::null_pointer)?.set_str("iconTexture", icon);
     Ok(())
 }
 
