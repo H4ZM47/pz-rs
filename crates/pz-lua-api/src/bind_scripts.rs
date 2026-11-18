@@ -1114,6 +1114,11 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     b.field("VanillaID", pz_scripts::manager::VANILLA_ID);
     let inst = instance.clone();
     global(thread, "getScriptManager", move |c| Ok(c.push(inst.clone())));
+    // `LuaManager.GlobalObject.getEvolvedRecipes`: `ScriptManager.instance.getAllEvolvedRecipes()`.
+    let s = sm.clone();
+    global(thread, "getEvolvedRecipes", move |c| {
+        Ok(c.push(script_list(&s.collection(ScriptType::EvolvedRecipe).get_all_scripts())))
+    });
 
     let s = sm.clone();
     b.static_fn("EnableDebug", move |c| {
