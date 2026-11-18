@@ -6,11 +6,15 @@
 //! The picks themselves need the world and the chunk renderer's records, so
 //! the engine installs an [`ObjectPicker`] ([`set_object_picker`]); without
 //! one every pick answers `nil`, as with nothing under the mouse.
+//!
+//! `PickVehicle`, which `ISVehicleMenu.OnFillWorldObjectContextMenu` asks
+//! for, needs no renderer records: it turns the screen point into a world
+//! point and tests the cell's vehicles.
 
 use crate::expose::{bool_arg, expose_class, int_arg, this};
 use pz_entity::runtime_load::RuntimeHostError;
 use pz_kahlua::value::LuaObject;
-use pz_kahlua::{LuaResult, Thread, Value};
+use pz_kahlua::{LuaError, LuaResult, Thread, Value};
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -107,9 +111,42 @@ impl LuaObject for LuaObjectPicker {
     }
 }
 
+/// `PickVehicle(x, y)`: the screen point on the floor of
+/// `PZMath.fastfloor(IsoPlayer.players[0].getZ())`, through
+/// `IsoUtils.XToIso/YToIso` (the camera of `IsoPlayer.getPlayerIndex()`),
+/// then the first of `IsoCell.getVehicles()` that `isInBounds` there.
+fn pick_vehicle(x: i32, y: i32) -> LuaResult<Value> {
+    let player = crate::bind_players::player(0).ok_or_else(|| LuaError::Runtime {
+        message: "Cannot invoke \"zombie.characters.IsoPlayer.getZ()\" because \"zombie.characters.IsoPlayer.players[0]\" is null"
+            .into(),
+        class: "java.lang.NullPointerException",
+    })?;
+    let floor = pz_world::java::fastfloor(player.borrow().vars.z) as f32;
+    let index = usize::try_from(crate::bind_players::player_index()).ok().filter(|&i| i < 4).ok_or_else(|| {
+        LuaError::Runtime {
+            message: format!("Index {} out of bounds for length 4", crate::bind_players::player_index()),
+            class: "java.lang.ArrayIndexOutOfBoundsException",
+        }
+    })?;
+    let (ox, oy) = crate::hud::host::with_host(|h| h.camera.camera_offset(index));
+    let (px, py) = (x as f32 + ox, y as f32 + oy);
+    let ts = crate::bind_core::shared_core().borrow().tile_scale as f32;
+    let wx = (px + 2.0 * py) / (64.0 * ts) + 3.0 * floor;
+    let wy = (px - 2.0 * py) / (-64.0 * ts) + 3.0 * floor;
+    Ok(pz_vehicles::manager::cell_vehicles()
+        .iter()
+        .find(|v| v.is_in_bounds(wx, wy))
+        .map_or(Value::Nil, pz_vehicles::lua::vehicle_value))
+}
+
 pub fn register(thread: &mut Thread) {
     let b = expose_class(thread, CLASS, Some("java.lang.Object"));
     b.field("Instance", Value::Object(Rc::new(LuaObjectPicker)));
+    b.method("PickVehicle", |c| {
+        this::<LuaObjectPicker>(c)?;
+        let v = pick_vehicle(int_arg(c, 1), int_arg(c, 2))?;
+        Ok(c.push(v))
+    });
     let picks: [(&str, fn(&pz_kahlua::NativeCall<'_>) -> Pick); 7] = [
         ("PickDoor", |c| Pick::Door {
             transparent: bool_arg(c, 3),
@@ -191,5 +228,47 @@ mod tests {
             ]
         );
         set_object_picker(None);
+    }
+
+    #[test]
+    fn pick_vehicle_finds_the_cell_vehicle_under_the_screen_point() {
+        struct Restore(Option<crate::bind_character_sim::LuaGameCharacterRef>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::bind_players::set_player(0, self.0.take());
+                pz_vehicles::manager::reset();
+            }
+        }
+        let _restore = Restore(crate::bind_players::player(0));
+        let mut t = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        register(&mut t);
+        // No players[0]: getZ() on null.
+        crate::bind_players::set_player(0, None);
+        let err = run(&mut t, "local ok, e = pcall(IsoObjectPicker.Instance.PickVehicle, IsoObjectPicker.Instance, 0, 0) return tostring(e)");
+        assert!(pz_kahlua::exec::java_value_of(&err).contains("players[0]\" is null"), "{err:?}");
+        let player = Rc::new(RefCell::new(crate::bind_character_sim::LuaGameCharacter::new(
+            &pz_scripts::ScriptManager::new(),
+            pz_characters::CharacterKind::Player,
+        )));
+        player.borrow_mut().vars.z = 0.5;
+        crate::bind_players::set_player(0, Some(player));
+        // A vehicle whose polygon covers the world point (0, 0): the screen
+        // point (0, 0) with no camera offset on floor 0.
+        let v = pz_vehicles::BaseVehicle::new();
+        {
+            let mut st = v.st_mut();
+            let p = &mut st.poly;
+            (p.x1, p.y1, p.x2, p.y2, p.x3, p.y3, p.x4, p.y4) = (-1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0);
+            for (i, corner) in p.corners().into_iter().enumerate() {
+                (p.borders[i].x, p.borders[i].y) = corner;
+            }
+            st.poly_dirty = false;
+        }
+        pz_vehicles::manager::cell_add(&v);
+        pz_vehicles::manager::process_add_vehicles();
+        let hit = run(&mut t, "return IsoObjectPicker.Instance:PickVehicle(0, 0) ~= nil");
+        let miss = run(&mut t, "return IsoObjectPicker.Instance:PickVehicle(100000, 0) == nil");
+        assert!(hit.truthy() && miss.truthy(), "{hit:?} {miss:?}");
     }
 }
