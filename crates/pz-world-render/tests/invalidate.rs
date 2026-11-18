@@ -635,3 +635,41 @@ fn failed_actual_rebuild_keeps_pending_work_and_puddle_geometry_for_retry() {
     assert!(!scene.pending.has_rebuilds());
     assert!(scene.pending.puddles.is_empty());
 }
+
+#[test]
+fn chunk_floor_blood_is_copied_on_build_and_added_splats_fade_out_of_a_full_queue() {
+    use pz_iso_render::weather::SurfaceWorld;
+    let mut s = Scene::new();
+    // The world chunk's saved splats, then the chunk loaded again.
+    let floor = |sq: &IsoGridSquare| sq.x != 9 || sq.y != 9;
+    let ch = s.cell.chunks.get_mut(&(2, 2)).unwrap();
+    assert_eq!(ch.add_blood_splat(17.5, 18.25, 0.0, 4, 3.0, floor), Some(0));
+    let view = WorldView {
+        cell: &s.cell,
+        meta: &s.meta,
+        sprites: &s.m,
+    };
+    s.render
+        .build_chunk(&view, 2, 2, &mut s.sprite_cache, &mut NoTextures)
+        .unwrap();
+    let blood = s.render.chunk_blood(2, 2).unwrap();
+    assert_eq!(blood.splats.len(), 1);
+    assert_eq!((blood.splats[0].x, blood.splats[0].y, blood.splats[0].kind), (1.5, 2.25, 4));
+    assert_eq!((blood.splats[0].index, blood.next_splat_index), (1, 1));
+    // The renderer's copy follows the world's adds; a full queue fades its
+    // first splat over five seconds.
+    for _ in 0..1000 {
+        assert_eq!(
+            s.render.add_blood_splat(2, 2, 20.5, 20.5, 0.0, 12, 4.0, 60),
+            Some(0)
+        );
+    }
+    let blood = s.render.chunk_blood(2, 2).unwrap();
+    assert_eq!(blood.splats.len(), 1000);
+    assert_eq!(blood.fade.borrow().len(), 1);
+    assert_eq!(blood.fade.borrow()[0].fade, 300);
+    // A chunk that left has no blood.
+    s.render.remove_chunk(2, 2);
+    assert!(s.render.chunk_blood(2, 2).is_none());
+    assert_eq!(s.render.add_blood_splat(2, 2, 20.5, 20.5, 0.0, 12, 4.0, 60), None);
+}

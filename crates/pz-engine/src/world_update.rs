@@ -17,7 +17,7 @@ use pz_characters::character::state::StateCx;
 use pz_characters::character::zombie::population::RealZombies;
 use pz_characters::character::SimEvent;
 use pz_characters::survivor::SurvivorDescRef;
-use pz_inventory::floor_drop::HostResult;
+use pz_inventory::floor_drop::{HostResult, RuntimeHostError};
 use pz_kahlua::Value;
 use pz_lua_api::bind_character_sim::{character_value, LuaGameCharacter, LuaGameCharacterRef};
 use pz_lua_api::bind_characters::{shared_characters, LuaItem};
@@ -366,12 +366,34 @@ fn player_positions() -> [Option<PlayerPos>; MAX_PLAYERS] {
 
 /// Runs `f` over the character states' world (`StatesWorldAdapter` over
 /// the current cell); `None` without a cell.
+/// Whether the events raised since `from` include `IsoGameCharacter.die()`.
+fn died_since(sim: &FrameSim, from: usize) -> bool {
+    sim.events
+        .borrow()
+        .get(from..)
+        .is_some_and(|new| new.iter().any(|e| matches!(e, SimEvent::Die)))
+}
+
 pub(crate) fn with_states<R>(
     sprites: &Rc<RefCell<IsoSpriteManager>>,
     runtime: &mut StatesRuntime,
     models: Option<&mut WorldModels>,
     sim: &FrameSim,
     floor_world: Option<&Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
+    f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
+) -> Option<R> {
+    with_states_and_characters(sprites, runtime, models, sim, floor_world, None, f)
+}
+
+/// [`with_states`] where the states also reach `characters` by id (the
+/// real zombies a player's attack finds and hits).
+pub(crate) fn with_states_and_characters<R>(
+    sprites: &Rc<RefCell<IsoSpriteManager>>,
+    runtime: &mut StatesRuntime,
+    models: Option<&mut WorldModels>,
+    sim: &FrameSim,
+    floor_world: Option<&Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
+    characters: Option<&mut Vec<LuaGameCharacter>>,
     f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
 ) -> Option<R> {
     let movers = player_squares();
@@ -399,6 +421,9 @@ pub(crate) fn with_states<R>(
             runtime,
             &mut engine,
         );
+        if let Some(characters) = characters {
+            adapter = adapter.with_characters(characters);
+        }
         Some(f(&mut adapter))
     })
 }
@@ -577,17 +602,19 @@ impl IsoWorld {
                         action_groups,
                         models,
                         floor_world,
+                        zombies,
                         ..
                     } = self;
                     let Some(sprites) = sprites.as_mut() else {
                         return Ok(());
                     };
-                    with_states(
+                    with_states_and_characters(
                         sprites,
                         states_runtime,
                         models.as_mut(),
                         sim,
                         floor_world.as_ref(),
+                        Some(zombies),
                         |w| {
                             if first_phase {
                                 fill_square_environment(&mut chr, w.cell);
@@ -622,9 +649,9 @@ impl IsoWorld {
                             }
                             pz_characters::character::player::PlayerUpdateStep::TimedActions => {
                                 pz_lua_api::timed_actions::update(&mut lua.thread, &p);
-                                let IsoWorld { sprites, states_runtime, models, floor_world, .. } = self;
+                                let IsoWorld { sprites, states_runtime, models, floor_world, zombies, .. } = self;
                                 if let Some(sprites) = sprites.as_mut() {
-                                    let result = with_states(sprites, states_runtime, models.as_mut(), sim, floor_world.as_ref(), |w| {
+                                    let result = with_states_and_characters(sprites, states_runtime, models.as_mut(), sim, floor_world.as_ref(), Some(zombies), |w| {
                                         pz_lua_api::bind_states::with_state_registry(|_| {
                                             let chars = chars.borrow();
                                             let mut cx = StateCx::new(&sm, &chars, &player_sim, w);
@@ -683,6 +710,7 @@ impl IsoWorld {
         let Some(sprites) = sprites.as_mut() else {
             return Ok(());
         };
+        let mut dying = Vec::new();
         let errors = with_states(
             sprites,
             states_runtime,
@@ -696,9 +724,13 @@ impl IsoWorld {
                     for z in zombies.iter_mut() {
                         z.preupdate_zombie();
                         fill_square_environment(z, w.cell);
+                        let from = sim.events.borrow().len();
                         let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
                         let result = z.update_zombie(reg, action_groups, &mut cx);
                         cx.state_result()?;
+                        if died_since(sim, from) {
+                            dying.push(z.id);
+                        }
                         if let Err(e) = result {
                             errors.push(format!("IsoZombie.update: {e}"));
                         }
@@ -719,7 +751,7 @@ impl IsoWorld {
             None => (),
         }
         self.fire_sim_events(lua, None, sim);
-        Ok(())
+        self.zombies_become_corpses(lua, sim, dying)
     }
 
     /// `MovingObjectUpdateScheduler.postupdate()`: `IsoPlayer.postupdate`
@@ -740,6 +772,7 @@ impl IsoWorld {
         let Some(sprites) = sprites.as_mut() else {
             return Ok(());
         };
+        let mut dying = Vec::new();
         let result = with_states(
             sprites,
             states_runtime,
@@ -755,9 +788,13 @@ impl IsoWorld {
                     cx.state_result()?;
                 }
                 for z in zombies.iter_mut() {
+                    let from = sim.events.borrow().len();
                     let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
                     z.postupdate_zombie(&mut cx);
                     cx.state_result()?;
+                    if died_since(sim, from) {
+                        dying.push(z.id);
+                    }
                 }
                 Ok::<_, pz_characters::character::state::StateFailure>(())
             },
@@ -766,7 +803,7 @@ impl IsoWorld {
             return self.finish_state_host_fault(lua, None, sim, Vec::new(), error);
         }
         self.fire_sim_events(lua, None, sim);
-        Ok(())
+        self.zombies_become_corpses(lua, sim, dying)
     }
 
     /// `updateThread()`.
@@ -805,11 +842,269 @@ impl IsoWorld {
                 SimEvent::StopAllActionQueue if chr.is_some() => {
                     pz_lua_api::timed_actions::cancel(&mut lua.thread, chr.unwrap(), "");
                 }
+                // `IsoZombie.onKilled`: `OnZombieDead`, then `DoDeath` ->
+                // `OnDeath` -> `OnCharacterDeath`, each with the killed
+                // character (the rest of `DoDeath` is the character's, after
+                // this event). The event does not name it in `chr` (a
+                // player's swing raises it with the player as `chr`), and a
+                // zombie has no Lua object. Vanilla only listens in the tutorial; with
+                // no listener the events do nothing.
+                SimEvent::Killed { victim, .. } => {
+                    // `IsoZombie.onKilled`: `DoZombieInventory()` first.
+                    if let Some(z) = self.zombies.iter_mut().find(|z| z.id == victim) {
+                        if let Err(e) = pz_lua_api::zombie_inventory::do_zombie_inventory(&mut lua.thread, z) {
+                            self.log_update_error(format!("IsoZombie.DoZombieInventory: {e}"));
+                        }
+                    }
+                    for name in ["OnZombieDead", "OnCharacterDeath"] {
+                        if lua.events.callbacks(name) > 0 {
+                            self.log_update_error(format!(
+                                "unsupported: {name} (the killed character is not passed to Lua)"
+                            ));
+                        }
+                    }
+                }
+                // `chr.splatBloodFloorBig()`: a big floor splat under the
+                // character, `Rand.Next(20)` drawn here (after the rest of
+                // the character's update, not in its order).
+                // TODO(port): characters other than zombies.
+                SimEvent::CharacterSplatBloodFloorBig { chr } => {
+                    let Some(z) = self.zombies.iter().find(|z| z.id == chr) else {
+                        continue;
+                    };
+                    let (x, y, zz) = (z.vars.x, z.vars.y, z.vars.z);
+                    let current = z.path.current_square;
+                    if let Err(e) = self.splat_blood_floor_big(current, x, y, zz) {
+                        self.log_update_error(format!("IsoGameCharacter.splatBloodFloorBig: {e:?}"));
+                    }
+                }
                 // TODO(port): the other `SimEvent`s (sounds, visuals, XP,
                 // game speed, the world's side of combat).
                 _ => {}
             }
         }
+    }
+
+    /// `splatBloodFloorBig()` for a character at `(x, y, z)` on square
+    /// `current`: `getCurrentSquare().getChunk().addBloodSplat(x, y, z,
+    /// Rand.Next(20))`, nothing without a square or chunk. A kept splat
+    /// goes to the renderer.
+    fn splat_blood_floor_big(
+        &mut self,
+        current: Option<(i32, i32, i32)>,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> HostResult<()> {
+        let Some((sx, sy, _)) = current else {
+            return Ok(());
+        };
+        let (wx, wy) = (sx.div_euclid(8), sy.div_euclid(8));
+        let Some(sprites) = self.sprites.clone() else {
+            return Err(RuntimeHostError::Unsupported {
+                operation: "actual splatBloodFloorBig sprite owner",
+                kind: None,
+            });
+        };
+        let world_age = {
+            let time = pz_lua_api::bind_climate::shared_game_time();
+            let time = time
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("addBloodSplat GameTime"))?;
+            time.world_age_hours()
+        };
+        let kept = pz_lua_api::bind_world::try_with_world(|w| {
+            let Some(chunk) = w.cell.as_mut().and_then(|c| c.chunks.get_mut(&(wx, wy))) else {
+                return Ok(None);
+            };
+            let kind = pz_core::random::next(20);
+            let sprites = sprites
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("addBloodSplat sprite manager"))?;
+            Ok(chunk
+                .add_blood_splat(x, y, z, kind, world_age, |sq| sq.treat_as_solid_floor(&sprites))
+                .map(|_| kind))
+        })?;
+        if let Some(kind) = kept {
+            self.render_chunks.blood.push(crate::iso_world::BloodSplatAdded {
+                wx,
+                wy,
+                x,
+                y,
+                z,
+                kind,
+                world_age: world_age as f32,
+            });
+        }
+        Ok(())
+    }
+
+    /// `IsoGameCharacter.die()` for the zombies that raised it: `becomeCorpse()`
+    /// (`new IsoDeadBody(zombie)`), which puts the corpse on its square and
+    /// takes the zombie off the cell's zombie list (`removeFromWorld`). A
+    /// zombie whose corpse cannot be made or placed stays in the world with
+    /// its inventory.
+    ///
+    /// TODO(port): `dropHeldItems` (a zombie holding an item is reported
+    /// as unsupported by [`GameCharacter::become_dead_body`]), the zombies
+    /// near a player's corpse going to eat it, `invokeOnDiedListeners`.
+    ///
+    /// [`GameCharacter::become_dead_body`]: pz_characters::GameCharacter::become_dead_body
+    fn zombies_become_corpses(
+        &mut self,
+        lua: &mut LuaManager,
+        sim: &FrameSim,
+        dying: Vec<i32>,
+    ) -> pz_characters::character::state::StateResult<()> {
+        if dying.is_empty() {
+            return Ok(());
+        }
+        // `GameTime.getWorldAgeHours()`.
+        let death_time = sim.world_age_hours as f32;
+        let (placed, errors) = self.place_new_corpses(&dying, death_time);
+        for e in errors {
+            self.log_update_error(e);
+        }
+        if placed.is_empty() {
+            return Ok(());
+        }
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let chars = shared_characters();
+        let IsoWorld {
+            sprites,
+            states_runtime,
+            zombies,
+            models,
+            floor_world,
+            ..
+        } = self;
+        let Some(states_sprites) = sprites.as_ref() else {
+            return Ok(());
+        };
+        let result = with_states(
+            states_sprites,
+            states_runtime,
+            models.as_mut(),
+            sim,
+            floor_world.as_ref(),
+            |w| {
+                let chars = chars.borrow();
+                for (id, _) in &placed {
+                    let Some(i) = zombies.iter().position(|z| z.id == *id) else {
+                        continue;
+                    };
+                    // `chr.removeFromWorld()`: off the cell's zombie list.
+                    let mut z = zombies.remove(i);
+                    let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
+                    z.zombie_remove_from_world(&mut cx);
+                    cx.state_result()?;
+                }
+                Ok::<_, pz_characters::character::state::StateFailure>(())
+            },
+        );
+        if let Some(Err(error)) = result {
+            return self.finish_state_host_fault(lua, None, sim, Vec::new(), error);
+        }
+        for body in placed.iter().filter_map(|(_, body)| body.as_ref()) {
+            // `IsoDeadBody(chr, false, true)`: both with the body.
+            let body = pz_lua_api::bind_dead_body::dead_body_value(body);
+            lua.trigger_event("OnContainerUpdate", std::slice::from_ref(&body));
+            lua.trigger_event("OnDeadBodySpawn", &[body]);
+        }
+        Ok(())
+    }
+
+    /// The corpse side of `new IsoDeadBody(chr)` for each dying zombie
+    /// ([`pz_characters::GameCharacter::become_dead_body`] with
+    /// [`pz_world::square_mutation::MutationEnv::place_new_corpse`]).
+    /// Returns the zombies whose corpse is on its square with the corpse
+    /// (none when only `CorpseCount` failed), and the errors.
+    fn place_new_corpses(
+        &mut self,
+        dying: &[i32],
+        death_time: f32,
+    ) -> (Vec<(i32, Option<pz_world::save::visual::DeadBodyRef>)>, Vec<String>) {
+        let num_players = pz_lua_api::bind_players::num_players();
+        let IsoWorld {
+            door_tables,
+            sprites,
+            rand,
+            regions,
+            render,
+            zombies,
+            ..
+        } = self;
+        let (Some(sprites), Some(doors)) = (sprites.as_ref(), door_tables.as_ref()) else {
+            return (Vec::new(), vec!["IsoDeadBody: corpses require sprites and door tables".into()]);
+        };
+        let mut sprites = sprites.borrow_mut();
+        let water = sprites.tables.flag.water;
+        let mut no_regions = None;
+        let mut regions_guard = regions.as_ref().map(|r| r.borrow_mut());
+        let regions = match regions_guard.as_mut() {
+            Some(r) => &mut **r,
+            None => no_regions.get_or_insert_with(|| IsoRegions::new(0)),
+        };
+        with_world(|w| {
+            let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else {
+                return (Vec::new(), vec!["IsoDeadBody: corpses require the live cell".into()]);
+            };
+            let mut hooks = pz_world::square_mutation::NoMutationHooks;
+            let mut path = pz_world::square_mutation::NoMutationHooks;
+            let mut no_render = pz_world::square_mutation::NoMutationHooks;
+            let mut render = render.borrow_mut();
+            let mut inv = render.as_mut().map(|r| r.invalidation(water, num_players));
+            let render: &mut dyn pz_world::square_mutation::RenderSquareHooks = match inv.as_mut() {
+                Some(i) => i,
+                None => &mut no_render,
+            };
+            let mut env = pz_world::square_mutation::MutationEnv {
+                cell,
+                meta,
+                sprites: &mut sprites,
+                regions,
+                rand,
+                doors,
+                world: &mut hooks,
+                pathfind: &mut path,
+                render,
+                num_players,
+            };
+            let mut placed = Vec::new();
+            let mut errors = Vec::new();
+            for id in dying {
+                let Some(z) = zombies.iter_mut().find(|z| z.id == *id) else {
+                    continue;
+                };
+                let mut corpse = None;
+                let result = z.become_dead_body(death_time, |body| {
+                    // `chr.getCurrentSquare()`, else `getGridSquare(x, y, z)`.
+                    let pos = (
+                        body.base.x.floor() as i32,
+                        body.base.y.floor() as i32,
+                        body.base.z.floor() as i32,
+                    );
+                    match env.place_new_corpse(pos, body) {
+                        Ok(body) => {
+                            corpse = body;
+                            corpse.is_some()
+                        }
+                        Err(e) => {
+                            // Only `CorpseCount.corpseAdded` failed: the
+                            // corpse is already on its square.
+                            errors.push(format!("IsoDeadBody: {e:?}"));
+                            true
+                        }
+                    }
+                });
+                match result {
+                    Ok(true) => placed.push((*id, corpse)),
+                    Ok(false) => errors.push(format!("IsoDeadBody: no loaded square for zombie {id}")),
+                    Err(e) => errors.push(format!("IsoZombie.becomeCorpse: {e}")),
+                }
+            }
+            (placed, errors)
+        })
     }
 
     /// Flush only events already produced by the completed native prefix.
@@ -877,12 +1172,13 @@ impl IsoWorld {
                             let Some(sprites) = self.sprites.as_ref() else {
                                 return Ok(());
                             };
-                            let result = with_states(
+                            let result = with_states_and_characters(
                                 sprites,
                                 &mut self.states_runtime,
                                 Some(&mut models),
                                 sim,
                                 self.floor_world.as_ref(),
+                                Some(&mut self.zombies),
                                 |w| {
                                     let chars = chars.borrow();
                                     let mut cx = StateCx::new(&sm, &chars, sim, w);
@@ -910,6 +1206,7 @@ impl IsoWorld {
             self.fire_sim_events(lua, Some(&p), sim);
         }
         let mut host_error = None;
+        let mut dying = Vec::new();
         for chr in &mut self.zombies {
             ids.push(chr.id);
             match models.update_character(chr, dt, days) {
@@ -923,10 +1220,14 @@ impl IsoWorld {
                             self.floor_world.as_ref(),
                             |w| {
                                 let chars = chars.borrow();
+                                let from = sim.events.borrow().len();
                                 let mut cx = StateCx::new(&sm, &chars, sim, w);
                                 for event in events {
                                     chr.on_anim_event(&event, &mut cx);
                                     cx.state_result()?;
+                                }
+                                if died_since(sim, from) {
+                                    dying.push(chr.id);
                                 }
                                 Ok::<_, pz_characters::character::state::StateFailure>(())
                             },
@@ -951,7 +1252,7 @@ impl IsoWorld {
         for e in errors {
             self.log_update_error(format!("ModelManager.update: {e}"));
         }
-        Ok(())
+        self.zombies_become_corpses(lua, sim, dying)
     }
 
     /// `ExceptionLogger.logException(ex)` for an exception the original

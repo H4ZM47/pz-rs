@@ -6,7 +6,8 @@
 //! the screen shader).
 
 use crate::iso_world::{IsoWorld, RenderChunkEvents};
-use crate::world_models::{CharacterView, WorldModels};
+use crate::world_models::{CharacterView, CorpseSquare, WorldModels};
+use pz_character_model::corpse::PointLight;
 use pz_character_model::lights::LightContext;
 use pz_entity::runtime_load::{HostResult, RuntimeHostError};
 use pz_fs::GameFs;
@@ -15,6 +16,7 @@ use pz_iso_render::chunk::dirty;
 use pz_iso_render::cutaways::{CutawayPlayer, Cutaways};
 use pz_iso_render::frame::{plan_chunks, world_frame_full, FrameSize};
 use pz_iso_render::objects::FrameObjects;
+use pz_iso_render::weather::{SurfaceSettings, SurfaceTextures, Surfaces};
 use pz_iso_render::{Camera, ChunkRenderer, CutawayWorld};
 use pz_lighting::jni::{IsoDirection, VisionConeInput};
 use pz_lua_api::bind_character_sim::LuaGameCharacter;
@@ -87,6 +89,9 @@ pub struct WorldRender {
     seams: Vec<Texture>,
     cutaway_stencils: Vec<Texture>,
     drop_shadow: Option<Texture>,
+    /// The `blood_floor_*` tiles (`Texture.getSharedTexture` in
+    /// `renderOneLevel_Blood`).
+    blood_textures: BloodTextures,
     sprites: SpriteCache,
     pub world: RenderWorld,
     pub lighting: WorldLighting,
@@ -96,6 +101,8 @@ pub struct WorldRender {
     start: Instant,
     /// The lighting session failed; frames draw unlit.
     lighting_error: bool,
+    /// The last corpse render error, reported once.
+    corpse_error: Option<String>,
     /// What the square mutations changed since the last frame.
     pub pending: PendingRender,
     /// Port extension: the 3D view (off by default).
@@ -152,6 +159,12 @@ impl WorldRender {
             seams,
             cutaway_stencils,
             drop_shadow: tm.shared_texture_flags(fs, "media/textures/NewShadow.png", 0),
+            blood_textures: BloodTextures(
+                pz_iso_render::blood::FLOOR_BLOOD_TYPES
+                    .iter()
+                    .filter_map(|&name| Some((name, tm.shared_texture(fs, name)?)))
+                    .collect(),
+            ),
             sprites: SpriteCache::new(),
             world: RenderWorld::new(),
             lighting: WorldLighting::new(),
@@ -159,6 +172,7 @@ impl WorldRender {
             cutaways: std::array::from_fn(|_| Cutaways::new()),
             start: Instant::now(),
             lighting_error: false,
+            corpse_error: None,
             pending: PendingRender::new(),
             view3d: Default::default(),
             view3d_held: (false, false),
@@ -362,6 +376,19 @@ impl WorldRender {
         fs: &GameFs,
         tm: &mut TextureManager,
     ) -> HostResult<()> {
+        // The world chunks' splats, before chunks leave: a chunk that left
+        // has no copy to add to.
+        let lock_fps = pz_lua_api::bind_climate::climate_settings().lock_fps;
+        for b in events.blood.drain(..) {
+            if let Some(level) = self
+                .world
+                .add_blood_splat(b.wx, b.wy, b.x, b.y, b.z, b.kind, b.world_age, lock_fps)
+            {
+                for c in self.caches.iter_mut() {
+                    c.invalidate(b.wx, b.wy, level, dirty::BLOOD);
+                }
+            }
+        }
         for (wx, wy) in events.removed.drain(..) {
             self.world.remove_chunk(wx, wy);
             self.lighting.remove_chunk(wx, wy);
@@ -397,6 +424,95 @@ impl WorldRender {
             events.added.remove(0);
         }
         Ok(())
+    }
+
+    /// `IsoDeadBody.render` and `renderShadow` for the corpses on the
+    /// squares of the player's chunk map: their atlas draws and shadows
+    /// into `objects`, the atlas render jobs into `jobs`.
+    ///
+    /// TODO(port): the stairs test of `renderCorpseShadows`, the on-screen
+    /// and seen tests, and corpses in the 3D view.
+    fn render_corpses(
+        &mut self,
+        view: &WorldView<'_>,
+        v: &RenderView,
+        cam: &Camera,
+        models: &mut WorldModels,
+        objects: &mut FrameObjects,
+        jobs: &mut Vec<DrawCmd>,
+    ) {
+        let p = v.player as i32;
+        let world_age_days = (pz_lua_api::bind_climate::shared_game_time()
+            .borrow()
+            .world_age_hours()
+            / 24.0) as f32;
+        let (x0, y0, n) = v.chunk_map;
+        for wx in x0..x0 + n {
+            for wy in y0..y0 + n {
+                let Some(chunk) = view.cell.chunks.get(&(wx, wy)) else {
+                    continue;
+                };
+                for sq_owner in chunk.squares() {
+                    if sq_owner.borrow().static_moving.is_empty() {
+                        continue;
+                    }
+                    let sq = sq_owner.borrow();
+                    let (sx, sy, sz) = (sq.x, sq.y, sq.z);
+                    let outside = sq.is_exterior(view.sprites);
+                    let room = sq.room_id != -1;
+                    // `BodyParams.initLights`: `square.lighting[0]`.
+                    let lights: Vec<PointLight> = self
+                        .lighting
+                        .result_lights(0, sx, sy, sz)
+                        .iter()
+                        .map(|l| PointLight {
+                            x: l.x,
+                            y: l.y,
+                            z: l.z,
+                            rgb: [l.r, l.g, l.b],
+                            radius: l.radius,
+                        })
+                        .collect();
+                    let vert_light = self.lighting.square_light(p, sx, sy, sz).map(|l| l.vert_light);
+                    for body in &sq.static_moving {
+                        let Ok(mut body) = body.try_borrow_mut() else {
+                            continue;
+                        };
+                        let rgb = vert_light
+                            .as_ref()
+                            .map(|vl| {
+                                let c = pz_iso_render::models::interpolate_light(
+                                    vl,
+                                    body.base.x - sx as f32,
+                                    body.base.y - sy as f32,
+                                );
+                                [c.r, c.g, c.b]
+                            })
+                            .unwrap_or([v.climate.climate.ambient; 3]);
+                        let input = CorpseSquare {
+                            outside,
+                            room,
+                            lights: lights.clone(),
+                            light: [rgb[0], rgb[1], rgb[2], 1.0],
+                            world_age_days,
+                        };
+                        match models.render_corpse(&mut body, &input, cam, jobs) {
+                            Ok(Some(d)) => {
+                                objects.corpses.extend(d.draws);
+                                objects.corpse_shadows.push(d.shadow);
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                if self.corpse_error.as_deref() != Some(e.as_str()) {
+                                    eprintln!("ERROR: IsoDeadBody.render: {e}");
+                                    self.corpse_error = Some(e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// One player's world frame (`FBORenderCell.renderInternal` and what
@@ -479,10 +595,12 @@ impl WorldRender {
         }
         let first_person = p == 0 && self.view3d.mode == pz_world3d::ViewMode::FirstPerson;
         let aspect = v.width as f32 / v.height.max(1) as f32;
-        // TODO(port): corpses, world items, the water and sky surfaces
+        // TODO(port): world items, the water and sky surfaces
         // (`SkyBox`, `SurfaceChecks`) and the
         // `FrameExtras` (flies, highlights, markers, vision cone, fog).
         let mut objects = FrameObjects::default();
+        // `DeadBodyAtlas.render()`'s jobs, drawn before the world.
+        let mut corpse_jobs = Vec::new();
         if let Some(models) = models {
             let camera = match &cam3 {
                 Some(c3) => pz_iso_render::models::ModelCamera::perspective(
@@ -566,6 +684,12 @@ impl WorldRender {
                     objects.moving.push(object);
                 }
             }
+            // Port extension: the 3D view draws no corpses, and its frame
+            // does not carry the atlas jobs, so it must not make atlas
+            // entries ready.
+            if cam3.is_none() {
+                self.render_corpses(view, v, &cam, models, &mut objects, &mut corpse_jobs);
+            }
         }
         // Port extension: the 3D view (pz-world3d) replaces the isometric
         // frame for player 0 when it is on.
@@ -594,7 +718,7 @@ impl WorldRender {
             .flat_map(|x| (y0..y0 + n).map(move |y| (x, y)))
             .collect();
         let inputs = self.world.chunk_inputs(&order);
-        let mut cmds = Vec::new();
+        let mut cmds = corpse_jobs;
         let chunks = plan_chunks(&mut self.caches[p], &cam, size, &inputs, &mut cmds);
         let maps = pz_iso_render::seam::WorldDepthMaps {
             tiles: &self.depth,
@@ -623,7 +747,31 @@ impl WorldRender {
             state: &state,
             world: &self.world,
         };
-        let r = ChunkRenderer::new(cam, &maps, (v.width, v.height)).with_cutaways(Some(cv));
+        // TODO(port): the climate, water, puddles, sky reflection, rain
+        // and fish splash inputs; with their defaults only the floor blood
+        // draws.
+        let (blood_decals, world_age_hours) = surface_values();
+        let surfaces = Surfaces {
+            settings: SurfaceSettings {
+                blood_decals,
+                lock_fps: pz_lua_api::bind_climate::climate_settings().lock_fps,
+                ..Default::default()
+            },
+            climate: Default::default(),
+            water: Default::default(),
+            puddles: Default::default(),
+            sky: Default::default(),
+            world_age_hours,
+            meta_grid_min_x: 0,
+            world: &self.world,
+            textures: &self.blood_textures,
+            frame: Default::default(),
+            rain: None,
+            fish: None,
+        };
+        let r = ChunkRenderer::new(cam, &maps, (v.width, v.height))
+            .with_cutaways(Some(cv))
+            .with_surfaces(Some(surfaces));
         // `renderWeatherFX` draws after the cell, in the world projection.
         // TODO(port): `render_weather_fx` from `ClimateRenderValues` with
         // the weather mask.
@@ -640,6 +788,27 @@ impl WorldRender {
         );
         out.extend(cmds);
     }
+}
+
+/// The floor blood tiles by name.
+struct BloodTextures(std::collections::HashMap<&'static str, Texture>);
+
+impl SurfaceTextures for BloodTextures {
+    fn texture(&self, name: &str) -> Option<Texture> {
+        self.0.get(name).cloned()
+    }
+}
+
+/// `Core.getOptionBloodDecals()` and `GameTime.getWorldAgeHours()`; a
+/// borrowed owner draws no blood this frame.
+fn surface_values() -> (i32, f32) {
+    let decals = pz_lua_api::bind_core::shared_core()
+        .try_borrow()
+        .map_or(0, |c| c.get_option_blood_decals());
+    let age = pz_lua_api::bind_climate::shared_game_time()
+        .try_borrow()
+        .map_or(0.0, |t| t.world_age_hours() as f32);
+    (decals, age)
 }
 
 impl IsoWorld {

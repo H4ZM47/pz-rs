@@ -43,12 +43,14 @@
 //! (`CellLoader.isoObjectCache`).
 
 use crate::chunk::{IsoCell, IsoGridSquare, MAX_LEVEL, MIN_LEVEL};
+use std::cell::RefCell;
+use std::rc::Rc;
 use crate::isoregion::IsoRegions;
 use crate::java::GameRand;
 use crate::meta_grid::IsoMetaGrid;
 use crate::object_slot::{IsoObjectRef, ObjectSlot};
 use crate::objects::{IsoObject, ObjectId, ObjectKind};
-use crate::save::visual::IsoDeadBody;
+use crate::save::visual::{DeadBodyRef, IsoDeadBody};
 use crate::sprite::{IsoSpriteManager, SpriteIdx};
 use crate::square::{set_matrix_bit, IsoDirections};
 use crate::SquareRef;
@@ -1091,7 +1093,7 @@ impl MutationEnv<'_> {
             return;
         };
         let mut sq = sq_owner.borrow_mut();
-        sq.static_moving.push(body);
+        sq.static_moving.push(Rc::new(RefCell::new(body)));
         let i = sq.static_moving.len() - 1;
         drop(sq);
         self.world.corpse_added_to_world(sq_owner.clone(), i);
@@ -1103,9 +1105,31 @@ impl MutationEnv<'_> {
         self.invalidate_render(pos, dirty::CORPSE_ADDED);
     }
 
+    /// The square side of the `IsoDeadBody(chr)` constructor: the new
+    /// corpse goes into `staticMovingObjects`, then
+    /// `CorpseCount.corpseAdded(xi, yi, zi)` and
+    /// `invalidateRenderChunkLevel(DIRTY_CORPSE_ADDED)`. It is not
+    /// `addCorpse`: the burnt-out flag stays. `false` when the square is
+    /// not loaded (the original keeps the body off any square); else the
+    /// corpse object.
+    ///
+    /// TODO(port): `ObjectIDManager.addObject` and
+    /// `FliesSound.corpseAdded`.
+    pub fn place_new_corpse(&mut self, pos: SquarePos, body: IsoDeadBody) -> HostResult<Option<DeadBodyRef>> {
+        let Some(sq_owner) = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2) else {
+            return Ok(None);
+        };
+        let (x, y, z) = (body.base.x.floor() as i32, body.base.y.floor() as i32, body.base.z.floor() as i32);
+        let body = Rc::new(RefCell::new(body));
+        sq_owner.borrow_mut().static_moving.push(body.clone());
+        crate::dead_body::corpse_count::corpse_added(self.cell, self.meta, x, y, z)?;
+        self.invalidate_render(pos, dirty::CORPSE_ADDED);
+        Ok(Some(body))
+    }
+
     /// `removeCorpse(body, false)` in single player: the corpse at
     /// `staticMovingObjects[index]` leaves the world and the square.
-    pub fn remove_corpse(&mut self, pos: SquarePos, index: usize) -> Option<IsoDeadBody> {
+    pub fn remove_corpse(&mut self, pos: SquarePos, index: usize) -> Option<DeadBodyRef> {
         let sq_owner = self.sq_mut(pos)?;
         let sq = sq_owner.borrow();
         if index >= sq.static_moving.len() {
@@ -1115,9 +1139,9 @@ impl MutationEnv<'_> {
         self.invalidate_render(pos, dirty::CORPSE_REMOVED);
         let sq_owner = self.sq_mut(pos).unwrap();
         let mut sq = sq_owner.borrow_mut();
-        let mut body = sq.static_moving.remove(index);
+        let body = sq.static_moving.remove(index);
         drop(sq);
-        self.world.corpse_removed_from_world(pos, &mut body);
+        self.world.corpse_removed_from_world(pos, &mut body.borrow_mut());
         let sq_owner = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2).unwrap();
         self.world.lua_event(sq_owner, LuaEvent::ContainerUpdate);
         Some(body)

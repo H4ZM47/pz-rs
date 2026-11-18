@@ -208,7 +208,7 @@ impl HumanVisualOwner for VisualOwner {
     }
 }
 
-struct InventoryHost<'a>(&'a mut Thread);
+pub(crate) struct InventoryHost<'a>(pub(crate) &'a mut Thread);
 impl WornItemsInventoryHost for InventoryHost<'_> {
     fn create_item(&mut self, item_type: &str) -> WornInventoryResult<Option<ItemRef>> {
         let item = crate::bind_items::try_create_item_host(item_type, 1.0)?;
