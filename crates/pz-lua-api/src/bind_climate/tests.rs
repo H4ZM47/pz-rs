@@ -447,3 +447,22 @@ fn rain_manager_fresh_class_state_matches_installed_initializer() {
         rain_desired_intensity: 1.0, stop_rain: false,
     });
 }
+
+#[test]
+fn passing_time_counts_the_hours_a_living_player_survives() {
+    let sm = pz_scripts::ScriptManager::new();
+    let chr = std::rc::Rc::new(std::cell::RefCell::new(crate::bind_character_sim::LuaGameCharacter::new(
+        &sm,
+        pz_characters::CharacterKind::Player,
+    )));
+    crate::bind_players::set_player(0, Some(chr.clone()));
+    crate::bind_players::set_num_players(1);
+    let mut t = Thread::new(TableRef::new());
+    super::players_time_passed(&mut t, 0.25);
+    assert_eq!(chr.borrow().hours_survived, 0.25);
+    assert_eq!(chr.borrow().asleep_time, 0.0);
+    chr.borrow_mut().asleep = true;
+    super::players_time_passed(&mut t, 0.5);
+    assert_eq!((chr.borrow().hours_survived, chr.borrow().asleep_time), (0.75, 0.5));
+    crate::bind_players::set_player(0, None);
+}

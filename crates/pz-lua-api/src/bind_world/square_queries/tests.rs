@@ -231,3 +231,60 @@ fn light_level_reads_installed_source_and_defaults_to_white() {
     );
     install_square_light(None);
 }
+
+#[test]
+fn an_object_read_from_a_square_reports_it_until_it_leaves() {
+    let mut f = Fixture::new();
+    crate::bind_world_object::register_classes(&mut f.thread);
+    crate::world_menu_logic::register(&mut f.thread);
+    let slot = pz_world::ObjectSlot::new(pz_world::IsoObject::new(7, pz_world::ObjectKind::Object, None));
+    crate::bind_world_object::ensure_class(&slot.ref_handle(), crate::bind_world_object::ISO_OBJECT).unwrap();
+    f.square(|sq| sq.objects.push(slot));
+    f.run("o = a:getObjects():get(0); assert(o:getSquare() == a)");
+    f.square(|sq| drop(sq.objects.pop()));
+    f.run("assert(o:getSquare() == nil)");
+}
+
+#[test]
+fn menu_reads_of_an_outdoor_square() {
+    let mut f = Fixture::new();
+    crate::bind_world_object::register_classes(&mut f.thread);
+    crate::bind_sprites::register(&mut f.thread);
+    crate::world_menu_logic::register(&mut f.thread);
+    let slot = pz_world::ObjectSlot::new(pz_world::IsoObject::new(7, pz_world::ObjectKind::Object, None));
+    crate::bind_world_object::ensure_class(&slot.ref_handle(), crate::bind_world_object::ISO_OBJECT).unwrap();
+    f.square(|sq| sq.objects.push(slot));
+    f.run(
+        r#"
+        assert(a:getNextNonItemObjectIndex(0) == 0)
+        assert(a:getNextNonItemObjectIndex(1) == -1)
+        assert(not a:getProperties():has("fuelAmount"))
+        assert(a:getRoom() == nil and a:getBuilding() == nil)
+        assert(a:getDeadBody() == nil and a:getAnimalTrack() == nil and not a:haveGraffiti() and not a:haveGrime())
+        local o = a:getObjects():get(0)
+        assert(o:getProperties() == nil and o:getAttachedAnimSprite() == nil)
+        assert(a:getOre() == nil and o:getSpriteName() == nil)
+        assert(not o:hasFluid())
+    "#,
+    );
+}
+
+#[test]
+fn moving_objects_of_a_square() {
+    let mut f = Fixture::new();
+    let sm = pz_scripts::ScriptManager::new();
+    let chr = Rc::new(RefCell::new(crate::bind_character_sim::LuaGameCharacter::new(
+        &sm,
+        pz_characters::CharacterKind::Player,
+    )));
+    chr.borrow_mut().id = 5;
+    crate::bind_players::set_player(0, Some(chr.clone()));
+    let p = crate::bind_character_sim::character_value(&chr);
+    f.thread.globals().rawset(pz_kahlua::Value::str("p"), p);
+    f.run("assert(a:getMovingObjects():size() == 0)");
+    f.square(|sq| sq.moving_objects.push(5));
+    f.run("local l = a:getMovingObjects(); assert(l:size() == 1 and l:get(0) == p)");
+    f.square(|sq| sq.moving_objects.push(9));
+    f.run("assert(not pcall(function() return a:getMovingObjects() end))");
+    crate::bind_players::set_player(0, None);
+}

@@ -10,7 +10,7 @@
 use crate::expose::{expose_class, int_arg, str_arg, JavaEnum};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
-use pz_world::sprite::{IsoSpriteManager, SpriteIdx};
+use pz_world::sprite::{IsoSpriteManager, PropertyContainer, SpriteIdx};
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -87,7 +87,41 @@ impl LuaObject for SpriteObj {
     }
 }
 
-fn sprite_value(idx: Option<SpriteIdx>, props: bool) -> Value {
+/// An `IsoGridSquare`'s `PropertyContainer`, copied when Lua reads it.
+struct SquareProps(PropertyContainer);
+
+impl LuaObject for SquareProps {
+    fn class_name(&self) -> &str {
+        PROPS
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// The Lua `PropertyContainer` of a square's `properties`.
+pub(crate) fn square_props_value(props: PropertyContainer) -> Value {
+    Value::Object(Rc::new(SquareProps(props)))
+}
+
+/// Run `f` on the `PropertyContainer` that receives `has` or `get`.
+fn with_props<R>(
+    c: &NativeCall<'_>,
+    f: impl FnOnce(&IsoSpriteManager, &PropertyContainer) -> LuaResult<R>,
+) -> LuaResult<R> {
+    if let Value::Object(o) = c.arg(0) {
+        if let Some(square) = o.as_any().downcast_ref::<SquareProps>() {
+            return with_manager(|m| f(m, &square.0));
+        }
+    }
+    let i = self_idx(c, true)?;
+    with_manager(|m| {
+        let m: &IsoSpriteManager = m;
+        f(m, &m.sprites[i].properties)
+    })
+}
+
+pub(crate) fn sprite_value(idx: Option<SpriteIdx>, props: bool) -> Value {
     idx.map_or(Value::Nil, |idx| {
         Value::Object(Rc::new(SpriteObj { idx, props }))
     })
@@ -218,10 +252,8 @@ pub fn register(thread: &mut Thread) {
     });
     // `has(String)` / `has(IsoFlagType)`.
     p.method("has", |c| {
-        let i = self_idx(c, true)?;
         let key = c.arg(1);
-        let r = with_manager(|m| {
-            let props = &m.sprites[i].properties;
+        let r = with_props(c, |m, props| {
             Ok(match flag_name(&key) {
                 Some(f) => m
                     .tables
@@ -234,14 +266,8 @@ pub fn register(thread: &mut Thread) {
     });
     // `get(String)`.
     p.method("get", |c| {
-        let i = self_idx(c, true)?;
-        let v = with_manager(|m| {
-            Ok(str_arg(c, 1).and_then(|n| {
-                m.sprites[i]
-                    .properties
-                    .get(&m.alias, &n)
-                    .map(str::to_string)
-            }))
+        let v = with_props(c, |m, props| {
+            Ok(str_arg(c, 1).and_then(|n| props.get(&m.alias, &n).map(str::to_string)))
         })?;
         Ok(c.push(v.map_or(Value::Nil, |v| Value::str(&v))))
     });
