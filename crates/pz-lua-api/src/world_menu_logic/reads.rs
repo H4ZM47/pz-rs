@@ -53,6 +53,19 @@ pub(super) fn register(thread: &mut Thread) {
         let sprite = tile_sprite(receiver(&this)?, "IsoObject.getProperties")?;
         Ok(c.push(crate::bind_sprites::sprite_value(sprite, true)))
     });
+    // getProperty(String): `getProperties()`, then its `get(key)`; null
+    // without a sprite.
+    object.method("getProperty", |c| {
+        let this = c.arg(0);
+        let sprite = tile_sprite(receiver(&this)?, "IsoObject.getProperty")?;
+        let props = crate::bind_sprites::sprite_value(sprite, true);
+        if props.is_nil() {
+            return Ok(c.push(Value::Nil));
+        }
+        let get = c.thread.table_get(&props, &Value::str("get"))?;
+        let v = c.thread.call1(&get, &[props, c.arg(1)])?;
+        Ok(c.push(v))
+    });
     // getAttachedAnimSprite(): `attachedAnimSprite`, as a copy.
     object.method("getAttachedAnimSprite", |c| {
         let this = c.arg(0);
