@@ -890,15 +890,16 @@ all installed assets, render paths or foreign platforms.
       game-world UI; `HudPlayers::player_screen` (characters thread) and
       `HudCamera` (`IsoCamera.getOffX/Y`, `Core.getZoom`; world-render
       thread) feed its position (#145).
-- [ ] Clock inputs: `HudAlarmClocks` (players' worn and inventory
+- [x] Clock inputs: `HudAlarmClocks` (players' worn and inventory
       `AlarmClock`/`AlarmClockClothing`, stop/set alarm; world thread),
       `HudClimate::air_temperature_for_character` and
       `HudGameTime::time_of_day/day/month` and `digits_time_of_day` (the
       digits' `serverTimeOfDay` swap while an MP client fast-forwards)
       (characters thread),
-      `HudPlayers::player_dead`, `HudDebug::cheat_clock_visible`. Call
-      `UIManager::resize()` when a player's clocks change (the original
-      re-runs `resize` from its callers) (#146; digits split #164).
+      `HudPlayers::player_dead`, `HudDebug::cheat_clock_visible`.
+      `UIManager::resize()` runs every in-game frame before
+      `renderframeui`, as `IngameState.renderInternal` does; `Clock.resize`
+      there reads the players' clocks (#146; digits split #164).
 - [ ] Moodles: `hud::set_moodles_character(i, Some(player_index))` when a
       player is created or removed (`IsoPlayer` sets
       `UIManager.getMoodleUI(i).setCharacter`); `HudMoodles` (a player's
