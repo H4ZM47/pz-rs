@@ -1492,6 +1492,39 @@ mod tests {
     }";
 
     #[test]
+    fn required_skill_perk_and_player_check() {
+        use pz_characters::skills::PerkFactory;
+        use pz_scripts::registry::builtin::PerkDecl;
+        let sm = load(
+            "skills",
+            &[("media/scripts/test.txt", "module Base { craftRecipe Saw { time = 10, SkillRequired = Woodwork:3, } }")],
+        );
+        {
+            let decl = |f: &str| PerkDecl { field: f.into(), id: f.into(), parent: None };
+            let mut tables = sm.builtin_tables.borrow_mut();
+            tables.perks = ["None", "Woodwork", "MAX"].map(decl).to_vec();
+        }
+        let chars = crate::bind_characters::shared_characters();
+        chars.borrow_mut().perks = PerkFactory::from_tables(&sm.builtin_tables.borrow()).unwrap();
+        let mut t = thread(sm);
+        run(
+            &mut t,
+            r#"
+            local skill = getScriptManager():getCraftRecipe("Saw"):getRequiredSkill(0)
+            assert(tostring(skill:getPerk()) == "Woodwork" and skill:getLevel() == 3)
+            local function chr(level)
+                return { getPerkLevel = function(self, perk) assert(tostring(perk) == "Woodwork") return level end }
+            end
+            assert(CraftRecipeManager.hasPlayerRequiredSkill(skill, chr(3)))
+            assert(not CraftRecipeManager.hasPlayerRequiredSkill(skill, chr(2)))
+            assert(not CraftRecipeManager.hasPlayerRequiredSkill(nil, chr(9)))
+            assert(not CraftRecipeManager.hasPlayerRequiredSkill(skill, nil))
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn manager_items_and_recipes() {
         let sm = load("items", &[("media/scripts/test.txt", SCRIPTS)]);
         let mut t = thread(sm);
