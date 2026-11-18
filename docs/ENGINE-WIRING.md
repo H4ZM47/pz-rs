@@ -593,9 +593,12 @@ fresh isolated cache. A successful ordinary workspace suite does not exercise
 all installed assets, render paths or foreign platforms.
 
 ## Boot (`GameWindow.init`)
-- [ ] Mods (only when Core's mods option is on): `bind_mods::read_default`,
-      `GameFs::load_mods`, mod texture packs via `mod_pack_files` →
-      `load_texture_pack` + `set_texture_pack_lookup` (#24).
+- [x] Mods (only when Core's mods option is on): `boot::load_default_mods`
+      (`resetDefaultModsForNewRelease`, `bind_mods::read_default`,
+      `GameFs::load_mods`, then `boot::load_mod_pack_files`:
+      `load_texture_pack` + `set_texture_pack_lookup`) before the UI packs in
+      `App::boot`, the client's headless boot and the menu reload; the mods'
+      script folders reach `ScriptManager.Load` (#24). Lua mods only.
 - [x] ScriptManager: `load_builtin_registries` + `load`, then
       `bind_registry::install_script_manager` (#22/#27).
 - [x] Item assets for `instanceItem`: after the ScriptManager,
