@@ -48,6 +48,9 @@ pub struct ClassFile {
     pub super_class: Option<String>,
     pub fields: Vec<Member>,
     pub methods: Vec<Member>,
+    /// The `BootstrapMethods` attribute: for each entry, the pool index of
+    /// its method handle and its static arguments.
+    pub bootstrap_methods: Vec<(u16, Vec<u16>)>,
 }
 
 /// A resolved field or method reference: (owner class, name, descriptor).
@@ -155,6 +158,7 @@ impl ClassFile {
             super_class: None,
             fields: Vec::new(),
             methods: Vec::new(),
+            bootstrap_methods: Vec::new(),
         };
         cf.access = r.u16()?;
         cf.this_class = cf.class_name(r.u16()?)?.to_string();
@@ -166,7 +170,37 @@ impl ClassFile {
         }
         cf.fields = cf.members(&mut r)?;
         cf.methods = cf.members(&mut r)?;
+        for _ in 0..r.u16()? {
+            let attr = cf.utf8(r.u16()?)?.to_string();
+            let len = r.u32()? as usize;
+            let body = r.bytes(len)?;
+            if attr == "BootstrapMethods" {
+                let mut b = Reader { b: body, at: 0 };
+                for _ in 0..b.u16()? {
+                    let handle = b.u16()?;
+                    let mut args = Vec::new();
+                    for _ in 0..b.u16()? {
+                        args.push(b.u16()?);
+                    }
+                    cf.bootstrap_methods.push((handle, args));
+                }
+            }
+        }
         Ok(cf)
+    }
+
+    /// The `StringConcatFactory.makeConcatWithConstants` recipe of the
+    /// `invokedynamic` constant at `index` (`\u{1}` marks an argument,
+    /// `\u{2}` a constant), or `None` for any other call site.
+    pub fn indy_concat_recipe(&self, index: u16) -> Option<String> {
+        let Ok(Constant::InvokeDynamic(bootstrap, nt)) = self.constant(index) else { return None };
+        let Ok(Constant::NameAndType(name, _)) = self.constant(*nt) else { return None };
+        if self.utf8(*name).ok()? != "makeConcatWithConstants" {
+            return None;
+        }
+        let (_, args) = self.bootstrap_methods.get(*bootstrap as usize)?;
+        let Ok(Constant::String(recipe)) = self.constant(*args.first()?) else { return None };
+        Some(self.utf8(*recipe).ok()?.to_string())
     }
 
     fn members(&self, r: &mut Reader) -> Result<Vec<Member>> {

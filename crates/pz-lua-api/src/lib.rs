@@ -260,6 +260,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     {
         let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
         bind_randomized_world::register_from_jar(&mut mgr.thread, jar.as_ref());
+        bind_items::on_create_data::register_from_jar(jar.as_ref());
     }
     bind_sprites::register(&mut mgr.thread);
     bind_map_groups::register(&mut mgr.thread, move || fs.borrow().media_file("maps"));

@@ -300,8 +300,24 @@ and the complete Java ItemCodeOnCreate class remain separate work.
 The genuine ItemCodeOnCreate class now exposes onCreateRecipeMagazine for
 actual Literature receivers: get the actual ModData table, read full type,
 then rawset literatureTitle, retaining unrelated entries and returning no
-values. This implements one of 58 public callbacks. The other 57 callbacks,
-constructor/private helpers, successful resolver cache and native factory
+values. The custom-colour callbacks (`onCreateLipstick`, `onCreateFabricRoll`,
+`onCreateSprayPaint`, `onCreateToyPlane`, `onCreateRandomColor`) draw from the
+`ItemGenerationConstants` weighted colour lists read from the jar, or from
+`Colors.GetRandomColor`, and set the item's custom colour. The ID card
+callbacks (`onCreateIDCard`, `onCreateIDCardFemale`, `onCreateIDCardMale`) name
+the item after its display name and a random survivor name, and give a
+Literature card a random `lockedBy`. The other callbacks
+(`on_create_callbacks`) are ported from the 42.21 bytecode with the same `Rand`
+draws in the same order. Their tables (`Brochure`, `Flier`, `Newspaper`,
+`Book`, `Magazine`, `ComicBook`, `Photo`, `Job`, the `ItemGenerationConstants`
+lists and the `ModelKey` / `ItemKey` / `FluidKey` / `ItemTag` ids they use) are
+read from the installed jar's static initialisers (`on_create_data`), so
+nothing is hard-coded. The exceptions are `onCreateScarecrow` and
+`onCreateSkeletonDisplay`, which build an `IsoMannequin` and fail as
+`pz.host.Unsupported`. `scratchTicketWinner` draws from the weighted
+`ticketWinnings` map in declaration order: the JDK shuffles that immutable
+map's iteration order per run, so no order is the original's.
+Constructor/private helpers, successful resolver cache and native factory
 callback ordering still need work. Supported argument conversion order and
 messages follow the installed invoker; unavailable reflected-null diagnostics
 and concrete Java implementation-class diagnostics fail explicitly as host
