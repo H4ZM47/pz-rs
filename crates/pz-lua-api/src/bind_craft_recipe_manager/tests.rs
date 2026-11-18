@@ -813,7 +813,7 @@ fn filter_and_tank_tests_read_the_clothing_mod_data() {
 }
 
 /// The other `RecipeCodeOnTest` checks on the item alone: `cutFish`,
-/// `cutFillet`, `breakGlass`, `hotFluidContainer`, `canAddToPack`,
+/// `cutFillet`, `breakGlass`, `hotFluidContainer`, `purifyWater`, `canAddToPack`,
 /// `scratchTicket` and `copyKey`.
 #[test]
 fn item_recipe_tests_follow_the_bytecode() {
@@ -853,6 +853,7 @@ fn item_recipe_tests_follow_the_bytecode() {
     assert!(test(&mut t, "cutFish(bat, nil)") && test(&mut t, "cutFillet(bat, nil)"), "not food");
     assert!(test(&mut t, "breakGlass(bat, nil)"), "no fluid container");
     assert!(test(&mut t, "hotFluidContainer(bat, nil)"), "no fluid container");
+    assert!(test(&mut t, "purifyWater(bat, nil)"), "no fluid container");
     assert!(test(&mut t, "canAddToPack(bat, nil)"), "not drainable");
     assert_eq!(pack.borrow().get_current_uses_float() < 1.0, test(&mut t, "canAddToPack(pack, nil)"));
     assert!(test(&mut t, "scratchTicket(bat, nil)"));

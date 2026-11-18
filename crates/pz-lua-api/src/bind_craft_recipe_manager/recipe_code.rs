@@ -74,6 +74,20 @@ pub(super) fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
             || i.get_current_uses_float() < 1.0;
         Ok(c.push(v))
     });
+    // `purifyWater`: a `FluidContainer` component that contains
+    // `Fluid.TaintedWater`; any other item.
+    b.static_fn("purifyWater", |c| {
+        let value = c.arg(0);
+        crate::bind_world_object::item_argument(&value)?;
+        let Some(component) = crate::bind_world_object::fluid_component(&value)? else {
+            return Ok(c.push(true));
+        };
+        let body = component.try_borrow().map_err(|_| LuaError::runtime("FluidContainer is in use"))?;
+        let fluid = body.fluid().ok_or_else(|| LuaError::runtime("FluidContainer allocation has an invalid class"))?;
+        let tainted = pz_entity::FluidRef::Type(pz_scripts::objects::definitions::FluidType::TaintedWater.id());
+        let v = fluid.fluids.iter().any(|f| f.fluid.as_ref() == Some(&tainted));
+        Ok(c.push(v))
+    });
     // `scratchTicket`: `scratched` is not true in the mod data.
     b.static_fn("scratchTicket", |c| {
         let item = crate::bind_world_object::item_argument(&c.arg(0))?;
