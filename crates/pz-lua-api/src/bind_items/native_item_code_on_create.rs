@@ -1,6 +1,8 @@
 //! Genuine static ItemCodeOnCreate entry points over actual item allocations.
 //!
-//! Only onCreateRecipeMagazine is implemented. Other declared handlers, the
+//! Implemented: onCreateRecipeMagazine and the custom-colour callbacks
+//! (onCreateLipstick, onCreateFabricRoll, onCreateSprayPaint,
+//! onCreateToyPlane, onCreateRandomColor). Other declared handlers, the
 //! public constructor, inherited helpers and factory/callback phase parity are
 //! separate capabilities; no replacement Lua callbacks are installed here.
 
@@ -119,9 +121,107 @@ fn invoke(call: &mut NativeCall<'_>) -> LuaResult<usize> {
     }
 }
 
+
+// ---- custom-colour callbacks ------------------------------------------------------------------
+
+/// The `setCustomColor(item, color)` helper: the item's colour, its red,
+/// green and blue channels, then the custom-colour flag. Java keeps the
+/// Color reference itself in `col`; the port's item stores its value.
+fn set_custom_color(item: &ItemRef, color: &crate::bind_misc_classes::Color) -> LuaResult<()> {
+    let rgba = [color.r.get(), color.g.get(), color.b.get(), color.a.get()];
+    {
+        let mut body = item.try_borrow_mut().map_err(|_| {
+            ModDataError::Borrowed("ItemCodeOnCreate.setCustomColor item").to_lua_error()
+        })?;
+        body.col = rgba;
+        body.color_red = rgba[0];
+        body.color_green = rgba[1];
+        body.color_blue = rgba[2];
+        body.custom_color = true;
+    }
+    pz_inventory::shared::observe_item(item);
+    Ok(())
+}
+
+/// Native reference conversion for an `InventoryItem` parameter: any item
+/// class is accepted, Java null faults later in the body.
+fn item_argument(call: &NativeCall<'_>) -> LuaResult<Option<ItemRef>> {
+    if call.nargs() == 0 {
+        return Err(pz_kahlua::LuaError::runtime("expected 1 argument, got 0"));
+    }
+    let argument = call.arg(0);
+    let item = match &argument {
+        Value::Nil => None,
+        Value::Object(object) => {
+            match (&**object as &dyn std::any::Any).downcast_ref::<LuaInventoryItem>() {
+                Some(known) => Some(known.item.clone()),
+                None => return Err(item_type_error(&argument)),
+            }
+        }
+        _ => return Err(item_type_error(&argument)),
+    };
+    if call.nargs() != 1 {
+        return Err(pz_kahlua::LuaError::runtime(format!(
+            "expected 1 argument, got {}",
+            call.nargs()
+        )));
+    }
+    Ok(item)
+}
+
+fn item_type_error(argument: &Value) -> pz_kahlua::LuaError {
+    if matches!(argument, Value::Native(_)) {
+        return ModDataError::Unsupported(
+            "native JavaFunction implementation class in InventoryItem argument diagnostic",
+        )
+        .to_lua_error();
+    }
+    pz_kahlua::LuaError::runtime(format!(
+        "expected argument of type InventoryItem, got {}",
+        crate::expose::simple_name(&pz_kahlua::stdlib::java_class_name(argument))
+    ))
+}
+
+/// Which colour a custom-colour callback picks.
+#[derive(Clone, Copy)]
+enum ColorSource {
+    /// `ItemGenerationConstants.<list>.getRandom()`.
+    Weighted(&'static str),
+    /// `Color.random()`.
+    Random,
+}
+
+/// Java evaluates the colour argument before `setCustomColor` touches the
+/// item, so the draw happens even for a null item; the null receiver then
+/// faults inside the helper.
+fn invoke_custom_color(call: &mut NativeCall<'_>, source: ColorSource, name: &'static str) -> LuaResult<usize> {
+    let item = item_argument(call)?;
+    let color = match source {
+        ColorSource::Weighted(list) => crate::bind_colors::item_generation_random_color(list)?,
+        ColorSource::Random => crate::bind_colors::random_color()?,
+    };
+    let Some(item) = item else {
+        return Err(ModDataError::Unsupported(name).to_lua_error());
+    };
+    set_custom_color(&item, &color)?;
+    Ok(0)
+}
+
+const CUSTOM_COLOR_CALLBACKS: [(&str, ColorSource, &str); 5] = [
+    ("onCreateLipstick", ColorSource::Weighted("COLOR_LIPSTICK"), "MethodCaller null-receiver NPE diagnostic state for onCreateLipstick"),
+    // FabricRoll draws from the lipstick list too.
+    ("onCreateFabricRoll", ColorSource::Weighted("COLOR_LIPSTICK"), "MethodCaller null-receiver NPE diagnostic state for onCreateFabricRoll"),
+    ("onCreateSprayPaint", ColorSource::Weighted("COLOR_SPRAY_PAINT"), "MethodCaller null-receiver NPE diagnostic state for onCreateSprayPaint"),
+    ("onCreateToyPlane", ColorSource::Weighted("COLOR_TOY_PLANE"), "MethodCaller null-receiver NPE diagnostic state for onCreateToyPlane"),
+    ("onCreateRandomColor", ColorSource::Random, "MethodCaller null-receiver NPE diagnostic state for onCreateRandomColor"),
+];
+
 pub(super) fn register(thread: &mut Thread) {
     let class = crate::expose::expose_class(thread, CLASS, Some(SUPERCLASS));
     class.static_fn("onCreateRecipeMagazine", invoke);
+    for (name, source, null_receiver) in CUSTOM_COLOR_CALLBACKS {
+        class.static_fn(name, move |c| invoke_custom_color(c, source, null_receiver));
+    }
 }
 
 #[cfg(test)]
@@ -439,5 +539,113 @@ mod tests {
         }
         pz_inventory::component_host::drain_retired_components();
         assert_eq!(drops.get(), 1);
+    }
+}
+
+#[cfg(test)]
+mod custom_color_tests {
+    use std::rc::Rc;
+
+    use pz_inventory::{shared, InventoryItem, ItemClass, ItemTemplate};
+    use pz_kahlua::{stdlib, TableRef, Thread, Value};
+
+    use crate::bind_misc_classes::Color;
+
+    fn thread() -> Thread {
+        let mut thread = Thread::new(TableRef::new());
+        stdlib::install(&mut thread, None).unwrap();
+        crate::bind_java_util::register(&mut thread);
+        crate::bind_globals::register(&mut thread);
+        crate::bind_items::register(&mut thread);
+        thread
+    }
+
+    fn run(thread: &mut Thread, src: &str) -> Result<Vec<Value>, String> {
+        let f = stdlib::load_string(src, Some("test"), thread.globals().clone()).unwrap();
+        thread.pcall(&f, &[]).map_err(|(m, _)| pz_kahlua::exec::java_value_of(&m))
+    }
+
+    fn item(thread: &mut Thread) -> super::ItemRef {
+        let item = shared::try_new_item(InventoryItem::create(
+            Rc::new(ItemTemplate::new(ItemClass::Normal, "Base", "Lipstick")),
+            1,
+        ))
+        .unwrap();
+        thread.globals().set_str("item", crate::bind_items::try_item_value(&item).unwrap());
+        item
+    }
+
+    #[test]
+    fn weighted_callbacks_set_the_drawn_custom_colour() {
+        let mut thread = thread();
+        let red = Rc::new(Color::rgba(0.75, 0.25, 0.5, 1.0));
+        let blue = Rc::new(Color::rgba(0.0, 0.0, 1.0, 0.5));
+        crate::bind_colors::install_item_generation_colors_for_test(vec![
+            ("COLOR_LIPSTICK", vec![(red.clone(), 3), (blue.clone(), 1)]),
+            ("COLOR_SPRAY_PAINT", vec![(blue.clone(), 5)]),
+            ("COLOR_TOY_PLANE", vec![(blue.clone(), 5)]),
+        ]);
+        for callback in ["onCreateLipstick", "onCreateFabricRoll", "onCreateSprayPaint", "onCreateToyPlane"] {
+            let item = item(&mut thread);
+            let r = run(&mut thread, &format!("return select('#', ItemCodeOnCreate.{callback}(item))")).unwrap();
+            assert_eq!(r[0].as_num(), Some(0.0), "{callback}");
+            let body = item.borrow();
+            assert!(body.custom_color, "{callback}");
+            let got = [body.col[0], body.col[1], body.col[2], body.col[3]];
+            assert!(got == [0.75, 0.25, 0.5, 1.0] || got == [0.0, 0.0, 1.0, 0.5], "{callback}: {got:?}");
+            assert_eq!([body.color_red, body.color_green, body.color_blue], [got[0], got[1], got[2]]);
+        }
+    }
+
+    #[test]
+    fn weighted_draw_follows_the_running_sum() {
+        let a = Rc::new(Color::rgba(1.0, 0.0, 0.0, 1.0));
+        let b = Rc::new(Color::rgba(0.0, 1.0, 0.0, 1.0));
+        crate::bind_colors::install_item_generation_colors_for_test(vec![("COLOR_LIPSTICK", vec![(a.clone(), 1), (b.clone(), 1)])]);
+        let draws = (0..8)
+            .map(|_| {
+                pz_core::random::set_seed(7);
+                let expected = pz_core::random::with_standard(|r| r.next(2));
+                pz_core::random::set_seed(7);
+                let got = crate::bind_colors::item_generation_random_color("COLOR_LIPSTICK").unwrap();
+                (expected, Rc::ptr_eq(&got, &a))
+            })
+            .collect::<Vec<_>>();
+        for (roll, is_a) in draws {
+            assert_eq!(roll == 0, is_a);
+        }
+    }
+
+    #[test]
+    fn bad_arguments_and_missing_lists_fail() {
+        let mut thread = thread();
+        crate::bind_colors::install_item_generation_colors_for_test(vec![]);
+        let _ = item(&mut thread);
+        let e = run(&mut thread, "ItemCodeOnCreate.onCreateSprayPaint(item)").unwrap_err();
+        assert!(e.contains("COLOR_SPRAY_PAINT"), "{e}");
+        let e = run(&mut thread, "ItemCodeOnCreate.onCreateLipstick('x')").unwrap_err();
+        assert!(e.contains("expected argument of type InventoryItem"), "{e}");
+        let e = run(&mut thread, "ItemCodeOnCreate.onCreateLipstick()").unwrap_err();
+        assert!(e.contains("expected 1 argument, got 0"), "{e}");
+    }
+
+    /// With an install, the jar's lists load and every entry resolves to a
+    /// `Colors` field.
+    #[test]
+    fn installed_jar_lists_load() {
+        let Ok(dir) = std::env::var("PZ_GAME_DIR") else {
+            eprintln!("PZ_GAME_DIR not set; skipping");
+            return;
+        };
+        let jar = pz_classfile::Jar::open(std::path::Path::new(&dir).join("projectzomboid.jar")).unwrap();
+        let mut thread = thread();
+        crate::bind_colors::register(&mut thread, Some(&jar));
+        for list in ["COLOR_LIPSTICK", "COLOR_SPRAY_PAINT", "COLOR_TOY_PLANE"] {
+            crate::bind_colors::item_generation_random_color(list).unwrap();
+        }
+        crate::bind_colors::random_color().unwrap();
+        let item = item(&mut thread);
+        run(&mut thread, "ItemCodeOnCreate.onCreateRandomColor(item)").unwrap();
+        assert!(item.borrow().custom_color);
     }
 }
