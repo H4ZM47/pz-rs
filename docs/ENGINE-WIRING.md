@@ -1353,13 +1353,18 @@ registered):
       read `IsoChunk.vehicles.loaded()` (#88/#91); once the vehicle runtime
       replaces those entries with its own objects, route these through
       the cell's vehicle list instead.
-- [ ] Erosion: `ErosionMain::new(tables from jar, ErosionSettings from
+- [x] Erosion: `ErosionMain::new(tables from jar, ErosionSettings from
       sandbox/GameTime, sprites, None = host time zone, OnInitSeasons hook)` at
       world load; pass `ErosionChunkHook { main, hooks: &ObjectHooks,
       dictionary: Some(&WorldDictionary), rand, logs_per_size }` to
       `finish_chunk_load` (it also gets `chunk_unloaded`); `main_timer(day,
       month, year)` on GameTimes ten-minute tick; bind `bind_erosion::
-      set_instance` for Lua (#42).
+      set_instance` for Lua (#42). Done: `IsoWorld::with_stream` passes
+      the hook (live-object `SquareHooks` via `cell_objects`, the save's
+      dictionary, `ObjectTables::logs_per_size`) to the streamer and the
+      deferred `SquareReady` step; `GameTimeEvent::ErosionEveryTenMinutes`
+      runs `mainTimer` before Lua's `EveryTenMinutes`. TODO(port): the
+      `ClearSoundsOnUnload` wrapper.
 - [ ] Pathfinding: one `PathfindService::new(meta min_x, min_y, width, height, is_server)` in a
       `pz_pathfind::host::PathHost` per world. On chunk load/unload
       `add_chunk_to_world(chunk, load_id, &SquareBits)` /
