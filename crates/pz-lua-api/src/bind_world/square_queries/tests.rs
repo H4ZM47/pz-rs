@@ -231,3 +231,34 @@ fn light_level_reads_installed_source_and_defaults_to_white() {
     );
     install_square_light(None);
 }
+
+#[test]
+fn objects_listed_from_a_square_give_their_containers_that_source_grid() {
+    let old_items = pz_inventory::shared::install_item_observer(Some(
+        crate::component_gc::observe_item,
+    ));
+    let old_objects = pz_world::object_slot::install_object_observer(Some(
+        crate::component_gc::observe_object,
+    ));
+    let mut f = Fixture::new();
+    crate::bind_item_container::register(&mut f.thread);
+    crate::bind_world_object::register_classes(&mut f.thread);
+    f.square(|square| {
+        let mut fridge = pz_world::IsoObject::new(9, pz_world::ObjectKind::Object, None);
+        fridge.container = Some(pz_inventory::ItemContainer::new(Some("fridge")));
+        square.objects.push(pz_world::ObjectSlot::new(fridge).into());
+    });
+    // The `ItemContainer` constructor for a map object sets the square as
+    // the source grid (ItemPicker needs it).
+    f.run(
+        r#"
+        local c = a:getObjects():get(0):getContainer()
+        local g = c:getSourceGrid()
+        assert(g ~= nil and g:getX() == 1 and g:getY() == 1 and g:getZ() == 0)
+        assert(c:getParent() == a:getObjects():get(0))
+    "#,
+    );
+    drop(f);
+    pz_inventory::shared::install_item_observer(old_items);
+    pz_world::object_slot::install_object_observer(old_objects);
+}

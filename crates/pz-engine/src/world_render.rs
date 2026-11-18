@@ -106,29 +106,37 @@ pub struct WorldRender {
     view3d_cursor_free: bool,
 }
 
+/// `GameWindow.enter`'s tile packs at `Core.tileScale` 2. The original
+/// loads them before any world. The port loads them when a game starts
+/// loading, so that the menu does not pay for them; square loading
+/// (`TileOverlays.updateTileOverlaySprite`) needs them. Loads once.
+pub fn load_tile_packs(fs: &GameFs, tm: &mut TextureManager) {
+    if tm.packs.iter().any(|p| p.pack_name == "Tiles2x") {
+        return;
+    }
+    let flags = if tm.use_compression { 4 } else { 0 } | 0x40;
+    for (pack, f) in [
+        ("Tiles2x", flags),
+        ("Overlays2x", flags),
+        ("JumboTrees2x", flags),
+        ("JumboTreesBigs2x", flags),
+        ("Tiles2x.floor", flags & !4),
+        ("B42ChunkCaching2x", flags),
+        ("B42ChunkCaching2x.floor", flags & !4),
+        ("Clock2x", flags),
+    ] {
+        tm.load_texture_pack(fs, pack, f, None);
+    }
+    let mods = fs.mod_ids().to_vec();
+    tm.set_texture_pack_lookup(&mods);
+}
+
 impl WorldRender {
-    /// The textures and tables the world renderer reads. The tile packs
-    /// are `GameWindow.enter`'s (loaded here, on the first world frame, so
-    /// that the menu does not pay for them); then
-    /// `TileDepthTextureManager.init`, the tile depth assignments and the
-    /// tile geometry, the seam and cutaway masks.
+    /// The textures and tables the world renderer reads: the tile packs
+    /// (see [`load_tile_packs`]), `TileDepthTextureManager.init`, the tile
+    /// depth assignments and the tile geometry, the seam and cutaway masks.
     pub fn new(game_dir: &std::path::Path, fs: &mut GameFs, tm: &mut TextureManager) -> Self {
-        // `GameWindow.enter` at `Core.tileScale` 2.
-        let flags = if tm.use_compression { 4 } else { 0 } | 0x40;
-        for (pack, f) in [
-            ("Tiles2x", flags),
-            ("Overlays2x", flags),
-            ("JumboTrees2x", flags),
-            ("JumboTreesBigs2x", flags),
-            ("Tiles2x.floor", flags & !4),
-            ("B42ChunkCaching2x", flags),
-            ("B42ChunkCaching2x.floor", flags & !4),
-            ("Clock2x", flags),
-        ] {
-            tm.load_texture_pack(fs, pack, f, None);
-        }
-        let mods = fs.mod_ids().to_vec();
-        tm.set_texture_pack_lookup(&mods);
+        load_tile_packs(fs, tm);
         let depth = TileDepthTextureManager::init(fs, tm);
         let assignments = TileDepthTextureAssignmentManager::init(fs);
         let geometry = TileGeometryManager::from_media_dirs([game_dir.join("media").as_path()]);

@@ -361,6 +361,10 @@ impl GameState for GameLoadingState {
         let core = pz_lua_api::bind_core::shared_core();
         println!("Savefile name is \"{}\"", core.borrow().game_save_world);
         self.game_loading_string.clear();
+        crate::world_render::load_tile_packs(
+            &cx.lua.fs.borrow(),
+            &mut pz_lua_api::bind_render::textures().borrow_mut(),
+        );
         cx.lua.load_dir_base("server");
         // TODO(port): `LuaManager.finishChecksum()`.
         pz_lua_api::bind_registry::shared_script_manager().loaded_after_lua();

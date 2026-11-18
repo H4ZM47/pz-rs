@@ -968,7 +968,7 @@ fn contains_in(_t: &mut Thread, c: &ContainerRef, item: &ItemRef, do_inv: bool) 
 }
 
 /// `isItemAllowed(item)`.
-fn is_item_allowed(t: &mut Thread, c: &ContainerRef, item: Option<&ItemRef>) -> LuaResult<bool> {
+pub(crate) fn is_item_allowed(t: &mut Thread, c: &ContainerRef, item: Option<&ItemRef>) -> LuaResult<bool> {
     let Some(item) = item else {
         return Ok(false);
     };
@@ -1050,7 +1050,7 @@ fn is_item_allowed(t: &mut Thread, c: &ContainerRef, item: Option<&ItemRef>) -> 
 
 /// `hasRoomFor(chr, weightVal, weightAddedToFloor)` without vehicle seats
 /// or a bag's world item (neither is shared yet).
-fn has_room_for_weight(
+pub(crate) fn has_room_for_weight(
     t: &mut Thread,
     c: &ContainerRef,
     chr: &Value,
@@ -3072,6 +3072,17 @@ fn register_fields(b: &crate::expose::ClassBuilder) {
     b.method("isEmpty", |c| {
         let v = this(c)?.borrow().items.is_empty();
         Ok(c.push(v))
+    });
+    // isEmptyOrUnwanted(player): true when there are no items or every
+    // item is unwanted by the player.
+    b.method("isEmptyOrUnwanted", |c| {
+        let player = c.arg(1);
+        for item in items(&this(c)?) {
+            if !crate::item_tooltip::chr::unwanted_by(c.thread, &item, &player)? {
+                return Ok(c.push(false));
+            }
+        }
+        Ok(c.push(true))
     });
     b.method("isFreezer", |c| {
         let v = this(c)?.borrow().is_freezer();

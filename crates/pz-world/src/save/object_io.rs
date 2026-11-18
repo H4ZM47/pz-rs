@@ -1044,8 +1044,8 @@ fn save_base(
     if with_containers && o.container_count() > 0 {
         bits.add(2);
         w.i8(o.container_count() as i8);
-        for c in o.containers() {
-            save_container(w, c, ctx.items)?;
+        for c in o.saved_containers()? {
+            save_container(w, &c, ctx.items)?;
         }
     }
     if let Some(t) = mod_data.filter(|t| !t.is_empty()) {
@@ -2069,7 +2069,8 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
                     super::io::SaveError(format!("archive pushable sprite field: {error:?}"))
                 })?)
             };
-            return p.save(w, class, sprite, o.container.as_ref(), ctx.items);
+            let container = o.saved_main_container()?;
+            return p.save(w, class, sprite, container.as_deref(), ctx.items);
         }
         ObjectKind::Barricade(b) => {
             w.i8(1);
@@ -2086,7 +2087,8 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
         _ => {}
     }
     let generator_md;
-    let mut mod_data = o.mod_data.as_ref();
+    let saved_md = o.saved_mod_data()?;
+    let mut mod_data = saved_md.as_deref();
     let mut with_containers = true;
     let mut with_attached = true;
     match &o.kind {
@@ -2095,7 +2097,7 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
         ObjectKind::Generator(_) => {
             // getModData().rawset("totalPowerDraw", (Object) float): a Float
             // the table cannot save, which still makes it non-empty.
-            let mut md = o.mod_data.clone().unwrap_or_default();
+            let mut md = saved_md.as_deref().cloned().unwrap_or_default();
             md.rawset(
                 LuaKey::Str("totalPowerDraw".into()),
                 Some(LuaValue::Unsaveable),

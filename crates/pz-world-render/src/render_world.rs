@@ -120,7 +120,7 @@ pub fn render_square(
         ro.id = o.id;
         ro.render_y_offset = o.render_y_offset;
         ro.tint = [o.tint_r, o.tint_g, o.tint_b];
-        ro.container_count = u32::from(o.container.is_some()) + o.secondary_containers.len() as u32;
+        ro.container_count = o.container_count() as u32;
         if !hidden_item {
             for attached in o.attached_anim_sprite.iter().flatten() {
                 w.sprites.sprites.get(attached.sprite).ok_or(
@@ -130,6 +130,18 @@ pub fn render_square(
                     sprite: cache.get(w.sprites, attached.sprite, tex),
                     alpha: attached.alpha,
                 });
+            }
+            // `overlaySprite`, by name. TODO(port): names saved as
+            // `WorldDictionary` ids.
+            if let Some(ov) = &o.overlay_sprite {
+                if let pz_world::objects::SpriteName::Str(name) = &ov.name {
+                    if let Some(&idx) = w.sprites.named_map.get(name.as_str()) {
+                        ro.overlay = Some(pz_iso_render::world::Overlay {
+                            sprite: cache.get(w.sprites, idx, tex),
+                            color: ov.color.map(|[r, g, b, a]| pz_iso_render::color::ColorInfo { r, g, b, a }),
+                        });
+                    }
+                }
             }
         }
         rs.objects.push(ro);

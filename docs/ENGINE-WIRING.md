@@ -779,13 +779,22 @@ all installed assets, render paths or foreign platforms.
       the player's input component. Unloaded squares/cells return `nil`.
 - [ ] `Basements.loadSavefile` / `writeSavefile` (`map_basements.bin`): a
       loaded world recomputes its placements.
-- [ ] `TileOverlays.updateTileOverlaySprite(obj)` when a square's objects
-      are created or loaded: `bind_tile_overlays::shared_tile_overlays()`
-      `.pick_overlay(..)` puts the sprite first in `attachedAnimSprite`;
-      `ContainerOverlays.updateContainerOverlaySprite` from
-      `shared_container_overlays()` sets the overlay sprite;
-      `fixTableTopOverlays(square)` after moving objects; both `Reset()` on
-      world unload.
+- [x] `TileOverlays.updateTileOverlaySprite(obj)` when a square's objects
+      are loaded: `bind_item_picker::load_gridsquare`
+      (`LoadGridsquarePerformanceWorkaround.LoadGridsquare`) calls
+      `bind_tile_overlays::update_tile_overlay_sprite` for each named object
+      without container overlays; `shared_tile_overlays().pick_overlay(..)`
+      puts the sprite first in `attachedAnimSprite`.
+- [x] Container overlays when a square's objects are loaded:
+      `load_gridsquare` (`LoadGridsquarePerformanceWorkaround.checkObject`)
+      calls `bind_tile_overlays::update_container_overlay_sprite`
+      (`ItemPickerJava.updateOverlaySprite`) for each named object whose
+      container is not empty; `set_overlay_sprite` sets `overlay_sprite`,
+      and `render_world` gives it to the renderer as `RenderObject.overlay`.
+- [ ] The rest of the overlay lifecycle: Lua `ItemPicker.updateOverlaySprite`
+      after a transfer (still a no-op), `invalidateRenderChunkLevel` for a
+      change after load, `fixTableTopOverlays(square)` after moving objects;
+      both `Reset()` on world unload.
 - [ ] `BrokenFences.destroyFence(obj, dir)` (thumping, vehicles): the engine's
       `StatesEngine::destroy_fence` / `is_breakable_fence` /
       `broken_fence_items` read `bind_broken_fences::shared_broken_fences()`
