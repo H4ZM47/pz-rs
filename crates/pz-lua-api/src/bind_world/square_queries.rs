@@ -65,6 +65,28 @@ fn with_square<R>(
     })
 }
 
+/// The Lua object of the moving object with `id`: a local player
+/// (`IsoPlayer.players`).
+fn moving_object_value(id: i32) -> LuaResult<Value> {
+    for i in 0..4 {
+        let Some(player) = crate::bind_players::player(i) else {
+            continue;
+        };
+        let matches = player
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoPlayer is in use"))?
+            .id
+            == id;
+        if matches {
+            return crate::bind_character_sim::try_character_value(&player)
+                .map_err(crate::bind_world_object::host_error);
+        }
+    }
+    Err(crate::bind_world_object::unsupported(format!(
+        "IsoGridSquare.getMovingObjects: moving object {id} is not a local player and has no Lua object"
+    )))
+}
+
 /// `square.isOutside()`: the cached exterior flag of the loaded square.
 pub fn square_is_outside(x: i32, y: i32, z: i32) -> LuaResult<bool> {
     let sprites = crate::bind_sprites::manager()?;
@@ -119,6 +141,55 @@ fn edge(b: &ClassBuilder, name: &str, f: EdgeQuery) {
     });
 }
 
+/// An object of the square has an attached sprite whose name contains one
+/// of `parts` (`haveGraffiti`, `haveGrime`).
+fn have_overlay(x: i32, y: i32, z: i32, parts: &[&str]) -> LuaResult<bool> {
+    let sprites = crate::bind_sprites::manager()?;
+    let sprites = sprites
+        .try_borrow()
+        .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+    with_square(x, y, z, |square| {
+        Ok(square.objects.iter().any(|slot| {
+            let object = slot.borrow();
+            object.attached_anim_sprite.iter().flatten().any(|instance| {
+                sprites.sprites[instance.sprite]
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| parts.iter().any(|part| name.contains(part)))
+            })
+        }))
+    })
+}
+
+/// `haveBlood()`: with blood decals on, a wall splat on an object of the
+/// square or a floor splat of the chunk within one square of it.
+fn have_blood(t: &mut Thread, x: i32, y: i32, z: i32) -> LuaResult<bool> {
+    let get_core = t.globals().rawget(&Value::str("getCore"));
+    let core = t.call1(&get_core, &[])?;
+    let option = t.table_get(&core, &Value::str("getOptionBloodDecals"))?;
+    if t.call1(&option, &[core])?.as_num().unwrap_or(0.0) == 0.0 {
+        return Ok(false);
+    }
+    let on_wall = with_square(x, y, z, |square| {
+        Ok(square
+            .objects
+            .iter()
+            .any(|slot| slot.borrow().wall_blood_splats.as_ref().is_some_and(|s| !s.is_empty())))
+    })?;
+    if on_wall {
+        return Ok(true);
+    }
+    let (wx, wy) = (x.div_euclid(8), y.div_euclid(8));
+    cell(|cell| {
+        let chunk = cell.chunks.get(&(wx, wy)).ok_or_else(npe)?;
+        Ok(chunk.saved.floor_blood_splats.iter().any(|splat| {
+            let sx = fastfloor(splat.x + (wx * 8) as f32);
+            let sy = fastfloor(splat.y + (wy * 8) as f32);
+            sx - 1 <= x && sx + 1 >= x && sy - 1 <= y && sy + 1 >= y
+        }))
+    })
+}
+
 pub(super) fn register(b: &ClassBuilder) {
     get(b, "isOutside", |c| {
         let (x, y, z) = self_square(c)?;
@@ -158,7 +229,11 @@ pub(super) fn register(b: &ClassBuilder) {
         })?;
         let items = objects
             .iter()
-            .map(crate::bind_world_object::object_value)
+            .map(|object| {
+                let value = crate::bind_world_object::object_value(object)?;
+                crate::bind_world_object::remember_square(&value, [x, y, z]);
+                Ok(value)
+            })
             .collect::<LuaResult<Vec<_>>>()?;
         Ok(crate::bind_java_util::list_value(items))
     });
@@ -173,6 +248,18 @@ pub(super) fn register(b: &ClassBuilder) {
             ));
         }
         Ok(crate::bind_java_util::list_value(Vec::new()))
+    });
+    // `getMovingObjects()`: the characters whose moving square this is
+    // (`movingObjects`), as a copy. Only the local players have Lua objects
+    // yet; any other character on the square stops with `unsupported`.
+    get(b, "getMovingObjects", |c| {
+        let (x, y, z) = self_square(c)?;
+        let ids = with_square(x, y, z, |square| Ok(square.moving_objects.clone()))?;
+        let mut items = Vec::with_capacity(ids.len());
+        for id in ids {
+            items.push(moving_object_value(id)?);
+        }
+        Ok(crate::bind_java_util::list_value(items))
     });
     // `getVehicleContainer()`: the first vehicle of the chunks within four
     // squares that intersects this square.
@@ -202,6 +289,138 @@ pub(super) fn register(b: &ClassBuilder) {
         let (x, y, z) = self_square(c)?;
         let player = player_index(c, 1, true)?;
         Ok(Value::Num(square_lighting(player, x, y, z).light_level as f64))
+    });
+    // `getProperties()`: `properties`, as a copy.
+    get(b, "getProperties", |c| {
+        let (x, y, z) = self_square(c)?;
+        let props = with_square(x, y, z, |square| Ok(square.properties.clone()))?;
+        Ok(crate::bind_sprites::square_props_value(props))
+    });
+    // `getNextNonItemObjectIndex(index)`: the first object at or after
+    // `index` that is not an IsoWorldInventoryObject, or -1.
+    get(b, "getNextNonItemObjectIndex", |c| {
+        let (x, y, z) = self_square(c)?;
+        let from = int_arg(c, 1);
+        let next = with_square(x, y, z, |square| {
+            Ok(square
+                .objects
+                .iter()
+                .enumerate()
+                .skip(from.max(0) as usize)
+                .find(|(_, slot)| !matches!(slot.borrow().kind, pz_world::ObjectKind::WorldInventory(_)))
+                .map_or(-1, |(i, _)| i as i32))
+        })?;
+        Ok(next.into())
+    });
+    // `getRoom()`: null when `roomId` is -1. IsoRoom has no Lua object.
+    let room = |b: &ClassBuilder, name: &'static str| {
+        get(b, name, move |c| {
+            let (x, y, z) = self_square(c)?;
+            let room_id = with_square(x, y, z, |square| Ok(square.room_id))?;
+            if room_id == -1 {
+                return Ok(Value::Nil);
+            }
+            Err(crate::bind_world_object::unsupported(format!(
+                "IsoGridSquare.{name}: IsoRoom has no Lua object"
+            )))
+        });
+    };
+    room(b, "getRoom");
+    // `getBuilding()`: `getRoom().getBuilding()`, null without a room.
+    room(b, "getBuilding");
+    // `getDeadBody()`: the first IsoDeadBody of `staticMovingObjects`.
+    get(b, "getDeadBody", |c| {
+        let (x, y, z) = self_square(c)?;
+        let count = with_square(x, y, z, |square| Ok(square.static_moving.len()))?;
+        if count != 0 {
+            return Err(crate::bind_world_object::unsupported(
+                "IsoGridSquare.getDeadBody: IsoDeadBody is not exposed to Lua",
+            ));
+        }
+        Ok(Value::Nil)
+    });
+    // `haveGraffiti()`: an object with an attached sprite named
+    // `overlay_graffiti`, `overlay_messages` or `constructedobjects_signs_01_4`.
+    get(b, "haveGraffiti", |c| {
+        let (x, y, z) = self_square(c)?;
+        let found = have_overlay(
+            x,
+            y,
+            z,
+            &["overlay_graffiti", "overlay_messages", "constructedobjects_signs_01_4"],
+        )?;
+        Ok(found.into())
+    });
+    get(b, "haveBlood", |c| {
+        let (x, y, z) = self_square(c)?;
+        Ok(have_blood(c.thread, x, y, z)?.into())
+    });
+    get(b, "haveGrime", |c| {
+        let (x, y, z) = self_square(c)?;
+        Ok(have_overlay(x, y, z, &["overlay_grime"])?.into())
+    });
+    // `haveStains()`: `haveBlood() || haveGrime()`.
+    get(b, "haveStains", |c| {
+        let (x, y, z) = self_square(c)?;
+        Ok((have_blood(c.thread, x, y, z)? || have_overlay(x, y, z, &["overlay_grime"])?).into())
+    });
+    // `getAnimalTrack()`: the first IsoAnimalTrack of the objects.
+    // `getOre()`: the first object that `isOre()`, whose `CustomName`
+    // property holds ironOre, copperOre, FlintBoulder or LimestoneBoulder.
+    get(b, "getOre", |c| {
+        let (x, y, z) = self_square(c)?;
+        let sprites = crate::bind_sprites::manager()?;
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        let ore = with_square(x, y, z, |square| {
+            for slot in &square.objects {
+                let sprite = match slot.borrow().sprite {
+                    pz_world::objects::ObjectSprite::None => continue,
+                    pz_world::objects::ObjectSprite::Tile(idx) => idx,
+                    _ => {
+                        return Err(crate::bind_world_object::unsupported(
+                            "IsoGridSquare.getOre: an object sprite that has no Lua object",
+                        ))
+                    }
+                };
+                let name = sprites.sprites[sprite].properties.get(&sprites.alias, "CustomName");
+                if name.is_some_and(|n| {
+                    ["ironOre", "copperOre", "FlintBoulder", "LimestoneBoulder"]
+                        .iter()
+                        .any(|ore| n.contains(ore))
+                }) {
+                    return Ok(Some(slot.ref_handle()));
+                }
+            }
+            Ok(None)
+        })?;
+        match ore {
+            None => Ok(Value::Nil),
+            Some(ore) => {
+                let value = crate::bind_world_object::object_value(&ore)?;
+                crate::bind_world_object::remember_square(&value, [x, y, z]);
+                Ok(value)
+            }
+        }
+    });
+    get(b, "getAnimalTrack", |c| {
+        let (x, y, z) = self_square(c)?;
+        let track = with_square(x, y, z, |square| {
+            Ok(square
+                .objects
+                .iter()
+                .find(|slot| matches!(slot.borrow().kind, pz_world::ObjectKind::AnimalTrack(_)))
+                .map(|slot| slot.ref_handle()))
+        })?;
+        match track {
+            None => Ok(Value::Nil),
+            Some(track) => {
+                let value = crate::bind_world_object::object_value(&track)?;
+                crate::bind_world_object::remember_square(&value, [x, y, z]);
+                Ok(value)
+            }
+        }
     });
     for (name, bit) in [("isSeen", 1u8), ("isCanSee", 2), ("isCouldSee", 4)] {
         get(b, name, move |c| {

@@ -4,6 +4,7 @@
 //! movement/context flags and `CharacterInputComponentEntity`'s input
 //! component setters.
 
+use std::rc::Rc;
 use super::{chr_of, float_arg, float_value, CharacterKind, CharacterObject, LuaGameCharacterRef, CONTEXT};
 use crate::expose::{bool_arg, int_arg, ClassBuilder, JavaEnum};
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
@@ -92,6 +93,34 @@ fn debug_cheat(name: &str) -> bool {
         && pz_core::debug::debug_options().borrow().get_boolean(name)
 }
 
+/// The `IsoObject` fields of a character: `bed` and `sitOnFurnitureObject`.
+/// They live on the character, so they go with it.
+#[derive(Clone, Copy)]
+enum ObjectField {
+    Bed,
+    SitOnFurniture,
+}
+
+/// The object field `field` of `chr`; nil when none is set.
+fn object_field(chr: &LuaGameCharacterRef, field: ObjectField) -> Value {
+    let chr = chr.borrow();
+    let slot = match field {
+        ObjectField::Bed => &chr.bed,
+        ObjectField::SitOnFurniture => &chr.sit_on_furniture_object,
+    };
+    slot.clone().unwrap_or(Value::Nil)
+}
+
+/// Set the object field `field` of `chr` (nil clears it).
+fn set_object_field(chr: &LuaGameCharacterRef, field: ObjectField, object: Value) {
+    let mut chr = chr.borrow_mut();
+    let slot = match field {
+        ObjectField::Bed => &mut chr.bed,
+        ObjectField::SitOnFurniture => &mut chr.sit_on_furniture_object,
+    };
+    *slot = (!object.is_nil()).then_some(object);
+}
+
 /// The `LuaManager.GlobalObject` functions about player control.
 pub(super) fn register_globals(thread: &mut Thread) {
     // `getLoosingXpTick(timer)`. TODO(port): the `DebugType.Multiplayer`
@@ -100,6 +129,45 @@ pub(super) fn register_globals(thread: &mut Thread) {
         let v = if debug_cheat("Cheat.Player.FastLooseXp") { 30000 } else { 10 };
         Ok(c.push(v))
     });
+    // `IsoPlayer.allPlayersAsleep()`: at least one living local player,
+    // and all of them asleep.
+    let player = crate::expose::expose_class(thread, super::ISO_PLAYER_CLASS, Some(super::ISO_GAME_CHARACTER_CLASS));
+    player.static_fn("allPlayersAsleep", |c| {
+        let (mut living, mut asleep) = (0, 0);
+        for i in 0..crate::bind_players::num_players().max(0) as usize {
+            let Some(p) = crate::bind_players::player(i) else { continue };
+            let p = p.try_borrow().map_err(|_| LuaError::runtime("IsoPlayer is in use"))?;
+            if !p.is_dead() {
+                living += 1;
+                if p.is_asleep() {
+                    asleep += 1;
+                }
+            }
+        }
+        Ok(c.push(living > 0 && living == asleep))
+    });
+    // `getSleepingEvent()`: `SleepingEvent.instance`.
+    let event = crate::expose::expose_class(thread, SLEEPING_EVENT, Some("java.lang.Object"));
+    event.method("setPlayerFallAsleep", |_| {
+        Err(crate::bind_world_object::unsupported(
+            "SleepingEvent.setPlayerFallAsleep: SleepingEventData, the nightmares, the delay to sleep and the zombie intruders",
+        ))
+    });
+    crate::expose::global(thread, "getSleepingEvent", |c| Ok(c.push(Value::Object(Rc::new(SleepingEvent)))));
+}
+
+const SLEEPING_EVENT: &str = "zombie.ai.sadisticAIDirector.SleepingEvent";
+
+/// `SleepingEvent.instance`.
+struct SleepingEvent;
+
+impl pz_kahlua::value::LuaObject for SleepingEvent {
+    fn class_name(&self) -> &str {
+        SLEEPING_EVENT
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// The methods on `IsoGameCharacter` (and so every character class).
@@ -158,6 +226,75 @@ pub(super) fn register(b: &ClassBuilder) {
     });
     b.method("isSitOnGround", |c| {
         let v = chr_of(c)?.borrow().sit_on_ground;
+        Ok(c.push(v))
+    });
+    // `getSitOnFurnitureObject()`: `sitOnFurnitureObject`.
+    b.method("getSitOnFurnitureObject", |c| {
+        let v = object_field(&chr_of(c)?, ObjectField::SitOnFurniture);
+        Ok(c.push(v))
+    });
+    // `setSitOnFurnitureObject(object)`.
+    b.method("setSitOnFurnitureObject", |c| {
+        set_object_field(&chr_of(c)?, ObjectField::SitOnFurniture, c.arg(1));
+        Ok(0)
+    });
+    // `getBed()` / `setBed(object)`: `bed`.
+    b.method("getBed", |c| {
+        let v = object_field(&chr_of(c)?, ObjectField::Bed);
+        Ok(c.push(v))
+    });
+    b.method("setBed", |c| {
+        set_object_field(&chr_of(c)?, ObjectField::Bed, c.arg(1));
+        Ok(0)
+    });
+    // `getForceWakeUpTime()` / `setForceWakeUpTime(hour)`: `forceWakeUpTime`.
+    b.method("getForceWakeUpTime", |c| {
+        let v = float_value(chr_of(c)?.borrow().force_wake_up_time);
+        Ok(c.push(v))
+    });
+    b.method("setForceWakeUpTime", |c| {
+        let v = float_arg(c, 1);
+        chr_of(c)?.borrow_mut().force_wake_up_time = v;
+        Ok(0)
+    });
+    // `IsoPlayer.getAsleepTime()` / `setAsleepTime(hours)`: `asleepTime`.
+    b.method("getAsleepTime", |c| {
+        let v = float_value(chr_of(c)?.borrow().asleep_time);
+        Ok(c.push(v))
+    });
+    b.method("setAsleepTime", |c| {
+        let v = float_arg(c, 1);
+        chr_of(c)?.borrow_mut().asleep_time = v;
+        Ok(0)
+    });
+    // `isSitOnFurnitureObject(object)`: false without a furniture object,
+    // else the same object or `furniture.isConnectedSpriteGridObject(object)`.
+    b.method("isSitOnFurnitureObject", |c| {
+        let furniture = object_field(&chr_of(c)?, ObjectField::SitOnFurniture);
+        let object = c.arg(1);
+        let r = if furniture.is_nil() {
+            false
+        } else if object.raw_equals(&furniture) {
+            true
+        } else {
+            let f = c.thread.table_get(&furniture, &Value::str("isConnectedSpriteGridObject"))?;
+            c.thread.call1(&f, &[furniture, object])?.truthy()
+        };
+        Ok(c.push(r))
+    });
+    // `getLastHourSleeped()`: `lastHourSleeped`.
+    b.method("getLastHourSleeped", |c| {
+        let v = chr_of(c)?.borrow().last_hour_sleeped;
+        Ok(c.push(v))
+    });
+    // `isOnFire()`: `onFire`.
+    b.method("isOnFire", |c| {
+        let v = chr_of(c)?.borrow().vars.on_fire;
+        Ok(c.push(v))
+    });
+    // `isSittingOnFurniture()`: `isSitOnFurniture`.
+    b.method("isSittingOnFurniture", |c| {
+        let v = chr_of(c)?.borrow().sitting_on_furniture;
         Ok(c.push(v))
     });
     b.method("getIgnoreMovement", |c| {

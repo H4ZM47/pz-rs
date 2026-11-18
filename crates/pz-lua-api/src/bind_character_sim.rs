@@ -2050,6 +2050,12 @@ fn register_character(
         let v = chr_of(c)?.borrow().is_unlimited_endurance(&*ctx);
         Ok(c.push(v))
     });
+    // `isBuildCheat()`: `getCheats().isSet(CheatType.BUILD)`.
+    b.method("isBuildCheat", |c| {
+        let ctx = CONTEXT.with(|c| c.borrow().clone());
+        let v = chr_of(c)?.borrow().cheats.is_set(&*ctx, "BUILD");
+        Ok(c.push(v))
+    });
     b.method("isGodMod", |c| {
         let ctx = CONTEXT.with(|c| c.borrow().clone());
         let v = chr_of(c)?.borrow().is_god_mod(&*ctx);
@@ -2111,6 +2117,12 @@ fn register_character(
     b.method("setBedType", |c| {
         let v = str_arg(c, 1).map(|s| s.to_string()).unwrap_or_default();
         chr_of(c)?.borrow_mut().bed_type = v;
+        Ok(0)
+    });
+    // `IsoPlayer.setHoursSurvived(hours)`.
+    b.method("setHoursSurvived", |c| {
+        let v = num_arg(c, 1);
+        chr_of(c)?.borrow_mut().hours_survived = v;
         Ok(0)
     });
     b.method("getHoursSurvived", |c| {

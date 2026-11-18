@@ -45,6 +45,9 @@ pub struct PathMoverState {
     pub deferred_movement: (f32, f32),
     /// The current square's coordinates (`getCurrentSquare()`).
     pub current_square: Option<(i32, i32, i32)>,
+    /// `movingSq`: the square whose `movingObjects` holds this character
+    /// ([`crate::character::GameCharacter::set_moving_square`]).
+    pub moving_square: Option<(i32, i32, i32)>,
     /// `getVehicle()` by id.
     pub vehicle: Option<i16>,
     /// `getSitOnFurnitureDirection()`.

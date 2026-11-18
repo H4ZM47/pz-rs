@@ -99,6 +99,8 @@ pub enum PickKind {
     LightSwitch,
     Generator,
     WaveSignal,
+    /// `IsoTree`.
+    Tree,
     DeadBody,
 }
 
@@ -611,6 +613,150 @@ pub fn context_pick(
     Ok(choices.pop())
 }
 
+impl ClickObject {
+    /// `ClickObject.contains(x, y, z)`: inside the drawn rectangle on
+    /// level `z`.
+    fn contains(&self, x: f32, y: f32, z: i32) -> bool {
+        x >= self.x as f32
+            && y >= self.y as f32
+            && x < (self.x + self.width) as f32
+            && y < (self.y + self.height) as f32
+            && self.z == z
+    }
+}
+
+/// `FBORenderObjectPicker.getFirst(x, y, predicate)`: the nearest object
+/// under the point (the click objects from the end of the list) that the
+/// predicate accepts. The predicate gets the zoomed point and answers 1
+/// to take the object, -1 to stop with none, anything else to go on.
+fn get_first(
+    w: &dyn PickWorld,
+    screen_x: i32,
+    screen_y: i32,
+    test: &dyn Fn(&ClickObject, f32, f32, &PickPlayer) -> i32,
+) -> HostResult<Option<Rc<PickObject>>> {
+    let Some(p) = w.player0() else {
+        return Ok(None);
+    };
+    let zoom = w.zoom();
+    let x = screen_x as f32 * zoom;
+    let y = screen_y as f32 * zoom;
+    for c in click_objects(w, screen_x, screen_y)?.iter().rev() {
+        match test(c, x, y, &p) {
+            -1 => return Ok(None),
+            1 => return Ok(Some(c.tile.clone())),
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// A drawn object that is not faded out (`sprite != null` and its
+/// `targetAlpha == 0` skip it).
+fn visible(o: &PickObject) -> bool {
+    o.sprite.is_none() || o.render.target_alpha != 0.0
+}
+
+/// The mask test of the pickers: the point inside the rectangle on the
+/// player's level, then the object's mask there with `floor` (the
+/// original's `PZMath.fastfloor`) or truncation.
+fn masked(c: &ClickObject, x: f32, y: f32, p: &PickPlayer, floor: bool) -> (bool, i32, i32) {
+    if !c.contains(x, y, p.zi) {
+        return (false, 0, 0);
+    }
+    let (dx, dy) = (x - c.x as f32, y - c.y as f32);
+    let (mx, my) = if floor { (fastfloor(dx), fastfloor(dy)) } else { (dx as i32, dy as i32) };
+    (c.tile.mask_clicked(mx, my, c.flip), mx, my)
+}
+
+/// Windows and window frames also take a click on a gap in the mask when
+/// the object has opaque pixels both above and below it in the column.
+fn column_has_pixels_both_sides(c: &ClickObject, x: i32, y: i32) -> bool {
+    let above = (0..=y).rev().any(|y| c.tile.mask_clicked(x, y, false));
+    let below = (y..c.height).any(|y| c.tile.mask_clicked(x, y, false));
+    above && below
+}
+
+/// `IsoObjectPicker.PickDoor(x, y, bTransparent)`: the nearest `IsoDoor`
+/// under the point, faded (`transparent`) or not.
+pub fn pick_door(
+    w: &dyn PickWorld,
+    x: i32,
+    y: i32,
+    transparent: bool,
+) -> HostResult<Option<Rc<PickObject>>> {
+    get_first(w, x, y, &|c, px, py, p| {
+        let t = &c.tile;
+        if t.kind != PickKind::Door || t.render.target_alpha == 0.0 {
+            return 0;
+        }
+        if transparent != (t.render.target_alpha < 1.0) {
+            return 0;
+        }
+        masked(c, px, py, p, true).0 as i32
+    })
+}
+
+/// `IsoObjectPicker.PickWindow(x, y)`: the nearest window or curtain.
+pub fn pick_window(w: &dyn PickWorld, x: i32, y: i32) -> HostResult<Option<Rc<PickObject>>> {
+    get_first(w, x, y, &|c, px, py, p| {
+        let t = &c.tile;
+        if !matches!(t.kind, PickKind::Window | PickKind::Curtain) || !visible(t) {
+            return 0;
+        }
+        let (hit, mx, my) = masked(c, px, py, p, true);
+        if !c.contains(px, py, p.zi) {
+            return 0;
+        }
+        (hit || (t.kind == PickKind::Window && column_has_pixels_both_sides(c, mx, my))) as i32
+    })
+}
+
+/// `IsoObjectPicker.PickWindowFrame(x, y)`.
+pub fn pick_window_frame(w: &dyn PickWorld, x: i32, y: i32) -> HostResult<Option<Rc<PickObject>>> {
+    get_first(w, x, y, &|c, px, py, p| {
+        let t = &c.tile;
+        if !matches!(t.kind, PickKind::WindowFrame { .. }) || !visible(t) {
+            return 0;
+        }
+        let (hit, mx, my) = masked(c, px, py, p, true);
+        if !c.contains(px, py, p.zi) {
+            return 0;
+        }
+        (hit || column_has_pixels_both_sides(c, mx, my)) as i32
+    })
+}
+
+/// `IsoObjectPicker.PickThumpable(x, y)`: the nearest `IsoThumpable`; a
+/// window one also by the column test.
+pub fn pick_thumpable(w: &dyn PickWorld, x: i32, y: i32) -> HostResult<Option<Rc<PickObject>>> {
+    get_first(w, x, y, &|c, px, py, p| {
+        let t = &c.tile;
+        let PickKind::Thumpable { window, .. } = t.kind else {
+            return 0;
+        };
+        if !visible(t) {
+            return 0;
+        }
+        let (hit, mx, my) = masked(c, px, py, p, false);
+        if !c.contains(px, py, p.zi) {
+            return 0;
+        }
+        (hit || (window && column_has_pixels_both_sides(c, mx, my))) as i32
+    })
+}
+
+/// `IsoObjectPicker.PickTree(x, y)`: the nearest `IsoTree`.
+pub fn pick_tree(w: &dyn PickWorld, x: i32, y: i32) -> HostResult<Option<Rc<PickObject>>> {
+    get_first(w, x, y, &|c, px, py, p| {
+        let t = &c.tile;
+        if t.kind != PickKind::Tree || !visible(t) {
+            return 0;
+        }
+        masked(c, px, py, p, false).0 as i32
+    })
+}
+
 /// [`HudPicking`] over a [`PickWorld`]: `ContextPick` at the mouse.
 pub struct WorldPicking<W: PickWorld> {
     pub world: W,
@@ -903,5 +1049,82 @@ mod tests {
         ));
         assert_eq!(picker.world.queries.get(), 2);
         assert_eq!(picker.world.corpses.get(), 0);
+    }
+
+    /// The row of the drawn rectangle the point falls on.
+    fn clicked_row(w: &World, x: i32, y: i32) -> i32 {
+        let c = click_objects(w, x, y).unwrap().pop().unwrap();
+        y - c.y
+    }
+
+    #[test]
+    fn pick_door_takes_the_doors_asked_for_by_their_fade() {
+        let sq = [12, 13, 0];
+        let (x, y) = point_over(sq);
+        let door = |alpha: f32| {
+            let mut d = obj(1, sq, 0, PickKind::Door, RenderLayer::MinusFloor);
+            d.render.target_alpha = alpha;
+            world(vec![d])
+        };
+        assert_eq!(pick_door(&door(1.0), x, y, false).unwrap().unwrap().id, 1);
+        assert!(pick_door(&door(1.0), x, y, true).unwrap().is_none());
+        assert_eq!(pick_door(&door(0.5), x, y, true).unwrap().unwrap().id, 1);
+        assert!(pick_door(&door(0.5), x, y, false).unwrap().is_none());
+        // Faded out entirely: not drawn, not picked.
+        assert!(pick_door(&door(0.0), x, y, true).unwrap().is_none());
+        // Something else in front does not hide the door behind it, and
+        // only doors answer.
+        let d = obj(1, sq, 0, PickKind::Door, RenderLayer::MinusFloor);
+        let front = obj(2, sq, 1, PickKind::Object, RenderLayer::MinusFloor);
+        assert_eq!(pick_door(&world(vec![d, front]), x, y, false).unwrap().unwrap().id, 1);
+        let t = obj(3, sq, 0, PickKind::Thumpable { door: true, window: false, square_window_on_edge: false, light_source: false }, RenderLayer::MinusFloor);
+        assert!(pick_door(&world(vec![t]), x, y, false).unwrap().is_none());
+    }
+
+    #[test]
+    fn windows_are_also_picked_through_a_gap_with_pixels_on_both_sides() {
+        let sq = [12, 14, 0];
+        let (x, y) = point_over(sq);
+        let row = clicked_row(&world(vec![obj(1, sq, 0, PickKind::Window, RenderLayer::MinusFloor)]), x, y);
+        // Opaque but for the clicked row: a pane in a frame.
+        let with_mask = |kind, mask: MaskFn| {
+            let mut o = obj(1, sq, 0, kind, RenderLayer::MinusFloor);
+            o.mask = Some(mask);
+            world(vec![o])
+        };
+        let pane = || -> MaskFn { Rc::new(move |_, y, _| y != row) };
+        let above_only = || -> MaskFn { Rc::new(move |_, y, _| y < row) };
+        let thumpable = PickKind::Thumpable { door: false, window: true, square_window_on_edge: false, light_source: false };
+        assert_eq!(pick_window(&with_mask(PickKind::Window, pane()), x, y).unwrap().unwrap().id, 1);
+        assert!(pick_window(&with_mask(PickKind::Window, above_only()), x, y).unwrap().is_none());
+        // A curtain only by its own pixels.
+        assert!(pick_window(&with_mask(PickKind::Curtain, pane()), x, y).unwrap().is_none());
+        assert_eq!(pick_window(&with_mask(PickKind::Curtain, Rc::new(|_, _, _| true)), x, y).unwrap().unwrap().id, 1);
+        assert_eq!(pick_window_frame(&with_mask(PickKind::WindowFrame { has_window: true }, pane()), x, y).unwrap().unwrap().id, 1);
+        assert!(pick_window_frame(&with_mask(PickKind::Window, pane()), x, y).unwrap().is_none());
+        assert_eq!(pick_thumpable(&with_mask(thumpable, pane()), x, y).unwrap().unwrap().id, 1);
+        // A thumpable that is no window has no such gap rule.
+        let wall = PickKind::Thumpable { door: false, window: false, square_window_on_edge: false, light_source: false };
+        assert!(pick_thumpable(&with_mask(wall, pane()), x, y).unwrap().is_none());
+        assert_eq!(pick_thumpable(&with_mask(wall, Rc::new(|_, _, _| true)), x, y).unwrap().unwrap().id, 1);
+    }
+
+    #[test]
+    fn pickers_skip_what_is_faded_out_or_outside_the_mask() {
+        let sq = [13, 14, 0];
+        let (x, y) = point_over(sq);
+        let one = |kind, alpha: f32, mask: bool| {
+            let mut o = obj(1, sq, 0, kind, RenderLayer::MinusFloor);
+            o.render.target_alpha = alpha;
+            o.mask = Some(Rc::new(move |_, _, _| mask));
+            world(vec![o])
+        };
+        assert_eq!(pick_tree(&one(PickKind::Tree, 1.0, true), x, y).unwrap().unwrap().id, 1);
+        assert!(pick_tree(&one(PickKind::Tree, 1.0, false), x, y).unwrap().is_none());
+        assert!(pick_tree(&one(PickKind::Object, 1.0, true), x, y).unwrap().is_none());
+        // The player's level decides which squares are looked at.
+        let mut w = one(PickKind::Tree, 1.0, true);
+        w.player.zi = 1;
+        assert!(pick_tree(&w, x, y).unwrap().is_none());
     }
 }
