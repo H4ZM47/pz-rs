@@ -57,9 +57,8 @@ pub struct RenderChunkEvents {
 
 /// What the main menu's Lua leaves on `IsoWorld.instance` for a new game
 /// (`CharacterCreationProfession.initWorld` on `OnInitWorld`: the player's
-/// descriptor, traits and spawn square). The menu cannot run that yet
-/// (`getWorld()` is not bound and the menu is blocked on the world map),
-/// so the development entry supplies it.
+/// descriptor, traits and spawn square). The development entry skips the
+/// menu, so it supplies them instead.
 #[derive(Clone, Debug, Default)]
 pub struct NewGameSetup {
     /// `luaPosX/Y/Z`; `None` picks a point of the map's
@@ -504,7 +503,17 @@ impl IsoWorld {
         }
         println!("triggerEvent OnInitWorld");
         lua.trigger_event("OnInitWorld", &[]);
-        self.apply_new_game_setup(lua);
+        if self.new_game_setup.is_some() {
+            self.apply_new_game_setup(lua);
+        } else {
+            // What the menu's handler (`CharacterCreationProfession.initWorld`)
+            // set on `IsoWorld.instance`: `luaDesc`, `luatraits` and
+            // `luaPosX/Y/Z`.
+            use pz_lua_api::bind_world::lua_world;
+            self.lua_player_desc = lua_world::lua_player_desc();
+            self.lua_traits = lua_world::lua_traits();
+            self.lua_pos = lua_world::lua_world_fields().lua_pos;
+        }
         // `SandboxOptions.instance.load()`.
         let sb = sandbox(lua).ok_or("SandboxOptions.instance")?;
         self.load_sandbox(lua, &sb);

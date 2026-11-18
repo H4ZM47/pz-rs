@@ -1,8 +1,9 @@
 //! `zombie.GameWindow`'s Lua-visible statics: the `doRenderEvent` flag the
 //! frame loop reads, `isIngameState`, `DoLoadingText`, `getUpdateTime`,
 //! `getCoopServerHome`, and the public static fields as they stand when
-//! the class is exposed; and `zombie.gameStates.MainScreenState`'s
-//! statics.
+//! the class is exposed; `zombie.gameStates.MainScreenState`'s statics;
+//! and `forceChangeState` with the one state Lua makes,
+//! `LoadingQueueState`.
 
 use std::cell::Cell;
 
@@ -25,7 +26,29 @@ impl pz_kahlua::value::LuaObject for MainScreenStateObject {
     }
 }
 
+pub const LOADING_QUEUE_STATE_CLASS: &str = "zombie.gameStates.LoadingQueueState";
+
+/// A `LoadingQueueState` Lua made (`LoadingQueueState.new()`).
+pub struct LoadingQueueStateObject;
+
+impl pz_kahlua::value::LuaObject for LoadingQueueStateObject {
+    fn class_name(&self) -> &str {
+        LOADING_QUEUE_STATE_CLASS
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// A state `forceChangeState` asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForcedState {
+    LoadingQueue,
+}
+
 thread_local! {
+    /// `GameWindow.states.forceNext`, as Lua last set it.
+    static FORCE_NEXT: Cell<Option<Option<ForcedState>>> = const { Cell::new(None) };
     static DO_RENDER_EVENT: Cell<bool> = const { Cell::new(false) };
     static UPDATE_TIME: Cell<i64> = const { Cell::new(0) };
     static MAIN_SCREEN: std::cell::RefCell<Option<std::rc::Rc<MainScreenStateObject>>> = const { std::cell::RefCell::new(None) };
@@ -37,6 +60,13 @@ pub fn set_main_screen_instance() {
     MAIN_SCREEN.with(|m| {
         m.borrow_mut().get_or_insert_with(|| std::rc::Rc::new(MainScreenStateObject));
     });
+}
+
+/// What `forceChangeState(state)` set since the last call:
+/// `Some(Some(s))` for a state, `Some(None)` for `null` (clears the
+/// pending state), `None` when Lua did not call it.
+pub fn take_forced_state() -> Option<Option<ForcedState>> {
+    FORCE_NEXT.with(|f| f.take())
 }
 
 /// `GameWindow.doRenderEvent`: whether `GameWindow.render` fires
@@ -114,6 +144,27 @@ pub fn register(thread: &mut Thread, jar: Option<&pz_classfile::Jar>, cache_dir:
             }
         }
     }
+    let q = expose_class(thread, LOADING_QUEUE_STATE_CLASS, None);
+    q.static_fn("new", |c| {
+        Ok(c.push(pz_kahlua::value::Value::Object(std::rc::Rc::new(LoadingQueueStateObject))))
+    });
+    // `forceChangeState(state)`: `GameWindow.states.forceNextState(state)`.
+    crate::expose::global(thread, "forceChangeState", |c| {
+        let s = match c.arg(0) {
+            pz_kahlua::value::Value::Nil => None,
+            pz_kahlua::value::Value::Object(o) if o.as_any().is::<LoadingQueueStateObject>() => {
+                Some(ForcedState::LoadingQueue)
+            }
+            v => {
+                return Err(pz_kahlua::LuaError::runtime(format!(
+                    "forceChangeState: {} is not a GameState",
+                    pz_kahlua::exec::java_value_of(&v)
+                )))
+            }
+        };
+        FORCE_NEXT.with(|f| f.set(Some(s)));
+        Ok(0)
+    });
     // `isSteamRunningOnSteamDeck()`: false outside Steam mode, and there is
     // no Steam integration.
     crate::expose::global(thread, "isSteamRunningOnSteamDeck", |c| Ok(c.push(false)));
@@ -137,5 +188,24 @@ mod tests {
         let r = t.pcall(&f, &[]).map_err(|(e, tr)| format!("{e:?}\n{tr}")).unwrap();
         assert_eq!(format!("{r:?}"), format!("{:?}", [pz_kahlua::value::Value::str("/tmp/x"), pz_kahlua::value::Value::Bool(false)]));
         assert!(render_event_enabled());
+    }
+
+    #[test]
+    fn force_change_state_records_the_state() {
+        let mut t = Thread::new(pz_kahlua::TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        register(&mut t, None, std::path::Path::new("/tmp/x/Zomboid"));
+        let run = |t: &mut Thread, src: &str| {
+            let f = pz_kahlua::stdlib::load_string(src, Some("t"), t.globals().clone()).unwrap();
+            t.pcall(&f, &[]).map_err(|(e, _)| format!("{e:?}"))
+        };
+        assert_eq!(take_forced_state(), None);
+        run(&mut t, "forceChangeState(LoadingQueueState.new())").unwrap();
+        assert_eq!(take_forced_state(), Some(Some(ForcedState::LoadingQueue)));
+        assert_eq!(take_forced_state(), None);
+        run(&mut t, "forceChangeState(nil)").unwrap();
+        assert_eq!(take_forced_state(), Some(None));
+        assert!(run(&mut t, "forceChangeState({})").is_err());
+        assert_eq!(take_forced_state(), None);
     }
 }

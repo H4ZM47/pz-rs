@@ -5,7 +5,8 @@
 //! `registerNavZones`), spawn origins, water flow, `Core` game settings
 //! and the `luaPos*` fields; `IsoMetaGrid.registerGeometryZone` /
 //! `registerWorldGenZone` / `getLotDirectories`; the `Zone` objects they
-//! return; and the globals `getLotDirectories` and `fileExists`.
+//! return; and the globals `getLotDirectories`, `fileExists`,
+//! `createRegionFile` and `setSpawnRegion`.
 //!
 //! What has no engine object yet is kept here for the engine to collect:
 //! `ZombiePopulationManager.spawnOrigins` ([`take_spawn_origins`], read by
@@ -16,7 +17,11 @@ use super::{
     get, grid, java_err, key_of, npe, obj, opt, self_world, void, with_world_state_cell, wrong, Key,
     ZoneClass,
 };
-use crate::bind_java_util::list_value;
+use crate::bind_characters::{
+    adopt_survivor_desc_value, desc_arg, survivor_desc_value, LuaSurvivorDesc,
+};
+use crate::bind_java_util::{list_value, JavaList};
+use crate::bind_registry::{key_arg, KeyObject};
 use crate::expose::{expose_class, global, int_arg, num_arg, str_arg, ClassBuilder};
 use pz_fs::GameFs;
 use pz_iso_render::water_flow::IsoWaterFlow;
@@ -39,6 +44,10 @@ pub struct LuaWorldFields {
 
 thread_local! {
     static FIELDS: RefCell<LuaWorldFields> = RefCell::default();
+    /// `IsoWorld.luaDesc`.
+    static LUA_DESC: RefCell<Option<Rc<RefCell<LuaSurvivorDesc>>>> = const { RefCell::new(None) };
+    /// `IsoWorld.luatraits` (one `ArrayList`, as `getLuaTraits` returns it).
+    static LUA_TRAITS: Value = list_value(Vec::new());
     /// `ZombiePopulationManager.instance.spawnOrigins`: `(x, y, w, h)`.
     static SPAWN_ORIGINS: RefCell<Vec<(i32, i32, i32, i32)>> = RefCell::default();
     static WATER_FLOW: Rc<RefCell<IsoWaterFlow>> = Rc::default();
@@ -52,6 +61,30 @@ thread_local! {
 /// The `IsoWorld` fields Lua set.
 pub fn lua_world_fields() -> LuaWorldFields {
     FIELDS.with(|f| f.borrow().clone())
+}
+
+/// `IsoWorld.luaDesc`, as Lua set it (`setLuaPlayerDesc`).
+pub fn lua_player_desc() -> Option<Rc<RefCell<LuaSurvivorDesc>>> {
+    LUA_DESC.with(|d| d.borrow().clone())
+}
+
+/// `IsoWorld.luatraits`, as Lua left it (`addLuaTrait`,
+/// `getLuaTraits()`). An element that is not a `CharacterTrait` is `None`.
+pub fn lua_traits() -> Vec<Option<Rc<pz_scripts::registry::RegistryKey>>> {
+    LUA_TRAITS.with(|l| {
+        let Value::Object(o) = l else { return Vec::new() };
+        let Some(list) = o.as_any().downcast_ref::<JavaList>() else {
+            return Vec::new();
+        };
+        let items = list.items.borrow();
+        items
+            .iter()
+            .map(|v| match v {
+                Value::Object(o) => o.as_any().downcast_ref::<KeyObject>().map(|k| k.key.clone()),
+                _ => None,
+            })
+            .collect()
+    })
 }
 
 /// Set `IsoWorld.luaPosX/Y/Z` (as the main menu's Lua does).
@@ -143,6 +176,35 @@ pub fn lot_directories(fs: &GameFs) -> LuaResult<Vec<String>> {
     Ok(pz_world::map_files::lot_directories(fs, &map))
 }
 
+/// `LuaManager.GlobalObject.createRegionFile()`: one `{ name, file }`
+/// spawn region per map directory of `IsoWorld.getMap()` that has a
+/// `spawnpoints.lua`, indexed from 1. "DEFAULT" is first replaced by the
+/// only world of `MapGroups`.
+pub fn create_region_file(fs: &GameFs) -> LuaResult<TableRef> {
+    let regions = TableRef::new();
+    if crate::bind_core::shared_core().borrow().game_map == "DEFAULT" {
+        crate::bind_map_groups::set_default_world()?;
+    }
+    let map = crate::bind_core::shared_core().borrow().game_map.clone();
+    let mut index = 1;
+    for s in map.split(';') {
+        let s = pz_world::java::java_trim(s);
+        if s.is_empty() {
+            continue;
+        }
+        let file = format!("media/maps/{s}/spawnpoints.lua");
+        if !file_exists(fs, &file) {
+            continue;
+        }
+        let t = TableRef::new();
+        t.set_str("name", s);
+        t.set_str("file", file.as_str());
+        regions.set_int(index, t);
+        index += 1;
+    }
+    Ok(regions)
+}
+
 /// `File(ZomboidFileSystem.instance.getString(filename)).exists()`, the
 /// working directory being the install.
 fn file_exists(fs: &GameFs, filename: &str) -> bool {
@@ -211,7 +273,8 @@ fn ret_zone(
     })
 }
 
-/// `getWorld()`, `getLotDirectories()`, `fileExists()` and the `IsoWorld`
+/// `getWorld()`, `getLotDirectories()`, `fileExists()`,
+/// `createRegionFile()`, `setSpawnRegion()` and the `IsoWorld`
 /// / `IsoMetaGrid` methods map loading calls.
 pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>) {
     global(thread, "getWorld", |c| Ok(c.push(obj(Key::World))));
@@ -234,6 +297,18 @@ pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>) {
             Ok(c.push(e))
         });
     }
+    {
+        let fs = fs.clone();
+        global(thread, "createRegionFile", move |c| {
+            Ok(c.push(create_region_file(&fs.borrow())?))
+        });
+    }
+    // `GlobalObject.setSpawnRegion`: `IsoWorld.instance.setSpawnRegion`
+    // unless `GameClient.client`, which is never set here.
+    global(thread, "setSpawnRegion", |c| {
+        set_spawn_region(str_arg(c, 0).as_deref());
+        Ok(0)
+    });
     let b = expose_class(thread, "zombie.iso.IsoWorld", Some("java.lang.Object"));
     register_world_zones(&b, fs.clone());
     register_world_settings(&b);
@@ -407,9 +482,7 @@ fn register_world_settings(b: &ClassBuilder) {
     });
     void(b, "setSpawnRegion", |c| {
         self_world(c)?;
-        if let Some(v) = str_arg(c, 1) {
-            FIELDS.with(|w| w.borrow_mut().spawn_region = v.to_string());
-        }
+        set_spawn_region(str_arg(c, 1).as_deref());
         Ok(())
     });
     get(b, "getSpawnRegion", |c| {
@@ -418,6 +491,54 @@ fn register_world_settings(b: &ClassBuilder) {
             &FIELDS.with(|w| w.borrow().spawn_region.clone()),
         ))
     });
+    void(b, "setLuaPlayerDesc", |c| {
+        self_world(c)?;
+        let d = match c.arg(1) {
+            Value::Nil => None,
+            v => {
+                let d = desc_arg(c, 1)?;
+                // `getLuaPlayerDesc` returns this same object.
+                adopt_survivor_desc_value(&v);
+                Some(d)
+            }
+        };
+        LUA_DESC.with(|l| *l.borrow_mut() = d);
+        Ok(())
+    });
+    get(b, "getLuaPlayerDesc", |c| {
+        self_world(c)?;
+        Ok(lua_player_desc().map_or(Value::Nil, |d| survivor_desc_value(&d)))
+    });
+    get(b, "getLuaTraits", |c| {
+        self_world(c)?;
+        Ok(LUA_TRAITS.with(Value::clone))
+    });
+    // `getLuaTraits().add(trait)`.
+    void(b, "addLuaTrait", |c| {
+        self_world(c)?;
+        let t = match c.arg(1) {
+            Value::Nil => Value::Nil,
+            v => {
+                key_arg(c, 1)?;
+                v
+            }
+        };
+        LUA_TRAITS.with(|l| {
+            if let Value::Object(o) = l {
+                if let Some(list) = o.as_any().downcast_ref::<JavaList>() {
+                    list.items.borrow_mut().push(t);
+                }
+            }
+        });
+        Ok(())
+    });
+}
+
+/// `IsoWorld.setSpawnRegion(name)`: a null name is ignored.
+fn set_spawn_region(name: Option<&str>) {
+    if let Some(v) = name {
+        FIELDS.with(|w| w.borrow_mut().spawn_region = v.to_string());
+    }
 }
 
 fn self_meta_grid(c: &NativeCall<'_>) -> LuaResult<()> {
