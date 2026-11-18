@@ -153,6 +153,9 @@ pub struct PlayerControl {
     pub lured_animals: Vec<i32>,
     /// `getAttachedAnimals()` (character ids of the animals on a leash).
     pub attached_animals: Vec<i32>,
+    /// `invPageDirty`: the inventory page should refresh its containers
+    /// (`ISInventoryPage.prerender` reads and clears it).
+    pub inv_page_dirty: bool,
 }
 
 impl Default for PlayerControl {
@@ -210,6 +213,7 @@ impl Default for PlayerControl {
             seen_this_frame: false,
             could_be_seen_this_frame: false,
             is_farming: false,
+            inv_page_dirty: false,
             action_blocks_movement: false,
             action_overrides_animation: false,
             has_actions: false,
