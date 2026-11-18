@@ -106,6 +106,12 @@ pub trait ItemEnv {
         Some(None)
     }
 
+    /// `Translator.getText(key)` without arguments: the key itself when
+    /// there is no translator.
+    fn get_text(&self, key: &str) -> String {
+        key.to_string()
+    }
+
     /// The properties `Moveable.ReadFromWorldSprite` reads from a sprite
     /// that has `IsMoveAble` (`None` for other or unknown sprites).
     fn world_sprite(&self, _name: &str) -> Option<WorldSpriteInfo> {
@@ -711,6 +717,11 @@ fn finish_constructor_prefix(env: &dyn ItemEnv, item: &mut InventoryItem) {
         .filter(|s| !s.trim().is_empty())
     {
         item.read_from_world_sprite(ws, env);
+    }
+    // Item.InstanceItem: `setCustomMenuOption(Translator.getText(
+    // "ContextMenu_" + customContextMenu))` when the script has one.
+    if let Some(key) = &t.custom_context_menu {
+        item.custom_menu_option = Some(env.get_text(&format!("ContextMenu_{key}")));
     }
 }
 

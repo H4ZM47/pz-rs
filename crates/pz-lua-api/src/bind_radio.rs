@@ -226,6 +226,12 @@ impl LuaObject for LuaMediaLine {
     }
 }
 
+/// `RecordedMedia.getMediaDataFromIndex(index)` on the radio's media.
+pub(crate) fn media_data_from_index(index: i16) -> Value {
+    let id = with_media(|m| m.media_data_from_index(index).map(|d| d.id().to_string())).flatten();
+    media_value(id.as_deref())
+}
+
 /// The one Lua object of each media id (Java hands out the same
 /// `MediaData`).
 fn media_value(id: Option<&str>) -> Value {

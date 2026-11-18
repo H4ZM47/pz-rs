@@ -52,6 +52,20 @@ pub fn get_max_level_trained_ref(item: &ItemRef) -> HostResult<i32> {
             .wrapping_sub(1)
     })
 }
+pub fn can_be_write_ref(item: &ItemRef) -> HostResult<bool> {
+    read(item, |v| v.can_be_write)
+}
+/// `isEmptyPages`: no custom pages, or only empty ones.
+pub fn is_empty_pages_ref(item: &ItemRef) -> HostResult<bool> {
+    read(item, |v| {
+        v.custom_pages
+            .as_ref()
+            .is_none_or(|pages| pages.iter().all(String::is_empty))
+    })
+}
+pub fn get_locked_by_ref(item: &ItemRef) -> HostResult<Option<String>> {
+    read(item, |v| v.locked_by.clone())
+}
 pub fn get_number_of_pages_ref(item: &ItemRef) -> HostResult<i32> {
     read(item, |v| v.number_of_pages)
 }

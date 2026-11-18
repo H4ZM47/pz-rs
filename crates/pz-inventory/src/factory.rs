@@ -46,6 +46,8 @@ pub struct ScriptItems {
     pub channels: Option<Box<dyn crate::device::ChannelLists>>,
     /// `MapDefinitions.definitions` (runtime input from Lua `LootMaps`).
     pub map_definitions: Vec<String>,
+    /// `Translator.getText(key)` (runtime input; `None`: the key itself).
+    pub get_text: Option<Box<dyn Fn(&str) -> String>>,
 }
 
 /// `ScriptManager.FindItem(type, false)` with `createItemInternal`'s
@@ -167,6 +169,7 @@ impl ScriptItems {
             rand: RefCell::new(None),
             channels: None,
             map_definitions: Vec::new(),
+            get_text: None,
         }
     }
 }
@@ -266,6 +269,13 @@ impl ItemEnv for ScriptItems {
 
     fn map_definitions(&self) -> Vec<String> {
         self.map_definitions.clone()
+    }
+
+    fn get_text(&self, key: &str) -> String {
+        match &self.get_text {
+            Some(f) => f(key),
+            None => key.to_string(),
+        }
     }
 
     fn note_raw(&self, _registry_id: i16, reason: &str) {
