@@ -2041,6 +2041,74 @@ fn register_character(
         Ok(c.push(any))
     });
     let s = sm.clone();
+    b.method("isWearingAwkwardGloves", move |c| {
+        let v = chr_of(c)?.borrow().is_wearing_awkward_gloves(&s);
+        Ok(c.push(v))
+    });
+    // `isRecipeKnown(CraftRecipe[, actuallyKnown])`: unless `actuallyKnown`,
+    // `SandboxOptions.seeNotLearntRecipe` makes every recipe known.
+    // `isRecipeKnown(Recipe)` checks its original name, and
+    // `isRecipeKnown(name[, actuallyKnown])` the `Recipe` of that name, else
+    // the name itself.
+    let s = sm.clone();
+    b.method("isRecipeKnown", move |c| {
+        use pz_scripts::objects::entity::components::crafting::CraftRecipe;
+        use pz_scripts::objects::recipes::Recipe;
+        fn see_not_learnt(t: &mut Thread) -> LuaResult<bool> {
+            crate::bind_sandbox::instance(t)?;
+            crate::bind_sandbox::current_bool("SeeNotLearntRecipe")
+                .ok_or_else(|| crate::bind_world_object::unsupported("SandboxOptions.seeNotLearntRecipe"))
+        }
+        let know_all = |c: &NativeCall<'_>| -> LuaResult<bool> {
+            let ctx = current_sim_context();
+            Ok(chr_of(c)?.borrow().cheats.is_set(&*ctx, "KNOW_ALL_RECIPES"))
+        };
+        let known = |c: &NativeCall<'_>, name: Option<&str>| -> LuaResult<bool> {
+            let chr = chr_of(c)?;
+            let chr = chr.borrow();
+            Ok(name.is_some_and(|n| chr.known_recipes.iter().any(|k| k == n)))
+        };
+        // `isRecipeKnown(Recipe)`.
+        let old_recipe = |c: &mut NativeCall<'_>, r: &Recipe| -> LuaResult<bool> {
+            if know_all(c)? || see_not_learnt(c.thread)? {
+                return Ok(true);
+            }
+            known(c, r.originalname())
+        };
+        let actually = c.arg(2).truthy();
+        let (craft, old) = match c.arg(1) {
+            Value::Str(name) => {
+                let v = match pz_scripts::objects::recipes::get_recipe(&s, &name) {
+                    Some(r) => old_recipe(c, &r.borrow())?,
+                    None => (!actually && see_not_learnt(c.thread)?) || know_all(c)? || known(c, Some(&*name))?,
+                };
+                return Ok(c.push(v));
+            }
+            Value::Object(o) => match o.as_any().downcast_ref::<crate::bind_scripts::ScriptHandle>() {
+                Some(h) => (h.root.downcast::<CraftRecipe>(), h.root.downcast::<Recipe>()),
+                None => (None, None),
+            },
+            _ => (None, None),
+        };
+        if let Some(r) = old {
+            let v = old_recipe(c, &r.borrow())?;
+            return Ok(c.push(v));
+        }
+        let Some(recipe) = craft else {
+            return Err(LuaError::runtime("java.lang.ClassCastException: not a recipe"));
+        };
+        if !actually && see_not_learnt(c.thread)? {
+            return Ok(c.push(true));
+        }
+        let r = recipe.borrow();
+        let v = know_all(c)?
+            || !r.need_to_be_learn()
+            || known(c, r.name())?
+            || known(c, r.meta_recipe())?
+            || known(c, r.translation_name())?;
+        Ok(c.push(v))
+    });
+    let s = sm.clone();
     b.method("isInventive", move |c| {
         let v = chr_of(c)?.borrow().is_inventive(&s).map_err(java_error)?;
         Ok(c.push(v))
@@ -2410,6 +2478,28 @@ pub(crate) mod tests {
 
     /// A script manager with an invented item, loaded from a unique temp
     /// dir.
+    /// `isRecipeKnown(name[, actuallyKnown])`: the `Recipe` of that name
+    /// takes the `Recipe` form; any other name is looked up as it is.
+    #[test]
+    fn is_recipe_known_takes_a_recipe_name() {
+        let dir = std::env::temp_dir().join(format!("pz-bind-character-recipe-{}", std::process::id()));
+        let p = dir.join("media/scripts/test.txt");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "module Base { recipe Make Brick { Base.Nails, Result:Base.Nails, Time:10, } }").unwrap();
+        let sm = ScriptManager::new();
+        sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        let (mut t, player, _) = setup_with(sm);
+        run(&mut t, "assert(not player:isRecipeKnown('Sew Thing', true))").unwrap();
+        player.borrow_mut().known_recipes.push("Sew Thing".into());
+        run(&mut t, "assert(player:isRecipeKnown('Sew Thing', true))").unwrap();
+        // A `Recipe` name takes the `Recipe` form, which reads
+        // `seeNotLearntRecipe` even when `actuallyKnown` (the test has no
+        // sandbox options).
+        let err = run(&mut t, "player:isRecipeKnown('Make Brick', true)").unwrap_err();
+        assert!(err.contains("SandboxOptions used before init"), "{err}");
+    }
+
     fn item_scripts() -> ScriptManager {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
