@@ -1263,4 +1263,55 @@ mod tests {
         assert_eq!((vis.texture_choice, vis.tint), (1, Some([0.25, 0.5, 0.75])));
         assert_eq!(item.col, [0.25, 0.5, 0.75, 1.0]);
     }
+
+    #[test]
+    fn dressup_wears_new_copies_of_descriptor_visuals_in_inventory() {
+        use pz_characters::CharacterKind;
+        let mut t = setup(5);
+        let sm = shared_script_manager();
+        let mut chars = pz_characters::Characters::default();
+        let tshirt = body_location_key("base:tshirt");
+        let back = body_location_key("base:back");
+        let group = chars.body_locations.get_group("Human").unwrap();
+        for k in [&tshirt, &back] {
+            group.borrow_mut().get_or_create_location(k.clone()).unwrap();
+        }
+        let desc = Rc::new(RefCell::new(LuaSurvivorDesc::new(&mut chars, &sm).unwrap()));
+        let shirt = crate::bind_items::try_create_item("Base.Tshirt_Test", 1.0).unwrap().unwrap();
+        get_visual(&shirt).unwrap();
+        shirt.borrow_mut().visual.as_mut().unwrap().texture_choice = 2;
+        let rock = crate::bind_items::try_create_item("Base.Rock", 1.0).unwrap().unwrap();
+        for (k, item) in [(&tshirt, &shirt), (&back, &rock)] {
+            desc.borrow_mut().worn_items.set_item(k.clone(), Some(LuaItem(item_value(item)))).unwrap();
+        }
+        let new_chr = |kind| {
+            let mut c = crate::bind_character_sim::LuaGameCharacter::new(&sm, kind);
+            c.init_worn_items(&sm, group.clone());
+            Rc::new(RefCell::new(c))
+        };
+
+        // A zombie is not dressed and keeps the descriptor's items.
+        let zombie = new_chr(CharacterKind::Zombie);
+        crate::character_dressup::dressup(&mut t, &sm, &zombie, &desc).unwrap();
+        assert!(zombie.borrow().items.worn_ids().is_empty());
+        assert_eq!(desc.borrow().worn_items.items().len(), 2);
+
+        let chr = new_chr(CharacterKind::Player);
+        crate::character_dressup::dressup(&mut t, &sm, &chr, &desc).unwrap();
+        let c = chr.borrow();
+        // The rock has no visual, so only the shirt is copied.
+        let ids = c.items.worn_ids();
+        assert_eq!(ids.len(), 1);
+        assert!(c.items.worn_location(ids[0]) == tshirt);
+        let inventory = c.items.inventory_items();
+        assert_eq!(inventory.len(), 1);
+        let worn = c.items.item(ids[0]).unwrap();
+        assert!(Rc::ptr_eq(&worn, &inventory[0]));
+        assert!(!Rc::ptr_eq(&worn, &shirt), "Dressup wears a new item");
+        let w = worn.borrow();
+        assert_eq!(w.get_full_type(), "Base.Tshirt_Test");
+        assert_eq!(w.visual.as_ref().unwrap().texture_choice, 2);
+        assert_eq!(w.condition, w.condition_max);
+        assert!(desc.borrow().worn_items.items().is_empty());
+    }
 }
