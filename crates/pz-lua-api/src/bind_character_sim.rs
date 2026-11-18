@@ -1629,6 +1629,28 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
         })?;
         Ok(0)
     });
+    // Global `addXp(player, perk, amount)`: in single player,
+    // `player.getXp().AddXP(perk, amount)` when `player.isExistInTheWorld()`.
+    // The port keeps no `square.movingObjects` lists, so a character is in
+    // the world when its current square is a square of the current cell.
+    let (s, ch) = (sm.clone(), chars.clone());
+    crate::expose::global(thread, "addXp", move |c| {
+        let chr = chr_of(c)?;
+        let square = chr.borrow().current_square_xyz();
+        let in_world =
+            square.is_some_and(|(x, y, z)| !crate::bind_world::square_value(x, y, z).is_nil());
+        if !in_world {
+            return Ok(0);
+        }
+        let v = character_value(&chr);
+        let perk = perk_arg(c, 1)?;
+        let amount = float_arg(c, 2);
+        let chars = ch.borrow();
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().add_xp(&s, &chars, perk.as_ref(), amount, ctx)
+        })?;
+        Ok(0)
+    });
     let (s, ch) = (sm.clone(), chars.clone());
     b.method("AddXPHaloText", move |c| {
         let chr = xp_chr(c)?;
@@ -3209,6 +3231,31 @@ pub(crate) mod tests {
         assert!(log[1].starts_with("AddXP Knit 26.6"), "{}", log[1]);
         assert!(log.contains(&"LevelPerk Sprinting 0.0 false".to_string()));
         assert_eq!(chr.borrow().perk_list.len(), 3);
+    }
+
+    #[test]
+    fn add_xp_global_needs_a_square_of_the_cell() {
+        let (mut t, chr, log) = setup();
+        let none = "addXp(player, Perks.Knit, 20) assert(player:getXp():getXP(Perks.Knit) == 0)";
+        // No current square.
+        run(&mut t, none).unwrap();
+        // A current square that the cell does not have.
+        chr.borrow_mut().path.current_square = Some((1, 1, 0));
+        run(&mut t, none).unwrap();
+        assert!(log.borrow().iter().all(|l| !l.starts_with("AddXP")));
+
+        let mut chunk = pz_world::IsoChunk::new(0, 0);
+        chunk.set_square(1, 1, 0, Some(pz_world::IsoGridSquare::new(1, 1, 0).into()));
+        let mut cell = pz_world::IsoCell::default();
+        cell.chunks.insert((0, 0), chunk);
+        let old = crate::bind_world::with_world(|w| w.cell.replace(cell));
+        let added = run(
+            &mut t,
+            "addXp(player, Perks.Knit, 20) assert(player:getXp():getXP(Perks.Knit) > 0)",
+        );
+        crate::bind_world::with_world(|w| w.cell = old);
+        added.unwrap();
+        assert!(log.borrow().iter().any(|l| l.starts_with("AddXP Knit")));
     }
 
     #[test]
