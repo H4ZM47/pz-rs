@@ -1054,6 +1054,31 @@ mod tests {
         ]
     }
 
+    /// `loadServerZombiesFile` (and `handleOldZombiesFile1`, which reads a
+    /// save's `zombies.ini` the same way): unprefixed names set the
+    /// `ZombieConfig.` options; other names are ignored.
+    #[test]
+    fn zombies_file_sets_zombie_config_options() {
+        let mut d = defs();
+        d.push(OptionDef {
+            name: "ZombieConfig.PopulationMultiplier".into(),
+            kind: OptionKind::Double { min: 0.0, max: 4.0, default: 1.0 },
+            translation: None,
+            value_translation: None,
+        });
+        let mut s = SandboxOptions::new(&d);
+        let dir = std::env::temp_dir().join(format!("pz-sandbox-zombies-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("zombies.ini");
+        std::fs::write(&file, "VERSION=1\nPopulationMultiplier=2.5\nC=3.0\n").unwrap();
+        assert!(s.load_server_zombies_file(&file));
+        let value = |s: &SandboxOptions, n: &str| s.option_by_name(n).unwrap().config.get_value_as_string();
+        assert_eq!(value(&s, "ZombieConfig.PopulationMultiplier"), "2.5");
+        assert_eq!(value(&s, "C"), "0.5");
+        assert!(!s.load_server_zombies_file(&dir.join("missing.ini")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn sandbox_vars_round_trip() {
         let mut s = SandboxOptions::new(&defs());
