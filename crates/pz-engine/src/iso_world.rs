@@ -790,8 +790,10 @@ impl IsoWorld {
             self.create_new_player(lua, &sm)?;
         }
         // `PlayerDB.getInstance().canSavePlayers = true`.
-        // TODO(port): `PlayerDB.canSavePlayers` (kept by the save path);
-        // `TutorialManager.activeControlZombies`;
+        if let Some(db) = self.player_db.as_mut() {
+            db.can_save_players = true;
+        }
+        // TODO(port): `TutorialManager.activeControlZombies`;
         // `ReanimatedPlayers.loadReanimatedPlayers`.
         if let Some(p) = pz_lua_api::bind_players::player_instance() {
             // TODO(port): `ScriptManager.checkAutoLearn`, `checkMetaRecipes`,
