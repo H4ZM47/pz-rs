@@ -17,6 +17,7 @@
 mod handcraft;
 pub mod item_status;
 mod logic;
+pub(crate) use logic::data_mapper_output_item;
 mod recipe_code;
 
 use crate::bind_character_sim::CharacterObject;

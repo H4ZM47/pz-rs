@@ -1728,8 +1728,7 @@ mod tests {
             assert(r:getRequiredSkill(0):getPerk() == 'W')
             local mapper = r:getOutputs():get(0):getOutputMapper()
             assert(mapper:getOutputItem(nil):getFullName() == "Base.Stone")
-            local held = { getFirstManualInputFor = function(self, input) return stone end }
-            assert(mapper:getOutputItem(held, true):getFullName() == "Base.Stone")
+            assert(mapper:getOutputItem(nil, true):getFullName() == "Base.Stone", "a mapper without inputs")
             "#,
         )
         .unwrap();

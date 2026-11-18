@@ -20,10 +20,11 @@ use super::RecipeCharacter;
 use crate::bind_world_object::unsupported;
 use pz_kahlua::{LuaError, LuaResult};
 use pz_scripts::objects::entity::components::crafting::{
-    CraftRecipe, InputFlag, InputScript, OutputFlag, OutputScript,
+    CraftRecipe, InputFlag, InputScript, OutputFlag, OutputMapper, OutputScript,
 };
 use pz_scripts::objects::entity::components::resources::ResourceType;
 use pz_scripts::objects::items::Item;
+use pz_scripts::ScriptRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -631,11 +632,62 @@ impl<'a> RecipeData<'a> {
         let Some(mapper) = self.recipe.output_mapper_for(output) else {
             return Ok(None);
         };
-        if !mapper.entrees().is_empty() {
-            // `OutputEntree.matchItem` against the input items.
-            return Err(unsupported("OutputMapper.getOutputItem (entrees)"));
+        Ok(self.mapper_output_item(mapper, false).and_then(|r| r.downcast::<Item>()))
+    }
+
+    /// `getDataForInputScript(input)` for the input on io line `line`: the
+    /// input itself, or the input that consumes from its item.
+    fn input_for_line(&self, line: usize) -> Option<usize> {
+        let target = self.recipe.io_lines().get(line)?.as_input()?;
+        self.inputs
+            .iter()
+            .position(|i| std::ptr::eq(*i, target))
+            .or_else(|| self.inputs.iter().position(|i| i.consume_from_item_script() == Some(line)))
+    }
+
+    /// `OutputMapper.matchItem(data, input, item, manual)`: the script item
+    /// of the input's first input item (manual) or of its most recent
+    /// applied item is `item`.
+    fn mapper_matches(&self, line: usize, item: &ScriptRef, manual: bool) -> bool {
+        let Some(i) = self.input_for_line(line) else { return false };
+        let d = &self.st.inputs[i];
+        let key = if manual { d.items.first() } else { d.cache.applied.last() };
+        let Some(script) = key.and_then(|&k| self.item(k).script_item()) else { return false };
+        item.downcast::<Item>().is_some_and(|p| Rc::ptr_eq(&p, &script))
+    }
+
+    /// `OutputMapper.getOutputItem(data, manual)`: the result of the first
+    /// entree whose pattern items each match a different mapper input, else
+    /// the default result. With `manual`, the default needs a manual input
+    /// item (`getFirstManualInputFor`) for every mapper input.
+    pub fn mapper_output_item(&self, mapper: &OutputMapper, manual: bool) -> Option<ScriptRef> {
+        for entree in mapper.entrees() {
+            if entree.pattern.is_empty() {
+                continue;
+            }
+            // `matchedInputs`.
+            let mut matched: Vec<usize> = Vec::new();
+            let all = entree.pattern.iter().all(|p| {
+                let found = mapper
+                    .input_scripts()
+                    .iter()
+                    .copied()
+                    .find(|&l| !matched.contains(&l) && self.mapper_matches(l, p, manual));
+                found.map(|l| matched.push(l)).is_some()
+            });
+            if all {
+                return entree.result.clone();
+            }
         }
-        Ok(mapper.default_output_entree().and_then(|e| e.result.as_ref()?.downcast::<Item>()))
+        let default = mapper.default_output_entree()?;
+        if manual {
+            for &line in mapper.input_scripts() {
+                // `getFirstManualInputFor`: null for another recipe's input.
+                let first = self.input_for_line(line).and_then(|i| self.st.inputs[i].items.first());
+                first?;
+            }
+        }
+        default.result.clone()
     }
 
     /// `createOutputItems(output, toOutputItems, test, data, chr)`.

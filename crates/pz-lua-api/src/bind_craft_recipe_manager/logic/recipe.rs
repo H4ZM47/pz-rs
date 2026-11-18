@@ -23,7 +23,7 @@ use crate::expose::{expose_class, this, ClassBuilder};
 use pz_characters::character::save::CraftHistoryEntry;
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
-use pz_scripts::objects::entity::components::crafting::{CraftRecipe, InputFlag, InputScript, LuaCall};
+use pz_scripts::objects::entity::components::crafting::{CraftRecipe, InputFlag, InputScript, LuaCall, OutputMapper};
 use pz_scripts::objects::entity::components::resources::ResourceType;
 use pz_scripts::{ScriptRef, ScriptType};
 use std::any::Any;
@@ -1171,4 +1171,28 @@ pub(super) fn register_recipe_data(thread: &mut Thread) {
         let v = with_data(c.thread, &logic, &[], |data, _, t| data.is_satisfied(input, t))?;
         Ok(c.push(v))
     });
+}
+
+/// `OutputMapper.getOutputItem(data, manual)` for a `CraftRecipeData`
+/// value; `recipe` is the address of the mapper's recipe. A data set to
+/// another recipe (or to none) has no data for the mapper's inputs.
+pub(crate) fn data_mapper_output_item(
+    thread: &mut Thread,
+    data: &Value,
+    recipe: usize,
+    mapper: &OutputMapper,
+    manual: bool,
+) -> LuaResult<Option<ScriptRef>> {
+    let Value::Object(d) = data else { return Err(class_cast()) };
+    let o = d.as_any().downcast_ref::<RecipeDataObject>().ok_or_else(class_cast)?.0.clone();
+    let same = selected(&o)
+        .and_then(|s| s.downcast::<CraftRecipe>())
+        .is_some_and(|r| r.as_ptr() as *const () as usize == recipe);
+    if same {
+        return with_data(thread, &o, &[], |d, _, _| Ok(d.mapper_output_item(mapper, manual)));
+    }
+    if manual && !mapper.input_scripts().is_empty() {
+        return Ok(None);
+    }
+    Ok(mapper.default_output_entree().and_then(|e| e.result.clone()))
 }

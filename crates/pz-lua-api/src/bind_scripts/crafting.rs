@@ -57,26 +57,22 @@ fn register_output_mapper(thread: &mut Thread) {
     let b = expose_class(thread, OUTPUT_MAPPER_CLASS, None);
     method(&b, "getOutputItem", |c, h| {
         let (data, manual) = (c.arg(1), c.arg(2).truthy());
-        let (entrees, inputs, result) = h.read(|m: &OutputMapper| {
-            let result = m.default_output_entree().map(|e| e.result.clone());
-            (!m.entrees().is_empty(), m.input_scripts().to_vec(), result)
-        })?;
-        if entrees && !data.is_nil() {
-            return Err(crate::bind_world_object::unsupported("OutputMapper.getOutputItem (entrees)"));
-        }
-        let Some(result) = result else { return Ok(Value::Nil) };
-        if manual {
-            // Every input of the mapper needs a manual input item.
-            let recipe = h.parent().ok_or_else(|| pz_kahlua::LuaError::runtime("java.lang.NullPointerException"))?;
-            for i in inputs {
-                let input = io_value(recipe, i)?;
-                let f = c.thread.table_get(&data, &Value::str("getFirstManualInputFor"))?;
-                if c.thread.call1(&f, &[data.clone(), input])?.is_nil() {
-                    return Ok(Value::Nil);
-                }
+        let mapper = h.read(|m: &OutputMapper| m.clone())?;
+        let npe = || pz_kahlua::LuaError::runtime("java.lang.NullPointerException");
+        if data.is_nil() {
+            // No entree is tried; when manual, `getFirstManualInputFor` on
+            // the null data throws for the first mapper input.
+            let Some(result) = mapper.default_output_entree().map(|e| e.result.clone()) else {
+                return Ok(Value::Nil);
+            };
+            if manual && !mapper.input_scripts().is_empty() {
+                return Err(npe());
             }
+            return Ok(script_value(result.as_ref()));
         }
-        Ok(script_value(result.as_ref()))
+        let recipe = h.parent().ok_or_else(npe)?.target_ptr()?;
+        let item = crate::bind_craft_recipe_manager::data_mapper_output_item(c.thread, &data, recipe, &mapper, manual)?;
+        Ok(script_value(item.as_ref()))
     });
 }
 

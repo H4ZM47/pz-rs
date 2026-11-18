@@ -727,3 +727,40 @@ fn a_known_recipe_one_level_short_could_benefit_from_a_recipe_at_hand() {
     assert!(!character_has_required_skills(&learned, &chr(2)));
     assert!(character_has_required_skills(&plain, &chr(0)));
 }
+
+/// `OutputMapper.getOutputItem(data, manual)`: an entree whose pattern items
+/// each match a different mapper input (by its first input item when manual,
+/// else by its most recent applied item), else the default result, which
+/// needs every mapper input filled when manual.
+#[test]
+fn output_mapper_entrees_match_the_input_items() {
+    let sm = manager(
+        "craftRecipe Mapped { time = 10, inputs { item 1 [Base.Apple;Base.Nails] mappers[M], item 1 [Base.Apple;Base.BaseballBat] mappers[M], } \
+         outputs { item 1 mapper:M, } itemMapper M { Base.BaseballBat = Base.Apple;Base.Nails, Base.Nails = Base.Apple;Base.Apple, Default = Base.Apple, } }",
+    );
+    let chr = player();
+    let r = recipe(&sm, "Mapped");
+    let r = r.borrow();
+    let items = [it(&sm, 1, "Apple"), it(&sm, 2, "Nails"), it(&sm, 3, "Apple"), it(&sm, 4, "BaseballBat")];
+    let refs: Vec<&dyn CraftItem> = items.iter().map(|i| i as &dyn CraftItem).collect();
+    let mapper = r.output_mapper_for(r.outputs().next().unwrap()).unwrap();
+    let name = |s: Option<ScriptRef>| s.map(|s| s.downcast::<Item>().unwrap().borrow().module_dot_type.clone());
+    let mut d = handcraft::RecipeData::new(&r, &refs, &chr);
+    // Nothing selected: no entree matches; the manual default needs both inputs.
+    assert_eq!(name(d.mapper_output_item(mapper, false)).as_deref(), Some("Base.Apple"));
+    assert_eq!(name(d.mapper_output_item(mapper, true)), None);
+    // Apple and nails, one per input.
+    d.st.inputs[0].items = vec![2];
+    d.st.inputs[1].items = vec![1];
+    assert_eq!(name(d.mapper_output_item(mapper, true)).as_deref(), Some("Base.BaseballBat"));
+    // Two apples: the second pattern apple needs another input.
+    d.st.inputs[0].items = vec![1];
+    d.st.inputs[1].items = vec![3];
+    assert_eq!(name(d.mapper_output_item(mapper, true)).as_deref(), Some("Base.Nails"));
+    // Not manual: the most recent applied item of each input.
+    d.st.inputs[0].cache.applied = vec![2, 1];
+    d.st.inputs[1].cache.applied = vec![4];
+    assert_eq!(name(d.mapper_output_item(mapper, false)).as_deref(), Some("Base.Apple"));
+    d.st.inputs[1].cache.applied = vec![4, 3];
+    assert_eq!(name(d.mapper_output_item(mapper, false)).as_deref(), Some("Base.Nails"));
+}

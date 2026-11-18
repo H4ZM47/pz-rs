@@ -13,6 +13,7 @@
 //! `unsupported`.
 
 mod recipe;
+pub(crate) use recipe::data_mapper_output_item;
 
 use super::handcraft::DataState;
 use super::{cached_recipe_info, container_items};
