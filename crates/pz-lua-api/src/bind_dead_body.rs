@@ -164,13 +164,22 @@ pub(crate) fn register(thread: &mut Thread) {
     expose_class(thread, ISO_MOVING_OBJECT, Some(crate::bind_world_object::ISO_OBJECT));
     let b = expose_class(thread, ISO_DEAD_BODY, Some(ISO_MOVING_OBJECT));
     // The `IsoObject` methods the loot window calls on a container's
-    // parent. A corpse is not an `IsoFireplace` or `IsoBarbecue`, so
+    // parent, for a corpse. It is not an `IsoFireplace` or `IsoBarbecue`, so
     // `isFireInteractionObject()`, `isPropaneBBQ()` and `hasPropaneTank()`
     // are false; `IsoObject.isLit()` is false.
     for name in ["isFireInteractionObject", "isPropaneBBQ", "hasPropaneTank", "isLit"] {
         get(&b, name, |c| {
             this(c)?;
             Ok(Value::Bool(false))
+        });
+    }
+    // `getName()` and `getSprite()` read `IsoObject.name` and `sprite`.
+    // The corpse constructors and `IsoMovingObject.load` do not set them,
+    // so they are null.
+    for name in ["getName", "getSprite"] {
+        get(&b, name, |c| {
+            this(c)?;
+            Ok(Value::Nil)
         });
     }
     get(&b, "isFemale", |c| Ok(Value::Bool(this(c)?.try_borrow().map_err(|_| borrowed())?.female)));
