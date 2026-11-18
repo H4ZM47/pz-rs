@@ -722,7 +722,7 @@ pub fn load_item_ref(
     let subclass = match item.try_borrow() {
         Ok(body) => match body.kind {
             crate::ItemKind::Container(_) => 1,
-            crate::ItemKind::Weapon(_) | crate::ItemKind::Map { .. } => 2,
+            crate::ItemKind::Map { .. } => 2,
             _ => 0,
         },
         Err(_) => {
@@ -756,8 +756,13 @@ pub fn load_item_ref(
         .try_borrow_mut()
         .map_err(|_| RuntimeHostError::Borrowed("item subclass body load"))
         .and_then(|mut body| {
-            body.load_kind_native(reader, world_version, env)
-                .map_err(|error| RuntimeHostError::NativeException(EntityError(error.0)))
+            body.load_kind_native(reader, world_version, env).map_err(|error| match error {
+                Some(error) => RuntimeHostError::NativeException(EntityError(error.0)),
+                None => RuntimeHostError::Unsupported {
+                    operation: "HandWeapon.load weapon parts of an actual item",
+                    kind: None,
+                },
+            })
         });
     if let Err(error) = loaded {
         return Err(fail(error, retired, reader.pos, None));
