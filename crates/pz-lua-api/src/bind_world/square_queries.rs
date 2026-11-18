@@ -124,6 +124,20 @@ pub(super) fn register(b: &ClassBuilder) {
         let (x, y, z) = self_square(c)?;
         Ok(square_is_outside(x, y, z)?.into())
     });
+    // `isFree(bCountOtherCharacters)`. The port does not keep the square's
+    // `movingObjects`, so the `true` form, which returns false for a square
+    // with a moving object, is unsupported.
+    get(b, "isFree", |c| {
+        let (x, y, z) = self_square(c)?;
+        if bool_arg(c, 1) {
+            return Err(crate::bind_world_object::unsupported("IsoGridSquare.isFree(true): the square's movingObjects"));
+        }
+        let sprites = crate::bind_sprites::manager()?;
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        Ok(with_square(x, y, z, |square| Ok(square.is_free_static(&sprites)))?.into())
+    });
     // Edge queries between this square and `other` (`nil` allowed).
     edge(b, "isBlockedTo", |env, a, other| env.is_blocked_to(a, other));
     edge(b, "isWallTo", |env, a, other| a.is_wall_to(other, env.sprites, env.cell));

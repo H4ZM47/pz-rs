@@ -231,3 +231,15 @@ fn light_level_reads_installed_source_and_defaults_to_white() {
     );
     install_square_light(None);
 }
+
+#[test]
+fn is_free_needs_a_solid_floor_without_solid_objects() {
+    let mut f = Fixture::new();
+    let flags = f.sprites.borrow().tables.flag;
+    f.run("assert(a:isFree(false) == false)");
+    f.square(|square| square.properties.set_flag(flags.solidfloor));
+    f.run("assert(a:isFree(false) == true)");
+    f.square(|square| square.properties.set_flag(flags.solidtrans));
+    f.run("assert(a:isFree(false) == false)");
+    f.run("local ok, err = pcall(a.isFree, a, true); assert(not ok and tostring(err):find('movingObjects'))");
+}
