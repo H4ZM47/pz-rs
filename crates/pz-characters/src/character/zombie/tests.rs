@@ -385,9 +385,14 @@ fn zombie_bites_through_attack_state() {
     let attack = z.zombie_attack_for(1, "Bite", &mut cx);
     assert_eq!(attack.surrounding_attacking_zombies, 1);
     let p = &mut world.chars[0];
+    assert!(p.variable_boolean_or("hitpvp", true), "no hitpvp before the bite");
     let out = p.body_damage_add_random_damage_from_zombie(&sm, &chars, &ctx, &attack).unwrap();
     z.apply_zombie_attack_outcome(&out);
     assert!(p.body_damage.health() <= health);
+    // The player's `to_hitreaction` transitions (`isTrue hashitreaction`,
+    // `isFalse hitpvp`) pass after a zombie's bite.
+    assert!(!p.variable_boolean_or("hitpvp", true));
+    assert!(p.variable_boolean("hashitreaction"));
 }
 
 #[test]
