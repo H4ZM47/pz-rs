@@ -447,3 +447,32 @@ fn rain_manager_fresh_class_state_matches_installed_initializer() {
         rain_desired_intensity: 1.0, stop_rain: false,
     });
 }
+
+#[test]
+fn death_string_and_zombie_killed_text_read_the_player() {
+    let mut t = setup();
+    let player = Rc::new(RefCell::new(crate::bind_character_sim::LuaGameCharacter::new(
+        &pz_scripts::ScriptManager::new(),
+        pz_characters::CharacterKind::Player,
+    )));
+    {
+        let mut p = player.borrow_mut();
+        p.hours_survived = 26.0;
+        p.zombie_kills = 1;
+    }
+    let value = Value::Object(Rc::new(crate::bind_character_sim::CharacterObject::try_new(&player).unwrap()));
+    t.globals().set_str("player", value);
+    // No translator is installed, so getText gives back the key.
+    let r = run(
+        &mut t,
+        "local gt = getGameTime()
+        local ok, err = pcall(gt.getDeathString, gt, nil)
+        return gt:getDeathString(player), gt:getZombieKilledText(player), ok, tostring(err)",
+    );
+    let shown: Vec<String> = r.iter().map(pz_kahlua::exec::java_value_of).collect();
+    assert_eq!(shown[..2], ["IGUI_Gametime_SurvivedFor", "IGUI_Gametime_zombieCount"], "{shown:?}");
+    assert!(shown[2] == "false" && shown[3].contains("\"player\" is null"), "{shown:?}");
+    player.borrow_mut().zombie_kills = -1;
+    let r = run(&mut t, "return getGameTime():getZombieKilledText(player) == nil");
+    assert!(r[0].truthy());
+}
