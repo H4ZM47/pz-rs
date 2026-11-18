@@ -404,13 +404,13 @@ pub fn load_square(
                     // IsoObject field initialisers: offsetX = 32 * tileScale,
                     // offsetY = 96 * tileScale.
                     let ts = ctx.settings.tile_scale as f32;
-                    sq.static_moving.push(IsoDeadBody::load(
+                    sq.static_moving.push(std::rc::Rc::new(std::cell::RefCell::new(IsoDeadBody::load(
                         r,
                         wv,
                         ctx.tables,
                         (32.0 * ts, 96.0 * ts),
                         ctx.items,
-                    )?);
+                    )?)));
                 }
             }
             if has(bits, 2) {
@@ -551,6 +551,9 @@ pub fn save_square(w: &mut Writer, ctx: &SaveCtx<'_>, sq: &IsoGridSquare) -> Sav
         w.i16(sq.static_moving.len() as i16);
         let class = ctx.class_id("DeadBody")?;
         for b in &sq.static_moving {
+            let Ok(b) = b.try_borrow() else {
+                return err("IsoDeadBody.save: the corpse is borrowed");
+            };
             b.save(w, class, ctx.items)?;
         }
     }

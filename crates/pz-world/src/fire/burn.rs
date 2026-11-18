@@ -1103,7 +1103,7 @@ pub fn burn_tick(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At, multipl
         let Some(sq_owner) = w.sq_mut(x, y, z) else {
             return;
         };
-        let mut sq = sq_owner.borrow_mut();
+        let sq = sq_owner.borrow();
         if i >= sq.static_moving.len() {
             return;
         }
@@ -1111,12 +1111,14 @@ pub fn burn_tick(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At, multipl
             i += 1;
             continue;
         }
-        let body = &mut sq.static_moving[i];
+        let body = sq.static_moving[i].clone();
+        let mut body = body.borrow_mut();
         body.burn_timer += multiplied_seconds;
         if body.burn_timer < 10.0 {
             i += 1;
             continue;
         }
+        drop(body);
         drop(sq);
         let have_remains = {
             let sq_owner = w.sq(x, y, z).unwrap();

@@ -715,6 +715,46 @@ all installed assets, render paths or foreign platforms.
       `bind_input::update`/`after_ui_update` the game loop builds one
       `EnginePlayerInput::capture()` per frame, passes `&input` to each local
       player's `IsoPlayer.update`, then calls `input.write_back()` (#137).
+- [x] Melee targets: a local player's update (and its timed-action tail)
+      and its animation events run with `with_states_and_characters(..,
+      Some(&mut zombies), ..)`, so `StatesWorldAdapter::with_characters`
+      answers `character_mut`, `take_character`/`put_character` and
+      `characters_near` from the real zombies: `CombatManager` finds the
+      zombie, `AttackCollisionCheck` hits it, and it plays its hit reaction,
+      falls and dies. Not wired: the zombies' own update and anim events
+      reaching the player (the zombie's attack).
+- [x] Zombie corpses: a zombie that raises `SimEvent::Die` in its update,
+      postupdate or animation events (`IsoGameCharacter.die`) becomes a
+      corpse after that phase: `GameCharacter::become_dead_body` (`new
+      IsoDeadBody(chr)`: position, look, inventory, worn items) with
+      `MutationEnv::place_new_corpse` (`staticMovingObjects`,
+      `CorpseCount`, render invalidation), then `zombie_remove_from_world`,
+      removal from `IsoWorld::zombies`, and `OnContainerUpdate` and
+      `OnDeadBodySpawn` with the corpse's Lua object. A zombie whose corpse
+      cannot be made or placed stays with its items. Not wired:
+      `DoZombieInventory` and `DoDeath` (`onKilled`), `dropHeldItems`,
+      `ObjectIDManager`, `FliesSound`, the ragdoll pose, and the Lua
+      objects for `OnZombieDead` and `OnCharacterDeath` (reported as
+      unsupported when they have listeners). `die()` from the population
+      pass (`RealZombies::die`) is not collected.
+- [x] Corpse objects: each corpse in `staticMovingObjects` is one shared
+      `DeadBodyRef`, and `bind_dead_body` gives it one Lua object
+      (`getStaticMovingObjects`, the events above). Its first `getContainer`
+      moves the saved container into a live one whose parent is the corpse
+      (`dead_body::inventory`); saving writes a snapshot of it. Not wired:
+      `PickCorpse`, the hand items, `getModData`, highlights, and the rest
+      of `IsoDeadBody`'s Lua methods.
+- [x] Corpse rendering: `WorldRender::render_corpses` draws each square's
+      `staticMovingObjects` as `IsoDeadBody.render` does: the square's
+      interpolated light, `BodyParams.init` (outside, room, lights), the
+      body texture from `DeadBodyAtlas.getBodyTexture` (the body model
+      posed by `BodyParams`/`diedBoneTransforms` and drawn into the atlas)
+      and its shadow. New and loaded corpses use the same path. The
+      texture jobs run in `WorldModels::prepare`, so a new body shows one
+      frame later. The 3D view (a port extension) draws no corpses and
+      prepares no atlas entries. Not wired: animal corpses (reported once), attached
+      models, the hand items' models, highlights, the alpha fade and the
+      release of atlas entries.
 - [x] `ZombiePopulationManager::update_main` with PopulationHost and
       `ZombieOps` (`RealZombies`) (#73/#77; `RealZombies::create_survivor`
       returns `CreateSurvivor`'s `ScriptResult`, and `WorldPopulation::update`
