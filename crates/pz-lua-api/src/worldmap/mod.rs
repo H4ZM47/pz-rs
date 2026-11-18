@@ -128,6 +128,13 @@ pub fn install_fs(fs: Rc<std::cell::RefCell<pz_fs::GameFs>>) {
     FS.with(|f| *f.borrow_mut() = Some(fs));
 }
 
+/// Run `f` on the installed file system (`None` without one).
+pub(crate) fn with_fs<R>(f: impl FnOnce(&pz_fs::GameFs) -> R) -> Option<R> {
+    let fs = FS.with(|f| f.borrow().clone())?;
+    let fs = fs.borrow();
+    Some(f(&fs))
+}
+
 /// `ZomboidFileSystem.instance.getString(name)`: the absolute path of a
 /// game file (unchanged without a file system).
 pub fn fs_get_string(name: &str) -> String {
