@@ -924,10 +924,19 @@ all installed assets, render paths or foreign platforms.
       (#187).
 - [ ] World containers need their `IsoObject` parent set with
       `bind_item_container::set_parent` the same way (#143).
-- [ ] Shared tooltip: `HudPicking::picked_tile` (`UIManager.getPicked().tile`
+- [x] Shared tooltip: `HudPicking::picked_tile` (`UIManager.getPicked().tile`
       as a `pz_ui::tooltip::TooltipObject`: identity, `haveSpecialTooltip`,
       its square's Lua object; world thread); the tooltip font option and
-      highlight colours come from `Core` (#153).
+      highlight colours come from `Core` (#153). `world_pick::install`
+      puts `PickedTile` into the HUD host: the object the last context
+      pick in `UIManager.update` found. `IsoObject.setSpecialTooltip` /
+      `haveSpecialTooltip` are bound for the map objects that set it
+      (rain barrels, plants, traps).
+- [x] Lua `UIManager.getPicked()` / `getLastPicked()`: `UIManager.picked`
+      (the context pick's `ClickObject`, opaque to Lua) and
+      `UIManager.lastPicked` (its tile, set by `updateTooltip` while the
+      mouse is over it). `getPickedTile` / `getTileFromMouse` are still
+      nil (TODO(world): `getTileFromMouse`).
 - [x] Item tooltips: `item:DoTooltip(tooltip)` / `DoTooltipEmbedded` are
       bound with the item classes (`bind_items::register` →
       `item_tooltip::register`); the tooltip's `setCharacter` gives the
@@ -954,6 +963,16 @@ all installed assets, render paths or foreign platforms.
       `with_host(|h| h.picking = Box::new(WorldPicking { world }))`; use
       `picking::context_pick` for `UIManager.setPicked` on mouse events
       (world-render thread) (#192).
+- [x] World mouse: `pz_engine::world_pick::install(render, sprites,
+      cameras)` after `install_hud_camera` and `uninstall()` on exit. It
+      puts one `EngineWorldMouse` into `UIManager` (`pz_ui::WorldMouse`:
+      `IsoObjectPicker.ContextPick` each frame, `OnObjectRightMouseButton*`
+      with `getObjectIndex`, the right-click state of `IsoPlayer`/the
+      clock) and into `IsoObjectPicker.Instance` for Lua
+      (`bind_object_picker`: `PickDoor/PickWindow/PickWindowFrame/
+      PickThumpable/PickTree`). `PickHoppable`/`PickCorpse`, the left
+      button (`OnObjectLeftMouseButton*`) and dragging moving objects are
+      open (world thread).
 - [ ] Object picking render side: keep a `pz_iso_render::RenderInfos`
       next to the chunk caches, build each player's `ChunkRenderer` with
       `.with_render_infos(&infos, player)` (chunk recording, composite and

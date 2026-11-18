@@ -246,8 +246,29 @@ pub(crate) fn item_argument(value: &Value) -> LuaResult<pz_inventory::shared::It
 }
 
 pub(crate) fn register_classes(thread: &mut Thread) {
-    crate::expose::expose_class(thread, ISO_OBJECT, Some(GAME_ENTITY));
+    let object = crate::expose::expose_class(thread, ISO_OBJECT, Some(GAME_ENTITY));
+    register_special_tooltip(&object);
     crate::expose::expose_class(thread, WORLD_INVENTORY_OBJECT, Some(ISO_OBJECT));
+}
+
+/// `IsoObject.haveSpecialTooltip()` / `setSpecialTooltip(b)`: the
+/// `specialTooltip` flag that makes the shared tooltip fire
+/// `DoSpecialTooltip` for the object under the mouse.
+fn register_special_tooltip(object: &crate::expose::ClassBuilder) {
+    fn body(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<IsoObjectRef> {
+        let o = crate::expose::this::<LuaWorldObject>(c)?;
+        Ok(o.as_any().downcast_ref::<LuaWorldObject>().unwrap().object.clone())
+    }
+    object.method("haveSpecialTooltip", |c| {
+        let o = body(c)?;
+        let v = o.try_borrow().map_err(|_| borrowed("IsoObject body"))?.special_tooltip;
+        Ok(c.push(Value::Bool(v)))
+    });
+    object.method("setSpecialTooltip", |c| {
+        let v = crate::expose::bool_arg(c, 1);
+        body(c)?.try_borrow_mut().map_err(|_| borrowed("IsoObject body"))?.special_tooltip = v;
+        Ok(0)
+    });
 }
 
 pub(crate) fn object_value(object: &IsoObjectRef) -> LuaResult<Value> {
