@@ -287,6 +287,42 @@ pub trait HudDebug {
     }
 }
 
+/// [`HudDebug`] over the shared `DebugOptions.instance`
+/// (`pz_core::debug::debug_options`).
+pub struct DebugOptionsHud;
+
+impl DebugOptionsHud {
+    fn option(name: &str) -> bool {
+        pz_core::debug::debug_options()
+            .try_borrow()
+            .is_ok_and(|o| o.get_boolean(name))
+    }
+}
+
+impl HudDebug for DebugOptionsHud {
+    fn cheat_clock_visible(&self) -> bool {
+        Self::option("Cheat.Clock.Visible")
+    }
+    fn ui_render_outline(&self) -> bool {
+        let debug = crate::bind_core::shared_core().try_borrow().is_ok_and(|c| c.debug);
+        debug && Self::option("UI.Render.Outline")
+    }
+    fn ui_debug_console_start_visible(&self) -> bool {
+        Self::option("UI.DebugConsole.StartVisible")
+    }
+    fn ui_debug_console_echo_command(&self) -> bool {
+        Self::option("UI.DebugConsole.EchoCommand")
+    }
+    fn ui_debug_console_debug_log(&self) -> bool {
+        Self::option("UI.DebugConsole.DebugLog")
+    }
+}
+
+/// Put [`DebugOptionsHud`] in the HUD host (run by `register_all`).
+pub fn install_debug_options_host() {
+    with_host(|h| h.debug = Box::new(DebugOptionsHud));
+}
+
 /// A Java method as the debug console's suggestion engine sees it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConsoleMethod {
@@ -471,4 +507,10 @@ pub fn install(h: HudHost) {
 /// Run `f` on the installed inputs. Implementations must not call Lua.
 pub fn with_host<R>(f: impl FnOnce(&mut HudHost) -> R) -> R {
     HOST.with(|s| f(&mut s.borrow_mut()))
+}
+
+/// [`with_host`], or `None` while the host is already borrowed (a log
+/// write from inside a host call).
+pub fn try_with_host<R>(f: impl FnOnce(&mut HudHost) -> R) -> Option<R> {
+    HOST.with(|s| s.try_borrow_mut().ok().map(|mut h| f(&mut h)))
 }

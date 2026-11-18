@@ -369,6 +369,19 @@ impl App {
         {
             self.launch.start = Start::MainMenu;
         }
+        // GameWindow.logic, after the states and `RunQueuedEvents`: with
+        // `Core.debug`, `TOGGLE_LUA_CONSOLE` flips the debug console.
+        // TODO(port): `TOGGLE_LUA_DEBUGGER` (the Lua debugger).
+        // `isKeyPressed(KeybindId)` is `isKeyPressed(keybindId.getId())`.
+        let debug = self.core.borrow().debug;
+        if debug
+            && pz_lua_api::bind_input::is_key_down_named("ToggleLuaConsole")
+            && !pz_lua_api::bind_input::was_key_down_named("ToggleLuaConsole")
+        {
+            if let Some(console) = pz_ui::with_ui(|m| m.debug_console.clone()) {
+                console.set_visible(!console.is_visible());
+            }
+        }
         for mut models in self.retired_models.drain(..) {
             models.clear();
             if let Some(gpu) = self.gpu.as_mut() {
