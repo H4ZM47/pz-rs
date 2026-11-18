@@ -191,6 +191,8 @@ pub struct WeaponStats {
     pub explosive: bool,
     /// `isBareHands()` (by type; TODO(item tags): the `BARE_HANDS` tag).
     pub bare_hands: bool,
+    /// `getSplatNumber()`.
+    pub splat_number: i32,
     pub max_hit_count: i32,
     pub min_angle: f32,
     pub max_angle: f32,
@@ -236,6 +238,7 @@ impl WeaponStats {
             aimed_firearm: item.is_aimed_firearm(),
             categories: item.get_weapon_categories().to_vec(),
             explosive: s.and_then(|s| s.display_category.as_deref()) == Some("Explosives"),
+            splat_number: s.map_or(2, |s| s.splat_number),
             max_hit_count: s.map_or(1, |s| s.max_hit_count),
             min_angle: item.weapon_data().map_or(0.0, |d| d.min_angle),
             max_angle: item.weapon_data().map_or(1.0, |d| d.max_angle),
@@ -888,7 +891,9 @@ impl<I: 'static> GameCharacter<I> {
                     wielder.zombie_kills += 1;
                 }
                 if !ctx.is_server() && !ctx.is_client() {
-                    self.kill_by(Some(wielder.id), cx);
+                    // `Kill(weapon, wielder)`.
+                    let info = crate::character::death::Killer::of(sm, wielder);
+                    self.kill_with(Some(wielder.id), Some(&info), Some(w), true, cx);
                 }
             }
             return Ok(());
@@ -1164,13 +1169,43 @@ impl<I: 'static> GameCharacter<I> {
         self.kill_by(killer, cx);
     }
 
-    /// `Kill(killer, weapon, isGory, null)`.
+    /// `Kill(killer)`: `Kill(killer, null, true, null)`. The killer is
+    /// read from the world (none when it is the character updating).
     pub fn kill_by(&mut self, killer: Option<i32>, cx: &mut StateCx<'_, I>) {
+        let info = killer.and_then(|id| cx.world.character_mut(id)).map(|k| crate::character::death::Killer::of(cx.sm, k));
+        self.kill_with(killer, info.as_ref(), None, true, cx);
+    }
+
+    /// `Kill(killer, weapon, isGory, null)`: `onKilled` once, which for a
+    /// zombie is `DoZombieInventory` and `OnZombieDead` (the owner's, from
+    /// [`SimEvent::Killed`]) and then `DoDeath`; for a player it is
+    /// `DoDeath`.
+    pub fn kill_with(
+        &mut self,
+        killer: Option<i32>,
+        info: Option<&crate::character::death::Killer>,
+        weapon: Option<&WeaponStats>,
+        gory: bool,
+        cx: &mut StateCx<'_, I>,
+    ) {
         self.vars.attacked_by = killer;
         self.set_health(cx.ctx, 0.0);
         self.body_damage.overall_body_health = 0.0;
         if !self.vars.on_kill_done {
-            cx.ctx.event(SimEvent::Killed { attacker: killer });
+            cx.ctx.event(SimEvent::Killed { attacker: killer, victim: self.id });
+            if self.is_zombie() {
+                // TODO(port): a killer not in the world (the character
+                // updating) is read as a non-player with no weapon.
+                let unknown = killer.map(crate::character::death::Killer::unknown);
+                let info = info.filter(|k| Some(k.id) == killer).or(unknown.as_ref());
+                self.zombie_on_killed(info, weapon, gory, cx);
+            } else if self.is_player() {
+                // TODO(port): a killer not in the world (the character
+                // updating) is read as a non-player with no weapon.
+                let unknown = killer.map(crate::character::death::Killer::unknown);
+                let info = info.filter(|k| Some(k.id) == killer).or(unknown.as_ref());
+                self.player_on_killed(info, gory, cx);
+            }
             self.vars.on_kill_done = true;
         }
     }

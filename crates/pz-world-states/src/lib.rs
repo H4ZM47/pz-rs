@@ -517,9 +517,26 @@ pub struct StatesWorldAdapter<'a> {
     pub settings: ThumpSettings,
     pub runtime: &'a mut StatesRuntime,
     pub engine: &'a mut dyn StatesEngine,
+    /// The other characters the states reach by id (the owner's
+    /// `Vec<GameCharacter<I>>`, set with [`Self::with_characters`]); `None`:
+    /// no other characters.
+    characters: Option<&'a mut dyn std::any::Any>,
+    /// The list index of each character out with `take_character`.
+    taken: Vec<(i32, usize)>,
 }
 
 impl<'a> StatesWorldAdapter<'a> {
+    /// Lets the states reach `characters` by id (`character_mut`,
+    /// `take_character`, `characters_near`).
+    pub fn with_characters<I: 'static>(mut self, characters: &'a mut Vec<GameCharacter<I>>) -> Self {
+        self.characters = Some(characters);
+        self
+    }
+
+    fn character_list<I: 'static>(&mut self) -> Option<&mut Vec<GameCharacter<I>>> {
+        self.characters.as_deref_mut()?.downcast_mut()
+    }
+
     pub fn new(
         cell: &'a mut IsoCell,
         meta: &'a IsoMetaGrid,
@@ -535,6 +552,8 @@ impl<'a> StatesWorldAdapter<'a> {
             settings,
             runtime,
             engine,
+            characters: None,
+            taken: Vec::new(),
         }
     }
 
@@ -689,7 +708,7 @@ impl<'a> StatesWorldAdapter<'a> {
     }
 
     fn corpse_info(&self, sq: &IsoGridSquare, i: usize) -> CorpseInfo {
-        let b = &sq.static_moving[i];
+        let b = sq.static_moving[i].borrow();
         let id = corpse_id(sq.x, sq.y, sq.z, i);
         let animal = b.animal.as_ref().is_some_and(|a| !a.animal_type.is_empty());
         let skel = b
@@ -735,6 +754,34 @@ pub fn corpse_pos(id: i64) -> (i32, i32, i32, usize) {
 }
 
 impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
+    fn character_mut(&mut self, id: i32) -> Option<&mut GameCharacter<I>> {
+        self.character_list::<I>()?.iter_mut().find(|c| c.id == id)
+    }
+    fn take_character(&mut self, id: i32) -> Option<GameCharacter<I>> {
+        let list = self.character_list::<I>()?;
+        let i = list.iter().position(|c| c.id == id)?;
+        let chr = list.remove(i);
+        self.taken.push((id, i));
+        Some(chr)
+    }
+    fn put_character(&mut self, chr: GameCharacter<I>) {
+        let at = self.taken.iter().position(|t| t.0 == chr.id).map(|k| self.taken.remove(k).1);
+        let Some(list) = self.character_list::<I>() else { return };
+        let i = at.unwrap_or(list.len()).min(list.len());
+        list.insert(i, chr);
+    }
+    fn characters_near(&self, x: f32, y: f32, _z: f32, radius: f32) -> Vec<i32> {
+        let Some(list) = self.characters.as_deref().and_then(|c| c.downcast_ref::<Vec<GameCharacter<I>>>()) else {
+            return Vec::new();
+        };
+        list.iter()
+            .filter(|c| {
+                let (dx, dy) = (c.vars.x - x, c.vars.y - y);
+                dx * dx + dy * dy <= radius * radius
+            })
+            .map(|c| c.id)
+            .collect()
+    }
     fn floor(&mut self) -> Option<&mut dyn pz_inventory::floor_drop::FloorWorld> {
         Some(self)
     }

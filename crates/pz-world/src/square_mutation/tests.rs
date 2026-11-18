@@ -565,6 +565,7 @@ fn body() -> IsoDeadBody {
         fake_dead: false,
         ragdoll: None,
         burn_timer: 0.0,
+        runtime: None,
     }
 }
 
@@ -585,6 +586,23 @@ fn corpses() {
     w.take_log();
     assert!(w.env().remove_corpse(p, 0).is_some());
     assert_eq!(w.take_log(), ["render 0,0,0 130", "OnContainerUpdate"]);
+}
+
+#[test]
+fn a_new_corpse_is_placed_without_add_corpse() {
+    let mut w = World::new();
+    let p = (1, 2, 0);
+    w.sq(p).borrow_mut().burnt_out = true;
+    w.cell.chunks.get_mut(&(0, 0)).unwrap().corpse_count = Some(Default::default());
+    w.take_log();
+    assert!(w.env().place_new_corpse(p, body()).unwrap().is_some());
+    assert_eq!(w.sq(p).borrow().static_moving.len(), 1);
+    let count = w.cell.chunks[&(0, 0)].corpse_count.clone().unwrap();
+    assert_eq!(count.level(0).unwrap().corpse_count, 1);
+    // The constructor leaves the burnt-out flag and only redraws.
+    assert!(w.sq(p).borrow().burnt_out);
+    assert_eq!(w.take_log(), [format!("render 0,0,0 {}", super::dirty::CORPSE_ADDED)]);
+    assert!(w.env().place_new_corpse((1, 2, 7), body()).unwrap().is_none());
 }
 
 #[test]

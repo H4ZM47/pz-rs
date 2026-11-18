@@ -422,6 +422,7 @@ fn digest(ctx: &SaveCtx<'_>, ch: &IsoChunk, out: &mut String) {
                     writeln!(out, "{}", object_line(ctx, &o)).unwrap();
                 }
                 for b in &sq.borrow().static_moving {
+                    let b = b.borrow();
                     writeln!(
                         out,
                         "  b IsoDeadBody spr=20000000 name=null sname=null att=-1 wbs=-1 md={} ent=0 conts={}",
@@ -507,8 +508,8 @@ fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(ItemRecordMut<'_>)) {
                         _ => {}
                     }
                 }
-                for b in &mut sq.borrow_mut().static_moving {
-                    if let Some(c) = &mut b.container {
+                for b in &sq.borrow().static_moving {
+                    if let Some(c) = &mut b.borrow_mut().container {
                         cont(c, f);
                     }
                 }

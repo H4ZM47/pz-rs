@@ -478,7 +478,7 @@ fn main() -> Result<(), String> {
                 }
             }
             for bd in &sq.static_moving {
-                if let Some(c) = &bd.container {
+                if let Some(c) = &bd.borrow().container {
                     collect(&c.items, &mut items);
                 }
             }

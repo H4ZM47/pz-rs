@@ -16,6 +16,8 @@ pub mod tags {
     pub const EGG: &str = "base:egg";
     pub const HANDGUARD: &str = "base:handguard";
     pub const GOOD_FROZEN: &str = "base:goodfrozen";
+    pub const APPLY_OWNER_NAME: &str = "base:applyownername";
+    pub const MONOGRAM_OWNER_NAME: &str = "base:monogramownername";
 }
 
 impl InventoryItem {
