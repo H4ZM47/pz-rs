@@ -206,15 +206,18 @@ impl pz_world::square_mutation::NativeFloorHost for LiveNativeFloorHost<'_> {
 /// name/translation family remains a capability at its first selected branch.
 fn plain_item_display_name(item: &ItemRef) -> HostResult<String> {
     use pz_entity::ComponentType;
+    // HandWeapon does not override getName: it runs InventoryItem.getName
+    // with its own getBloodLevel() (the bloodLevel field).
+    let blood_level;
     {
         let body = item
             .try_borrow()
             .map_err(|_| RuntimeHostError::Borrowed("floor getName class/item fluid"))?;
-        if body.template.class != pz_inventory::ItemClass::Normal
-            || !matches!(body.kind, pz_inventory::ItemKind::Plain)
-        {
-            return Err(unsupported("actual floor subclass getName dispatch"));
-        }
+        blood_level = match (&body.template.class, &body.kind) {
+            (pz_inventory::ItemClass::Normal, pz_inventory::ItemKind::Plain) => 0.0,
+            (pz_inventory::ItemClass::Weapon, pz_inventory::ItemKind::Weapon(w)) => w.blood_level,
+            _ => return Err(unsupported("actual floor subclass getName dispatch")),
+        };
         if body
             .components
             .get_ref(ComponentType::FluidContainer)
@@ -276,8 +279,12 @@ fn plain_item_display_name(item: &ItemRef) -> HostResult<String> {
     {
         return Err(unsupported("actual getName mechanic-type translation"));
     }
-    // ComboItem inherits base getBloodLevel()==0. Its independent broken
-    // flag, condition and later component reads remain in native phase order.
+    // isBloody(): getBloodLevel() > 0.25 (ComboItem inherits base 0).
+    // The broken flag, condition and later component reads remain in
+    // native phase order.
+    if blood_level > 0.25 {
+        return Err(unsupported("actual getName bloody translation"));
+    }
     {
         let body = item
             .try_borrow()
@@ -296,14 +303,13 @@ fn plain_item_display_name(item: &ItemRef) -> HostResult<String> {
         if body.broken {
             return Err(unsupported("actual getName changed broken translation"));
         }
-        if body
-            .components
-            .get_ref(ComponentType::Attributes)
-            .map_err(RuntimeHostError::Storage)?
-            .is_some()
-        {
-            return Err(unsupported("actual getName Attribute.Sharpness lookup"));
-        }
+    }
+    // !isBroken() && hasSharpness() && getSharpness() < 1/3 adds "blunt" or
+    // "dull"; a sharp enough item adds nothing.
+    if pz_lua_api::item_tooltip::components::has_sharpness_ref(item)?
+        && pz_lua_api::item_tooltip::components::sharpness_mut(item)? < 0.333_333_34
+    {
+        return Err(unsupported("actual getName blunt/dull translation"));
     }
     {
         let body = item

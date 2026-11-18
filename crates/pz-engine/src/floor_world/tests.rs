@@ -90,6 +90,10 @@ fn designation_placement_uses_the_initialized_physical_class_list_before_item_re
 }
 
 fn actual_plain_name_item() -> (ItemRef, Rc<RefCell<pz_scripts::objects::items::Item>>) {
+    actual_name_item(ItemClass::Normal)
+}
+
+fn actual_name_item(class: ItemClass) -> (ItemRef, Rc<RefCell<pz_scripts::objects::items::Item>>) {
     let script = Rc::new(RefCell::new(pz_scripts::objects::items::Item::new()));
     let manager = pz_scripts::ScriptManager::new();
     manager.enable_texture_capture();
@@ -102,7 +106,7 @@ fn actual_plain_name_item() -> (ItemRef, Rc<RefCell<pz_scripts::objects::items::
         "item NameProbe { }",
     )
     .unwrap();
-    let mut template = ItemTemplate::new(ItemClass::Normal, "Base", "NameProbe");
+    let mut template = ItemTemplate::new(class, "Base", "NameProbe");
     template.display_name = "Retained name".into();
     template.script = Some(pz_inventory::template::ScriptItemRef(script.clone()));
     template.texture_capture = Some(pz_inventory::item_texture::CapturedScriptTextures::new(
@@ -551,4 +555,19 @@ fn expired_actual_session_owner_rejects_every_operation_even_with_all_resources_
     );
     assert!(Rc::strong_count(&doors) > 0);
     assert!(with_world(|world| world.cell.as_mut().unwrap().take_retired_objects()).is_empty());
+}
+
+#[test]
+fn hand_weapon_runs_the_inherited_get_name_with_its_blood_level() {
+    let (item, _script) = actual_name_item(ItemClass::Weapon);
+    assert_eq!(plain_item_display_name(&item).unwrap(), "Retained name");
+    match &mut item.borrow_mut().kind {
+        pz_inventory::ItemKind::Weapon(w) => w.blood_level = 0.3,
+        _ => panic!("a HandWeapon"),
+    }
+    assert_eq!(
+        plain_item_display_name(&item),
+        Err(unsupported("actual getName bloody translation"))
+    );
+    pz_inventory::component_host::drain_retired_components();
 }
