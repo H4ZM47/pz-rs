@@ -283,7 +283,7 @@ struct Batch {
     /// A vision-cone draw (`VisibilityPolygon2`).
     vision: Option<vispoly::Op>,
     /// A 3D scene draw: view-projection uniform and target kind; `indices` are vertices of the scene vertex list.
-    world3d: Option<(u32, TargetKind)>,
+    world3d: Option<(u32, TargetKind, bool)>,
     stencil_ref: u32,
     scissor: Option<[u32; 4]>,
     globals: u32,
@@ -831,8 +831,8 @@ impl Gpu {
                 self.ensure_vehicle_textures(ids);
                 continue;
             }
-            if let Some((_, kind)) = f.batches[i].world3d {
-                self.world3d.ensure(&self.device, self.format, kind);
+            if let Some((_, kind, translucent)) = f.batches[i].world3d {
+                self.world3d.ensure(&self.device, self.format, kind, translucent);
                 continue;
             }
             match f.batches[i].model {
@@ -1153,8 +1153,8 @@ impl Gpu {
                     pass.draw(0..3, 0..1);
                     continue;
                 }
-                if let Some((u, kind)) = b.world3d {
-                    let Some(p) = self.world3d.pipelines.get(&kind) else { continue };
+                if let Some((u, kind, translucent)) = b.world3d {
+                    let Some(p) = self.world3d.pipelines.get(&(kind, translucent)) else { continue };
                     let tex = b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white);
                     set_viewport(&mut pass, b, tw, th, pass_desc.target != PassTarget::Main);
                     pass.set_scissor_rect(sx, sy, sw, sh);
@@ -1757,10 +1757,10 @@ impl Gpu {
                 f.passes.push(PassDesc { target: f.target, clear: false, mipmaps: false, scene: Some(*clear), batches: at..at });
             }
             DrawCmd::Scene3DEnd => f.scene3d = None,
-            DrawCmd::Quad3D { texture, pos, uv, color } => {
+            DrawCmd::Quad3D { texture, pos, uv, color, translucent } => {
                 let Some(u) = f.scene3d else { return };
                 let v: [world3d::World3dVertex; 4] = std::array::from_fn(|i| world3d::World3dVertex { pos: pos[i], uv: uv[i], color: color[i] });
-                f.push_quad3d(u, texture.id, v, &self.state);
+                f.push_quad3d(u, texture.id, *translucent, v, &self.state);
             }
             DrawCmd::VboRun(run) => self.record_vbo_run(f, run),
             DrawCmd::PushAttrib => self.state_stack.push(self.state.clone()),
@@ -2439,7 +2439,7 @@ impl FrameBuilder {
     }
 
     /// A 3D scene quad, batched with the previous one on the same texture and scene.
-    fn push_quad3d(&mut self, uniform: u32, texture: Option<u32>, verts: [world3d::World3dVertex; 4], st: &GlState) {
+    fn push_quad3d(&mut self, uniform: u32, texture: Option<u32>, translucent: bool, verts: [world3d::World3dVertex; 4], st: &GlState) {
         if self.passes.last().is_none_or(|p| p.target != self.target) {
             let at = self.batches.len();
             self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, scene: None, batches: at..at });
@@ -2451,7 +2451,7 @@ impl FrameBuilder {
         let (scissor, viewport, origin) = (st.scissor_box(), self.viewport, self.origin);
         let pass = self.passes.last_mut().expect("pass");
         match self.batches.last_mut() {
-            Some(b) if pass.batches.end > pass.batches.start && b.world3d == Some((uniform, kind)) && b.texture == texture && b.scissor == scissor && b.viewport == viewport && b.origin == origin && b.indices.end == start => b.indices.end = end,
+            Some(b) if pass.batches.end > pass.batches.start && b.world3d == Some((uniform, kind, translucent)) && b.texture == texture && b.scissor == scissor && b.viewport == viewport && b.origin == origin && b.indices.end == start => b.indices.end = end,
             _ => {
                 self.batches.push(Batch {
                     key: st.pipe_key(),
@@ -2462,7 +2462,7 @@ impl FrameBuilder {
                     vehicle: None,
                     outline: None,
                     vision: None,
-                    world3d: Some((uniform, kind)),
+                    world3d: Some((uniform, kind, translucent)),
                     stencil_ref: st.stencil_ref,
                     scissor,
                     globals: 0,

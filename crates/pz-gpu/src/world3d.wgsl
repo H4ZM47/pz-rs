@@ -40,3 +40,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(t.rgb, 1.0);
 }
+
+// Translucent faces (window glass): blended over what is already drawn, no
+// depth write; only nearly invisible texels are dropped.
+@fragment
+fn fs_translucent(in: VsOut) -> @location(0) vec4<f32> {
+    let texel = textureSample(tex, tex_sampler, in.uv);
+    let t = vec4<f32>(texel.rgb * in.color.rgb, texel.a);
+    if (t.a < 0.02) {
+        discard;
+    }
+    return t;
+}

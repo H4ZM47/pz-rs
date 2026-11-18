@@ -10,6 +10,7 @@ use crate::image::ImageData;
 use crate::{flags, Texture, TextureManager};
 
 use super::clamp::{clamp_pixel_to_upper_floor, CLAMP_ROWS};
+use super::plane::{fit_depth_plane, DepthPlane};
 
 /// Columns of every tileset sheet (`TileDepthTextures.createTileset`).
 pub const TILESET_COLUMNS: i32 = 8;
@@ -40,6 +41,8 @@ pub struct TileDepthTexture {
     /// The uploaded depth texture (`texture`), set for every tile that had
     /// depth when loaded.
     texture: Option<Texture>,
+    /// Roof slope fitted from the depth at load (`roofs_` tilesets only).
+    plane: Option<DepthPlane>,
 }
 
 impl TileDepthTexture {
@@ -55,6 +58,7 @@ impl TileDepthTexture {
             pixels: None,
             empty: true,
             texture: None,
+            plane: None,
         }
     }
 
@@ -106,6 +110,11 @@ impl TileDepthTexture {
         }
     }
 
+    /// The roof plane fitted to the depth, for `roofs_` tiles that are planar.
+    pub fn plane(&self) -> Option<DepthPlane> {
+        self.plane
+    }
+
     /// The uploaded texture, `None` for a tile that was empty when loaded.
     /// [`super::TileDepthTextureManager::texture_of`] substitutes the empty
     /// texture as `getTexture()` does.
@@ -134,6 +143,7 @@ impl TileDepthTexture {
         if self.empty {
             self.pixels = None;
         } else {
+            self.plane = if self.tileset.starts_with("roofs_") { fit_depth_plane(self.width, self.height, &pixels) } else { None };
             self.pixels = Some(pixels.into_boxed_slice());
             self.update_gpu_texture(keep_pixels, tm);
         }

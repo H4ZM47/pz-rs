@@ -11,6 +11,7 @@ use pz_fs::GameFs;
 use crate::{Texture, TextureManager};
 
 use super::assignments::TileDepthTextureAssignmentManager;
+use super::plane::DepthPlane;
 use super::texture::{TileDepthTexture, TilesetDepthTexture, TILESET_COLUMNS};
 
 /// "Does the sprite texture with this name exist" (`Texture.getSharedTexture`
@@ -336,6 +337,12 @@ impl TileDepthTextureManager {
     /// `getTextureFromTileName(tileName)`.
     pub fn texture_from_tile_name(&self, tile_name: &str) -> Option<&Rc<TileDepthTexture>> {
         self.merged.texture_from_tile_name(tile_name)
+    }
+
+    /// The roof plane fitted to a sprite's depth texture, looked up like
+    /// [`Self::sprite_depth_texture`].
+    pub fn sprite_roof_plane(&self, sprite_name: &str, has_tileset_name: bool, assignments: &TileDepthTextureAssignmentManager) -> Option<DepthPlane> {
+        self.sprite_depth_texture(sprite_name, has_tileset_name, assignments)?.plane()
     }
 
     /// `getDefaultDepthTexture()`: the whole-tile depth used for objects

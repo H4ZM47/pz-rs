@@ -29,7 +29,8 @@ pub struct World3dPipelines {
     layout: wgpu::PipelineLayout,
     /// Nearest-magnification sampler, bound at group 2 for every quad.
     pub sampler_bind: wgpu::BindGroup,
-    pub pipelines: HashMap<TargetKind, wgpu::RenderPipeline>,
+    /// Keyed by target and whether it is the blended translucent pipeline.
+    pub pipelines: HashMap<(TargetKind, bool), wgpu::RenderPipeline>,
 }
 
 impl World3dPipelines {
@@ -70,8 +71,8 @@ impl World3dPipelines {
         World3dPipelines { module, uniform_layout, layout, sampler_bind, pipelines: HashMap::new() }
     }
 
-    pub fn ensure(&mut self, device: &wgpu::Device, main_format: wgpu::TextureFormat, target: TargetKind) {
-        if self.pipelines.contains_key(&target) {
+    pub fn ensure(&mut self, device: &wgpu::Device, main_format: wgpu::TextureFormat, target: TargetKind, translucent: bool) {
+        if self.pipelines.contains_key(&(target, translucent)) {
             return;
         }
         let (format, depth_format) = match target {
@@ -80,7 +81,7 @@ impl World3dPipelines {
             TargetKind::Chunk => (state::CHUNK_COLOR_FORMAT, state::CHUNK_DEPTH_FORMAT),
         };
         let p = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("world3d"),
+            label: Some(if translucent { "world3d translucent" } else { "world3d" }),
             layout: Some(&self.layout),
             vertex: wgpu::VertexState {
                 module: &self.module,
@@ -95,7 +96,7 @@ impl World3dPipelines {
             primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: depth_format,
-                depth_write_enabled: Some(true),
+                depth_write_enabled: Some(!translucent),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: wgpu::StencilState { front: wgpu::StencilFaceState::IGNORE, back: wgpu::StencilFaceState::IGNORE, read_mask: 0, write_mask: 0 },
                 bias: wgpu::DepthBiasState::default(),
@@ -103,13 +104,13 @@ impl World3dPipelines {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &self.module,
-                entry_point: Some("fs_main"),
+                entry_point: Some(if translucent { "fs_translucent" } else { "fs_main" }),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState { format, blend: translucent.then_some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
             }),
             multiview_mask: None,
             cache: None,
         });
-        self.pipelines.insert(target, p);
+        self.pipelines.insert((target, translucent), p);
     }
 }
