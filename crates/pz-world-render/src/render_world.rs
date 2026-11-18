@@ -131,6 +131,18 @@ pub fn render_square(
                     alpha: attached.alpha,
                 });
             }
+            // `overlaySprite`, by name. TODO(port): names saved as
+            // `WorldDictionary` ids.
+            if let Some(ov) = &o.overlay_sprite {
+                if let pz_world::objects::SpriteName::Str(name) = &ov.name {
+                    if let Some(&idx) = w.sprites.named_map.get(name.as_str()) {
+                        ro.overlay = Some(pz_iso_render::world::Overlay {
+                            sprite: cache.get(w.sprites, idx, tex),
+                            color: ov.color.map(|[r, g, b, a]| pz_iso_render::color::ColorInfo { r, g, b, a }),
+                        });
+                    }
+                }
+            }
         }
         rs.objects.push(ro);
     }

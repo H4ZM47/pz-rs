@@ -280,3 +280,65 @@ fn load_gridsquare_fills_named_objects_once_and_marks_the_square() {
     pz_inventory::shared::install_item_observer(old_items);
     pz_world::object_slot::install_object_observer(old_objects);
 }
+
+#[test]
+fn load_gridsquare_sets_container_overlays_by_item_count() {
+    let old_items = pz_inventory::shared::install_item_observer(Some(crate::component_gc::observe_item));
+    let old_objects =
+        pz_world::object_slot::install_object_observer(Some(crate::component_gc::observe_object));
+    let mut t = setup();
+    crate::bind_world_object::register_classes(&mut t);
+    install_all(vec![("counter", dist(&[("Base.Rock", 100.0)], 1.0))], vec![]);
+    let mut sprites = pz_world::sprite::IsoSpriteManager::new(pz_world::sprite::test_tables());
+    let named = sprites.add_sprite_named("fixtures_counters_01_0");
+    sprites.sprites[named].name = Some("fixtures_counters_01_0".into());
+    let old_sprites = crate::bind_sprites::manager().ok();
+    crate::bind_sprites::install_sprite_manager(Some(Rc::new(RefCell::new(sprites))));
+    let mut square = pz_world::IsoGridSquare::new(1, 1, 0);
+    for (id, container) in [(1, Some("counter")), (2, Some("empty")), (3, None)] {
+        let mut o = pz_world::IsoObject::new(id, pz_world::ObjectKind::Object, Some(named));
+        o.container = container.map(|c| pz_inventory::ItemContainer::new(Some(c)));
+        square.objects.push(pz_world::ObjectSlot::new(o).into());
+    }
+    let objects: Vec<_> = square.objects.iter().map(|s| s.ref_handle()).collect();
+    let mut chunk = pz_world::IsoChunk::new(0, 0);
+    chunk.set_square(1, 1, 0, Some(square.into()));
+    let mut cell = pz_world::IsoCell::default();
+    cell.chunks.insert((0, 0), chunk);
+    let old_cell = crate::bind_world::with_world(|w| w.cell.take());
+    crate::bind_world::set_cell(Some(cell));
+    crate::bind_tile_overlays::shared_container_overlays().borrow_mut().add_overlays_v1(&[(
+        "fixtures_counters_01_0".into(),
+        vec![(Some("other".into()), Some("shelf_many".into()), Some("shelf_few".into()))],
+    )]);
+    crate::hud::test_util::install_textures(&[("shelf_many", 64, 128), ("shelf_few", 64, 128)]);
+
+    load_gridsquare(&mut t, 1, 1, 0).unwrap();
+    let overlay = |i: usize| {
+        objects[i].borrow().overlay_sprite.as_ref().map(|o| o.name.clone())
+    };
+    // One item (fewer than 7): the "few items" sprite; the sprite exists
+    // under that name for the renderer.
+    assert_eq!(overlay(0), Some(pz_world::objects::SpriteName::Str("shelf_few".into())));
+    let has_sprite = crate::bind_sprites::manager().unwrap().borrow().named_map.contains_key("shelf_few");
+    assert!(has_sprite);
+    // An empty container skips the update; no container clears it.
+    assert_eq!(overlay(1), None);
+    assert_eq!(overlay(2), None);
+    // A sprite with container overlays gets no tile overlay.
+    assert!(objects[0].borrow().attached_anim_sprite.is_none());
+    // Seven items: the "many items" sprite.
+    let o = objects[0].clone();
+    let main = o.borrow().runtime_containers.as_ref().unwrap().main.clone().unwrap();
+    let item = main.borrow().items[0].clone();
+    main.borrow_mut().items.extend(std::iter::repeat_n(item, 6));
+    let sq = pz_world::tile_overlays::OverlaySquare { x: 1, y: 1, z: 0, room: None };
+    crate::bind_tile_overlays::update_container_overlay_sprite(&o, sq).unwrap();
+    assert_eq!(overlay(0), Some(pz_world::objects::SpriteName::Str("shelf_many".into())));
+
+    drop((main, o, objects));
+    crate::bind_world::set_cell(old_cell);
+    crate::bind_sprites::install_sprite_manager(old_sprites);
+    pz_inventory::shared::install_item_observer(old_items);
+    pz_world::object_slot::install_object_observer(old_objects);
+}
