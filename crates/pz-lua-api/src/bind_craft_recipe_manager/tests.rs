@@ -811,3 +811,56 @@ fn filter_and_tank_tests_read_the_clothing_mod_data() {
     assert!(test(&mut t, "noOxygenTank(bat, nil)"));
     assert!(run(&mut t, "return RecipeCodeOnTest.haveFilter(bat, nil)").is_err());
 }
+
+/// The other `RecipeCodeOnTest` checks on the item alone: `cutFish`,
+/// `cutFillet`, `breakGlass`, `hotFluidContainer`, `canAddToPack`,
+/// `scratchTicket` and `copyKey`.
+#[test]
+fn item_recipe_tests_follow_the_bytecode() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let sm = manager("");
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    crate::bind_items::register(&mut t);
+    crate::bind_scripts::register(&mut t, sm.clone());
+    register(&mut t, sm.clone(), Rc::new(RefCell::new(Characters::default())));
+    let tagged = |class: ItemClass, name: &str, tag: &str| {
+        let i = item(&sm, class, name);
+        let mut template = (*i.borrow().template).clone();
+        template.tags.push(tag.into());
+        i.borrow_mut().template = Rc::new(template);
+        i
+    };
+    let fish = item(&sm, ItemClass::Food, "Apple");
+    let bat = item(&sm, ItemClass::Weapon, "BaseballBat");
+    let pack = tagged(ItemClass::Drainable, "Nails", "base:packed");
+    let key = tagged(ItemClass::Normal, "Nails", "base:buildingkey");
+    for (name, v) in [("fish", &fish), ("bat", &bat), ("pack", &pack), ("key", &key)] {
+        t.globals().set_str(name, crate::bind_items::try_item_value(v).unwrap());
+    }
+    let test = |t: &mut Thread, src: &str| run(t, &format!("return RecipeCodeOnTest.{src}")).unwrap()[0].truthy();
+    // A custom weight: `Food.getActualWeight` returns the item's own.
+    fish.borrow_mut().custom_weight = true;
+    for w in [0.5, 0.8, 1.2] {
+        run(&mut t, &format!("fish:setActualWeight({w})")).unwrap();
+        let actual = run(&mut t, "return fish:getActualWeight()").unwrap()[0].clone();
+        let actual = pz_kahlua::exec::raw_tonumber(&actual).unwrap() as f32;
+        assert_eq!(actual, w as f32);
+        assert_eq!(test(&mut t, "cutFish(fish, nil)"), actual > 0.6, "{w}");
+        assert_eq!(test(&mut t, "cutFillet(fish, nil)"), actual > 1.0, "{w}");
+    }
+    assert!(test(&mut t, "cutFish(bat, nil)") && test(&mut t, "cutFillet(bat, nil)"), "not food");
+    assert!(test(&mut t, "breakGlass(bat, nil)"), "no fluid container");
+    assert!(test(&mut t, "hotFluidContainer(bat, nil)"), "no fluid container");
+    assert!(test(&mut t, "canAddToPack(bat, nil)"), "not drainable");
+    assert_eq!(pack.borrow().get_current_uses_float() < 1.0, test(&mut t, "canAddToPack(pack, nil)"));
+    assert!(test(&mut t, "scratchTicket(bat, nil)"));
+    run(&mut t, "bat:getModData().scratched = true").unwrap();
+    assert!(!test(&mut t, "scratchTicket(bat, nil)"));
+    assert!(test(&mut t, "copyKey(bat, nil)"), "not a building key");
+    key.borrow_mut().key_id = -1;
+    assert!(!test(&mut t, "copyKey(key, nil)"));
+    key.borrow_mut().key_id = 7;
+    assert!(test(&mut t, "copyKey(key, nil)"));
+}
