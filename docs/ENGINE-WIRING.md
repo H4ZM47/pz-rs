@@ -968,11 +968,13 @@ all installed assets, render paths or foreign platforms.
       `UIManager::resize()` runs every in-game frame before
       `renderframeui`, as `IngameState.renderInternal` does; `Clock.resize`
       there reads the players' clocks (#146; digits split #164).
-- [ ] Moodles: `hud::set_moodles_character(i, Some(player_index))` when a
-      player is created or removed (`IsoPlayer` sets
-      `UIManager.getMoodleUI(i).setCharacter`); `HudMoodles` (a player's
+- [x] Moodles: `hud::set_moodles_character(i, Some(i))` on every update of
+      a living local player (`IsoPlayer.updateInternal2` sets
+      `UIManager.getMoodleUI(playerIndex).setCharacter(this)`; called from
+      `world_update::update_characters`); `HudMoodles` (a player's
       `Moodles`: refresh flag, levels, good/bad, display and description
-      strings; characters thread) (#148).
+      strings; characters thread) is `hud::characters::CharacterMoodles`
+      (#148).
 - [x] Character inventories: `CharacterItems::inventory` is a
       `pz_inventory::ContainerRef` (loaded in place with
       `shared::load_into`, saved via `to_container`);
