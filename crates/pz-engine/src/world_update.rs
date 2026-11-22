@@ -581,8 +581,8 @@ impl IsoWorld {
         // `ClimateManager.getInstance().update()` runs with `GameTime.update`
         // in `bind_climate::update_game_time` (`IngameState.UpdateStuff`).
         self.update_world(lua, sim)?;
-        self.update_thread();
-        Ok(())
+        self.update_thread(sim)
+
     }
 
     /// `updateWorld()`: `IsoCell.update`, `IsoRegions.update`, then
@@ -1060,13 +1060,35 @@ impl IsoWorld {
     }
 
     /// `updateThread()`.
-    fn update_thread(&mut self) {
+    fn update_thread(&mut self, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
         // TODO(port): `updateBuildings` (`IsoBuilding.update`),
         // `ObjectRenderEffects.updateStatic`, `AddCoopPlayer`,
-        // `IsoPlayer.UpdateRemovedEmitters`, `updateDBs`
-        // (`PlayerDB.updateMain`, `VehiclesDB2.updateMain`),
-        // `AnimalZones.updateVirtualAnimals`,
+        // `IsoPlayer.UpdateRemovedEmitters`.
+        self.update_dbs(sim)?;
+        // TODO(port): `AnimalZones.updateVirtualAnimals`,
         // `AnimalTracksDefinitions.loadTracksDefinitions`.
+        Ok(())
+    }
+
+    /// `updateDBs()`: `PlayerDB.updateMain()` when there is a `PlayerDB`.
+    /// The exceptions it throws are logged; a port failure stops the frame.
+    fn update_dbs(&mut self, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
+        let Some(db) = self.player_db.as_mut() else { return Ok(()) };
+        if !db.update_main_due(pz_lua_api::player_db::current_time_millis()) {
+            return Ok(());
+        }
+        // `savePlayersAsync()`. TODO(port): `VehiclesDB2.setForceSave()`
+        // and `VehiclesDB2.updateMain()`: `VehiclesDB2` is not ported.
+        use pz_characters::character::save::CharacterPersistenceError as E;
+        match self.save_local_players(sim, "PlayerDB.savePlayersAsync") {
+            Ok(()) => Ok(()),
+            Err(E::Host(h)) => Err(h.into()),
+            Err(E::Item(pz_inventory::item_texture::ItemPersistenceError::Host(h))) => Err(h.into()),
+            Err(e) => {
+                self.log_exception(format!("PlayerDB.updateMain: {e}"));
+                Ok(())
+            }
+        }
     }
 
     /// The simulation's side effects for Lua (`LuaEventManager.triggerEvent`
@@ -2178,8 +2200,30 @@ impl IsoWorld {
     fn save_quit_phases(&mut self, lua: &mut LuaManager, require_current_cell: bool) -> pz_characters::character::save::CharacterPersistenceResult<()> {
         let sim = FrameSim::capture();
         let sandbox = self.sandbox_save_bytes(lua);
-        // `PlayerDB.saveLocalPlayersForce()`: each local player's row
-        // (`PlayerData.set`: `IsoPlayer.save`).
+        // `PlayerDB.saveLocalPlayersForce()`, then `canSavePlayers = false`.
+        self.save_local_players(&sim, "PlayerDB.saveLocalPlayersForce")?;
+        if let Some(db) = self.player_db.as_mut() {
+            db.can_save_players = false;
+        }
+        // `saveLocalPlayersForce` above already queued them.
+        let mut report = self.game_window_save(lua, &sandbox, false)?;
+        // Ordinary quitting keeps its callback even when saving is disabled
+        // or the prelude threw. Window close rereads currentCell at this
+        // separate native block. The WORLD borrow ends before callbacks run.
+        if !require_current_cell || with_world(|w| w.cell.is_some()) {
+            lua.trigger_event("OnPostSave", &[]);
+        }
+        for e in report.errors.drain(..) {
+            self.log_update_error(e);
+        }
+        Ok(())
+    }
+
+    /// `PlayerDB.savePlayersAsync()` with the streamer's store: each local
+    /// player's row (`PlayerData.set`: `IsoPlayer.save`), a new id for a
+    /// player without one, then the row. A player whose save throws is
+    /// logged and skipped; a port failure is returned.
+    fn save_local_players(&mut self, sim: &FrameSim, what: &str) -> pz_characters::character::save::CharacterPersistenceResult<()> {
         let mut rows: Vec<(usize, pz_lua_api::player_db::PlayerData)> = Vec::new();
         {
             let sm = pz_lua_api::bind_registry::shared_script_manager();
@@ -2198,14 +2242,14 @@ impl IsoWorld {
                         self.player_sql_ids[n],
                         &sm,
                         &chars,
-                        &sim,
+                        sim,
                         &env,
                     );
                     match r {
                         Ok(d) => rows.push((n, d)),
                         Err(e) => {
                             if e.is_host_fault() { return Err(e); }
-                            errors.push(format!("PlayerDB.saveLocalPlayersForce: IsoPlayer.save: {e}"));
+                            errors.push(format!("{what}: IsoPlayer.save: {e}"));
                         }
                     }
                 }
@@ -2225,17 +2269,6 @@ impl IsoWorld {
         for ((n, _), d) in rows.iter().zip(&data) {
             self.player_sql_ids[*n] = d.sql_id;
         }
-        // `saveLocalPlayersForce` above already queued them.
-        let mut report = self.game_window_save(lua, &sandbox, false)?;
-        // Ordinary quitting keeps its callback even when saving is disabled
-        // or the prelude threw. Window close rereads currentCell at this
-        // separate native block. The WORLD borrow ends before callbacks run.
-        if !require_current_cell || with_world(|w| w.cell.is_some()) {
-            lua.trigger_event("OnPostSave", &[]);
-        }
-        for e in report.errors.drain(..) {
-            self.log_update_error(e);
-        }
         Ok(())
     }
 
@@ -2247,7 +2280,8 @@ impl IsoWorld {
     /// `canSavePlayers`, which the world start sets.
     pub fn save_during_play(&mut self, lua: &mut LuaManager) -> pz_characters::character::save::CharacterPersistenceResult<()> {
         let sandbox = self.sandbox_save_bytes(lua);
-        let mut report = self.game_window_save(lua, &sandbox, true)?;
+        let can_save_players = self.player_db.as_ref().is_some_and(|db| db.can_save_players);
+        let mut report = self.game_window_save(lua, &sandbox, can_save_players)?;
         // `GlobalObject.save` and `wakeUp` log what `GameWindow.save` throws.
         for e in report.errors.drain(..) {
             self.log_update_error(e);
@@ -2310,6 +2344,12 @@ impl IsoWorld {
             }
             None => SaveReport::default(),
         };
+        // `IsoCell.save`'s `PlayerDB.savePlayers()`.
+        if report.force_save_players {
+            if let Some(db) = self.player_db.as_mut() {
+                db.save_players();
+            }
+        }
         Ok(report)
     }
 
