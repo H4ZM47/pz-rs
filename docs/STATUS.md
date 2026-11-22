@@ -55,17 +55,17 @@ checks follow that selection. The component serializer writes to inventory
 compression's bounded buffer, and live mannequin saves serialize actual item
 references and map the worn items to their saved indices.
 
-The integration checklist in `ENGINE-WIRING.md` currently reads:
+The November 22 combined integration branch has these entries in `ENGINE-WIRING.md`.
 
 | Section | Done | Open |
 | --- | ---: | ---: |
-| Boot (`GameWindow.init`) | 13 | 12 |
-| Per frame (`GameWindow.logic` / `render`) | 11 | 2 |
-| World (`GameLoadingState` / `IngameState`) | 31 | 99 |
+| Boot (`GameWindow.init`) | 16 | 9 |
+| Per frame (`GameWindow.logic` / `render`) | 15 | 2 |
+| World (`GameLoadingState` / `IngameState`) | 43 | 91 |
 | World render pass | 5 | 26 |
-| World map | 1 | 5 |
-| Cleanups | 0 | 2 |
-| **Total** | **61** | **146** |
+| World map | 4 | 3 |
+| Cleanups | 1 | 1 |
+| **Total** | **84** | **132** |
 
 A checked box means the connection is implemented, not that runtime parity
 with the original has been verified.
@@ -78,21 +78,21 @@ Numbering follows [WORKSTREAMS.md](WORKSTREAMS.md).
 | --- | --- | --- | --- |
 | 1 | Kahlua compiler, VM, stdlib | `pz-kahlua` | **Largely done.** All 1,395 shipped Lua files compile to bytecode byte-identical to the original compiler; VM, coroutines and the standard libraries are ported. Ongoing work is GC/ownership behaviour at host boundaries. |
 | 2 | Lua API bindings | `pz-lua-api` | **In progress; the largest open area.** The biggest crate (~120k lines) and still the usual place a session stops. Example of scale: 1 of 58 `ItemCodeOnCreate` callbacks is implemented. |
-| 3 | File system and mods | `pz-fs` | **Library done.** Mod loading at boot is not wired. |
+| 3 | File system and mods | `pz-fs` | Boot loads the selected mods when Core enables mods. Lua map groups use the active game filesystem. |
 | 4 | Textures, packs, draw list | `pz-render`, `pz-gpu` | **Done for UI and chunk rendering.** GPU readback tests are part of the four-platform CI run (they may skip where a runner has no suitable graphics adapter). |
 | 5 | Fonts and translations | `pz-text` | **Done.** |
 | 6 | UI layer | `pz-ui` | **Working** (main menu and HUD run); HUD inputs partly wired. |
 | 7 | Game loop, Core, game states | `pz-engine`, `pz-client` | **In progress; the integration bottleneck.** State machine, loading and in-game states exist; most open checklist items land here. |
 | 8 | Script parser | `pz-scripts`, `pz-script-parser` | **Done as a library** and loaded at boot. |
 | 9 | Maps, chunks, world | `pz-world`, `pz-worldgen`, `pz-erosion`, `pz-lighting`, `pz-worldmap` | **Libraries ported**, chunk load/save works. Square mutations, erosion, fire, regions and the world map are only partly wired. |
-| 10 | Characters, animation, models | `pz-characters`, `pz-anim`, `pz-model`, `pz-character-model`, `pz-ragdoll`, `pz-animals`, `pz-vehicles`, `pz-pathfind`, `pz-popman` | **Libraries ported**, several checked bit-for-bit against the original in isolation (e.g. zombie chase, body damage). Players and zombies update in the loop; animals, ragdolls, vehicles, ballistics and pathfinding are not yet wired. |
+| 10 | Characters, animation, models | `pz-characters`, `pz-anim`, `pz-model`, `pz-character-model`, `pz-ragdoll`, `pz-animals`, `pz-vehicles`, `pz-pathfind`, `pz-popman` | **Libraries ported**, several checked bit-for-bit against the original in isolation (e.g. zombie chase, body damage). Players and zombies update in the loop; pathfinding runs its thread and main updates. Animal, ragdoll, vehicle and ballistics integration remains incomplete. |
 | 11 | Audio | `pz-audio`, `pz-sound`, `pz-world-sound`, `pz-radio` | **Decoding done** (FSB5/Vorbis from FMOD banks). Sound manager ticks per frame; positioned world sounds, fire sounds and radio are not wired. |
-| 12 | Saves | in `pz-world::save`, `pz-core`, `pz-sqlite`, `pz-inventory` (no separate `pz-save` crate) | **Partial.** Chunk files, `map_t.bin`, player load and quit-save exist. Vehicle DB, sandbox load, basements, reanimated players and the full `GameWindow.save` path are open. |
+| 12 | Saves | in `pz-world::save`, `pz-core`, `pz-sqlite`, `pz-inventory` (no separate `pz-save` crate) | **Partial.** Chunk files, `map_t.bin`, player load and quit-save exist. Saved worlds load sandbox settings and basement placements. Vehicle persistence, reanimated players and hot saves still have open work. |
 | 13 | Multiplayer | `pz-network` | **Not started.** The crate only holds the offline server list and account database; there is no RakNet protocol, `GameClient` or `GameServer`. |
 
 ## What remains
 
-Grouped from the 146 open items in `ENGINE-WIRING.md`. Each bullet names the
+Grouped from the open items in `ENGINE-WIRING.md`. Each bullet names the
 section to search there for exact hook names and call order.
 
 ### 1. Lua API coverage (workstream 2)
@@ -101,12 +101,11 @@ section to search there for exact hook names and call order.
 - [ ] Remaining 57 `ItemCodeOnCreate` callbacks.
 - [ ] Wire the new actual-reference `ArrayList` foundation to script,
       literature and character recipe-list fields.
-- [ ] Event and hook names read from the jar via `pz-classfile` instead of a
-      hand-kept list.
-- [ ] Fold `bind_vehicles`' item subset into the full item bindings (#86).
+- [x] Event and hook names load from the installed jar through `pz-classfile`.
+- [x] Vehicles use the shared inventory-item and radio device bindings.
 
 ### 2. Boot
-- [ ] Mods (when Core's mods option is on) and the real `MapGroupsHost`.
+- [x] Boot loads enabled mods and installs the filesystem-backed `MapGroupsHost`.
 - [x] `PerkFactory::init` before Lua initialization; `BodyLocations.lua`
       through the shared-Lua load before client Lua.
 - [ ] Character simulation context, world sounds and states world installed
@@ -155,8 +154,8 @@ section to search there for exact hook names and call order.
 - [ ] Full game save (`GameWindow.save(true)`: sleep, menu save, quit) and
       hot save.
 - [ ] Session save, characters side; reanimated players.
-- [ ] `SandboxOptions` from `map_sand.bin` on load.
-- [ ] `Basements` save file.
+- [x] `IsoWorld::load_sandbox` reads `map_sand.bin` during world initialization.
+- [x] World initialization reads or writes `map_basements.bin` for procedural placements.
 - [ ] `WorldDictionary`: string/script register population and version
       hashing.
 - [ ] Route the older value-container floor save through the

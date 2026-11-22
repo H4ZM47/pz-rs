@@ -847,8 +847,9 @@ all installed assets, render paths or foreign platforms.
       the character's live current square and return the world's canonical
       handle; `getCell` returns the installed cell. `getJoypadBind` reads
       the player's input component. Unloaded squares/cells return `nil`.
-- [ ] `Basements.loadSavefile` / `writeSavefile` (`map_basements.bin`): a
-      loaded world recomputes its placements.
+- [x] `Basements.loadSavefile` and `writeSavefile` on the world-load path.
+      A saved world reads its recorded placements before meta-grid loading.
+      A new world writes its generated placements using the installed world version.
 - [x] `TileOverlays.updateTileOverlaySprite(obj)` when a square's objects
       are loaded: `bind_item_picker::load_gridsquare`
       (`LoadGridsquarePerformanceWorkaround.LoadGridsquare`) calls
