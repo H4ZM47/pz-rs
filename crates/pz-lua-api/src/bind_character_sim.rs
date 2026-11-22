@@ -2115,6 +2115,10 @@ fn register_character(
         let v = chr_of(c)?.borrow().is_unlimited_endurance(&*ctx);
         Ok(c.push(v))
     });
+    b.method("getZombieKills", |c| {
+        let v = chr_of(c)?.borrow().zombie_kills;
+        Ok(c.push(v))
+    });
     b.method("isGodMod", |c| {
         let ctx = CONTEXT.with(|c| c.borrow().clone());
         let v = chr_of(c)?.borrow().is_god_mod(&*ctx);
@@ -3109,6 +3113,15 @@ pub(crate) mod tests {
         run(&mut t, "assert(player:getVehicle() == nil)").unwrap();
         chr.borrow_mut().player.input.joypad_bind = 3;
         run(&mut t, "assert(player:getJoypadBind() == 3)").unwrap();
+    }
+
+    /// `ISCharacterScreen.render` shows `getZombieKills()`.
+    #[test]
+    fn zombie_kills_from_lua() {
+        let (mut t, chr, _) = setup();
+        run(&mut t, "assert(player:getZombieKills() == 0)").unwrap();
+        chr.borrow_mut().zombie_kills = 7;
+        run(&mut t, "assert(player:getZombieKills() == 7 and player:getZombieKills() .. '' == '7')").unwrap();
     }
 
     #[test]
