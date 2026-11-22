@@ -526,3 +526,28 @@ fn owner_getter_reports_cold_borrow_error_and_retains_cached_identity_without_bo
     run(&mut thread, "assert(held:getOwner() == item)").unwrap();
     drop(owner_guard);
 }
+
+/// `RecipeCodeOnTest` on an item with a fluid container: `breakGlass` needs
+/// it empty, `hotFluidContainer` hot, and `purifyWater` true only with
+/// `Fluid.TaintedWater` in it.
+#[test]
+fn recipe_on_tests_read_the_item_fluid_container() {
+    let (_restore, mut thread, ctx) = setup();
+    crate::bind_craft_recipe_manager::register(
+        &mut thread,
+        Rc::new(pz_scripts::ScriptManager::new()),
+        Rc::new(std::cell::RefCell::new(pz_characters::Characters::default())),
+    );
+    let (item, component) = fluid_item(&ctx, "Bottle");
+    expose_item(&thread, "item", &item);
+    let test = |t: &mut Thread, f: &str| run(t, &format!("return RecipeCodeOnTest.{f}(item, nil)")).unwrap()[0].truthy();
+    assert!(!test(&mut thread, "breakGlass"), "water in it");
+    assert!(!test(&mut thread, "purifyWater"), "clean water");
+    item.borrow_mut().item_heat = 1.0;
+    assert!(!test(&mut thread, "hotFluidContainer"));
+    item.borrow_mut().item_heat = 2.0;
+    assert!(test(&mut thread, "hotFluidContainer"));
+    component.borrow_mut().fluid_mut().unwrap().fluids[0].fluid =
+        Some(FluidRef::Type(pz_scripts::objects::definitions::FluidType::TaintedWater.id()));
+    assert!(test(&mut thread, "purifyWater"), "tainted water");
+}

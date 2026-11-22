@@ -20,6 +20,121 @@ pub(super) fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
         let v = generic_packing(c.thread, &sm, &item)?;
         Ok(c.push(v))
     });
+    // `haveFilter` / `haveOxygenTank`: `((Clothing) item).hasFilter()` /
+    // `hasTank()`. `noFilter` / `noOxygenTank`: true unless a `Clothing`
+    // has one.
+    for (name, method, have) in [
+        ("haveFilter", "hasFilter", true),
+        ("noFilter", "hasFilter", false),
+        ("haveOxygenTank", "hasTank", true),
+        ("noOxygenTank", "hasTank", false),
+    ] {
+        b.static_fn(name, move |c| {
+            let item = crate::bind_world_object::item_argument(&c.arg(0))?;
+            let v = clothing_has(c.thread, &item, method, have)?;
+            Ok(c.push(v))
+        });
+    }
+    // `cutFish` / `cutFillet`: food heavier than 0.6 / 1.0; any other item.
+    for (name, min) in [("cutFish", 0.6f32), ("cutFillet", 1.0)] {
+        b.static_fn(name, move |c| {
+            let item = crate::bind_world_object::item_argument(&c.arg(0))?;
+            if !matches!(item.borrow().kind, ItemKind::Food(_)) {
+                return Ok(c.push(true));
+            }
+            let weight = number(&call(c.thread, &item, "getActualWeight", &[])?) as f32;
+            Ok(c.push(weight > min))
+        });
+    }
+    // `breakGlass`: no fluid container, or an empty one.
+    b.static_fn("breakGlass", |c| {
+        let item = crate::bind_world_object::item_argument(&c.arg(0))?;
+        let fluid = call(c.thread, &item, "getFluidContainer", &[])?;
+        let v = fluid.is_nil() || {
+            let f = c.thread.table_get(&fluid, &Value::str("isEmpty"))?;
+            c.thread.call1(&f, &[fluid.clone()])?.truthy()
+        };
+        Ok(c.push(v))
+    });
+    // `hotFluidContainer`: no `FluidContainer` component, or hotter than 1.6.
+    b.static_fn("hotFluidContainer", |c| {
+        let value = c.arg(0);
+        let item = crate::bind_world_object::item_argument(&value)?;
+        let has = crate::bind_world_object::fluid_component(&value)?.is_some();
+        let v = !has || item.borrow().get_item_heat() > 1.6;
+        Ok(c.push(v))
+    });
+    // `canAddToPack`: a `DrainableComboItem` with the `Packed` tag needs
+    // less than one use left.
+    b.static_fn("canAddToPack", |c| {
+        let item = crate::bind_world_object::item_argument(&c.arg(0))?;
+        let i = item.borrow();
+        let v = i.template.class != pz_inventory::ItemClass::Drainable
+            || !i.has_tag("base:packed")
+            || i.get_current_uses_float() < 1.0;
+        Ok(c.push(v))
+    });
+    // `purifyWater`: a `FluidContainer` component that contains
+    // `Fluid.TaintedWater`; any other item.
+    b.static_fn("purifyWater", |c| {
+        let value = c.arg(0);
+        crate::bind_world_object::item_argument(&value)?;
+        let Some(component) = crate::bind_world_object::fluid_component(&value)? else {
+            return Ok(c.push(true));
+        };
+        let body = component.try_borrow().map_err(|_| LuaError::runtime("FluidContainer is in use"))?;
+        let fluid = body.fluid().ok_or_else(|| LuaError::runtime("FluidContainer allocation has an invalid class"))?;
+        let tainted = pz_entity::FluidRef::Type(pz_scripts::objects::definitions::FluidType::TaintedWater.id());
+        let v = fluid.fluids.iter().any(|f| f.fluid.as_ref() == Some(&tainted));
+        Ok(c.push(v))
+    });
+    // `scratchTicket`: `scratched` is not true in the mod data.
+    b.static_fn("scratchTicket", |c| {
+        let item = crate::bind_world_object::item_argument(&c.arg(0))?;
+        let data = call(c.thread, &item, "getModData", &[])?;
+        let Value::Table(t) = data else { return Err(npe()) };
+        Ok(c.push(!t.get_str("scratched").raw_equals(&Value::Bool(true))))
+    });
+    // `copyKey`: not a building key, or a key with an id.
+    b.static_fn("copyKey", |c| {
+        let item = crate::bind_world_object::item_argument(&c.arg(0))?;
+        let i = item.borrow();
+        let key_id = match &i.kind {
+            ItemKind::Key { key_id, .. } => *key_id,
+            _ => i.key_id,
+        };
+        Ok(c.push(!i.has_tag("base:buildingkey") || key_id != -1))
+    });
+}
+
+/// `item.<name>(args)` through the item's binding.
+fn call(thread: &mut Thread, item: &ItemRef, name: &str, args: &[Value]) -> LuaResult<Value> {
+    let value = crate::bind_items::try_item_value(item)?;
+    let f = thread.table_get(&value, &Value::str(name))?;
+    let mut all = vec![value];
+    all.extend_from_slice(args);
+    thread.call1(&f, &all)
+}
+
+fn number(v: &Value) -> f64 {
+    pz_kahlua::exec::raw_tonumber(v).unwrap_or(0.0)
+}
+
+/// `((Clothing) item).<method>()` when `have`, else `!(item instanceof
+/// Clothing) || !item.<method>()`.
+fn clothing_has(thread: &mut Thread, item: &ItemRef, method: &str, have: bool) -> LuaResult<bool> {
+    let clothing = matches!(item.borrow().kind, ItemKind::Clothing(_) | ItemKind::AlarmClockClothing(..));
+    if !clothing {
+        if have {
+            return Err(LuaError::runtime("java.lang.ClassCastException: not a Clothing"));
+        }
+        return Ok(true);
+    }
+    // Through the binding, which prepares the item's mod data.
+    let value = crate::bind_items::try_item_value(item)?;
+    let f = thread.table_get(&value, &Value::str(method))?;
+    let has = thread.call1(&f, &[value])?.truthy();
+    Ok(has == have)
 }
 
 fn npe() -> LuaError {

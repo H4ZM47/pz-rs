@@ -764,3 +764,104 @@ fn output_mapper_entrees_match_the_input_items() {
     d.st.inputs[1].cache.applied = vec![4, 3];
     assert_eq!(name(d.mapper_output_item(mapper, false)).as_deref(), Some("Base.Nails"));
 }
+
+/// `haveFilter` / `noFilter` and `haveOxygenTank` / `noOxygenTank`: a gas
+/// mask with a `filterType` and an SCBA with a `tankType`; `have*` casts the
+/// item to `Clothing`, `no*` is true for any other item.
+#[test]
+fn filter_and_tank_tests_read_the_clothing_mod_data() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let sm = manager("");
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    crate::bind_items::register(&mut t);
+    crate::bind_scripts::register(&mut t, sm.clone());
+    register(&mut t, sm.clone(), Rc::new(RefCell::new(Characters::default())));
+    let clothing = |name: &str, tag: &str| {
+        struct Env;
+        impl pz_inventory::ItemEnv for Env {}
+        let mut definition = pz_scripts::objects::items::Item::new();
+        definition.set_module(&sm.get_module("Base").unwrap());
+        definition.init_load_pp(&sm, name);
+        definition.load(&sm, name, &format!("item {name} {{}}")).unwrap();
+        let mut template = ItemTemplate::new(ItemClass::Clothing, "Base", name);
+        template.script = Some(ScriptItemRef(Rc::new(RefCell::new(definition))));
+        template.tags.push(tag.into());
+        pz_inventory::env::create_from_template_ref(&Env, Rc::new(template), 1).unwrap()
+    };
+    let mask = clothing("Mask", "base:gasmask");
+    let scba = clothing("Scba", "base:scba");
+    let bat = item(&sm, ItemClass::Weapon, "BaseballBat");
+    for (name, v) in [("mask", &mask), ("scba", &scba), ("bat", &bat)] {
+        t.globals().set_str(name, crate::bind_items::try_item_value(v).unwrap());
+    }
+    let test = |t: &mut Thread, src: &str| run(t, &format!("return RecipeCodeOnTest.{src}")).unwrap()[0].truthy();
+    assert!(!test(&mut t, "haveFilter(mask, nil)"));
+    assert!(test(&mut t, "noFilter(mask, nil)"));
+    assert!(test(&mut t, "noOxygenTank(scba, nil)"));
+    run(&mut t, "mask:getModData().filterType = 'Base.Filter'; scba:getModData().tankType = 'Base.Tank'").unwrap();
+    assert!(test(&mut t, "haveFilter(mask, nil)"));
+    assert!(!test(&mut t, "noFilter(mask, nil)"));
+    assert!(test(&mut t, "haveOxygenTank(scba, nil)"));
+    assert!(!test(&mut t, "noOxygenTank(scba, nil)"));
+    assert!(!test(&mut t, "haveOxygenTank(mask, nil)"), "not an SCBA");
+    // Not a `Clothing`.
+    assert!(test(&mut t, "noFilter(bat, nil)"));
+    assert!(test(&mut t, "noOxygenTank(bat, nil)"));
+    assert!(run(&mut t, "return RecipeCodeOnTest.haveFilter(bat, nil)").is_err());
+}
+
+/// The other `RecipeCodeOnTest` checks on the item alone: `cutFish`,
+/// `cutFillet`, `breakGlass`, `hotFluidContainer`, `purifyWater`, `canAddToPack`,
+/// `scratchTicket` and `copyKey`.
+#[test]
+fn item_recipe_tests_follow_the_bytecode() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let sm = manager("");
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    crate::bind_items::register(&mut t);
+    crate::bind_scripts::register(&mut t, sm.clone());
+    register(&mut t, sm.clone(), Rc::new(RefCell::new(Characters::default())));
+    let tagged = |class: ItemClass, name: &str, tag: &str| {
+        let i = item(&sm, class, name);
+        let mut template = (*i.borrow().template).clone();
+        template.tags.push(tag.into());
+        i.borrow_mut().template = Rc::new(template);
+        i
+    };
+    let fish = item(&sm, ItemClass::Food, "Apple");
+    let bat = item(&sm, ItemClass::Weapon, "BaseballBat");
+    let pack = tagged(ItemClass::Drainable, "Nails", "base:packed");
+    let key = tagged(ItemClass::Normal, "Nails", "base:buildingkey");
+    for (name, v) in [("fish", &fish), ("bat", &bat), ("pack", &pack), ("key", &key)] {
+        t.globals().set_str(name, crate::bind_items::try_item_value(v).unwrap());
+    }
+    let test = |t: &mut Thread, src: &str| run(t, &format!("return RecipeCodeOnTest.{src}")).unwrap()[0].truthy();
+    // A custom weight: `Food.getActualWeight` returns the item's own.
+    fish.borrow_mut().custom_weight = true;
+    for w in [0.5, 0.8, 1.2] {
+        run(&mut t, &format!("fish:setActualWeight({w})")).unwrap();
+        let actual = run(&mut t, "return fish:getActualWeight()").unwrap()[0].clone();
+        let actual = pz_kahlua::exec::raw_tonumber(&actual).unwrap() as f32;
+        assert_eq!(actual, w as f32);
+        assert_eq!(test(&mut t, "cutFish(fish, nil)"), actual > 0.6, "{w}");
+        assert_eq!(test(&mut t, "cutFillet(fish, nil)"), actual > 1.0, "{w}");
+    }
+    assert!(test(&mut t, "cutFish(bat, nil)") && test(&mut t, "cutFillet(bat, nil)"), "not food");
+    assert!(test(&mut t, "breakGlass(bat, nil)"), "no fluid container");
+    assert!(test(&mut t, "hotFluidContainer(bat, nil)"), "no fluid container");
+    assert!(test(&mut t, "purifyWater(bat, nil)"), "no fluid container");
+    assert!(test(&mut t, "canAddToPack(bat, nil)"), "not drainable");
+    assert_eq!(pack.borrow().get_current_uses_float() < 1.0, test(&mut t, "canAddToPack(pack, nil)"));
+    assert!(test(&mut t, "scratchTicket(bat, nil)"));
+    run(&mut t, "bat:getModData().scratched = true").unwrap();
+    assert!(!test(&mut t, "scratchTicket(bat, nil)"));
+    assert!(test(&mut t, "copyKey(bat, nil)"), "not a building key");
+    key.borrow_mut().key_id = -1;
+    assert!(!test(&mut t, "copyKey(key, nil)"));
+    key.borrow_mut().key_id = 7;
+    assert!(test(&mut t, "copyKey(key, nil)"));
+}
