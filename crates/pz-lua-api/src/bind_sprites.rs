@@ -348,7 +348,12 @@ mod tests {
         };
         let old = make_manager();
         let old_lifetime = Rc::downgrade(&old);
-        old.borrow_mut().add_sprite_named("first");
+        {
+            let mut tiles = old.borrow_mut();
+            tiles.add_sprite_named("first");
+            let idx = tiles.add_sprite("old", 17);
+            tiles.sprites[idx].name = Some("old".into());
+        }
         install_sprite_manager(Some(old));
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
@@ -362,7 +367,8 @@ mod tests {
             retained = IsoSpriteManager.instance:getSprite('old')
             retainedProps = retained:getProperties()
             retainedProps:set('CustomName', 'Original')
-            return retained == IsoSpriteManager.instance:getSprite('old'), retainedProps == retained:getProperties()
+            return retained == IsoSpriteManager.instance:getSprite('old'), retainedProps == retained:getProperties(),
+                retained == IsoSpriteManager.instance:getSprite(17)
         "#);
         install_sprite_manager(Some(make_manager()));
         run(&mut t, r#"
