@@ -49,7 +49,7 @@ Selected results, each with what it does and does not show:
 | Chunk saves | 14,850 of 14,894 real chunk re-saves byte-identical to the original's own re-save | Checked locally; the remainder differ in random key ids and one model name ([PROGRESS.md](PROGRESS.md)) |
 | World generation | Object lists match the game on all 167,232 squares of 24 regions | Checked locally; blending and foraging zones not ported |
 | Erosion, climate, zombie chase, body damage | Match the original bit for bit | Each library compared in isolation, not inside a running session |
-| Engine integration | 84 of 216 items in the integration checklist done | A checked item means the connection exists, not that runtime parity is verified ([ENGINE-WIRING.md](docs/ENGINE-WIRING.md)) |
+| Engine integration | 85 of 216 items in the integration checklist done | A checked item means the connection exists, not that runtime parity is verified ([ENGINE-WIRING.md](docs/ENGINE-WIRING.md)) |
 | Lua API | Largest open area; for example 1 of 58 `ItemCodeOnCreate` callbacks is implemented | The most recent recorded stop is in the inventory pane |
 
 [docs/STATUS.md](docs/STATUS.md) has the per-workstream status and the full

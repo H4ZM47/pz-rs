@@ -453,7 +453,11 @@ impl App {
             drain_retired_host_owners();
             return;
         }
+        let vsync_changes = self.core.borrow_mut().take_vsync_requests();
         if let Some(gpu) = self.gpu.as_mut() {
+            for enabled in vsync_changes {
+                gpu.set_vsync(enabled);
+            }
             let tm = pz_lua_api::bind_render::textures();
             let params = pz_gpu::FrameParams {
                 clear: Some([0.0, 0.0, 0.0, 1.0]),

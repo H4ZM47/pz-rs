@@ -437,7 +437,7 @@ pub enum CoreRequest {
         height: i32,
         fullscreen: bool,
     },
-    /// `setVSyncEnabled`. TODO(render).
+    /// Apply `setVSyncEnabled` on the render thread.
     VSync(bool),
     /// `TakeFullScreenshot(filename)`. TODO(render).
     FullScreenshot(Option<String>),
@@ -1553,6 +1553,20 @@ impl Core {
     /// Drain the engine requests queued since the last call.
     pub fn take_requests(&mut self) -> Vec<CoreRequest> {
         std::mem::take(&mut self.pending_requests)
+    }
+
+    /// Render-context VSync calls, in request order. The other requests
+    /// stay queued for their respective consumers.
+    pub fn take_vsync_requests(&mut self) -> Vec<bool> {
+        let mut changes = Vec::new();
+        self.pending_requests.retain(|request| match request {
+            CoreRequest::VSync(enabled) => {
+                changes.push(*enabled);
+                false
+            }
+            _ => true,
+        });
+        changes
     }
 
     fn trigger_event(&mut self, name: &'static str, args: Vec<EventArg>) {

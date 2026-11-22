@@ -722,7 +722,9 @@ all installed assets, render paths or foreign platforms.
 - [x] Sound: `SoundManager` update and emitter ticks through
       `sound_system().with(..)`; listener from the active camera (#78/#83).
 - [x] `UITransition.UpdateAll` → `bind_misc::ui_transition_update_all()` (#20).
-- [ ] Vsync from Core options; `FrameParams` size from Core screen size.
+- [x] The render surface uses Core's VSync setting at creation and applies
+      queued option changes before drawing the next frame. UI frame dimensions
+      come from Core's screen width and height.
 - [x] `GameTime::update` / `update_game_time(thread)` once per frame
       before the world (#49).
 - [ ] Pathfinding: PathHost `update_thread` then `update_main` before the

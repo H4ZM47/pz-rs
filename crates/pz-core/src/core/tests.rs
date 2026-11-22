@@ -549,3 +549,17 @@ fn build_42_21_options_keep_zoom_settings_and_migrate_old_save_directories() {
     assert!(!save.exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn render_context_receives_vsync_changes_without_consuming_other_core_requests() {
+    let mut core = Core::new();
+    core.pending_requests.push(CoreRequest::Exit);
+    core.set_option_vsync(false);
+    core.pending_requests.push(CoreRequest::FullScreenshot(None));
+    core.set_option_vsync(true);
+    core.set_option_vsync(true);
+    assert!(core.get_option_v_sync());
+    assert_eq!(core.take_vsync_requests(), [false, true, true]);
+    assert!(core.take_vsync_requests().is_empty());
+    assert_eq!(core.take_requests(), [CoreRequest::Exit, CoreRequest::FullScreenshot(None)]);
+}

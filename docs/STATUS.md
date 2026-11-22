@@ -62,12 +62,12 @@ The November 22 combined integration branch has these entries in `ENGINE-WIRING.
 | Section | Done | Open |
 | --- | ---: | ---: |
 | Boot (`GameWindow.init`) | 16 | 9 |
-| Per frame (`GameWindow.logic` / `render`) | 15 | 2 |
+| Per frame (`GameWindow.logic` / `render`) | 16 | 1 |
 | World (`GameLoadingState` / `IngameState`) | 43 | 91 |
 | World render pass | 5 | 26 |
 | World map | 4 | 3 |
 | Cleanups | 1 | 1 |
-| **Total** | **84** | **132** |
+| **Total** | **85** | **131** |
 
 A checked box means the connection is implemented, not that runtime parity
 with the original has been verified.
@@ -175,7 +175,7 @@ section to search there for exact hook names and call order.
 - [ ] Split screen.
 - [x] GPU faults stop the frame and report the cause through the engine's
       error exit. Actual device-loss testing remains open.
-- [ ] Vsync and frame size from Core options.
+- [x] VSync updates on the active render surface. Core supplies the frame dimensions.
 
 ### 7. World map
 - [ ] Map host inputs, live `MapFilesInfo`, image frame hooks, visited
