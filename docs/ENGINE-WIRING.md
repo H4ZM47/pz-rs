@@ -758,6 +758,17 @@ all installed assets, render paths or foreign platforms.
       objects for `OnZombieDead`, `OnCharacterDeath` and `OnDeadBodySpawn`
       (reported as unsupported when they have listeners). `die()` from the
       population pass (`RealZombies::die`) is not collected.
+- [x] Corpse rendering: `WorldRender::render_corpses` draws each square's
+      `staticMovingObjects` as `IsoDeadBody.render` does: the square's
+      interpolated light, `BodyParams.init` (outside, room, lights), the
+      body texture from `DeadBodyAtlas.getBodyTexture` (the body model
+      posed by `BodyParams`/`diedBoneTransforms` and drawn into the atlas)
+      and its shadow. New and loaded corpses use the same path. The
+      texture jobs run in `WorldModels::prepare`, so a new body shows one
+      frame later. The 3D view (a port extension) draws no corpses and
+      prepares no atlas entries. Not wired: animal corpses (reported once), attached
+      models, the hand items' models, highlights, the alpha fade and the
+      release of atlas entries.
 - [x] `ZombiePopulationManager::update_main` with PopulationHost and
       `ZombieOps` (`RealZombies`) (#73/#77; `RealZombies::create_survivor`
       returns `CreateSurvivor`'s `ScriptResult`, and `WorldPopulation::update`
