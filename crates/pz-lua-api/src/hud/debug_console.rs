@@ -75,9 +75,14 @@ pub fn process_command(t: &mut Thread) {
 
 /// `DebugLog.OutputStreamWrapper.write`: the debug log's bytes reach the
 /// console when `Core.debug`, a console exists and the option is on.
+/// Installed as `pz_core::debug`'s console mirror by [`register`]; a
+/// write while the core or the HUD host is borrowed is not mirrored.
 pub fn debug_log_write(b: &[u8]) {
-    let debug = crate::bind_core::shared_core().borrow().debug;
-    if debug && instance().is_some() && with_host(|h| h.debug.ui_debug_console_debug_log()) {
+    let debug = crate::bind_core::shared_core().try_borrow().is_ok_and(|c| c.debug);
+    if debug
+        && instance().is_some()
+        && super::host::try_with_host(|h| h.debug.ui_debug_console_debug_log()).unwrap_or(false)
+    {
         add_output(b);
     }
 }
@@ -802,6 +807,8 @@ impl UIElementExt for UIDebugConsole {
 /// Lua: the methods of the exposed class.
 pub(crate) fn register(thread: &mut Thread) {
     use crate::bind_ui::element_of;
+    // `DebugLog`'s `OutputStreamWrapper`s feed the console.
+    pz_core::debug::set_console_mirror(Some(debug_log_write));
     use crate::expose::{expose_class, int_arg};
     let b = expose_class(thread, UI_DEBUG_CONSOLE, Some(crate::bind_ui::UIELEMENT));
     fn console(c: &pz_kahlua::NativeCall<'_>) -> pz_kahlua::LuaResult<Rc<UIElement>> {
@@ -1260,6 +1267,46 @@ mod tests {
         tb(&me.command_line).state().internal = "  clear ".chars().collect();
         me.process_command(&c, &mut t);
         assert_eq!(text_of(&me.output_log), "");
+    }
+
+    #[test]
+    fn debug_log_reaches_console_through_options() {
+        use pz_core::debug::{self, DebugOptionDef, DebugType, LogSeverity};
+        install_textures(&[]);
+        install(HudHost::default());
+        super::super::host::install_debug_options_host();
+        let mut t = thread();
+        pz_ui::UIManager::set_text_renderer(Some(Rc::new(Mono)));
+        crate::bind_core::shared_core().borrow_mut().debug = true;
+        let c = UIDebugConsole::create(&mut t, 0, 0);
+        let me = c.ext::<UIDebugConsole>().unwrap();
+        tb(&me.output_log).set_text(&me.output_log, &mut t, &[]);
+        OUTPUT.with(|o| *o.borrow_mut() = (Vec::new(), false));
+        let opts = debug::debug_options();
+        opts.borrow_mut().set_definitions(vec![DebugOptionDef {
+            name: "UI.DebugConsole.DebugLog".into(),
+            default_value: true,
+            debug_only: false,
+        }]);
+        debug::with(|d| {
+            d.set_sink(pz_core::debug::MemorySink::new());
+            d.set_severity(DebugType::General, LogSeverity::General);
+            d.println(DebugType::General, "mirrored line");
+        });
+        c.update(&mut t);
+        assert!(text_of(&me.output_log).ends_with("mirrored line\n"), "{}", text_of(&me.output_log));
+        // The option off: nothing more reaches the console.
+        opts.borrow_mut().set_boolean("UI.DebugConsole.DebugLog", false);
+        debug::with(|d| d.println(DebugType::General, "hidden"));
+        c.update(&mut t);
+        assert!(!text_of(&me.output_log).contains("hidden"));
+        // Without `Core.debug` neither.
+        opts.borrow_mut().set_boolean("UI.DebugConsole.DebugLog", true);
+        crate::bind_core::shared_core().borrow_mut().debug = false;
+        debug::with(|d| d.println(DebugType::General, "no debug"));
+        c.update(&mut t);
+        assert!(!text_of(&me.output_log).contains("no debug"));
+        opts.borrow_mut().set_definitions(Vec::new());
     }
 
     #[test]
