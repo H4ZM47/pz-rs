@@ -355,7 +355,13 @@ impl GameState for IngameState {
             w.start_population(&FrameSim::capture());
         }
         // TODO(port): `currentCell.putInVehicle(player)`.
-        let tutorial = pz_lua_api::bind_core::shared_core().borrow().game_mode == "Tutorial";
+        let tutorial = match pz_lua_api::bind_core::shared_core().borrow().is_tutorial() {
+            Ok(value) => value,
+            Err(error) => {
+                crate::failure::record_first(cx.error, format!("IngameState tutorial mode: {error}").into());
+                return;
+            }
+        };
         set_music_state(if tutorial { "Tutorial" } else { "InGame" });
         // TODO(port): `ClimateManager.getInstance().update()` on its own,
         // `AmbientStreamManager.instance.checkHaveElectricity()`.

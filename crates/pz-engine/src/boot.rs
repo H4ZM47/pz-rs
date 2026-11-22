@@ -53,7 +53,12 @@ pub fn load_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>) -> Result<
         .map_err(|error|format!("native item key registry jar: {error}"))?;
     let native_keys=pz_scripts::native_item_keys::native_item_key_statics(&jar)
         .map_err(|error|format!("native item key statics: {error}"))?;
-    let sm=pz_scripts::ScriptManager::with_native_item_key_statics(&native_keys);
+    let native_modes = pz_scripts::native_game_modes::native_game_mode_statics(&jar)
+        .map_err(|error| format!("native game mode statics: {error}"))?;
+    pz_lua_api::bind_core::shared_core().borrow_mut()
+        .install_game_mode_statics(native_modes.clone())
+        .map_err(|error| format!("install native game mode statics: {error}"))?;
+    let sm = pz_scripts::ScriptManager::with_native_key_statics(&native_keys, &native_modes);
     sm.load_builtin_registries(&game_dir.join("projectzomboid.jar"))
         .map_err(|e| format!("built-in registries: {e}"))?;
     let mut chars = pz_characters::Characters::default();

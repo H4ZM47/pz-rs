@@ -179,10 +179,12 @@ impl Default for GameLoadingState {
 
 impl GameLoadingState {
     /// `ZomboidFileSystem.getCurrentSaveDir()`.
-    fn current_save_dir(cx: &StateCx<'_>) -> std::path::PathBuf {
+    fn current_save_dir(cx: &StateCx<'_>) -> Result<std::path::PathBuf, String> {
+        let mode = pz_lua_api::bind_save::game_mode_cache_name()
+            .map_err(|error| format!("game mode cache directory: {error}"))?;
         let core = pz_lua_api::bind_core::shared_core();
         let c = core.borrow();
-        cx.launch.cache_dir.join("Saves").join(&c.game_mode).join(&c.game_save_world)
+        Ok(cx.launch.cache_dir.join("Saves").join(mode).join(&c.game_save_world))
     }
 
     /// `loadQuickTipList()`.
@@ -209,15 +211,16 @@ impl GameLoadingState {
 
     /// `runInner` up to `waitForAssetLoadingToFinish2`.
     fn run_inner_1(&mut self, cx: &mut StateCx<'_>) -> Result<(), String> {
-        let core = pz_lua_api::bind_core::shared_core();
-        let mode_dir = cx.launch.cache_dir.join("Saves").join(core.borrow().game_mode.clone());
+        let mode = pz_lua_api::bind_save::game_mode_cache_name()
+            .map_err(|error| format!("game mode cache directory: {error}"))?;
+        let mode_dir = cx.launch.cache_dir.join("Saves").join(mode);
         let _ = std::fs::create_dir(&mode_dir);
         // TODO(port): `BaseVehicle.LoadAllVehicleTextures()`;
         // `TutorialManager.instance = new TutorialManager()`.
         pz_lua_api::bind_climate::install_game_time(std::rc::Rc::new(std::cell::RefCell::new(pz_core::game_time::GameTime::default())));
         pz_lua_api::bind_climate::new_climate_manager(&mut cx.lua.thread);
         let spawn_region = cx.world.as_ref().map(|w| w.spawn_region.clone()).unwrap_or_default();
-        let mut world = IsoWorld::new(&cx.launch.game_dir, &cx.launch.cache_dir, Self::current_save_dir(cx));
+        let mut world = IsoWorld::new(&cx.launch.game_dir, &cx.launch.cache_dir, Self::current_save_dir(cx)?);
         world.spawn_region = spawn_region;
         world.new_game_setup = cx.launch.start.new_game_setup();
         // `WorldDictionary.setIsNewGame(newGame)` from `enter`.
@@ -239,7 +242,7 @@ impl GameLoadingState {
         // TODO(port): `IsoObjectPicker.Instance.Init()`,
         // `TutorialManager.instance.init()` / `CreateQuests()`.
         let saved = cx.world.as_ref().map_or(-1, |w| w.saved_world_version);
-        let save_dir = Self::current_save_dir(cx);
+        let save_dir = Self::current_save_dir(cx)?;
         let new_game = !save_dir.join("map_ver.bin").exists();
         if new_game || saved != WORLD_VERSION {
             if !new_game {
@@ -366,9 +369,23 @@ impl GameState for GameLoadingState {
         pz_lua_api::bind_registry::shared_script_manager().loaded_after_lua();
         // TODO(port): `Core.initFBOs()`, `initShaders()`, `SkyBox.getInstance()`,
         // `IsoPuddles.getInstance()`, `IsoWater.getInstance()`.
-        let (save_world, no_save, tutorial, last_stand, mode) = {
+        let mode = match pz_lua_api::bind_save::game_mode_cache_name() {
+            Ok(mode) => mode,
+            Err(error) => {
+                crate::failure::record_first(cx.error, format!("game mode cache directory: {error}").into());
+                return;
+            }
+        };
+        let (save_world, no_save, tutorial, last_stand, multiplayer) = {
             let c = core.borrow();
-            (c.game_save_world.clone(), c.is_no_save(), c.tutorial, c.is_last_stand(), c.game_mode.clone())
+            let multiplayer = match c.is_game_mode_constant("MULTIPLAYER") {
+                Ok(value) => value,
+                Err(error) => {
+                    crate::failure::record_first(cx.error, format!("GameLoadingState multiplayer mode: {error}").into());
+                    return;
+                }
+            };
+            (c.game_save_world.clone(), c.is_no_save(), c.tutorial, c.is_last_stand(), multiplayer)
         };
         if save_world.is_empty() {
             // The original shows this and exits the process.
@@ -376,7 +393,13 @@ impl GameState for GameLoadingState {
             self.unexpected_error = true;
             return;
         }
-        let save_dir = Self::current_save_dir(cx);
+        let save_dir = match Self::current_save_dir(cx) {
+            Ok(path) => path,
+            Err(error) => {
+                crate::failure::record_first(cx.error, error.into());
+                return;
+            }
+        };
         if !save_dir.exists() && !no_save {
             println!("The savefile directory doesn't exist.  It's a bug.");
             self.unexpected_error = true;
@@ -387,7 +410,7 @@ impl GameState for GameLoadingState {
                 eprintln!("ERROR: {e}");
             }
         }
-        if !(tutorial || last_stand || mode == "Multiplayer") {
+        if !(tutorial || last_stand || multiplayer) {
             let ini = format!("{save_world}\r\n{mode}\r\n");
             if let Err(e) = std::fs::write(cx.launch.cache_dir.join("latestSave.ini"), ini) {
                 eprintln!("ERROR: latestSave.ini: {e}");
@@ -447,9 +470,15 @@ impl GameState for GameLoadingState {
         let mods = pz_lua_api::savefile::active_mods_by_id("currentGame");
         // TODO(port): `checkMissingMods` / `checkMissingMaps`.
         pz_lua_api::savefile::set_active_mods("loaded", mods.clone());
-        let path = Self::current_save_dir(cx).join("mods.txt");
+        let path = match Self::current_save_dir(cx) {
+            Ok(path) => path.join("mods.txt"),
+            Err(error) => {
+                crate::failure::record_first(cx.error, error.into());
+                return;
+            }
+        };
         pz_lua_api::savefile::write_active_mods(no_save, &path.to_string_lossy(), &mods);
-        println!("Game Mode: {}", core.borrow().game_mode);
+        println!("Game Mode: {}", core.borrow().game_mode_name().unwrap_or("null"));
         println!("Sandbox Options:");
         if let Ok(pz_kahlua::Value::Object(o)) = pz_lua_api::bind_sandbox::instance(&mut cx.lua.thread) {
             if let Some(s) = o.as_any().downcast_ref::<pz_lua_api::bind_sandbox::SandboxObj>() {
@@ -540,8 +569,14 @@ impl GameState for GameLoadingState {
         if pz_lua_api::bind_core::shared_core().borrow().get_debug() {
             self.showed_click_to_skip = true;
         }
-        let mode = pz_lua_api::bind_core::shared_core().borrow().game_mode.clone();
-        if self.done && self.player_created && (!self.new_game || self.time >= TOTAL_TIME || last_stand || mode == "Tutorial") {
+        let tutorial = match pz_lua_api::bind_core::shared_core().borrow().is_tutorial() {
+            Ok(value) => value,
+            Err(error) => {
+                crate::failure::record_first(cx.error, format!("GameLoadingState tutorial mode: {error}").into());
+                return;
+            }
+        };
+        if self.done && self.player_created && (!self.new_game || self.time >= TOTAL_TIME || last_stand || tutorial) {
             let step = cx.multiplier / 30.0;
             if self.click_to_skip_fade_in {
                 self.click_to_skip_alpha += step;

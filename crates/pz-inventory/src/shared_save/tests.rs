@@ -652,3 +652,124 @@ fn live_moddata_overflow_replays_before_provider_failure_and_restores_real_id() 
     prefix.i16(0);
     assert_eq!(writer.buf, prefix.buf);
 }
+
+fn live_component(item: &ItemRef, value: pz_entity::Component) -> ComponentRef {
+    let component = pz_entity::RuntimeComponent::new_unowned(value).unwrap();
+    item.borrow_mut().components.runtime_mut().push_ref_if_absent(component.clone()).unwrap();
+    assert!(component.borrow_mut().replace_owner(Some(&pz_entity::EntityOwner::from_ref(item))).is_none());
+    component
+}
+
+#[test]
+fn component_comparison_overflow_retries_before_provider_and_restores_id_on_error() {
+    let _restore = Restore::new();
+    let t = asset_template(ItemClass::Normal, "LargeComponent");
+    let item = actual(t.clone(), 1, 91);
+    let component = live_component(&item, pz_entity::Component::Script(pz_entity::components::basic::EntityScriptInfo {
+        // This payload alone exceeds a 3 KiB scratch buffer, independently
+        // of item framing, so reaching the provider requires capacity >=4 KiB.
+        original_is_item: true, original_script: Some("x".repeat(4000)),
+    }));
+    let root = crate::shared::SharedContainer::default().into_ref();
+    root.borrow_mut().items.push(item.clone());
+    let calls = Rc::new(Cell::new(0));
+    let seen = calls.clone();
+    let receiver = item.clone();
+    pz_render::install_texture_ref_loader(Some(Rc::new(move |_, _| {
+        seen.set(seen.get() + 1);
+        assert!(io::native_buffer_capacity(&current_buffer()).unwrap() >= 4096);
+        assert_eq!(receiver.try_borrow_mut().unwrap().id, 0);
+        Err(pz_render::TextureHostError::Borrowed("after component overflow replay"))
+    })));
+    let mut output = Writer::new();
+    assert!(matches!(save_container_ref(&root, &mut output, &Env(vec![t])),
+        Err(ItemPersistenceError::Host(RuntimeHostError::Borrowed("after component overflow replay")))));
+    assert_eq!(calls.get(), 1, "component overflow must precede the later provider");
+    assert_eq!(item.borrow().id, 91);
+    assert!(Rc::ptr_eq(&component, &item.borrow().components.get_ref(ComponentType::Script).unwrap().unwrap()));
+    assert!(component.borrow().owner_slot().unwrap().ptr_eq(&pz_entity::EntityOwner::from_ref(&item)));
+    let mut retired = RetiredComponents::new();
+    crate::component_host::detach_component_for_transfer(&item, ComponentType::Script, &mut retired).unwrap();
+    crate::component_host::retire_components(retired);
+}
+
+#[test]
+fn bounded_component_overflow_precedes_later_component_fault_and_keeps_prefix() {
+    let _restore = Restore::new();
+    let t = Rc::new(template(ItemClass::Normal, "Components"));
+    let item = actual(t, 1, 55);
+    let first = live_component(&item, pz_entity::Component::Script(pz_entity::components::basic::EntityScriptInfo {
+        original_is_item: false, original_script: Some("x".repeat(3000)),
+    }));
+    let second = live_component(&item, pz_entity::Component::Durability(Default::default()));
+    let small = io::new_native_save_buffer();
+    let mut writer = Writer::for_native_buffer(&small);
+    let second_guard = second.borrow_mut();
+    let outcome = io::catch_native_overflow(|| item.borrow().components.write_to_runtime(&mut writer, 249));
+    assert!(matches!(outcome, Err(NativeWriterFault::Overflow)));
+    assert_eq!(io::native_buffer_position(&small).unwrap(), 11);
+    assert_eq!(io::native_buffer_bytes(&small, 0, 11).unwrap(), [2, 0, 0, 0, 0, 0, ComponentType::Script.id() as u8, 0, 1, 0x0b, 0xb8]);
+    let mut grown = small;
+    while io::native_buffer_capacity(&grown).unwrap() < 4096 {
+        grown = io::native_buffer_ensure_capacity(&grown).unwrap();
+    }
+    io::native_buffer_clear(&grown).unwrap();
+    let mut writer = Writer::for_native_buffer(&grown);
+    let error = io::catch_native_overflow(|| item.borrow().components.write_to_runtime(&mut writer, 249)).unwrap().unwrap_err();
+    assert!(matches!(error, pz_entity::RuntimeError::BorrowedComponent { index: Some(1), kind: ComponentType::Durability }));
+    assert_eq!(io::native_buffer_position(&grown).unwrap(), 3017);
+    assert_eq!(io::native_buffer_i32_at(&grown, 1).unwrap(), 3006, "completed first block is patched");
+    assert_eq!(io::native_buffer_i32_at(&grown, 3011).unwrap(), 0, "failing second block retains its placeholder");
+    assert_eq!(first.borrow().owner_slot().unwrap().ptr_eq(&pz_entity::EntityOwner::from_ref(&item)), true);
+    drop(second_guard);
+    let mut retired = RetiredComponents::new();
+    for kind in [ComponentType::Script, ComponentType::Durability] {
+        crate::component_host::detach_component_for_transfer(&item, kind, &mut retired).unwrap();
+    }
+    crate::component_host::retire_components(retired);
+}
+
+#[test]
+fn actual_component_container_save_and_load_preserve_data_and_distinct_owners() {
+    let _restore = Restore::new();
+    struct ComponentEnv<'a> { t: Rc<ItemTemplate>, codec: crate::component::EntityCodec<'a> }
+    impl ItemEnv for ComponentEnv<'_> {
+        fn template(&self, id: i16) -> Option<Rc<ItemTemplate>> { (id == 1).then(|| self.t.clone()) }
+        fn components(&self) -> &dyn crate::component::ComponentCodec { &self.codec }
+    }
+    let t = Rc::new(template(ItemClass::Normal, "Durable"));
+    let context = pz_entity::BasicContext::default();
+    let env = ComponentEnv { t: t.clone(), codec: crate::component::EntityCodec { ctx: &context } };
+    let item = actual(t, 1, 123);
+    let component = live_component(&item, pz_entity::Component::Durability(pz_entity::components::basic::Durability {
+        current_hit_points: 0.25, max_hit_points: 17.0, ..Default::default()
+    }));
+    let source = crate::shared::SharedContainer::default().into_ref();
+    source.borrow_mut().items.push(item.clone());
+    let mut writer = Writer::new();
+    let saved = save_container_ref(&source, &mut writer, &env).unwrap();
+    assert!(Rc::ptr_eq(&saved[0], &item));
+    assert_eq!(item.borrow().id, 123, "comparison finally must restore the original id");
+    assert!(component.borrow().owner_slot().unwrap().ptr_eq(&pz_entity::EntityOwner::from_ref(&item)));
+    let target = crate::shared::SharedContainer::default().into_ref();
+    let mut reader = crate::io::Reader::new(&writer.buf);
+    let loaded = crate::shared_load::load_container_ref(&target, &mut reader, 249, &env).unwrap();
+    assert_eq!(reader.pos, writer.buf.len());
+    let loaded_item = loaded[0].as_ref().unwrap();
+    assert!(!Rc::ptr_eq(loaded_item, &item));
+    assert!(Rc::ptr_eq(loaded_item, &target.borrow().items[0]));
+    assert_eq!(loaded_item.borrow().id, 123);
+    let loaded_component = loaded_item.borrow().components.get_ref(ComponentType::Durability).unwrap().unwrap();
+    assert!(!Rc::ptr_eq(&loaded_component, &component));
+    {
+        let body = loaded_component.borrow();
+        assert!(body.owner_slot().unwrap().ptr_eq(&pz_entity::EntityOwner::from_ref(loaded_item)));
+        assert_eq!(body.durability().unwrap().current_hit_points, 0.25);
+        assert_eq!(body.durability().unwrap().max_hit_points, 17.0);
+    }
+    let mut retired = RetiredComponents::new();
+    crate::component_host::detach_component_for_transfer(&item, ComponentType::Durability, &mut retired).unwrap();
+    crate::component_host::detach_component_for_transfer(loaded_item, ComponentType::Durability, &mut retired).unwrap();
+    crate::shared::try_set_container(loaded_item, None).unwrap();
+    crate::component_host::retire_components(retired);
+}

@@ -52,15 +52,24 @@ pub fn save_dir(fs: &RefCell<GameFs>) -> String {
     dir
 }
 
+/// Native getGameModeCacheDir normalizes null to the actual SANDBOX static.
+pub fn game_mode_cache_name() -> Result<String, pz_scripts::native_item_keys::ScriptAccessError> {
+    let core = shared_core();
+    let mut core = core.try_borrow_mut().map_err(|_| pz_scripts::native_item_keys::ScriptAccessError::Borrowed("Core game mode cache directory"))?;
+    if core.get_game_mode_ref().is_none() {
+        let sandbox = core.game_mode_sandbox_ref()?;
+        core.set_game_mode_ref(Some(sandbox))?;
+    }
+    Ok(core.game_mode_name().expect("sandbox assignment retained mode").to_owned())
+}
+
 /// `getCurrentSaveDir()`: `<Saves>/<Core.gameMode>/<Core.gameSaveWorld>`.
-fn current_save_dir(fs: &RefCell<GameFs>) -> String {
+fn current_save_dir(fs: &RefCell<GameFs>) -> LuaResult<String> {
     let saves = save_dir(fs);
+    let mode = game_mode_cache_name().map_err(crate::bind_core::game_mode_error)?;
     let core = shared_core();
     let core = core.borrow();
-    format!(
-        "{saves}{SEP}{}{SEP}{}",
-        core.game_mode, core.game_save_world
-    )
+    Ok(format!("{saves}{SEP}{mode}{SEP}{}", core.game_save_world))
 }
 
 fn is_no_save() -> bool {
@@ -379,7 +388,7 @@ fn save_info(c: &mut NativeCall<'_>, fs: &RefCell<GameFs>) -> LuaResult<Value> {
     };
     let mut save = arg.to_string();
     if !save.contains(SEP) {
-        let mode = shared_core().borrow().game_mode.clone();
+        let mode = shared_core().borrow().game_mode_name().unwrap_or("null").to_owned();
         save = format!("{mode}{SEP}{save}");
     }
     let no_save = is_no_save();
@@ -567,7 +576,7 @@ pub fn register(mgr: &mut LuaManager) {
     fs_global(mgr, "checkSaveFileExists", |c, fs| {
         Ok(savefile::exists(&format!(
             "{}{SEP}{}",
-            current_save_dir(fs),
+            current_save_dir(fs)?,
             string_arg(c, 0)
         ))
         .into())
@@ -575,7 +584,7 @@ pub fn register(mgr: &mut LuaManager) {
 
     // Single player: the GameClient branch (ClientPlayerDB) is not ported.
     fs_global(mgr, "checkSavePlayerExists", |_, fs| {
-        Ok(savefile::is_player_alive(is_no_save(), &current_save_dir(fs), 1).into())
+        Ok(savefile::is_player_alive(is_no_save(), &current_save_dir(fs)?, 1).into())
     });
 
     fs_global(mgr, "getLastPlayedDate", |c, fs| {
@@ -735,18 +744,21 @@ fn register_save_changes(mgr: &mut LuaManager) {
     });
 
     fs_global(mgr, "deleteAllGameModeSaves", |c, fs| {
+        let mode = crate::bind_registry::game_mode_arg(&c.arg(0))?;
         let core = shared_core();
-        let old = core.borrow().game_mode.clone();
-        // A null mode becomes "Sandbox" in getGameModeCacheDir.
-        let mode = str_arg(c, 0).map_or_else(|| "Sandbox".to_string(), |s| s.to_string());
-        core.borrow_mut().set_game_mode(&mode);
-        let path = format!("{}{SEP}{mode}", save_dir(fs));
+        let borrowed = || crate::bind_core::game_mode_error(
+            pz_scripts::native_item_keys::ScriptAccessError::Borrowed("Core delete game mode saves")
+        );
+        let old = core.try_borrow().map_err(|_| borrowed())?.get_game_mode_ref();
+        core.try_borrow_mut().map_err(|_| borrowed())?.set_game_mode_ref(mode).map_err(crate::bind_core::game_mode_error)?;
+        let cache_mode = game_mode_cache_name().map_err(crate::bind_core::game_mode_error)?;
+        let path = format!("{}{SEP}{cache_mode}", save_dir(fs));
         if savefile::exists(&path) {
             if let Err(e) = savefile::delete_tree(&path) {
                 eprintln!("ERROR: General: {e}");
             }
         }
-        core.borrow_mut().set_game_mode(&old);
+        core.try_borrow_mut().map_err(|_| borrowed())?.set_game_mode_ref(old).map_err(crate::bind_core::game_mode_error)?;
         Ok(Value::Nil)
     });
 

@@ -321,20 +321,30 @@ fn register_world_settings(b: &ClassBuilder) {
     let str_or_nil = |v: Option<String>| v.map_or(Value::Nil, |s| Value::str(&s));
     void(b, "setGameMode", move |c| {
         self_world(c)?;
-        let Some(mode) = str_arg(c, 1) else {
-            return Err(npe());
+        let arg = c.arg(1);
+        enum ModeArg { Name(String), Object(Option<Rc<pz_scripts::registry::RegistryKey>>) }
+        let mode = match &arg {
+            Value::Str(name) => ModeArg::Name(name.to_string()),
+            Value::Nil => return Err(crate::bind_world_object::unsupported("ambiguous GameMode overload")),
+            _ => ModeArg::Object(crate::bind_registry::game_mode_arg(&arg)?),
         };
         let core = core();
-        let mut core = core.borrow_mut();
-        core.set_game_mode(&mode);
-        core.last_stand = &*mode == "LastStand";
+        let mut core = core.try_borrow_mut().map_err(|_| crate::bind_core::game_mode_error(
+            pz_scripts::native_item_keys::ScriptAccessError::Borrowed("Core GameMode setter")
+        ))?;
+        match mode {
+            ModeArg::Name(name) => core.set_game_mode(&name),
+            ModeArg::Object(mode) => core.set_game_mode_ref(mode),
+        }.map_err(crate::bind_core::game_mode_error)?;
         core.set_challenge(false);
         core.challenge_id = None;
         Ok(())
     });
     get(b, "getGameMode", move |c| {
         self_world(c)?;
-        Ok(Value::str(&core().borrow().game_mode))
+        Ok(crate::bind_registry::key_value(
+            crate::bind_registry::GAME_MODE_CLASS, core().borrow().get_game_mode_ref().as_ref(),
+        ))
     });
     void(b, "setPreset", move |c| {
         self_world(c)?;

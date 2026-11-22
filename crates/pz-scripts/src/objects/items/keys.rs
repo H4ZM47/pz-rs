@@ -98,6 +98,11 @@ fn registry_get(
 }
 
 pub fn registry_constant(sm: &ScriptManager, registry: &str, field: &str) -> Option<Rc<RegistryKey>> {
+    if registry == "game_mode" {
+        if let Some(keys) = sm.native_game_mode_statics() {
+            return keys.constant(field).cloned();
+        }
+    }
     if let Some(keys) = sm.native_item_key_statics() {
         if registry == "item_tag" || registry == "item_type" {
             return keys.constant(registry, field).cloned();

@@ -77,10 +77,9 @@ pub fn create_world(cache_dir: &std::path::Path, world_name: &str) -> Result<(),
     };
     let name = pz_lua_api::savefile::sanitize_world_name(name);
     let core = pz_lua_api::bind_core::shared_core();
-    let (mode, no_save) = {
-        let c = core.borrow();
-        (c.game_mode.clone(), c.is_no_save())
-    };
+    let mode = pz_lua_api::bind_save::game_mode_cache_name()
+        .map_err(|error| format!("game mode cache directory: {error}"))?;
+    let no_save = core.borrow().is_no_save();
     let dir = cache_dir.join("Saves").join(mode).join(&name);
     if !no_save {
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -263,7 +262,8 @@ impl App {
                 crate::boot::load_key_bindings(self.lua.as_mut().ok_or("no Lua")?)?;
                 {
                     let mut c = self.core.borrow_mut();
-                    c.set_game_mode(&g.game_mode);
+                    c.set_game_mode(&g.game_mode)
+                        .map_err(|error| format!("set game mode: {error}"))?;
                     c.game_save_world = g.world.clone();
                     if g.new_game.is_some() {
                         c.game_map = g.map.clone();
@@ -431,6 +431,11 @@ impl App {
                 ..pz_gpu::FrameParams::ui(w as u32, h as u32)
             };
             gpu.render_frame(&[(params, &dl)], &mut tm.borrow_mut());
+            if record_gpu_fault(&mut self.error, gpu.error()) {
+                drop(collection_deferral);
+                drain_retired_host_owners();
+                return;
+            }
         }
         // `if (doRenderEvent) onRender()`: OnRenderTick after the frame.
         if pz_lua_api::bind_game_window::render_event_enabled() {
@@ -442,6 +447,19 @@ impl App {
         // Only this outer boundary permits final host destructors to reenter.
         drop(collection_deferral);
         drain_retired_host_owners();
+    }
+}
+
+/// Stop the frame at the same first-failure boundary as other engine errors.
+fn record_gpu_fault(
+    slot: &mut Option<crate::failure::EngineError>,
+    fault: Option<pz_gpu::GpuError>,
+) -> bool {
+    if let Some(fault) = fault {
+        crate::failure::record_first(slot, format!("graphics frame failed: {fault}").into());
+        true
+    } else {
+        false
     }
 }
 
@@ -772,3 +790,34 @@ mod error_boundary_tests;
 
 #[cfg(test)]
 mod close_save_tests;
+
+#[cfg(test)]
+mod gpu_fault_tests {
+    use super::record_gpu_fault;
+    use pz_gpu::GpuError;
+
+    #[test]
+    fn gpu_fault_stops_frame_with_readable_cause() {
+        let mut error = None;
+        assert!(!record_gpu_fault(&mut error, None));
+        assert!(error.is_none());
+        assert!(record_gpu_fault(
+            &mut error,
+            Some(GpuError::DeviceLost("driver reset".into()))
+        ));
+        assert_eq!(
+            error.unwrap().to_string(),
+            "graphics frame failed: GPU device lost: driver reset"
+        );
+    }
+
+    #[test]
+    fn gpu_fault_preserves_first_engine_error() {
+        let mut error = Some("earlier failure".into());
+        assert!(record_gpu_fault(
+            &mut error,
+            Some(GpuError::Allocation("atlas".into()))
+        ));
+        assert_eq!(error.unwrap().to_string(), "earlier failure");
+    }
+}

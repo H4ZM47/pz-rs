@@ -10,6 +10,16 @@ use pz_kahlua::TableRef;
 /// from the wall clock; unseeded, about one run in twenty started a
 /// weather period that lit (or darkened) the global light the tests check.
 fn reset_climate_state() {
+    use pz_classfile::{StaticInit, Value as ClassValue};
+    let initializers = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial"), ("WINTER_IS_COMING", "Winter is Coming")]
+        .into_iter().map(|(field, id)| StaticInit {
+            class: "zombie/core/GameMode".into(), field: field.into(),
+            value: ClassValue::Call { class: "zombie/core/GameMode".into(), name: "registerBase".into(), descriptor: String::new(), args: vec![ClassValue::Str(id.into())] },
+        }).collect::<Vec<_>>();
+    let modes = Rc::new(pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&initializers).unwrap());
+    let mut core = pz_core::core::Core::default();
+    core.install_game_mode_statics(modes).unwrap();
+    crate::bind_core::install_core(Rc::new(RefCell::new(core)));
     set_default_zone(Some(JavaZone::utc()));
     set_climate_settings(ClimateSettings::default());
     pz_core::random::with_standard(|r| r.set_seed(1994));
@@ -446,4 +456,16 @@ fn rain_manager_fresh_class_state_matches_installed_initializer() {
         rand_rain: 0, rand_rain_min: 0, rand_rain_max: 0,
         rain_desired_intensity: 1.0, stop_rain: false,
     });
+}
+
+#[test]
+fn climate_winter_mode_uses_canonical_identity_and_null_is_false() {
+    reset_climate_state();
+    let core = crate::bind_core::shared_core();
+    let ctx = LuaClimateContext::new();
+    assert!(!ctx.is_winter_is_coming());
+    core.borrow_mut().set_game_mode("Winter is Coming").unwrap();
+    assert!(ctx.is_winter_is_coming());
+    core.borrow_mut().set_game_mode_ref(None).unwrap();
+    assert!(!ctx.is_winter_is_coming());
 }

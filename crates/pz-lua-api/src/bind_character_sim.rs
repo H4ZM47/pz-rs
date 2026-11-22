@@ -1781,7 +1781,9 @@ fn sprint_query(c: &mut NativeCall<'_>, can_sprint: bool) -> LuaResult<usize> {
             &self.0
         }
     }
-    let mode = SprintMode(crate::bind_core::shared_core().borrow().get_game_mode());
+    let tutorial = crate::bind_core::shared_core().borrow().is_tutorial()
+        .map_err(crate::bind_core::game_mode_error)?;
+    let mode = SprintMode(if tutorial { "Tutorial" } else { "" }.to_owned());
     let sm = shared_script_manager();
     let chr = chr_of(c)?;
     let chr = chr.borrow();

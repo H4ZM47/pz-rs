@@ -29,6 +29,9 @@ use crate::config::{
     ConfigFile, ConfigObject, ConfigOption, OnChange,
 };
 use pz_kahlua::number::java_parse_int;
+use pz_scripts::native_game_modes::NativeGameModeStaticsRef;
+use pz_scripts::native_item_keys::ScriptAccessError;
+use pz_scripts::registry::RegistryKey;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -482,7 +485,8 @@ pub struct Core {
     pub initial_height: f32,
     pub max_juke_boxes_active: i32,
     pub num_juke_boxes_active: i32,
-    pub game_mode: String,
+    game_mode: Option<Rc<RegistryKey>>,
+    game_mode_statics: Option<NativeGameModeStaticsRef>,
     pub add_zombie_on_cell_load: bool,
     pub preset: String,
     pub gl_version: Option<String>,
@@ -721,6 +725,8 @@ simple_accessors! {
     get String get_option_screen_filter "getOptionScreenFilter" "screenFilter";
     get bool is_option_show_chat_timestamp "isOptionShowChatTimestamp" "showChatTimestamp";
     get bool is_option_show_chat_title "isOptionShowChatTitle" "showChatTitle";
+    get bool is_option_show_connection_info "isOptionShowConnectionInfo" "showConnectionInfo";
+    get bool is_option_show_server_info "isOptionShowServerInfo" "showServerInfo";
     get String get_option_chat_font_size "getOptionChatFontSize" "chatFontSize";
     get f32 get_option_min_chat_opaque "getOptionMinChatOpaque" "minChatOpaque";
     get f32 get_option_max_chat_opaque "getOptionMaxChatOpaque" "maxChatOpaque";
@@ -751,7 +757,6 @@ simple_accessors! {
     get i32 get_option_ignore_prone_zombie_range "getOptionIgnoreProneZombieRange" "ignoreProneZombieRange";
     get bool is_tutorial_done "isTutorialDone" "tutorialDone";
     get bool is_vehicles_warning_show "isVehiclesWarningShow" "vehiclesWarningShow";
-    get bool is_done_new_save_folder "isDoneNewSaveFolder" "doneNewSaveFolder";
     get bool get_content_translations_enabled "getContentTranslationsEnabled" "contentTranslationsEnabled";
     get bool is_show_your_username "isShowYourUsername" "showYourUsername";
     get bool is_populate_server_list_on_start "isPopulateServerListOnStart" "populateServerListOnStart";
@@ -838,6 +843,8 @@ simple_accessors! {
     set bool set_option_show_chat_timestamp "setOptionShowChatTimestamp" "showChatTimestamp";
     set String set_option_chat_font_size "setOptionChatFontSize" "chatFontSize";
     set bool set_option_show_chat_title "setOptionShowChatTitle" "showChatTitle";
+    set bool set_option_show_connection_info "setOptionShowConnectionInfo" "showConnectionInfo";
+    set bool set_option_show_server_info "setOptionShowServerInfo" "showServerInfo";
     set f32 set_option_min_chat_opaque "setOptionMinChatOpaque" "minChatOpaque";
     set f32 set_option_max_chat_opaque "setOptionMaxChatOpaque" "maxChatOpaque";
     set f32 set_option_chat_fade_time "setOptionChatFadeTime" "chatFadeTime";
@@ -865,7 +872,6 @@ simple_accessors! {
     set i32 set_option_ignore_prone_zombie_range "setOptionIgnoreProneZombieRange" "ignoreProneZombieRange";
     set bool set_tutorial_done "setTutorialDone" "tutorialDone";
     set bool set_vehicles_warning_show "setVehiclesWarningShow" "vehiclesWarningShow";
-    set bool set_done_new_save_folder "setDoneNewSaveFolder" "doneNewSaveFolder";
     set bool set_content_translations_enabled "setContentTranslationsEnabled" "contentTranslationsEnabled";
     set bool set_show_your_username "setShowYourUsername" "showYourUsername";
     set bool set_populate_server_list_on_start "setPopulateServerListOnStart" "populateServerListOnStart";
@@ -948,7 +954,8 @@ impl Core {
             initial_height: 720.0,
             max_juke_boxes_active: 10,
             num_juke_boxes_active: 0,
-            game_mode: "Sandbox".into(),
+            game_mode: None,
+            game_mode_statics: None,
             add_zombie_on_cell_load: true,
             preset: "Apocalypse".into(),
             gl_version: None,
@@ -1226,7 +1233,6 @@ impl Core {
         self.add(false, ConfigOption::boolean("lockCursorToWindow", false));
         self.add(false, ConfigOption::boolean("textureCompression", false));
         self.add(false, ConfigOption::boolean("modelTextureMipmaps", false));
-        self.add(false, ConfigOption::boolean("texture2x", true));
         self.add(false, ConfigOption::boolean("highResPlacedItems", true));
         self.add(false, ConfigOption::integer("maxTextureSize", 1, 4, 1));
         self.add(
@@ -1236,15 +1242,6 @@ impl Core {
         self.add(
             false,
             ConfigOption::string_values("screenFilter", "nearest", &["nearest", "linear"]),
-        );
-        self.add(
-            false,
-            ConfigOption::array(
-                "zoomLevels1x",
-                ConfigOption::integer("element", 25, 250, 100),
-                ";",
-                "",
-            ),
         );
         self.add(
             false,
@@ -1265,6 +1262,8 @@ impl Core {
         self.add(false, ConfigOption::boolean("reloadRadialInstant", false));
         self.add(false, ConfigOption::boolean("panCameraWhileAiming", true));
         self.add(false, ConfigOption::boolean("panCameraWhileDriving", false));
+        self.add(false, ConfigOption::boolean("showConnectionInfo", false));
+        self.add(false, ConfigOption::boolean("showServerInfo", false));
         self.add(false, ConfigOption::boolean("showChatTimestamp", false));
         self.add(false, ConfigOption::boolean("showChatTitle", false));
         self.add(
@@ -1421,7 +1420,6 @@ impl Core {
             )
             .multi_line(true),
         );
-        self.add(true, ConfigOption::boolean("doneNewSaveFolder", false));
         self.add(true, ConfigOption::integer("fogQuality", 0, 2, 0));
         self.add(true, ConfigOption::integer("viewConeOpacity", 0, 5, 3));
         self.add(true, ConfigOption::boolean("gotNewBelt", false));
@@ -1717,13 +1715,61 @@ impl Core {
     /// TODO(render): `SceneShaderStore.initShaders()`, puddles, water.
     pub fn init_shaders(&mut self) {}
 
-    pub fn get_game_mode(&self) -> String {
+    pub fn get_game_mode(&self) -> Option<Rc<RegistryKey>> {
         self.game_mode.clone()
     }
 
-    pub fn set_game_mode(&mut self, game_mode: &str) {
-        self.game_mode = game_mode.to_string();
-        self.add_zombie_on_cell_load = game_mode != "Tutorial" && game_mode != "LastStand";
+    pub fn get_game_mode_ref(&self) -> Option<Rc<RegistryKey>> { self.game_mode.clone() }
+
+    /// Explicit constructor continuation after the real GameMode class globals
+    /// exist. Rebinding a Lua environment never resets the retained mode.
+    pub fn install_game_mode_statics(&mut self, statics: NativeGameModeStaticsRef) -> Result<(), ScriptAccessError> {
+        if let Some(current) = &self.game_mode_statics {
+            if Rc::ptr_eq(current, &statics) { return Ok(()); }
+            return Err(ScriptAccessError::Unsupported("different live Core GameMode authority"));
+        }
+        self.game_mode = Some(statics.constant("SANDBOX").cloned()
+            .ok_or(ScriptAccessError::Unsupported("Core constructor GameMode.SANDBOX"))?);
+        self.game_mode_statics = Some(statics);
+        Ok(())
+    }
+
+    pub fn game_mode_name(&self) -> Option<&str> {
+        self.game_mode.as_ref().map(|mode| mode.name.as_str())
+    }
+
+    pub fn game_mode_sandbox_ref(&self) -> Result<Rc<RegistryKey>, ScriptAccessError> {
+        self.game_mode_statics.as_ref()
+            .and_then(|statics| statics.constant("SANDBOX"))
+            .cloned().ok_or(ScriptAccessError::Unsupported("Core GameMode.SANDBOX authority unavailable"))
+    }
+
+    pub fn is_tutorial(&self) -> Result<bool, ScriptAccessError> {
+        self.is_game_mode_constant("TUTORIAL")
+    }
+
+    pub fn is_game_mode_constant(&self, field: &str) -> Result<bool, ScriptAccessError> {
+        let statics = self.game_mode_statics.as_ref()
+            .ok_or(ScriptAccessError::Unsupported("Core GameMode class authority unavailable"))?;
+        let constant = statics.constant(field)
+            .ok_or(ScriptAccessError::Unsupported("Core GameMode static unavailable"))?;
+        Ok(self.game_mode.as_ref().is_some_and(|mode| Rc::ptr_eq(mode, constant)))
+    }
+
+    /// Native String overload: resolve the real registry before assignment.
+    /// An unknown, valid identifier is a genuine null GameMode.
+    pub fn set_game_mode(&mut self, id: &str) -> Result<(), ScriptAccessError> {
+        let statics = self.game_mode_statics.as_ref()
+            .ok_or(ScriptAccessError::Unsupported("Core GameMode class authority unavailable"))?;
+        let mode = statics.get_id(id)?;
+        self.set_game_mode_ref(mode)
+    }
+
+    pub fn set_game_mode_ref(&mut self, mode: Option<Rc<RegistryKey>>) -> Result<(), ScriptAccessError> {
+        self.game_mode = mode;
+        // The installed setter publishes the field before this query.
+        self.add_zombie_on_cell_load = !self.is_tutorial()?;
+        Ok(())
     }
 
     pub fn get_debug(&self) -> bool {
@@ -1808,11 +1854,7 @@ impl Core {
     }
 
     fn zoom_levels_option_string(&self) -> String {
-        if self.tile_scale == 2 {
-            self.opt("zoomLevels2x").get_value_as_string()
-        } else {
-            self.opt("zoomLevels1x").get_value_as_string()
-        }
+        self.opt("zoomLevels2x").get_value_as_string()
     }
 
     pub fn move_method_toggle(&mut self) {
@@ -2624,15 +2666,6 @@ impl Core {
         self.allow_option_texture_compression() && self.opt("textureCompression").get_bool()
     }
 
-    pub fn get_option_texture2x(&self) -> bool {
-        true
-    }
-
-    pub fn set_option_texture2x(&mut self, b: bool) {
-        self.opt_mut("texture2x").set_bool(b);
-        debug_log("1x textures are disabled.");
-    }
-
     pub fn get_max_texture_size_from_flags(&self, flags: i32) -> i32 {
         if flags & 0x80 != 0 {
             return self.get_max_texture_size();
@@ -2662,14 +2695,6 @@ impl Core {
     pub fn get_max_vehicle_texture_size(&self) -> i32 {
         self.get_max_texture_size_from_option(self.get_option_max_vehicle_texture_size())
             .unwrap_or(256)
-    }
-
-    pub fn get_option_zoom_levels1x(&self) -> String {
-        self.opt("zoomLevels1x").get_value_as_string()
-    }
-
-    pub fn set_option_zoom_levels1x(&mut self, levels: Option<&str>) {
-        self.opt_mut("zoomLevels1x").parse(levels.unwrap_or(""));
     }
 
     pub fn get_option_zoom_levels2x(&self) -> String {
@@ -3280,10 +3305,6 @@ impl Core {
             let lang = self.system_language.clone();
             self.opt_mut("language").set_string(Some(&lang));
         }
-        if !self.opt("doneNewSaveFolder").get_bool() {
-            self.handle_new_save_folder_format();
-            self.opt_mut("doneNewSaveFolder").set_bool(true);
-        }
         self.collect_option_changes();
         self.save_options()?;
         Ok(true)
@@ -3333,39 +3354,7 @@ impl Core {
             self.height = h;
         }
         self.set_option_zoom_levels2x(Some("50;75;125;150;175;200"));
-        self.set_option_zoom_levels1x(Some("50;75;125;150;175;200"));
         self.save_options()
-    }
-
-    /// `handleNewSaveFolderFormat()`: move pre-41 saves into `Saves/`.
-    fn handle_new_save_folder_format(&mut self) {
-        let Some(cache) = self.cache_dir.clone() else {
-            return;
-        };
-        let save_dir = cache.join("Saves");
-        let _ = std::fs::create_dir(&save_dir);
-        for mode in [
-            "Beginner",
-            "Survival",
-            "A Really CD DA",
-            "LastStand",
-            "Opening Hours",
-            "Sandbox",
-            "Tutorial",
-            "Winter is Coming",
-            "You Have One Day",
-        ] {
-            let previous = cache.join(mode);
-            let new = save_dir.join(mode);
-            if !previous.exists() {
-                continue;
-            }
-            let _ = std::fs::create_dir(&new);
-            let _ = std::fs::remove_dir(&new);
-            if std::fs::rename(&previous, &new).is_err() {
-                break;
-            }
-        }
     }
 
     /// `saveOptions()`. Writes nothing (and succeeds) when no options path

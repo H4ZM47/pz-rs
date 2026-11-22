@@ -19,7 +19,9 @@ use super::properties::{PropertyValueMap, TilePropertyAliasMap};
 use super::types::SpriteTables;
 use super::{is_null_or_whitespace, java_split, parse_int, try_parse_int};
 use crate::java::{hashmap_order, io_throwable, java_trim};
-use crate::tiledef::{read_int, read_string, sprite_id, TDEF_FILE_MAGIC, TILE_DEFINITION_FILES};
+use crate::tiledef::{
+    read_int, read_string, sprite_id, tile_definition_dir, TDEF_FILE_MAGIC, TILE_DEFINITION_FILES,
+};
 
 const FACE_NAMES: [&str; 4] = ["N", "E", "S", "W"];
 
@@ -255,9 +257,10 @@ impl IsoSpriteManager {
         media_dir: &Path,
         entity_script_names: &[String],
     ) -> Result<IsoSpriteManager, String> {
+        let tile_dir = tile_definition_dir(media_dir);
         let mut map = PropertyValueMap::default();
         for (name, number) in TILE_DEFINITION_FILES {
-            let path = media_dir.join(name);
+            let path = tile_dir.join(name);
             let res = std::fs::File::open(&path).and_then(|f| {
                 load_property_strings(
                     &mut map,
@@ -282,7 +285,7 @@ impl IsoSpriteManager {
         let mut mgr = IsoSpriteManager::new(tables);
         mgr.generate_alias_map(map, entity_script_names)?;
         for (name, number) in TILE_DEFINITION_FILES {
-            let path = media_dir.join(name);
+            let path = tile_dir.join(name);
             let res = std::fs::File::open(&path).and_then(|f| {
                 mgr.load_tile_definitions(&mut BufReader::new(f), &path.to_string_lossy(), number)
             });

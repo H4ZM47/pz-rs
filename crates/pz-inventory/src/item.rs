@@ -887,12 +887,6 @@ impl InventoryItem {
         }
         if !self.components.is_empty() {
             bits.add(0x4000000);
-            if w.is_native_buffer() {
-                return Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
-                    operation: "bounded scratch component writer",
-                    kind: None,
-                }.into());
-            }
             self.components
                 .write_to_runtime(w, crate::component::COMPONENT_WORLD_VERSION)
                 .map_err(pz_entity::runtime_load::RuntimeHostError::Storage)?;

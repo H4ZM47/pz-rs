@@ -1170,10 +1170,7 @@ impl ClimateManager {
             t.map_max_y = max_y * 256 + 4000;
         }
         self.wind_noise_offset = 0.0;
-        let mode = ctx.game_mode();
-        self.winter_is_coming = mode == "Winter is Coming";
-        self.the_descending_fog = mode == "The Descending Fog";
-        self.a_storm_is_coming = mode == "A Storm is Coming";
+        self.winter_is_coming = ctx.is_winter_is_coming();
         let mut f = std::mem::take(&mut self.climate_forecaster);
         f.init(self, clock, ctx);
         self.climate_forecaster = f;
@@ -1658,7 +1655,6 @@ impl ClimateManager {
         ctx: &mut dyn ClimateContext,
     ) {
         let values_env = self.values_env(ctx);
-        let mode = ctx.game_mode();
         self.base_season(ctx);
         let base = self.season.clone().expect("season");
         let current = self.get_season().cloned().unwrap_or_else(|| base.clone());
@@ -1669,7 +1665,7 @@ impl ClimateManager {
             simplex_offset_a: self.simplex_offset_a,
             simplex_offset_b: self.simplex_offset_b,
             values_env,
-            game_mode: &mode,
+            winter_is_coming: self.winter_is_coming,
         };
         self.weather_period.init(
             front,

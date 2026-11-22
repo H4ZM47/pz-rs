@@ -2032,6 +2032,98 @@ fn load_special(
     Ok(())
 }
 
+/// Actual object owner entry point. A mannequin's container serializer and
+/// wear callbacks run after the object guard has ended.
+pub(crate) fn save_object_ref(
+    w: &mut Writer,
+    ctx: &SaveCtx<'_>,
+    object: &crate::IsoObjectRef,
+) -> SaveResult<()> {
+    {
+        let body = object.try_borrow().map_err(|_| super::io::SaveError("Borrowed object during save".into()))?;
+        if !matches!(&body.kind, ObjectKind::Mannequin(m) if m.runtime_container.is_some()) {
+            return save_object(w, ctx, &body);
+        }
+    }
+    let mut pins = pz_entity::RetiredComponents::new();
+    pins.push_erased(object.clone());
+    pz_inventory::component_host::retire_components(pins);
+    let container = {
+        let mut o = object.try_borrow_mut().map_err(|_| super::io::SaveError("Borrowed mannequin object".into()))?;
+        let ObjectKind::Mannequin(m) = &mut o.kind else {
+            return save_object(w, ctx, &o);
+        };
+        let Some(container) = m.runtime_container.take() else {
+            return save_object(w, ctx, &o);
+        };
+        // Native clears the container before super.save and restores it only
+        // after success. Keep the captured owner alive even on failure.
+        let mut pins = pz_entity::RetiredComponents::new();
+        pins.push_erased(container.clone());
+        pz_inventory::component_host::retire_components(pins);
+        save_base(w, ctx, &o, false, true, o.mod_data.as_ref())?;
+        let ObjectKind::Mannequin(m) = &mut o.kind else {
+            return err("mannequin changed class during base save");
+        };
+        let displaced = m.runtime_container.replace(container.clone());
+        let mut pins = pz_entity::RetiredComponents::new();
+        if let Some(displaced) = displaced { pins.push_erased(displaced); }
+        pz_inventory::component_host::retire_components(pins);
+        w.i8(m.dir);
+        w.bool(m.init);
+        w.bool(m.female);
+        w.bool(m.zombie);
+        w.bool(m.skeleton);
+        w.string(m.mannequin_script_name.as_deref().unwrap_or(""));
+        w.string(m.pose.as_deref().unwrap_or(""));
+        m.human_visual.save(w);
+        container
+    };
+    w.i8(1);
+    // Native walks the captured container's Java iterator. This Vec-backed
+    // host cannot expose its modCount: reject changed membership explicitly
+    // instead of silently traversing an altered list.
+    let members = container.try_borrow()
+        .map_err(|_| super::io::SaveError("Borrowed mannequin container".into()))?.items.clone();
+    let mut pins = pz_entity::RetiredComponents::new();
+    for item in &members { pins.push_erased(item.clone()); }
+    pz_inventory::component_host::retire_components(pins);
+    for item in &members {
+        ctx.hooks.mannequin_wear_item(object, item)?;
+        let current = container.try_borrow()
+            .map_err(|_| super::io::SaveError("Borrowed mannequin container".into()))?;
+        if current.items.len() != members.len() || current.items.iter().zip(&members)
+            .any(|(a, b)| !std::rc::Rc::ptr_eq(a, b)) {
+            return err("Unsupported: mannequin inventory changed during save iterator");
+        }
+    }
+    let id = container.try_borrow().map_err(|_| super::io::SaveError("Borrowed mannequin container".into()))?.id;
+    w.i32(id);
+    let saved = pz_inventory::shared_save::save_container_ref(&container, w, ctx.items)?;
+    let worn = {
+        let o = object.try_borrow().map_err(|_| super::io::SaveError("Borrowed mannequin object".into()))?;
+        let ObjectKind::Mannequin(m) = &o.kind else {
+            return err("mannequin changed class during save");
+        };
+        m.runtime_worn_items.clone().ok_or_else(|| super::io::SaveError("mannequin has no actual worn owner".into()))?
+    };
+    let mut pins = pz_entity::RetiredComponents::new();
+    pins.push_erased(worn.clone());
+    pz_inventory::component_host::retire_components(pins);
+    let worn = worn.try_borrow().map_err(|_| super::io::SaveError("Borrowed mannequin worn items".into()))?;
+    if worn.items().len() > i8::MAX as usize {
+        return err("too many worn items");
+    }
+    w.i8(worn.items().len() as i8);
+    for entry in worn.items() {
+        let location = entry.location.as_ref().ok_or_else(|| super::io::SaveError("mannequin worn location: java.lang.NullPointerException".into()))?;
+        w.string(&location.location.id());
+        let index = saved.iter().position(|item| std::rc::Rc::ptr_eq(item, &entry.item));
+        w.i16(index.map_or(-1, |i| i as i16));
+    }
+    Ok(())
+}
+
 /// `IsoObject.save` of `o` with its class's override.
 pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResult<()> {
     match &o.kind {

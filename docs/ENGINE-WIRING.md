@@ -646,16 +646,18 @@ all installed assets, render paths or foreign platforms.
       `bind_popman::install_population` (#73).
 - [ ] World sounds: `bind_zombie::install_world_sounds` (#75).
 - [ ] States world: `bind_states::install_state_world` (#74).
-- [ ] Perks: `PerkFactory::init` before Lua runs (#26).
+- [x] Perks: `boot::load_scripts` calls `PerkFactory::init` before
+      `LuaManager::init` and client Lua loading (#26).
 
-- [ ] Perks initialised before Lua loads (#26).
-- [ ] BodyLocations.lua runs at boot so the "Human" body-location group and
-      clothing hide/alt rules exist (#26).
+- [x] Perks initialised before Lua loads (same boot call as above) (#26).
+- [x] `BodyLocations.lua` is included in `LuaManager::load_all_client`'s
+      recursive shared-Lua load, before client Lua. Successful installed
+      execution of the clothing hide/alt rules still needs validation (#26).
 - [x] UI avatars: `pz_engine::ui_models::install(game_dir, fs)` before Lua
       loads (installs the `bind_ui3d::UIModelRenderer`); `TextManager` init
       (`bind_text::boot`) in the engine boot (#115).
-- [ ] ScriptManager loading in the windowed engine boot (only the client's
-      `--png`/`--headless-frames` paths load scripts) (#115).
+- [x] Windowed and headless `App::boot` call `boot::load_scripts` before
+      creating the Lua environment; this includes ScriptManager loading (#115).
 
 - [x] `UIManager.init()` is `pz_lua_api::hud::init_ui(&mut thread)` (builds
       `SpeedControls`; the in-game HUD when a player exists) — boot uses it
@@ -1924,9 +1926,10 @@ registered):
       `OnClothingUpdated` for a player call `chr.update_vision_effects(sm)`
       (the blur target from glasses and `SHORT_SIGHTED`); the per-frame
       `updateVisionEffectTargets` already runs in `update_player`.
-- [ ] GPU faults: check `Gpu::error()` after `render_frame` (a lost
-      device stops drawing; out-of-memory chunk/atlas textures are left
-      out) and stop or rebuild the `Gpu` with a clear message (#120).
+- [x] GPU faults: `App::frame` checks `Gpu::error()` after `render_frame`,
+      retains the first engine error and stops before later frame callbacks.
+      The existing error exit reports the graphics cause; retirement cleanup
+      runs at the outer boundary. Actual device-loss testing remains open (#120).
 
 - [ ] Frame extras (#141): build the world frame with
       `frame::world_frame_extras(.., &mut FrameExtras { .. }, ..)`; a field
