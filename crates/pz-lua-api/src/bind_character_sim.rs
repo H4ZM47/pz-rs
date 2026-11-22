@@ -2195,6 +2195,10 @@ fn register_character(
     });
     b.method("getZombieKills", |c| {
         let v = chr_of(c)?.borrow().zombie_kills;
+    // `isBuildCheat()`: `getCheats().isSet(CheatType.BUILD)`.
+    b.method("isBuildCheat", |c| {
+        let ctx = CONTEXT.with(|c| c.borrow().clone());
+        let v = chr_of(c)?.borrow().cheats.is_set(&*ctx, "BUILD");
         Ok(c.push(v))
     });
     b.method("isGodMod", |c| {

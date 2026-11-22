@@ -53,6 +53,8 @@ pub mod bind_mods;
 pub mod bind_nutrition;
 pub mod bind_performance;
 pub mod bind_object_picker;
+pub mod bind_safehouse;
+mod world_menu_logic;
 pub mod bind_players;
 pub mod bind_popman;
 pub mod bind_recipe_manager;
@@ -277,6 +279,8 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_tile_overlays::register(&mut mgr.thread);
     bind_broken_fences::register(&mut mgr.thread);
     bind_object_picker::register(&mut mgr.thread);
+    bind_safehouse::register(&mut mgr.thread);
+    world_menu_logic::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
     bind_item_picker::register(&mut mgr.thread);
     bind_item_picker::install_event_sink(mgr.events.clone());
