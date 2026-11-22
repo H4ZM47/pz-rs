@@ -2213,6 +2213,20 @@ fn register_character(
     b.method("isBuildCheat", |c| {
         let ctx = CONTEXT.with(|c| c.borrow().clone());
         let v = chr_of(c)?.borrow().cheats.is_set(&*ctx, "BUILD");
+    // `isCheatSet(CheatType)`: `getCheats().isSet(cheat)`.
+    b.method("isCheatSet", |c| {
+        let cheat = match c.arg(1) {
+            Value::Nil => None,
+            Value::Object(o) => match o.as_any().downcast_ref::<crate::expose::JavaEnum>() {
+                Some(e) if e.class == crate::bind_cheat_type::CHEAT_TYPE_CLASS => Some(e.name),
+                _ => return Err(class_cast(&c.arg(1), crate::bind_cheat_type::CHEAT_TYPE_CLASS)),
+            },
+            other => return Err(class_cast(&other, crate::bind_cheat_type::CHEAT_TYPE_CLASS)),
+        };
+        let ctx = CONTEXT.with(|c| c.borrow().clone());
+        // `EnumSet.contains(null)` is false.
+        let chr = chr_of(c)?;
+        let v = cheat.is_some_and(|n| chr.borrow().cheats.is_set(&*ctx, n));
         Ok(c.push(v))
     });
     b.method("isGodMod", |c| {
@@ -3255,6 +3269,37 @@ pub(crate) mod tests {
         // `PlayerCheats.isSet` also needs debug, client or server.
         install_sim_context(_restore.0.clone());
         run(&mut t, "assert(player:isMovablesCheat() == false)").unwrap();
+    /// `isCheatSet(CheatType)`: `PlayerCheats.isSet`, which also needs
+    /// debug, client or server.
+    #[test]
+    fn is_cheat_set_reads_the_player_cheats() {
+        struct Debug;
+        impl SimContext for Debug {
+            fn is_debug(&self) -> bool {
+                true
+            }
+        }
+        struct Restore(Rc<dyn SimContext>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                install_sim_context(self.0.clone());
+            }
+        }
+        let _restore = Restore(current_sim_context());
+        let (mut t, chr, _) = setup();
+        let types = ["GOD_MODE", "INVISIBLE"].map(|n| crate::bind_cheat_type::CheatType { name: n.into(), tooltip: n.into() });
+        crate::bind_cheat_type::register(&mut t, &types);
+        install_sim_context(Rc::new(Debug));
+        chr.borrow_mut().cheats.set(&Debug, "INVISIBLE", true);
+        run(
+            &mut t,
+            "assert(player:isCheatSet(CheatType.INVISIBLE) and not player:isCheatSet(CheatType.GOD_MODE))
+             assert(not player:isCheatSet(nil))
+             assert(not pcall(function() return player:isCheatSet('INVISIBLE') end))",
+        )
+        .unwrap();
+        install_sim_context(Rc::new(DefaultSimContext));
+        run(&mut t, "assert(not player:isCheatSet(CheatType.INVISIBLE))").unwrap();
     }
 
     #[test]
