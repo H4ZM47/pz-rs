@@ -337,10 +337,6 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     get(&b, "getLevel", |s: &RequiredSkill| s.level());
     get(&b, "getPerk", |s: &RequiredSkill| required_perk(s));
     register_required_skill_check(thread);
-    method(&b, "getPerk", |c, h| {
-        let perk = h.read(|s: &RequiredSkill| s.perk().to_string())?;
-        Ok(perk_of(c.thread, &perk))
-    });
     let b = expose_class(thread, XP_AWARD_CLASS, None);
     get(&b, "getAmount", |x: &XpAward| x.amount());
 
