@@ -158,6 +158,7 @@ fn no_options_path_writes_nothing() {
 fn first_run_creates_options_ini() {
     let dir = temp_dir("first");
     let mut c = core_in(&dir);
+    c.install_game_mode_statics(mode_statics()).unwrap();
     assert!(!c.load_options().unwrap());
     let text = option_contents(&std::fs::read_to_string(dir.join("options.ini")).unwrap());
     assert!(text.starts_with("version=8\n3DGroundItem=true\n"), "{text}");
