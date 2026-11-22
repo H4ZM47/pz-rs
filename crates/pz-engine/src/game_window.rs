@@ -204,6 +204,10 @@ impl App {
         pz_lua_api::bind_render::textures()
             .borrow_mut()
             .load_ui_packs(&fs.borrow());
+        // GameWindow.init: Languages.init and Translator.loadFiles come
+        // before initShared loads the scripts.
+        pz_lua_api::bind_text::load_translator(&fs.borrow(), &self.core.borrow())
+            .map_err(|e| format!("text init: {e}"))?;
         crate::boot::load_scripts(&self.launch.game_dir, &fs)?;
         // SoundManager.init / FMODManager.init (windowed runs; headless
         // runs keep the silent system).
