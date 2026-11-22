@@ -47,9 +47,14 @@ fn in_slots(s: &IsoPlayerStatics, chr: &LuaGameCharacterRef) -> bool {
 /// (`isLocalPlayer`) in step with the slots. Panics for `i >= 4`, as the
 /// original's array store throws.
 pub fn set_player(i: usize, chr: Option<LuaGameCharacterRef>) {
-    STATICS.with(|s| {
+    let changed = STATICS.with(|s| {
         let mut s = s.borrow_mut();
         let old = std::mem::replace(&mut s.players[i], chr.clone());
+        let changed = match (&old, &chr) {
+            (Some(a), Some(b)) => !Rc::ptr_eq(a, b),
+            (None, None) => false,
+            _ => true,
+        };
         if let Some(old) = old {
             if !in_slots(&s, &old) {
                 old.borrow_mut().in_players = false;
@@ -58,7 +63,14 @@ pub fn set_player(i: usize, chr: Option<LuaGameCharacterRef>) {
         if let Some(c) = &chr {
             c.borrow_mut().in_players = true;
         }
+        changed
     });
+    // `MoodlesUI` keeps a character, ours a slot index: a new character in
+    // slot `i` must look like a new `setCharacter` (moodles state changed)
+    // on the next local update.
+    if changed {
+        crate::hud::set_moodles_character(i, None);
+    }
     if let Some(c) = &chr {
         crate::chat::characters::attach_chat_element(c);
     }

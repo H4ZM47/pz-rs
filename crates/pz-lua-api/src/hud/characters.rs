@@ -577,6 +577,37 @@ mod tests {
     }
 
     #[test]
+    fn a_new_player_in_a_slot_is_a_new_moodles_character() {
+        install_textures(&[]);
+        let (sm, _) = setup();
+        let mut t = fresh();
+        let p0 = new_player(&sm, 0.0, 0.0);
+        bind_players::set_player(0, Some(p0.clone()));
+        bind_players::set_player_instance(Some(p0.clone()));
+        init_ui(&mut t);
+        let ui = with_ui(|m| m.moodle_ui[0].clone()).unwrap();
+        let character = || ui.ext::<MoodlesUI>().unwrap().character();
+        set_moodles_character(0, Some(0));
+        assert_eq!(character(), Some(0));
+        ui.update(&mut t);
+        assert!(!p0.borrow_mut().moodles.ui_refresh_needed());
+        // The same character again changes nothing.
+        bind_players::set_player(0, Some(p0.clone()));
+        assert_eq!(character(), Some(0));
+        // Another character in slot 0: the UI lets go, and the next local
+        // update's `setCharacter` flags the new character's moodles.
+        let p1 = new_player(&sm, 1.0, 1.0);
+        p1.borrow_mut().moodles.set_moodles_state_changed(false);
+        bind_players::set_player(0, Some(p1.clone()));
+        assert_eq!(character(), None);
+        set_moodles_character(0, Some(0));
+        assert!(p1.borrow_mut().moodles.ui_refresh_needed());
+        // Leaving the game clears it too.
+        bind_players::reset();
+        assert_eq!(character(), None);
+    }
+
+    #[test]
     fn body_damage_drives_the_health_panel() {
         install_textures(&[]);
         let (sm, _) = setup();

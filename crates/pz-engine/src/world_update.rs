@@ -555,11 +555,15 @@ impl IsoWorld {
         let sm = pz_lua_api::bind_registry::shared_script_manager();
         let chars = shared_characters();
         let player_sim = sim.player_context();
-        for p in local_players().into_iter().flatten() {
+        for (i, p) in local_players().into_iter().enumerate() {
+            let Some(p) = p else { continue };
             if p.borrow().is_dead() {
                 continue;
             }
             pz_lua_api::bind_players::set_player_instance(Some(p.clone()));
+            // `IsoPlayer.updateInternal1`: `UIManager.getMoodleUI(playerIndex)
+            // .setCharacter(this)` for the local player.
+            pz_lua_api::hud::set_moodles_character(i, Some(i));
             pz_lua_api::timed_actions::sync_flags(&p);
             let mut phase = pz_characters::character::player::PlayerUpdatePhase::Start;
             let mut u = pz_characters::character::player::PlayerUpdate::default();
