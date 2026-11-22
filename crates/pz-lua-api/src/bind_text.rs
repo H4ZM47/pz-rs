@@ -92,6 +92,20 @@ fn install_script_get_text() {
             .with(|e| e.borrow().as_ref().map(|t| t.get_text(key, &[])))
             .unwrap_or_else(|| key.to_string())
     })));
+    pz_scripts::translator::install_get_item_name(Some(Box::new(|full_type, script_name| {
+        if let Some(n) =
+            with_translator_mut(|t| t.get_item_name_from_full_type(full_type, script_name))
+        {
+            return n;
+        }
+        EARLY_TRANSLATOR
+            .with(|e| {
+                e.borrow_mut()
+                    .as_mut()
+                    .map(|t| t.get_item_name_from_full_type(full_type, script_name))
+            })
+            .unwrap_or_else(|| script_name(full_type).unwrap_or_else(|| full_type.to_string()))
+    })));
 }
 
 /// `Languages.init` and `Translator.loadFiles`, which `GameWindow.init`
