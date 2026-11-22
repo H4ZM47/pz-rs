@@ -30,8 +30,7 @@ legally installed copy of the game, and the jar must remain on disk because
 Most subsystems exist as **ported libraries with their own tests**; the
 remaining work is dominated by **wiring those libraries into the running game
 loop** and by **filling in the Lua-facing API** that the game's shipped Lua
-calls. The workspace has 49 crates and roughly 650,000 lines of Rust with about
-2,900 unit tests. The client boots, runs the real main-menu Lua, and can create
+calls. The workspace has 50 crates. The client boots, runs the real main-menu Lua, and can create
 or load a single-player world (`pz-client --new-game NAME` /
 `--load-game MODE/NAME`, optionally `--headless-frames N`). It is not yet
 playable: sessions still encounter unbound API methods, and many world systems
@@ -49,6 +48,13 @@ aside and checks that quitting to menu recreates every resident chunk.
 This run used the port's version 249 save format. Native Build 42.22 writes
 version 251. Native-save interchange and installed Windows/Linux sessions
 still need separate tests.
+
+The x64 Windows and Linux client binaries linked locally. The Intel macOS
+binary ran under Rosetta and rendered the installed menu. The macOS menu
+opens the installed audio banks and plays colour BIKi video. All 105 clips
+matched FFmpeg on their first three YUV frames. The first three title frames
+also matched the game's Bink RGBA output pixel for pixel. Bink 2 video and
+video audio tracks remain outside the current playback implementation.
 
 The loader supports both tile-definition directory layouts. Core uses the
 installed getter signature to select Build 42.21's string game modes or

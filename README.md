@@ -38,10 +38,9 @@ data; it is never executed. Details are in
 
 Most subsystems exist as ported libraries with their own tests. What remains
 is mostly wiring those libraries into the running game loop and binding the
-Lua-facing API that the shipped Lua calls. The workspace has 49 crates and
-about 2,900 unit tests.
+Lua-facing API that the shipped Lua calls. The workspace has 50 crates.
 
-Selected results, each with what it does and does not show:
+Selected comparisons and runtime checks follow.
 
 | Area | Result | Conditions |
 | --- | --- | --- |
@@ -50,27 +49,31 @@ Selected results, each with what it does and does not show:
 | World generation | Object lists match the game on all 167,232 squares of 24 regions | Checked locally; blending and foraging zones not ported |
 | Erosion, climate, zombie chase, body damage | Match the original bit for bit | Each library compared in isolation, not inside a running session |
 | Engine integration | 85 of 216 items in the integration checklist done | A checked item means the connection exists, not that runtime parity is verified ([ENGINE-WIRING.md](docs/ENGINE-WIRING.md)) |
-| Lua API | Largest open area; for example 1 of 58 `ItemCodeOnCreate` callbacks is implemented | The most recent recorded stop is in the inventory pane |
+| Item creation | All 58 Build 42.21 callback names are registered. Scarecrow and skeleton display creation still lack live bodies | Other Lua APIs remain incomplete |
+| Installed Steam session | Created a world, moved, performed a timed action, saved and reloaded, and rewrote 169 resident chunks on return to menu | Apple Silicon, Build 42.22 assets, Rust save version 249 |
+| Menu and guide video | The first three decoded frames matched an independent decoder in all 105 installed colour BIKi clips. The first three title frames also matched native Bink RGBA output pixel for pixel | Build 42.22 assets. The Bink 2 guide still needs a decoder |
 
 [docs/STATUS.md](docs/STATUS.md) has the per-workstream status and the full
 checklist of what remains.
 
 ## Limits
 
-* **Gameplay.** No in-game session runs to completion yet. Animals,
-  ragdolls, vehicles, ballistics, pathfinding, fire and radio exist as
-  libraries but are not connected to the frame loop.
-* **Mods.** The mod loader is ported as a library, but mods are not loaded
-  at boot yet.
-* **Saves.** Chunk files, `map_t.bin`, player load and quit-save exist. A full
-  game save, sandbox options on load and the vehicle database do not.
-* **Multiplayer.** Not started. There is no network protocol, client or
-  server.
-* **Platforms.** Sessions against an installed game have been run on macOS
-  only. Windows and Linux are covered by CI builds and unit tests, which run
-  without game assets.
-* **Game version.** Comparisons were made against Build 42.21. Other builds
-  may differ.
+* **Gameplay.** The single-player movement and save round-trip runs on macOS.
+  World simulation, player interactions, vehicle systems and the Lua API
+  still have open items in the integration checklist.
+* **Mods.** A cache-local Build 42 mod ran through normal startup and changed
+  frame-rate and VSync settings from the installed menu. Broader compatibility
+  requires testing additional mods.
+* **Saves.** The installed-session checks cover player state, nested inventory,
+  world data and worn mannequin items. The port writes save version 249.
+  Interchange with native Build 42.22 saves (version 251) remains unverified.
+* **Multiplayer.** The workspace includes a Rust RakNet transport, packet types
+  and account storage. Multiplayer gameplay remains unfinished.
+* **Platforms.** The client ran on Apple Silicon and rendered the installed
+  menu through Rosetta in an Intel macOS build. Windows and Linux x64 clients
+  linked locally. Both still need an installed-game run on their native OS.
+* **Game version.** The parity target is Build 42.21. Installed-session and
+  video results here used Build 42.22.
 
 ## How results are checked
 
@@ -125,7 +128,7 @@ suggested dependency order, not a schedule:
 ## Layout
 
 <details>
-<summary>49 crates, grouped by area, with the original code each one replaces</summary>
+<summary>50 crates, grouped by area, with the original code each one replaces</summary>
 
 | Crate | Original counterpart |
 | --- | --- |
@@ -142,7 +145,7 @@ suggested dependency order, not a schedule:
 | `pz-player-input` | what `IsoPlayer.update` reads from keyboard, mouse and joypads |
 | `pz-sandbox` | `zombie.SandboxOptions` |
 | `pz-server-settings` | `zombie.network.ServerOptions`, `ServerSettings`, `SpawnRegions` |
-| `pz-network` | offline server list and accounts (`zombie.network.Server`, `Account`); no networking |
+| `pz-network` | offline server list and accounts (`zombie.network.Server`, `Account`), RakNet transport and packet types |
 | `pz-sqlite` | SQLite file reader/writer for `players.db` and `vehicles.db` |
 | `pz-joml` | the `org.joml.Matrix4f` operations the engine uses |
 | **Scripts, UI and text** | |
@@ -176,6 +179,7 @@ suggested dependency order, not a schedule:
 | `pz-gpu` | GPU backend on wgpu (the original's render thread) |
 | `pz-iso-render` | isometric world renderer (`FBORenderCell`, sprite render paths) |
 | `pz-world-render` | glue: world data → renderer and lighting inputs |
+| `pz-world3d` | optional first-person, third-person and free-camera rendering |
 | `pz-model` | models, skeletons and animation clips (`.X`, `.fbx`, `.txt` loaders) |
 | `pz-anim` | `zombie.core.skinnedmodel.animation` and `.advancedanimation` |
 | `pz-character-model` | character model tree, composited textures, per-frame lights |
