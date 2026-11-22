@@ -157,7 +157,9 @@ section to search there for exact hook names and call order.
       areas, symbols, streets and overlays.
 
 ### 8. Multiplayer
-- [ ] Everything: RakNet transport, `GameClient`, `GameServer`, network
+- [x] Packet type table (`PacketTypes`: wire ids, send settings, handling
+      sides, anti-cheat lists) and role `Capability` in `pz-network`.
+- [ ] Everything else: RakNet transport, `GameClient`, `GameServer`, network
       character states. Global-object command delivery exists for single
       player only.
 
