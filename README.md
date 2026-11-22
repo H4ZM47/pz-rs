@@ -49,9 +49,9 @@ Selected comparisons and runtime checks follow.
 | World generation | Object lists match the game on all 167,232 squares of 24 regions | Checked locally; blending and foraging zones not ported |
 | Erosion, climate, zombie chase, body damage | Match the original bit for bit | Each library compared in isolation, not inside a running session |
 | Engine integration | 85 of 216 items in the integration checklist done | A checked item means the connection exists, not that runtime parity is verified ([ENGINE-WIRING.md](docs/ENGINE-WIRING.md)) |
-| Item creation | All 58 Build 42.21 callback names are registered. Scarecrow and skeleton display creation still lack live bodies | Other Lua APIs remain incomplete |
+| Item creation | All 58 Build 42.21 callback names are registered. The tested scarecrow and skeleton callbacks produce loadable moveable payloads | Installed stock scripts and a dressed scarecrow script override |
 | Installed Steam session | Created a world, moved, performed a timed action, saved and reloaded, and rewrote 169 resident chunks on return to menu | Apple Silicon, Build 42.22 assets, Rust save version 249 |
-| Menu and guide video | The first three decoded frames matched an independent decoder in all 105 installed colour BIKi clips. The first three title frames also matched native Bink RGBA output pixel for pixel | Build 42.22 assets. The Bink 2 guide still needs a decoder |
+| Menu and guide video | All 26,751 decoded frames across 105 installed colour BIKi clips matched FFmpeg. The first three title frames also matched native Bink RGBA output pixel for pixel | Build 42.22 assets. The Bink 2 guide still needs a decoder |
 
 [docs/STATUS.md](docs/STATUS.md) has the per-workstream status and the full
 checklist of what remains.

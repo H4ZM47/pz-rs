@@ -51,8 +51,8 @@ still need separate tests.
 
 The x64 Windows and Linux client binaries linked locally. The Intel macOS
 binary ran under Rosetta and rendered the installed menu. The macOS menu
-opens the installed audio banks and plays colour BIKi video. All 105 clips
-matched FFmpeg on their first three YUV frames. The first three title frames
+opens the installed audio banks and plays colour BIKi video. All 26,751 YUV frames across
+the 105 installed clips matched FFmpeg. The first three title frames
 also matched the game's Bink RGBA output pixel for pixel. Bink 2 video and
 video audio tracks remain outside the current playback implementation.
 
@@ -106,7 +106,7 @@ section to search there for exact hook names and call order.
 ### 1. Lua API coverage (workstream 2)
 - [ ] Bind the methods the shipped client Lua hits next, starting from the
       recorded stop in the inventory pane (`isFavouriteRecipeInput`).
-- [ ] Complete `ItemCodeOnCreate.onCreateScarecrow` and `onCreateSkeletonDisplay`, including detached mannequin setup and serialization into the moveable item.
+- [x] `ItemCodeOnCreate.onCreateScarecrow` and `onCreateSkeletonDisplay` create a detached mannequin and save it into the moveable item. Installed tests read both stock payloads back and verify a costume override including its inventory, worn indices and added weight.
 - [ ] Wire the new actual-reference `ArrayList` foundation to script,
       literature and character recipe-list fields.
 - [x] Event and hook names load from the installed jar through `pz-classfile`.
