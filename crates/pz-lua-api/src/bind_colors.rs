@@ -273,6 +273,22 @@ pub(crate) fn named_color(name: &str) -> Option<Rc<Color>> {
     with(|s| s.main.set.contains(&name).then(|| s.main.color_map.get(&name).cloned()).flatten()).flatten()
 }
 
+/// `Colors.GetColorInfo(name).getColor()` when `name` is a game colour
+/// (`ColorSet.Game`).
+pub(crate) fn game_color(name: &str) -> Option<Rc<Color>> {
+    with(|s| s.main.info_map.get(name).filter(|n| n.color_set == ColorSet::Game).map(|n| n.color.clone())).flatten()
+}
+
+/// `Colors.AddGameColor(name, color)` for Rust callers.
+pub(crate) fn register_game_color(name: &str, color: Rc<Color>) -> Option<Rc<Color>> {
+    with(|s| s.add_game_color(name, color))
+}
+
+/// The Lua object of a shared colour.
+pub(crate) fn color_lua_value(c: &Rc<Color>) -> Value {
+    color_value(c)
+}
+
 fn color_value(c: &Rc<Color>) -> Value {
     crate::bind_fluid_container::existing_color_value(c)
 }

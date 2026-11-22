@@ -60,6 +60,7 @@ pub mod bind_scripts;
 pub mod bind_search_mode;
 pub mod bind_skills;
 pub mod bind_survival_guide;
+pub mod bind_xui;
 pub mod bind_states;
 pub mod bind_zombie;
 pub mod bind_zombie_outfits;
@@ -235,6 +236,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_body_damage::register_shared(&mut mgr.thread);
     bind_states::register_shared(&mut mgr.thread);
     bind_scripts::register(&mut mgr.thread, bind_registry::shared_script_manager());
+    bind_xui::register(&mut mgr.thread);
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
     bind_character_sim::register_shared(&mut mgr.thread);
