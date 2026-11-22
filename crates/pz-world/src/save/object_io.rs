@@ -2044,7 +2044,7 @@ fn load_special(
 
 /// Actual object owner entry point. A mannequin's container serializer and
 /// wear callbacks run after the object guard has ended.
-pub(crate) fn save_object_ref(
+pub fn save_object_ref(
     w: &mut Writer,
     ctx: &SaveCtx<'_>,
     object: &crate::IsoObjectRef,

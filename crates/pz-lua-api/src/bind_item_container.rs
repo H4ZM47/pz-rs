@@ -877,7 +877,7 @@ fn capacity(c: &ContainerRef) -> i32 {
 }
 
 /// `getContentsWeight()`.
-fn contents_weight(c: &ContainerRef) -> f32 {
+pub(crate) fn contents_weight(c: &ContainerRef) -> f32 {
     let e = item_env();
     let ctx = e.context();
     let mut total = 0.0f32;

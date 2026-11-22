@@ -313,6 +313,19 @@ impl ItemEnv for CreateEnv<'_> {
     }
 }
 
+/// The installed item factory environment, including the entity component
+/// codec, for serializing items that have just been created by a script.
+pub(crate) fn with_factory_env<R>(f: impl FnOnce(&dyn ItemEnv) -> R) -> R {
+    let lua = item_env();
+    let sm = crate::bind_registry::shared_script_manager();
+    f(&CreateEnv {
+        lua: Some(lua.as_ref()),
+        ctx: lua.context(),
+        sm: &sm,
+        codec: lua.entity().map(|ctx| pz_inventory::component::EntityCodec { ctx }),
+    })
+}
+
 /// The script item's `getDisplayName()` (translated at load, the full
 /// name when it has none).
 pub fn script_display_name(full_type: &str) -> Option<String> {

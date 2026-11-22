@@ -435,6 +435,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     // This is the native CloseRequested path, not a direct save helper.
     let parts = app.world.as_ref().unwrap().save_tables.as_ref().unwrap().blood_body_parts;
     let sprites = app.world.as_ref().unwrap().sprites.as_ref().unwrap().clone();
+    mannequin::check_moveable_items(app.lua.as_mut().unwrap(), app.world.as_ref().unwrap());
     mannequin::install_outfit_fixtures(app.lua.as_mut().unwrap(), &game_dir, parts, &sprites);
     let expected_world_chunks = mannequin::check_live(true);
     let expected_mannequins = mannequin::saved_state();

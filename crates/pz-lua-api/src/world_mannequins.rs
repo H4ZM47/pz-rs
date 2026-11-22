@@ -386,6 +386,22 @@ pub fn activate(
     no_black_clothes: bool,
     item_env: Option<&dyn pz_inventory::ItemEnv>,
 ) -> WornInventoryResult {
+    initialize(thread, object, InitialSettings::Square { sprite_name, zone }, game_dir, no_black_clothes, item_env)
+}
+
+enum InitialSettings<'a> {
+    Square { sprite_name: Option<&'a str>, zone: Option<&'a MannequinZoneData> },
+    Script(&'a str),
+}
+
+fn initialize(
+    thread: &mut Thread,
+    object: &IsoObjectRef,
+    settings: InitialSettings<'_>,
+    game_dir: &Path,
+    no_black_clothes: bool,
+    item_env: Option<&dyn pz_inventory::ItemEnv>,
+) -> WornInventoryResult {
     let scripts = crate::bind_registry::shared_script_manager();
     promote_loaded_inventory(object, &scripts, item_env)?;
     let group = crate::bind_characters::shared_characters()
@@ -416,14 +432,17 @@ pub fn activate(
         let first = !m.init;
         if first {
             m.init = true;
-            if sprite_name.is_none() {
-                return Err(
-                    ScriptError::new("java.lang.NullPointerException: mannequin sprite").into(),
-                );
-            }
-            properties_from_sprite(m, sprite_name);
-            if let Some(zone) = zone {
-                properties_from_zone(m, zone);
+            match settings {
+                InitialSettings::Square { sprite_name: Some(sprite), zone } => {
+                    properties_from_sprite(m, Some(sprite));
+                    if let Some(zone) = zone {
+                        properties_from_zone(m, zone);
+                    }
+                }
+                InitialSettings::Square { sprite_name: None, .. } => {
+                    return Err(ScriptError::new("java.lang.NullPointerException: mannequin sprite").into());
+                }
+                InitialSettings::Script(name) => m.mannequin_script_name = Some(name.to_owned()),
             }
         }
         init_script(m, &scripts);
@@ -546,6 +565,9 @@ pub fn activate(
     sync_visuals(object)?;
     Ok(())
 }
+
+mod moveable;
+pub(crate) use moveable::{create_moveable, install_item_source};
 
 /// Synchronize the visual state from the live worn owner, retaining completed
 /// visual entries if a later visual provider fails.

@@ -2,6 +2,41 @@ use pz_lua_api::bind_world::with_world;
 use pz_world::objects::ObjectKind;
 use std::path::Path;
 
+/// Both stock moveables run their script callback inside instanceItem. Read
+/// their bytes through the world's ordinary object loader.
+pub(super) fn check_moveable_items(lua: &mut pz_lua_api::LuaManager, world: &crate::iso_world::IsoWorld) {
+    use pz_world::save::{object_io, NoSaveHooks, SaveCtx, WORLD_VERSION};
+    for (item_type, name, skin) in [
+        ("Base.Mov_Scarecrow", "MannequinScarecrow02", "Male_Scarecrow"),
+        ("Base.Mov_SkeletonDisplay", "MannequinSkeleton01", "Skeleton_Mannequin"),
+    ] {
+        // The create callback may consult the sprite manager itself.
+        super::lua_check(lua, &format!("rustSessionMoveable = assert(instanceItem('{item_type}'))"));
+        let item = pz_lua_api::bind_items::item_arg_value(&lua.thread.globals().get_str("rustSessionMoveable")).unwrap();
+        let item = item.borrow();
+        let data = item.byte_data.as_deref().expect("item creation must produce a mannequin payload");
+        let mut reader = pz_inventory::io::Reader::new(data);
+        assert_eq!(reader.i32().unwrap(), WORLD_VERSION);
+        let sprites = world.sprites.as_ref().unwrap().borrow();
+        let ctx = SaveCtx {
+            sprites: &sprites, tables: world.save_tables.as_ref().unwrap(), settings: &world.save_settings,
+            items: world.items.as_ref().unwrap(), hooks: &NoSaveHooks, meta: None,
+        };
+        let object = object_io::load_object(&mut reader, &ctx, WORLD_VERSION, 1).unwrap().unwrap();
+        assert_eq!(reader.pos, data.len());
+        let ObjectKind::Mannequin(m) = object.kind else { panic!("expected a mannequin payload") };
+        assert!(m.init);
+        assert_eq!(m.dir, pz_world::IsoDirections::N as i8);
+        assert_eq!(m.mannequin_script_name.as_deref(), Some(name));
+        assert_eq!(m.pose.as_deref(), Some("pose01"));
+        assert_eq!(m.human_visual.skin_texture_name.as_deref(), Some(skin));
+        assert!(m.container.as_ref().unwrap().items.is_empty());
+        assert!(m.worn_items.is_empty());
+        eprintln!("verified {item_type}: script={name} pose=pose01 skin={skin} bytes={}", data.len());
+    }
+    super::lua_check(lua, "rustSessionMoveable = nil");
+}
+
 /// Authored map-style receivers, using only installed mannequin scripts,
 /// outfit assets and the normal item factory. Scarecrow03's CostumeScarecrow
 /// has required clothing; Scarecrow02 explicitly requests no outfit. Neither
