@@ -39,7 +39,7 @@
 use crate::events::EventManager;
 use crate::expose::{bool_arg, expose_class, global, int_arg, num_arg, str_arg, ClassBuilder};
 use pz_core::core::{
-    ColorInfo, Core, EventArg, GameVersion, KeyBinding, SimpleAccessor, SIMPLE_ACCESSORS,
+    ColorInfo, Core, EventArg, GameVersion, KeyBinding, SimpleAccessor,
 };
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, TableRef, Thread, Value};
@@ -579,9 +579,9 @@ pub fn register(
 }
 
 fn register_simple(b: &ClassBuilder, cx: &Rc<Ctx>) {
-    for acc in SIMPLE_ACCESSORS {
+    for acc in cx.core().option_accessors() {
         let name = acc.java_name();
-        match *acc {
+        match acc {
             SimpleAccessor::GetBool(_, f) => {
                 def(b, cx, name, move |cx, _| Ok(f(&cx.core()).into()))
             }
@@ -1160,6 +1160,12 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     });
     get!("getMaxTextureSize", get_max_texture_size);
     get!("getMaxVehicleTextureSize", get_max_vehicle_texture_size);
+    if cx.core().uses_named_game_mode() {
+        get!("getOptionTexture2x", get_option_texture2x);
+        set_bool!("setOptionTexture2x", set_option_texture2x);
+        get!("getOptionZoomLevels1x", get_option_zoom_levels1x);
+        set_str!("setOptionZoomLevels1x", set_option_zoom_levels1x);
+    }
     get!("getOptionZoomLevels2x", get_option_zoom_levels2x);
     set_str!("setOptionZoomLevels2x", set_option_zoom_levels2x);
     set_str!("setOptionScreenFilter", set_option_screen_filter);

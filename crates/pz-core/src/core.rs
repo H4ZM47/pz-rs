@@ -622,7 +622,13 @@ impl Default for Core {
 
 macro_rules! simple_accessors {
     ($( $kind:ident $ty:ident $rust:ident $java:literal $opt:literal; )*) => {
-        impl Core { $( simple_accessors!(@m $kind $ty $rust $opt); )* }
+        impl Core {
+            $( simple_accessors!(@m $kind $ty $rust $opt); )*
+            pub fn option_accessors(&self) -> impl Iterator<Item = SimpleAccessor> + '_ {
+                SIMPLE_ACCESSORS.iter().copied().zip([$( $opt ),*])
+                    .filter_map(|(accessor, key)| self.option(key).map(|_| accessor))
+            }
+        }
         /// Option getters/setters whose Java body is a single
         /// `getValue()` / `setValue(v)` on one option.
         pub const SIMPLE_ACCESSORS: &[SimpleAccessor] = &[ $( simple_accessors!(@t $kind $ty $rust $java) ),* ];
@@ -761,6 +767,7 @@ simple_accessors! {
     get bool get_option_simple_weapon_textures "getOptionSimpleWeaponTextures" "simpleWeaponTextures";
     get i32 get_option_ignore_prone_zombie_range "getOptionIgnoreProneZombieRange" "ignoreProneZombieRange";
     get bool is_tutorial_done "isTutorialDone" "tutorialDone";
+    get bool is_done_new_save_folder "isDoneNewSaveFolder" "doneNewSaveFolder";
     get bool is_vehicles_warning_show "isVehiclesWarningShow" "vehiclesWarningShow";
     get bool get_content_translations_enabled "getContentTranslationsEnabled" "contentTranslationsEnabled";
     get bool is_show_your_username "isShowYourUsername" "showYourUsername";
@@ -876,6 +883,7 @@ simple_accessors! {
     set bool set_option_simple_weapon_textures "setOptionSimpleWeaponTextures" "simpleWeaponTextures";
     set i32 set_option_ignore_prone_zombie_range "setOptionIgnoreProneZombieRange" "ignoreProneZombieRange";
     set bool set_tutorial_done "setTutorialDone" "tutorialDone";
+    set bool set_done_new_save_folder "setDoneNewSaveFolder" "doneNewSaveFolder";
     set bool set_vehicles_warning_show "setVehiclesWarningShow" "vehiclesWarningShow";
     set bool set_content_translations_enabled "setContentTranslationsEnabled" "contentTranslationsEnabled";
     set bool set_show_your_username "setShowYourUsername" "showYourUsername";
@@ -1237,6 +1245,9 @@ impl Core {
         self.add(false, ConfigOption::boolean("lockCursorToWindow", false));
         self.add(false, ConfigOption::boolean("textureCompression", false));
         self.add(false, ConfigOption::boolean("modelTextureMipmaps", false));
+        if self.uses_named_game_mode() {
+            self.add(false, ConfigOption::boolean("texture2x", true));
+        }
         self.add(false, ConfigOption::boolean("highResPlacedItems", true));
         self.add(false, ConfigOption::integer("maxTextureSize", 1, 4, 1));
         self.add(
@@ -1247,6 +1258,10 @@ impl Core {
             false,
             ConfigOption::string_values("screenFilter", "nearest", &["nearest", "linear"]),
         );
+        if self.uses_named_game_mode() {
+            self.add(false, ConfigOption::array("zoomLevels1x",
+                ConfigOption::integer("element", 25, 250, 100), ";", ""));
+        }
         self.add(
             false,
             ConfigOption::array(
@@ -1266,8 +1281,10 @@ impl Core {
         self.add(false, ConfigOption::boolean("reloadRadialInstant", false));
         self.add(false, ConfigOption::boolean("panCameraWhileAiming", true));
         self.add(false, ConfigOption::boolean("panCameraWhileDriving", false));
-        self.add(false, ConfigOption::boolean("showConnectionInfo", false));
-        self.add(false, ConfigOption::boolean("showServerInfo", false));
+        if !self.uses_named_game_mode() {
+            self.add(false, ConfigOption::boolean("showConnectionInfo", false));
+            self.add(false, ConfigOption::boolean("showServerInfo", false));
+        }
         self.add(false, ConfigOption::boolean("showChatTimestamp", false));
         self.add(false, ConfigOption::boolean("showChatTitle", false));
         self.add(
@@ -1424,6 +1441,9 @@ impl Core {
             )
             .multi_line(true),
         );
+        if self.uses_named_game_mode() {
+            self.add(true, ConfigOption::boolean("doneNewSaveFolder", false));
+        }
         self.add(true, ConfigOption::integer("fogQuality", 0, 2, 0));
         self.add(true, ConfigOption::integer("viewConeOpacity", 0, 5, 3));
         self.add(true, ConfigOption::boolean("gotNewBelt", false));
@@ -1738,6 +1758,18 @@ impl Core {
         let sandbox = statics.constant("SANDBOX").cloned()
             .ok_or(ScriptAccessError::Unsupported("Core constructor GameMode.SANDBOX"))?;
         self.game_mode = CoreGameMode::Registry { statics, mode: Some(sandbox) };
+        // Class discovery can follow construction of Core and local option changes.
+        // Keep the same values and change flags for options shared by both builds.
+        let options = std::mem::take(&mut self.options);
+        let fake_options = std::mem::take(&mut self.fake_options);
+        self.option_by_name.clear();
+        self.fake_option_by_name.clear();
+        self.register_options();
+        for previous in options.into_iter().chain(fake_options) {
+            if let Some(current) = self.option_mut(previous.name()) {
+                *current = previous;
+            }
+        }
         Ok(())
     }
 
@@ -1896,7 +1928,11 @@ impl Core {
     }
 
     fn zoom_levels_option_string(&self) -> String {
-        self.opt("zoomLevels2x").get_value_as_string()
+        if self.tile_scale != 2 && self.uses_named_game_mode() {
+            self.get_option_zoom_levels1x()
+        } else {
+            self.get_option_zoom_levels2x()
+        }
     }
 
     pub fn move_method_toggle(&mut self) {
@@ -2708,6 +2744,15 @@ impl Core {
         self.allow_option_texture_compression() && self.opt("textureCompression").get_bool()
     }
 
+    pub fn get_option_texture2x(&self) -> bool {
+        true
+    }
+
+    pub fn set_option_texture2x(&mut self, b: bool) {
+        self.opt_mut("texture2x").set_bool(b);
+        debug_log("1x textures are disabled.");
+    }
+
     pub fn get_max_texture_size_from_flags(&self, flags: i32) -> i32 {
         if flags & 0x80 != 0 {
             return self.get_max_texture_size();
@@ -2737,6 +2782,14 @@ impl Core {
     pub fn get_max_vehicle_texture_size(&self) -> i32 {
         self.get_max_texture_size_from_option(self.get_option_max_vehicle_texture_size())
             .unwrap_or(256)
+    }
+
+    pub fn get_option_zoom_levels1x(&self) -> String {
+        self.opt("zoomLevels1x").get_value_as_string()
+    }
+
+    pub fn set_option_zoom_levels1x(&mut self, levels: Option<&str>) {
+        self.opt_mut("zoomLevels1x").parse(levels.unwrap_or(""));
     }
 
     pub fn get_option_zoom_levels2x(&self) -> String {
@@ -3347,6 +3400,10 @@ impl Core {
             let lang = self.system_language.clone();
             self.opt_mut("language").set_string(Some(&lang));
         }
+        if self.uses_named_game_mode() && !self.is_done_new_save_folder() {
+            self.handle_new_save_folder_format();
+            self.set_done_new_save_folder(true);
+        }
         self.collect_option_changes();
         self.save_options()?;
         Ok(true)
@@ -3396,7 +3453,41 @@ impl Core {
             self.height = h;
         }
         self.set_option_zoom_levels2x(Some("50;75;125;150;175;200"));
+        if self.uses_named_game_mode() {
+            self.set_option_zoom_levels1x(Some("50;75;125;150;175;200"));
+        }
         self.save_options()
+    }
+
+    /// `handleNewSaveFolderFormat()`: move pre-41 saves into `Saves/`.
+    fn handle_new_save_folder_format(&mut self) {
+        let Some(cache) = self.cache_dir.clone() else {
+            return;
+        };
+        let save_dir = cache.join("Saves");
+        let _ = std::fs::create_dir(&save_dir);
+        for mode in [
+            "Beginner",
+            "Survival",
+            "A Really CD DA",
+            "LastStand",
+            "Opening Hours",
+            "Sandbox",
+            "Tutorial",
+            "Winter is Coming",
+            "You Have One Day",
+        ] {
+            let previous = cache.join(mode);
+            let new = save_dir.join(mode);
+            if !previous.exists() {
+                continue;
+            }
+            let _ = std::fs::create_dir(&new);
+            let _ = std::fs::remove_dir(&new);
+            if std::fs::rename(&previous, &new).is_err() {
+                break;
+            }
+        }
     }
 
     /// `saveOptions()`. Writes nothing (and succeeds) when no options path

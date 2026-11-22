@@ -111,17 +111,27 @@ struct App {
     ui_models: Option<Rc<RefCell<crate::ui_models::UiModels>>>,
 }
 
+fn launch_core(launch: &Launch) -> crate::failure::EngineResult<Rc<RefCell<Core>>> {
+    let core = pz_lua_api::bind_core::shared_core();
+    {
+        let mut c = core.borrow_mut();
+        let path = launch.game_dir.join("projectzomboid.jar");
+        if path.is_file() {
+            let jar = pz_classfile::Jar::open(path).map_err(|e| format!("open game JAR: {e}"))?;
+            crate::boot::install_game_mode_class(&jar, &mut c)?;
+        }
+        c.set_cache_dir(&launch.cache_dir);
+        let _ = c.load_options();
+    }
+    Ok(core)
+}
+
 /// Boot (`GameWindow.init`) and run the main menu until the window closes.
 pub fn run(launch: Launch) -> crate::failure::EngineResult<()> {
     let _retirement_boundary = HostRetirementBoundary;
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let core = pz_lua_api::bind_core::shared_core();
-    {
-        let mut c = core.borrow_mut();
-        c.set_cache_dir(&launch.cache_dir);
-        let _ = c.load_options();
-    }
+    let core = launch_core(&launch)?;
     let mut app = App {
         launch,
         window: None,
@@ -648,12 +658,7 @@ fn close_headless(app: &mut App) -> crate::failure::EngineResult<()> {
 }
 
 fn headless_app(launch: Launch) -> crate::failure::EngineResult<App> {
-    let core = pz_lua_api::bind_core::shared_core();
-    {
-        let mut c = core.borrow_mut();
-        c.set_cache_dir(&launch.cache_dir);
-        let _ = c.load_options();
-    }
+    let core = launch_core(&launch)?;
     Ok(App {
         launch,
         window: None,

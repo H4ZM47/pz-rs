@@ -181,6 +181,7 @@ fn round_trip_sample() {
     let dir = temp_dir("roundtrip");
     std::fs::write(dir.join("options.ini"), SAMPLE).unwrap();
     let mut c = core_in(&dir);
+    c.install_game_mode_statics(mode_statics()).unwrap();
     assert!(c.load_options().unwrap());
     assert!(!c.is_default_options());
     assert_eq!(c.version, 8);
@@ -241,6 +242,7 @@ fn round_trip_sample() {
         assert!(!contents.contains(&format!("\n{retired}=")));
     }
     let mut c2 = core_in(&dir);
+    c2.install_game_mode_statics(mode_statics()).unwrap();
     assert!(c2.load_options().unwrap());
     let second = std::fs::read_to_string(dir.join("options.ini")).unwrap();
     assert_eq!(first, second);
@@ -260,6 +262,7 @@ fn round_trip_sample() {
     c2.set_screen_size(1600, 900);
     c2.save_options().unwrap();
     let mut c3 = core_in(&dir);
+    c3.install_game_mode_statics(mode_statics()).unwrap();
     c3.load_options().unwrap();
     assert_eq!(c3.get_option_ambient_volume(), 9);
     assert_eq!(c3.get_option_min_chat_opaque(), 0.25);
@@ -317,6 +320,10 @@ fn real_options_ini_round_trips() {
     let dir = temp_dir("real");
     std::fs::write(dir.join("options.ini"), &original).unwrap();
     let mut c = core_in(&dir);
+    // This optional fixture may have been written by either supported game.
+    if original.lines().any(|line| line.starts_with("showConnectionInfo=")) {
+        c.install_game_mode_statics(mode_statics()).unwrap();
+    }
     if let Some(lang) = original.lines().find_map(|l| l.strip_prefix("language=")) {
         c.system_language = lang.to_string();
     }
@@ -355,6 +362,7 @@ fn current_options_persist_information_flags_and_retire_removed_keys() {
     let old_save = dir.join("Sandbox").join("fixture-world");
     std::fs::create_dir_all(&old_save).unwrap();
     let mut core = core_in(&dir);
+    core.install_game_mode_statics(mode_statics()).unwrap();
     core.load_options().unwrap();
     assert!(core.is_option_show_connection_info());
     assert!(core.is_option_show_server_info());
@@ -370,6 +378,7 @@ fn current_options_persist_information_flags_and_retire_removed_keys() {
     core.set_option_show_server_info(false);
     core.save_options().unwrap();
     let mut reloaded = core_in(&dir);
+    reloaded.install_game_mode_statics(mode_statics()).unwrap();
     reloaded.load_options().unwrap();
     assert!(!reloaded.is_option_show_connection_info());
     assert!(!reloaded.is_option_show_server_info());
@@ -520,4 +529,22 @@ fn game_mode_field_preserves_identity_null_and_constructor_authority() {
     core.set_game_mode_ref(Some(sandbox)).unwrap();
     assert!(core.set_game_mode("").is_err());
     assert_eq!(core.game_mode_name(), Some("Sandbox"));
+}
+
+#[test]
+fn build_42_21_options_keep_zoom_settings_and_migrate_old_save_directories() {
+    let dir = temp_dir("legacy-options");
+    std::fs::write(dir.join("options.ini"), "version=8\ntexture2x=false\nzoomLevels1x=50;100\ndoneNewSaveFolder=false\n").unwrap();
+    let save = dir.join("Sandbox/fixture-world");
+    std::fs::create_dir_all(&save).unwrap();
+    std::fs::write(save.join("map_ver.bin"), b"world").unwrap();
+    let mut core = core_in(&dir);
+    core.load_options().unwrap();
+    assert!(core.is_done_new_save_folder());
+    assert_eq!(core.get_option_zoom_levels1x(), "50;100");
+    assert_eq!(core.opt("texture2x").get_bool(), false);
+    assert!(core.option("showConnectionInfo").is_none());
+    assert_eq!(std::fs::read(dir.join("Saves/Sandbox/fixture-world/map_ver.bin")).unwrap(), b"world");
+    assert!(!save.exists());
+    std::fs::remove_dir_all(&dir).unwrap();
 }

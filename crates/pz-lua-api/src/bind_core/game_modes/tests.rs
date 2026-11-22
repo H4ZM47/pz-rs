@@ -196,7 +196,9 @@ fn build_42_21_core_exposes_string_modes_and_keeps_custom_names() {
         c:setGameMode("A Really CD DA")
         local custom = c:getGameMode()
         c:setGameMode("LastStand")
-        return defaultMode == "Sandbox", custom == "A Really CD DA",
+        c:setOptionZoomLevels1x("50;100")
+        return c:getOptionZoomLevels1x() == "50;100", c:getOptionTexture2x(),
+               c.isOptionShowConnectionInfo == nil, defaultMode == "Sandbox", custom == "A Really CD DA",
                c:getGameMode() == "LastStand", c.isTutorial == nil
     "#).unwrap());
     assert!(!core.borrow().add_zombie_on_cell_load);
