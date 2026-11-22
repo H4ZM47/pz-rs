@@ -38,20 +38,22 @@ playable: sessions still encounter unbound API methods, and many world systems
 are not yet connected to the frame loop. An earlier inventory-drawing stop was
 `isFavouriteRecipeInput` at `ISInventoryPane.renderdetails:2338`.
 
-The November 13 installed Steam validation found a tile-directory mismatch:
-current assets use `media/tile_definitions`, while older layouts use `media`.
-The loader now supports both. Core now retains the actual nullable `GameMode`
-registry object, and `isTutorial()` compares it with the canonical static
-object. `OnElectricityChanged` is registered. The rerun passed shipped inventory
-creation, global-system ownership, pause/resume, sustained keyboard movement,
-return to idle, live animation, and the timed-action queue checks.
+On November 22, 2026, the macOS installed-session regression passed with Steam
+Build 42.22 assets. It created a fresh world, exercised keyboard movement,
+animation and a timed action, saved on window close, and reloaded the world
+in a fresh engine. It checked player position, nested inventory and mod data,
+global systems, every expected chunk, and the pose, skin, worn membership and
+item visuals of three mannequins. Returning to the menu and closing also passed.
+This run used the port's version 249 save format. Native Build 42.22 writes
+version 251. Native-save interchange and installed Windows/Linux sessions
+still need separate tests.
 
-The component serializer now writes directly to inventory compression's bounded
-buffer, and the installed rerun passed player-save and save-event checks.
-The next stop is mannequin chunk serialization: its live inventory is routed
-through the archive texture writer. That path is being connected to the actual
-item serializer. Save/reload remains unvalidated until the complete session
-test passes.
+The loader supports both tile-definition directory layouts. Core uses the
+installed getter signature to select Build 42.21's string game modes or
+42.22's registry objects. The option schema, Lua bindings and save-mode
+checks follow that selection. The component serializer writes to inventory
+compression's bounded buffer, and live mannequin saves serialize actual item
+references and map the worn items to their saved indices.
 
 The integration checklist in `ENGINE-WIRING.md` currently reads:
 
