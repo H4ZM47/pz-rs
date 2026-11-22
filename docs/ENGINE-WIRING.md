@@ -621,7 +621,7 @@ all installed assets, render paths or foreign platforms.
       with `backend = StudioBackend::new(studio).with_file_resolver(..)`
       (resolving `media/sound/*` through GameFs) (pz-sound feature
       `studio`); set its `rand_next` and `media_file_exists` (#80/#82/#83).
-- [ ] Event and hook names read from the jar via pz-classfile instead of
+- [x] Event and hook names read from the jar via pz-classfile instead of
       `events.rs` constants (#7).
 - [ ] Character simulation context: `bind_character_sim::install_sim_context`
       with the engine's `SimContext` (lore, climate, `Rand`, events) (#41).

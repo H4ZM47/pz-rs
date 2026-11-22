@@ -124,8 +124,20 @@ impl LuaManager {
         let stdlib_src = stdlib_path.and_then(|p| std::fs::read(p).ok());
         let stdlib_src = stdlib_src.map(|b| String::from_utf8_lossy(&b).into_owned());
         stdlib::install(&mut thread, stdlib_src.as_deref())?;
-        let events = EventManager::register(&env, "Events", EVENT_NAMES);
-        let hooks = EventManager::register(&env, "Hook", HOOK_NAMES);
+        // The names the install's jar registers; the built-in lists when
+        // there is no jar (unit tests, a bare media folder).
+        let jar = pz_classfile::Jar::open(fs.borrow().base.join("projectzomboid.jar"));
+        let (event_names, hook_names) = match jar.and_then(|j| crate::events::names_from_jar(&j)) {
+            Ok(names) => names,
+            Err(_) => (
+                EVENT_NAMES.iter().map(|s| s.to_string()).collect(),
+                HOOK_NAMES.iter().map(|s| s.to_string()).collect(),
+            ),
+        };
+        let event_names: Vec<&str> = event_names.iter().map(String::as_str).collect();
+        let hook_names: Vec<&str> = hook_names.iter().map(String::as_str).collect();
+        let events = EventManager::register(&env, "Events", &event_names);
+        let hooks = EventManager::register(&env, "Hook", &hook_names);
         let loader = traceable(Loader::default());
         let mgr = LuaManager {
             thread,
