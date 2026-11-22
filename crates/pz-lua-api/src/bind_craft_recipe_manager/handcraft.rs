@@ -320,3 +320,38 @@ pub fn can_perform_from_context_click(
     // `createOutputsInternal(true, null, chr)`: `createRecipeOutputs`.
     Err(unsupported(format!("CraftRecipeData.createRecipeOutputs ({})", recipe.name().unwrap_or_default())))
 }
+
+/// `CraftRecipeData.canPerform(chr, sourceResources, allItems, false,
+/// null)` on a `testRecipeData` just set to the recipe, the way
+/// `BaseCraftingLogic.createCachedRecipeInfo` calls it: every input that
+/// applies to hand crafting is consumed, in test mode, from the supplied
+/// item list (`items`); the first input that fails ends the loop.
+///
+/// The caller has already tested `isValidRecipeForCharacter`. As in
+/// `can_perform_from_context_click`, `tooDarkToRead` is read after the
+/// inputs, and the outputs are not ported.
+pub fn can_perform_with_items(
+    recipe: &CraftRecipe,
+    items: &[&dyn CraftItem],
+    chr: &dyn RecipeCharacter,
+    on_test: &mut OnTest,
+) -> LuaResult<bool> {
+    let mut data = RecipeData::new(recipe, items, chr);
+    let all: Vec<usize> = (0..items.len()).collect();
+    for input in 0..data.inputs.len() {
+        let script = data.inputs[input];
+        if script.has_flag(InputFlag::AutomationOnly) || script.is_apply_on_tick() {
+            continue;
+        }
+        let consumed = !all.is_empty()
+            && script.resource_type() == ResourceType::Item
+            && data.consume_input_from_items(input, &all, false, on_test)?;
+        if !consumed {
+            return Ok(false);
+        }
+    }
+    if !recipe.can_be_done_in_dark() && chr.is_player() && chr.too_dark_to_read()? {
+        return Ok(false);
+    }
+    Err(unsupported(format!("CraftRecipeData.createRecipeOutputs ({})", recipe.name().unwrap_or_default())))
+}

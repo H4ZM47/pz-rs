@@ -17,6 +17,7 @@
 
 mod handcraft;
 pub mod item_status;
+mod logic;
 
 use crate::bind_character_sim::CharacterObject;
 use crate::bind_item_container::LuaItemContainer;
@@ -288,6 +289,39 @@ pub fn unique_recipe_items(
     Ok(out)
 }
 
+/// `BaseCraftingLogic.createCachedRecipeInfo(recipe, null)` without the
+/// `HandcraftLogic` surface test: `isValid` (`isValidRecipeForCharacter`
+/// with no containers) and `canPerform` (see
+/// `handcraft::can_perform_with_items`) for the logic's player and items.
+pub(crate) fn cached_recipe_info(
+    thread: &mut Thread,
+    sm: &ScriptManager,
+    chars: &RefCell<Characters>,
+    chr_value: &Value,
+    recipe: &CraftRecipe,
+    items: &[ItemRef],
+) -> LuaResult<(bool, bool)> {
+    let character = match chr_value {
+        Value::Object(o) => (&**o as &dyn Any)
+            .downcast_ref::<CharacterObject>()
+            .ok_or_else(|| LuaError::runtime("expected IsoGameCharacter"))?,
+        _ => return Err(npe("IsoGameCharacter")),
+    };
+    let lua_chr = LuaRecipeCharacter { chars, character, value: chr_value.clone(), env: thread.globals().clone() };
+    if !is_valid_recipe_for_character(recipe, Some(&lua_chr), false)? {
+        return Ok((false, false));
+    }
+    let items = items.iter().map(|i| LuaCraftItem::new(sm, i.clone(), chr_value)).collect::<LuaResult<Vec<_>>>()?;
+    let values: Vec<(usize, Value)> = items.iter().map(|i| (i.key(), i.value.clone())).collect();
+    let mut on_test = |name: &str, key: usize| {
+        let item = values.iter().find(|(k, _)| *k == key).map_or(Value::Nil, |(_, v)| v.clone());
+        call_on_test(thread, name, &item, chr_value)
+    };
+    let refs: Vec<&dyn CraftItem> = items.iter().map(|i| i as &dyn CraftItem).collect();
+    let can_perform = handcraft::can_perform_with_items(recipe, &refs, &lua_chr, &mut on_test)?;
+    Ok((true, can_perform))
+}
+
 /// The `IsoGameCharacter` argument, read through the shared characters.
 struct LuaRecipeCharacter<'a> {
     chars: &'a RefCell<Characters>,
@@ -456,7 +490,7 @@ fn npe(what: &str) -> LuaError {
 
 /// `getAllItemsFromContainers(containers, allItems)`: each
 /// `ItemContainer`'s items in order.
-fn container_items(containers: &Value) -> LuaResult<Vec<ItemRef>> {
+pub(crate) fn container_items(containers: &Value) -> LuaResult<Vec<ItemRef>> {
     let Value::Object(o) = containers else {
         return Err(npe("containers"));
     };
@@ -474,7 +508,18 @@ fn container_items(containers: &Value) -> LuaResult<Vec<ItemRef>> {
 }
 
 pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Characters>>) {
+    logic::register(thread, sm.clone(), chars.clone());
     let b = expose_class(thread, CRAFT_RECIPE_MANAGER_CLASS, None);
+    let query_sm = sm.clone();
+    b.static_fn("queryRecipes", move |c| {
+        let query = match c.arg(0) {
+            Value::Str(s) => s.to_string(),
+            Value::Nil => String::new(),
+            _ => return Err(LuaError::runtime("expected String")),
+        };
+        let list = query_recipes(&query_sm, &query)?;
+        Ok(c.push(script_list(&list)))
+    });
     b.static_fn("getUniqueRecipeItems", move |c| {
         let item = crate::bind_world_object::item_argument(&c.arg(0))?;
         let chr_value = c.arg(1);

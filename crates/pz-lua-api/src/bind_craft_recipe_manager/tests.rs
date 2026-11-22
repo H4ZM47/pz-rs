@@ -479,3 +479,25 @@ fn lua_get_unique_recipe_items() {
     let err = run(&mut t, "return CraftRecipeManager.getUniqueRecipeItems(bat, player, ArrayList.new())").unwrap_err();
     assert!(err.contains("tooDarkToRead"), "{err}");
 }
+
+#[test]
+fn lua_query_recipes() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let sm = manager("");
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    crate::bind_scripts::register(&mut t, sm.clone());
+    register(&mut t, sm.clone(), Rc::new(RefCell::new(Characters::default())));
+    let out = run(
+        &mut t,
+        r#"
+        local list = CraftRecipeManager.queryRecipes("InHandCraft;AnySurfaceCraft")
+        return list:size(), list:get(0):getName(), CraftRecipeManager.queryRecipes(nil):size(),
+            CraftRecipeManager.queryRecipes("*"):size()
+        "#,
+    )
+    .unwrap();
+    let want = [Value::Num(3.0), Value::str("Hammer"), Value::Num(0.0), Value::Num(5.0)];
+    assert!(out.iter().zip(&want).all(|(a, b)| a.raw_equals(b)) && out.len() == 4, "{out:?}");
+}
