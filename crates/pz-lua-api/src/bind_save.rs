@@ -756,6 +756,14 @@ fn register_save_changes(mgr: &mut LuaManager) {
         Ok(c.push(savefile::sanitize_world_name(&name)))
     });
 
+    // `createWorld(worldName)`; a folder it cannot make is ignored, as in
+    // the original.
+    fs_global(mgr, "createWorld", |c, fs| {
+        let cache = fs.borrow().cache_dir().to_path_buf();
+        let _ = crate::world_save::create_world(&cache, str_arg(c, 0).as_deref());
+        Ok(Value::Nil)
+    });
+
     fs_global(mgr, "renameSavefile", |c, fs| {
         let (mode, old, new) = (str_arg(c, 0), str_arg(c, 1), str_arg(c, 2));
         Ok(savefile::rename_savefile(

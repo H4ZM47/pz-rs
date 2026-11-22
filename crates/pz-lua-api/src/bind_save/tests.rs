@@ -318,6 +318,7 @@ fn save_folder_changes() {
         setSpawnRegion("Muldraugh, KY")
         setSpawnRegion(nil)
         assert(getWorld():getSpawnRegion() == "Muldraugh, KY")
+        createWorld("new world:1")
         "#,
     );
     assert!(!s.join("Sandbox/del").exists());
@@ -334,6 +335,14 @@ fn save_folder_changes() {
         mods.contains("mod = M1,") && mods.contains("map = Muldraugh, KY,"),
         "{mods}"
     );
+    let created = s.join("Sandbox/new_world1");
+    for d in ["apop", "chunkdata", "map", "zpop", "metagrid"] {
+        assert!(created.join(d).is_dir(), "{d}");
+    }
+    assert_eq!(shared_core().borrow().game_save_world, "new_world1");
+    run(&mut env.mgr, "createWorld(nil)");
+    assert!(s.join("Sandbox/blah/map").is_dir());
+    assert_eq!(shared_core().borrow().game_save_world, "blah");
     assert!(!s.join("LastStand").exists());
     assert_eq!(shared_core().borrow().game_mode, "Sandbox");
     assert!(!cache.join("db/coop.db").exists());

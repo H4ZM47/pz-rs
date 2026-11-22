@@ -67,28 +67,13 @@ impl Start {
     }
 }
 
-/// `LuaManager.GlobalObject.createWorld(worldName)`: the save folder (unless
-/// saving is off) with its subdirectories, and `Core.gameSaveWorld`.
+/// `LuaManager.GlobalObject.createWorld(worldName)`
+/// ([`pz_lua_api::world_save::create_world`]).
 pub fn create_world(cache_dir: &std::path::Path, world_name: &str) -> Result<(), String> {
-    let name = if world_name.is_empty() {
-        "blah"
-    } else {
-        world_name
-    };
-    let name = pz_lua_api::savefile::sanitize_world_name(name);
-    let core = pz_lua_api::bind_core::shared_core();
-    let (mode, no_save) = {
-        let c = core.borrow();
-        (c.game_mode.clone(), c.is_no_save())
-    };
-    let dir = cache_dir.join("Saves").join(mode).join(&name);
-    if !no_save {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        pz_lua_api::world_save::ensure_subdirectories_exist(&dir)
-            .map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
-    core.borrow_mut().game_save_world = name;
-    Ok(())
+    pz_lua_api::world_save::create_world(cache_dir, Some(world_name)).map_err(|e| {
+        let name = pz_lua_api::bind_core::shared_core().borrow().game_save_world.clone();
+        format!("createWorld {name}: {e}")
+    })
 }
 
 struct App {
@@ -335,6 +320,15 @@ impl App {
         pz_lua_api::bind_input::after_ui_update(lua);
         if let Some(w) = self.window.as_ref() {
             apply_window_requests(w, pz_lua_api::bind_input::take_window_requests());
+        }
+        // Lua's `forceChangeState` sets `states.forceNext` at once; the
+        // machine reads it in its next update.
+        if let Some(forced) = pz_lua_api::bind_game_window::take_forced_state() {
+            self.states.force_next = forced.map(|s| match s {
+                pz_lua_api::bind_game_window::ForcedState::LoadingQueue => {
+                    state(LoadingQueueState::default())
+                }
+            });
         }
         // MapCollisionData.instance.updateGameState().
         // GameWindow.logic snapshots this after UI/input callbacks. Paused
