@@ -1141,6 +1141,7 @@ impl IsoWorld {
                             ));
                         }
                     }
+                }
                 SimEvent::SleepingEventWakeUp { fast_wakeup } if chr.is_some() => {
                     pz_lua_api::bind_character_sim::sleeping_event_wake_up_ui(chr.unwrap(), fast_wakeup);
                 }

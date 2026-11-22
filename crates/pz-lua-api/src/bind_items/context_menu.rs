@@ -141,6 +141,7 @@ pub(super) fn register(thread: &mut Thread) {
             Ok(c.push(script.map_or(Value::Nil, |s| get(&s.0.borrow()))))
         });
     }
+
     // `scriptItem == null ? 0 : scriptItem.getEatTime()`.
     item.method("getEatTime", |c| {
         let script = this(c)?.borrow().template.script.clone();

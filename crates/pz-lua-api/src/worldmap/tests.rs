@@ -389,6 +389,10 @@ fn current_map_files_follow_game_map_then_world_lot_list() {
     crate::bind_world::set_meta_grid(None);
     host::reset_current_map_files();
     core.borrow_mut().game_map = "DEFAULT".into();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn visited_instance_needs_meta_grid_then_loads_updates_and_saves() {
     use pz_worldmap::visited::BIT_VISITED;
     let root = std::env::temp_dir().join(format!("pz-worldmap-visited-{}", std::process::id()));

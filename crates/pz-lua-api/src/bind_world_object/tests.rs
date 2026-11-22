@@ -557,6 +557,9 @@ fn base_object_answers_the_loot_window_fire_and_bbq_checks() {
     let flags: Vec<bool> = values[1..].iter().map(|v| matches!(v, Value::Bool(true))).collect();
     // A barbecue without a sprite is not a propane one, so it has no tank.
     assert_eq!(flags, [true, false, false, false, false, true, false, true, true, false, true]);
+}
+
+#[test]
 fn special_tooltip_flag_is_read_and_set_through_lua() {
     let _restore = Restore::new();
     let mut t = thread();

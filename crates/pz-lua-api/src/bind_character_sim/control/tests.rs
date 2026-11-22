@@ -123,6 +123,8 @@ fn is_rand_xp_rolls_once_per_interval_per_perk() {
         assert(player:isRandXp(100000, 1.0, Perks.Fitness) == false)
         assert(player:isRandXp(100000, 1.0, Perks.Sprinting) == true)
     "#).unwrap();
+}
+
 /// A Lua world object that tells when it is dropped.
 struct Probe;
 

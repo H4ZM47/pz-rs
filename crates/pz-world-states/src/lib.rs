@@ -970,6 +970,8 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     ) -> pz_inventory::floor_drop::HostResult<()> {
         let (Some((x, y, z)), Some(id)) = (action.square, action.object) else { return Ok(()) };
         self.toggle_player_door(ObjectRef { x, y, z, id: id as u32 }, chr, actor)
+    }
+
     fn characters_on_square(&self, sq: (i32, i32, i32)) -> Vec<i32> {
         self.at(sq).map_or_else(Vec::new, |s| s.borrow().moving_objects.clone())
     }

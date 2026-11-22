@@ -519,6 +519,7 @@ pub(crate) fn register_classes(thread: &mut Thread) {
     register_special_tooltip(&object);
     crate::expose::expose_class(thread, WORLD_INVENTORY_OBJECT, Some(ISO_OBJECT));
     position::register(thread);
+    master_object::register(thread);
 }
 
 /// The receiver's live containers (`container`, `secondaryContainers`).
@@ -640,7 +641,6 @@ fn by_type(
         let container = container.borrow();
         kinds.iter().flatten().any(|kind| **kind == *container.kind)
     }))
-    master_object::register(thread);
 }
 
 /// `IsoObject.haveSpecialTooltip()` / `setSpecialTooltip(b)`: the
@@ -805,6 +805,7 @@ pub(crate) fn has_component(value: &Value, kind: pz_entity::ComponentType) -> Lu
         "GameEntity getter requires an actual item or world-object userdata",
     ))
 }
+
 mod position;
 
 mod master_object;

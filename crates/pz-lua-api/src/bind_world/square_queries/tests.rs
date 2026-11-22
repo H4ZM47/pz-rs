@@ -242,6 +242,9 @@ fn is_free_needs_a_solid_floor_without_solid_objects() {
     f.square(|square| square.properties.set_flag(flags.solidtrans));
     f.run("assert(a:isFree(false) == false)");
     f.run("local ok, err = pcall(a.isFree, a, true); assert(not ok and tostring(err):find('movingObjects'))");
+}
+
+#[test]
 fn objects_listed_from_a_square_give_their_containers_that_source_grid() {
     let old_items = pz_inventory::shared::install_item_observer(Some(
         crate::component_gc::observe_item,
@@ -270,6 +273,9 @@ fn objects_listed_from_a_square_give_their_containers_that_source_grid() {
     drop(f);
     pz_inventory::shared::install_item_observer(old_items);
     pz_world::object_slot::install_object_observer(old_objects);
+}
+
+#[test]
 fn an_object_read_from_a_square_reports_it_until_it_leaves() {
     let mut f = Fixture::new();
     crate::bind_world_object::register_classes(&mut f.thread);
@@ -325,6 +331,9 @@ fn moving_objects_of_a_square() {
     f.square(|sq| sq.moving_objects.push(9));
     f.run("assert(not pcall(function() return a:getMovingObjects() end))");
     crate::bind_players::set_player(0, None);
+}
+
+#[test]
 fn static_moving_objects_are_the_square_corpses() {
     let mut f = Fixture::new();
     crate::bind_item_container::register(&mut f.thread);

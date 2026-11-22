@@ -2286,10 +2286,14 @@ fn register_character(
     });
     b.method("getZombieKills", |c| {
         let v = chr_of(c)?.borrow().zombie_kills;
+        Ok(c.push(v))
+    });
     // `isBuildCheat()`: `getCheats().isSet(CheatType.BUILD)`.
     b.method("isBuildCheat", |c| {
         let ctx = CONTEXT.with(|c| c.borrow().clone());
         let v = chr_of(c)?.borrow().cheats.is_set(&*ctx, "BUILD");
+        Ok(c.push(v))
+    });
     // `isCheatSet(CheatType)`: `getCheats().isSet(cheat)`.
     b.method("isCheatSet", |c| {
         let cheat = match c.arg(1) {
@@ -3386,6 +3390,8 @@ pub(crate) mod tests {
         // `PlayerCheats.isSet` also needs debug, client or server.
         install_sim_context(_restore.0.clone());
         run(&mut t, "assert(player:isMovablesCheat() == false)").unwrap();
+    }
+
     /// `isCheatSet(CheatType)`: `PlayerCheats.isSet`, which also needs
     /// debug, client or server.
     #[test]

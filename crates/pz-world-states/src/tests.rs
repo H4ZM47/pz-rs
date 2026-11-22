@@ -1984,6 +1984,7 @@ mod context {
             assert_eq!(a.context_special_at(&query(10, 10), IsoDirections::N, which).unwrap(), None);
         }
     }
+}
 #[test]
 fn characters_by_id() {
     let mut w = World::new();
@@ -2012,6 +2013,8 @@ fn characters_by_id() {
     drop(a);
     assert_eq!(list.iter().map(|z| z.id).collect::<Vec<_>>(), vec![10, 11, 12]);
     assert_eq!(list[1].health, 0.5);
+}
+
 #[test]
 fn moving_squares_list_the_characters_on_them() {
     let mut w = World::new();

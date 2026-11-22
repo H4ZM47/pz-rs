@@ -471,6 +471,8 @@ fn timed_actions_restore_weapon_type_from_the_empty_hands() {
     run(&mut thread, "a = make('weapon', 10); a.action:restoreWeaponType()").unwrap();
     // `WeaponType.UNARMED.getType()` is the empty string.
     assert_eq!(chr.borrow().variable_string("Weapon"), "");
+}
+
 /// `ISInventoryPage.prerender` reads and clears `IsoPlayer.invPageDirty`.
 #[test]
 fn inv_page_dirty_is_a_player_flag() {

@@ -475,6 +475,9 @@ fn death_string_and_zombie_killed_text_read_the_player() {
     player.borrow_mut().zombie_kills = -1;
     let r = run(&mut t, "return getGameTime():getZombieKilledText(player) == nil");
     assert!(r[0].truthy());
+}
+
+#[test]
 fn passing_time_counts_the_hours_a_living_player_survives() {
     let sm = pz_scripts::ScriptManager::new();
     let chr = std::rc::Rc::new(std::cell::RefCell::new(crate::bind_character_sim::LuaGameCharacter::new(

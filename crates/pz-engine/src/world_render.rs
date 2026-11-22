@@ -488,6 +488,8 @@ impl WorldRender {
         };
         sprites.white = tm.shared_texture(fs, FxMaskSprites::WHITE);
         self.fx_sprites = Some(sprites);
+    }
+
     /// `IsoDeadBody.render` and `renderShadow` for the corpses on the
     /// squares of the player's chunk map: their atlas draws and shadows
     /// into `objects`, the atlas render jobs into `jobs`.

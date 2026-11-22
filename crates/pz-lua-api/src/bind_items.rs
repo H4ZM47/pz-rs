@@ -2044,6 +2044,7 @@ mod tests {
         assert!(r[1].is_nil() && r[2].truthy());
     }
 
+    #[test]
     fn world_static_model_from_lua() {
         let mut thread = item_thread();
         let gun = make(ItemClass::Weapon, "Pistol", |t| t.world_static_model = Some("PistolGround".into()));
