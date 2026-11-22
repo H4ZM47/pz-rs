@@ -71,6 +71,9 @@ pub struct IsoGridSquare {
     pub world_objects: crate::WorldObjectsRef,
     /// `staticMovingObjects`: corpses.
     pub static_moving: Vec<IsoDeadBody>,
+    /// `movingObjects`: the ids of the characters whose moving square
+    /// (`IsoMovingObject.movingSq`) this is. Not saved.
+    pub moving_objects: Vec<i32>,
     /// `table` (square mod data).
     pub mod_data: Option<LuaTable>,
     pub overlay_done: bool,
@@ -146,6 +149,7 @@ impl IsoGridSquare {
             erosion: self.erosion.clone(),
             world_objects: copied.world_objects,
             static_moving: self.static_moving.clone(),
+            moving_objects: Vec::new(),
             mod_data: self.mod_data.clone(),
             overlay_done: self.overlay_done,
             have_sheet_rope: self.have_sheet_rope,
@@ -184,6 +188,7 @@ impl IsoGridSquare {
             erosion: None,
             world_objects: crate::WorldObjects::new_ref(),
             static_moving: Vec::new(),
+            moving_objects: Vec::new(),
             mod_data: None,
             overlay_done: false,
             have_sheet_rope: false,

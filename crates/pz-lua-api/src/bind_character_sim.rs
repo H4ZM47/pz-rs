@@ -2272,6 +2272,12 @@ fn register_character(
         chr_of(c)?.borrow_mut().bed_type = v;
         Ok(0)
     });
+    // `IsoPlayer.setHoursSurvived(hours)`.
+    b.method("setHoursSurvived", |c| {
+        let v = num_arg(c, 1);
+        chr_of(c)?.borrow_mut().hours_survived = v;
+        Ok(0)
+    });
     b.method("getHoursSurvived", |c| {
         let ctx = CONTEXT.with(|c| c.borrow().clone());
         let v = chr_of(c)?.borrow().hours_survived(&*ctx);

@@ -80,6 +80,59 @@ pub(super) fn register(thread: &mut Thread) {
         });
         Ok(c.push(list))
     });
+    // getTileName(): with a CustomName property, the moveable display name
+    // of `GroupName CustomName` (or of `CustomName`); else getName().
+    object.method("getTileName", |c| {
+        let this = c.arg(0);
+        let names = match tile_sprite(receiver(&this)?, "IsoObject.getTileName")? {
+            None => None,
+            Some(sprite) => {
+                let m = crate::bind_sprites::manager()?;
+                let m = m.try_borrow().map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+                let props = &m.sprites[sprite].properties;
+                props.get(&m.alias, "CustomName").map(|custom| {
+                    match props.get(&m.alias, "GroupName") {
+                        Some(group) => format!("{group} {custom}"),
+                        None => custom.to_string(),
+                    }
+                })
+            }
+        };
+        let r = match names {
+            Some(name) => {
+                let display = crate::bind_text::with_translator(|t| t.get_moveable_display_name(&name));
+                Value::str(&display.unwrap_or(name))
+            }
+            None => Cx { t: c.thread }.call(&this, "getName", &[])?,
+        };
+        Ok(c.push(r))
+    });
+    // getSpriteName(): the sprite's name while `spriteName` is null, else
+    // `spriteName`.
+    object.method("getSpriteName", |c| {
+        let this = c.arg(0);
+        let object = receiver(&this)?;
+        let body = object.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
+        if body.sprite_name.is_none() {
+            if let ObjectSprite::Tile(sprite) = body.sprite {
+                let m = crate::bind_sprites::manager()?;
+                let m = m.try_borrow().map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+                if let Some(name) = &m.sprites[sprite].name {
+                    return Ok(c.push(Value::str(name)));
+                }
+            } else if !matches!(body.sprite, ObjectSprite::None) {
+                return Err(unsupported("IsoObject.getSpriteName: the sprite has no Lua object"));
+            }
+        }
+        let r = match &body.sprite_name {
+            None => Value::Nil,
+            Some(pz_world::objects::SpriteName::Str(name)) => Value::str(name),
+            Some(pz_world::objects::SpriteName::Dict(_)) => {
+                return Err(unsupported("IsoObject.getSpriteName: a spriteName from the save dictionary"))
+            }
+        };
+        Ok(c.push(r))
+    });
     object.method("hasFluid", |c| {
         let this = c.arg(0);
         let r = has_fluid(c, &this)?;

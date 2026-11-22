@@ -490,6 +490,10 @@ pub trait StateWorld<I> {
     fn characters_on_square(&self, _sq: (i32, i32, i32)) -> Vec<i32> {
         Vec::new()
     }
+    /// `sq.getMovingObjects().remove(chr)`.
+    fn remove_moving_object(&mut self, _sq: (i32, i32, i32), _chr: i32) {}
+    /// `if (!sq.getMovingObjects().contains(chr)) sq.getMovingObjects().add(chr)`.
+    fn add_moving_object(&mut self, _sq: (i32, i32, i32), _chr: i32) {}
     /// `IsoMovingObject.separate()` for `chr` (pushing apart overlapping
     /// characters, bumps; the world owns the other characters).
     fn separate(&mut self, _chr: &mut GameCharacter<I>) {}

@@ -2006,4 +2006,20 @@ fn characters_by_id() {
     drop(a);
     assert_eq!(list.iter().map(|z| z.id).collect::<Vec<_>>(), vec![10, 11, 12]);
     assert_eq!(list[1].health, 0.5);
+#[test]
+fn moving_squares_list_the_characters_on_them() {
+    let mut w = World::new();
+    let mut z = zombie(9.5, 9.5, 1);
+    let mut a = w.adapter();
+    let on = |a: &StatesWorldAdapter<'_>, x, y| StateWorld::<()>::characters_on_square(a, (x, y, 0));
+    z.set_moving_square(Some((9, 9, 0)), &mut a);
+    z.set_moving_square(Some((9, 9, 0)), &mut a);
+    assert_eq!(on(&a, 9, 9), vec![3]);
+    z.set_moving_square(Some((10, 9, 0)), &mut a);
+    assert!(on(&a, 9, 9).is_empty());
+    assert_eq!(on(&a, 10, 9), vec![3]);
+    z.path.current_square = Some((10, 9, 0));
+    z.remove_from_square(&mut a);
+    assert!(on(&a, 10, 9).is_empty());
+    assert_eq!((z.path.current_square, z.path.moving_square), (None, None));
 }

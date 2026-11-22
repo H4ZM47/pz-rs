@@ -123,4 +123,70 @@ fn is_rand_xp_rolls_once_per_interval_per_perk() {
         assert(player:isRandXp(100000, 1.0, Perks.Fitness) == false)
         assert(player:isRandXp(100000, 1.0, Perks.Sprinting) == true)
     "#).unwrap();
+/// A Lua world object that tells when it is dropped.
+struct Probe;
+
+impl pz_kahlua::LuaObject for Probe {
+    fn class_name(&self) -> &str {
+        "zombie.iso.IsoObject"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+fn probe() -> (Value, std::rc::Weak<dyn pz_kahlua::LuaObject>) {
+    let object: Rc<dyn pz_kahlua::LuaObject> = Rc::new(Probe);
+    let weak = Rc::downgrade(&object);
+    (Value::Object(object), weak)
+}
+
+fn unpublished_zombie() -> LuaGameCharacterRef {
+    Rc::new(RefCell::new(LuaGameCharacter::new(
+        &shared_script_manager(),
+        CharacterKind::Zombie,
+    )))
+}
+
+#[test]
+fn object_fields_are_per_character() {
+    let (mut thread, _player, _zombie) = setup();
+    let (bed, _) = probe();
+    thread.globals().set_str("bed", bed);
+    run(&mut thread, r#"
+        assert(zombie:getBed() == nil and zombie:getSitOnFurnitureObject() == nil)
+        zombie:setBed(bed)
+        zombie:setSitOnFurnitureObject(bed)
+        assert(zombie:getBed() == bed and zombie:isSitOnFurnitureObject(bed))
+        assert(player:getBed() == nil and not player:isSitOnFurnitureObject(bed))
+        zombie:setBed(nil)
+        assert(zombie:getBed() == nil and zombie:getSitOnFurnitureObject() == bed)
+    "#).unwrap();
+}
+
+#[test]
+fn the_session_reset_keeps_no_object_fields() {
+    let _ = setup();
+    let (bed, bed_weak) = probe();
+    let chr = unpublished_zombie();
+    super::set_object_field(&chr, super::ObjectField::Bed, bed.clone());
+    super::set_object_field(&chr, super::ObjectField::SitOnFurniture, bed);
+    drop(chr);
+    crate::bind_character_sim::reset_session_handles();
+    assert!(bed_weak.upgrade().is_none(), "the bed outlived its character and the reset");
+}
+
+#[test]
+fn a_new_character_at_a_reused_address_has_no_object_fields() {
+    let _ = setup();
+    let (bed, _) = probe();
+    let old = unpublished_zombie();
+    super::set_object_field(&old, super::ObjectField::Bed, bed.clone());
+    super::set_object_field(&old, super::ObjectField::SitOnFurniture, bed);
+    // A new character in the same place, as when the allocator gives the
+    // freed block to the next character.
+    *old.borrow_mut() = LuaGameCharacter::new(&shared_script_manager(), CharacterKind::Zombie);
+    let fresh = old;
+    assert!(super::object_field(&fresh, super::ObjectField::Bed).is_nil());
+    assert!(super::object_field(&fresh, super::ObjectField::SitOnFurniture).is_nil());
 }
