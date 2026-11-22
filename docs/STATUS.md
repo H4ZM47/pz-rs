@@ -79,7 +79,7 @@ Numbering follows [WORKSTREAMS.md](WORKSTREAMS.md).
 | # | Workstream | Crates | Status |
 | --- | --- | --- | --- |
 | 1 | Kahlua compiler, VM, stdlib | `pz-kahlua` | **Largely done.** All 1,395 shipped Lua files compile to bytecode byte-identical to the original compiler; VM, coroutines and the standard libraries are ported. Ongoing work is GC/ownership behaviour at host boundaries. |
-| 2 | Lua API bindings | `pz-lua-api` | **In progress; the largest open area.** The biggest crate (~120k lines) and still the usual place a session stops. Example of scale: 1 of 58 `ItemCodeOnCreate` callbacks is implemented. |
+| 2 | Lua API bindings | `pz-lua-api` | **In progress; the largest open area.** The biggest crate (~120k lines) and still the usual place a session stops. The port registers all 58 public Build 42.21 item-creation callback names. Two mannequin callbacks still return an unsupported-operation error. |
 | 3 | File system and mods | `pz-fs` | Boot loads the selected mods when Core enables mods. Lua map groups use the active game filesystem. |
 | 4 | Textures, packs, draw list | `pz-render`, `pz-gpu` | **Done for UI and chunk rendering.** GPU readback tests are part of the four-platform CI run (they may skip where a runner has no suitable graphics adapter). |
 | 5 | Fonts and translations | `pz-text` | **Done.** |
@@ -100,7 +100,7 @@ section to search there for exact hook names and call order.
 ### 1. Lua API coverage (workstream 2)
 - [ ] Bind the methods the shipped client Lua hits next, starting from the
       recorded stop in the inventory pane (`isFavouriteRecipeInput`).
-- [ ] Remaining 57 `ItemCodeOnCreate` callbacks.
+- [ ] Complete `ItemCodeOnCreate.onCreateScarecrow` and `onCreateSkeletonDisplay`, including detached mannequin setup and serialization into the moveable item.
 - [ ] Wire the new actual-reference `ArrayList` foundation to script,
       literature and character recipe-list fields.
 - [x] Event and hook names load from the installed jar through `pz-classfile`.
