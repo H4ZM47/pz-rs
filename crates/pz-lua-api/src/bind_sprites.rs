@@ -13,7 +13,8 @@ use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_world::sprite::{IsoSpriteManager, PropertyContainer, SpriteIdx};
 use std::any::Any;
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::collections::HashMap;
+use std::rc::{Rc, Weak};
 
 const MANAGER: &str = "zombie.iso.sprite.IsoSpriteManager";
 const SPRITE: &str = "zombie.iso.sprite.IsoSprite";
@@ -21,17 +22,27 @@ const PROPS: &str = "zombie.core.properties.PropertyContainer";
 
 thread_local! {
     static MANAGER_INSTANCE: Rc<ManagerObj> = Rc::new(ManagerObj);
-    static SPRITES: RefCell<Option<Rc<RefCell<IsoSpriteManager>>>> = const { RefCell::new(None) };
+    static SPRITES: RefCell<Option<Rc<SpriteRegistry>>> = const { RefCell::new(None) };
 }
 
 /// Install (or clear) the sprite manager behind `IsoSpriteManager.instance`.
 pub fn install_sprite_manager(m: Option<Rc<RefCell<IsoSpriteManager>>>) {
-    SPRITES.with(|s| *s.borrow_mut() = m);
+    SPRITES.with_borrow_mut(|slot| {
+        if let (Some(active), Some(next)) = (&*slot, &m) {
+            if Rc::ptr_eq(&active.manager, next) {
+                return;
+            }
+        }
+        *slot = m.map(|manager| Rc::new(SpriteRegistry {
+            manager,
+            handles: RefCell::default(),
+        }));
+    });
 }
 
 pub(crate) fn manager() -> LuaResult<Rc<RefCell<IsoSpriteManager>>> {
     SPRITES
-        .with(|s| s.borrow().clone())
+        .with_borrow(|s| s.as_ref().map(|owner| owner.manager.clone()))
         .ok_or_else(|| LuaError::runtime("IsoSpriteManager: tile definitions are not loaded"))
 }
 
@@ -49,7 +60,7 @@ fn with_manager<R>(f: impl FnOnce(&mut IsoSpriteManager) -> LuaResult<R>) -> Lua
 /// no manager is installed.
 pub fn sprite_property(name: &str, key: &str) -> Option<Option<String>> {
     let _collection_deferral = pz_kahlua::gc::defer_collection();
-    let m = SPRITES.with(|s| s.borrow().clone())?;
+    let m = manager().ok()?;
     let mut m = m.try_borrow_mut().ok()?;
     let i = match m.named_map.get(name) {
         Some(&i) => i,
@@ -74,10 +85,32 @@ impl LuaObject for ManagerObj {
     }
 }
 
-/// An `IsoSprite` (`sprite`) or its `PropertyContainer` (`props`).
+/// Each Lua handle uses the registry that allocated its sprite index. The
+/// weak cache gives name and ID lookups the same Lua identity.
+struct SpriteRegistry {
+    manager: Rc<RefCell<IsoSpriteManager>>,
+    handles: RefCell<HashMap<(SpriteIdx, bool), Weak<SpriteObj>>>,
+}
+
+#[derive(Clone)]
 struct SpriteObj {
+    owner: Option<Rc<SpriteRegistry>>,
     idx: SpriteIdx,
     props: bool,
+}
+
+impl SpriteObj {
+    fn with_manager<R>(&self, f: impl FnOnce(&mut IsoSpriteManager) -> LuaResult<R>) -> LuaResult<R> {
+        let _collection_deferral = pz_kahlua::gc::defer_collection();
+        let owner = self.owner.as_ref()
+            .ok_or_else(|| LuaError::runtime("IsoSpriteManager: tile definitions are not loaded"))?;
+        let mut manager = owner.manager.try_borrow_mut()
+            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        if self.idx >= manager.sprites.len() {
+            return Err(LuaError::runtime("IsoSprite index is outside its tile definitions"));
+        }
+        f(&mut manager)
+    }
 }
 
 impl LuaObject for SpriteObj {
@@ -120,23 +153,34 @@ fn with_props<R>(
             return with_manager(|m| f(m, &square.0));
         }
     }
-    let i = self_idx(c, true)?;
-    with_manager(|m| {
-        let m: &IsoSpriteManager = m;
-        f(m, &m.sprites[i].properties)
-    })
+    let sprite = self_sprite(c, true)?;
+    sprite.with_manager(|m| f(m, &m.sprites[sprite.idx].properties))
 }
 
 pub(crate) fn sprite_value(idx: Option<SpriteIdx>, props: bool) -> Value {
     idx.map_or(Value::Nil, |idx| {
-        Value::Object(Rc::new(SpriteObj { idx, props }))
+        sprite_handle(SPRITES.with_borrow(Clone::clone), idx, props)
     })
 }
 
-fn self_idx(c: &NativeCall<'_>, props: bool) -> LuaResult<SpriteIdx> {
+fn sprite_handle(owner: Option<Rc<SpriteRegistry>>, idx: SpriteIdx, props: bool) -> Value {
+    let Some(registry) = &owner else {
+        return Value::Object(Rc::new(SpriteObj { owner, idx, props }));
+    };
+    let mut handles = registry.handles.borrow_mut();
+    let key = (idx, props);
+    if let Some(handle) = handles.get(&key).and_then(Weak::upgrade) {
+        return Value::Object(handle);
+    }
+    let handle = Rc::new(SpriteObj { owner: owner.clone(), idx, props });
+    handles.insert(key, Rc::downgrade(&handle));
+    Value::Object(handle)
+}
+
+fn self_sprite(c: &NativeCall<'_>, props: bool) -> LuaResult<SpriteObj> {
     match c.arg(0) {
         Value::Object(o) => match o.as_any().downcast_ref::<SpriteObj>() {
-            Some(s) if s.props == props => Ok(s.idx),
+            Some(s) if s.props == props => Ok(s.clone()),
             _ => Err(LuaError::runtime(format!(
                 "Expected {} but got {}",
                 if props { PROPS } else { SPRITE },
@@ -191,17 +235,17 @@ pub fn register(thread: &mut Thread) {
     });
     let s = expose_class(thread, SPRITE, Some("java.lang.Object"));
     s.method("getProperties", |c| {
-        let i = self_idx(c, false)?;
-        Ok(c.push(sprite_value(Some(i), true)))
+        let sprite = self_sprite(c, false)?;
+        Ok(c.push(sprite_handle(sprite.owner, sprite.idx, true)))
     });
     s.method("getName", |c| {
-        let i = self_idx(c, false)?;
-        let n = with_manager(|m| Ok(m.sprites[i].name.clone()))?;
+        let sprite = self_sprite(c, false)?;
+        let n = sprite.with_manager(|m| Ok(m.sprites[sprite.idx].name.clone()))?;
         Ok(c.push(n.map_or(Value::Nil, |n| Value::str(&n))))
     });
     s.method("getID", |c| {
-        let i = self_idx(c, false)?;
-        let id = with_manager(|m| Ok(m.sprites[i].id))?;
+        let sprite = self_sprite(c, false)?;
+        let id = sprite.with_manager(|m| Ok(m.sprites[sprite.idx].id))?;
         Ok(c.push(id))
     });
     let p = expose_class(thread, PROPS, Some("java.lang.Object"));
@@ -209,21 +253,21 @@ pub fn register(thread: &mut Thread) {
     // `set(IsoFlagType, String)`, `set(IsoPropertyType, String)`: a
     // property name that names an `IsoFlagType` sets the flag.
     p.method("set", |c| {
-        let i = self_idx(c, true)?;
+        let sprite = self_sprite(c, true)?;
         let key = c.arg(1);
         let value = if c.nargs() > 2 {
             str_arg(c, 2).map(|s| s.to_string())
         } else {
             Some(String::new())
         };
-        with_manager(|m| {
+        sprite.with_manager(|m| {
             let IsoSpriteManager {
                 tables,
                 alias,
                 sprites,
                 ..
             } = m;
-            let props = &mut sprites[i].properties;
+            let props = &mut sprites[sprite.idx].properties;
             if let Some(f) = flag_name(&key) {
                 if let Some(flag) = tables.flag_from_string(f) {
                     props.set_flag(flag);
@@ -240,16 +284,16 @@ pub fn register(thread: &mut Thread) {
     });
     // `unset(String)` / `unset(IsoFlagType)` / `unset(IsoPropertyType)`.
     p.method("unset", |c| {
-        let i = self_idx(c, true)?;
+        let sprite = self_sprite(c, true)?;
         let key = c.arg(1);
-        with_manager(|m| {
+        sprite.with_manager(|m| {
             let IsoSpriteManager {
                 tables,
                 alias,
                 sprites,
                 ..
             } = m;
-            let props = &mut sprites[i].properties;
+            let props = &mut sprites[sprite.idx].properties;
             if let Some(f) = flag_name(&key) {
                 if let Some(flag) = tables.flag_from_string(f) {
                     props.unset_flag(flag);
@@ -291,6 +335,49 @@ mod tests {
     use super::*;
     use crate::bind_iso_enums::{register_with, IsoClassData};
     use pz_kahlua::TableRef;
+
+    #[test]
+    fn retained_sprites_and_properties_use_their_original_tile_definitions() {
+        let previous = manager().ok();
+        let make_manager = || {
+            let mut m = IsoSpriteManager::new(pz_world::sprite::test_tables());
+            let mut values = pz_world::sprite::PropertyValueMap::default();
+            values.put("CustomName", vec!["Original".into(), "Retained".into()]);
+            m.alias = pz_world::sprite::TilePropertyAliasMap::generate(&values, &[]);
+            Rc::new(RefCell::new(m))
+        };
+        let old = make_manager();
+        let old_lifetime = Rc::downgrade(&old);
+        old.borrow_mut().add_sprite_named("first");
+        install_sprite_manager(Some(old));
+        let mut t = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        register(&mut t);
+        let run = |t: &mut Thread, code| {
+            let f = pz_kahlua::stdlib::load_string(code, Some("sprite owners"), t.globals().clone()).unwrap();
+            t.call(&f, &[]).unwrap();
+        };
+        run(&mut t, r#"
+            retained = IsoSpriteManager.instance:getSprite('old')
+            retainedProps = retained:getProperties()
+            assert(retained == IsoSpriteManager.instance:getSprite('old'))
+            assert(retainedProps == retained:getProperties())
+            retainedProps:set('CustomName', 'Original')
+        "#);
+        install_sprite_manager(Some(make_manager()));
+        run(&mut t, r#"
+            local current = IsoSpriteManager.instance:getSprite('new')
+            assert(current ~= retained and retained:getName() == 'old')
+            assert(retained:getProperties() == retainedProps)
+            assert(retainedProps:get('CustomName') == 'Original')
+            retainedProps:set('CustomName', 'Retained')
+            assert(current:getProperties():get('CustomName') == nil)
+            assert(retained:getProperties():get('CustomName') == 'Retained')
+            retained, retainedProps = nil, nil
+        "#);
+        assert!(old_lifetime.upgrade().is_none());
+        install_sprite_manager(previous);
+    }
 
     #[test]
     fn property_container_takes_iso_property_type_keys() {

@@ -60,7 +60,7 @@ fn observe_tile_definitions(lua: &mut LuaManager) {
         Events.OnLoadedTileDefinitions.Add(function(manager)
             assert(manager == IsoSpriteManager.instance)
             local fence = manager:getSprite('fencing_01_1')
-            assert(manager:getSprite(fence:getID()):getName() == 'fencing_01_1')
+            assert(manager:getSprite(fence:getID()) == fence and fence:getName() == 'fencing_01_1')
             local props = manager:getSprite('rust_session_tile_probe'):getProperties()
             assert(not props:has(IsoFlagType.solid))
             props:set(IsoFlagType.solid)
