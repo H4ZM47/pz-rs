@@ -79,6 +79,10 @@ pub trait HudCamera {
     fn camera_offset(&self, _player: usize) -> (f32, f32) {
         (0.0, 0.0)
     }
+    /// `IsoCamera.cameras[player].fixJigglyModelsSquareX/Y`.
+    fn fix_jiggly_square(&self, _player: usize) -> (f32, f32) {
+        (0.0, 0.0)
+    }
     /// `IsoCamera.frameState.playerIndex`: the player whose frame is being
     /// updated or rendered.
     fn frame_player_index(&self) -> usize {

@@ -291,7 +291,12 @@ fn profession_def_arg(
 }
 
 /// A `CharacterTraits`.
-pub struct CharacterTraitsObject(pub RefCell<CharacterTraits>);
+pub enum CharacterTraitsObject {
+    /// A standalone set from the `CharacterTraits` constructor.
+    Owned(RefCell<CharacterTraits>),
+    /// `IsoGameCharacter.getCharacterTraits()`: the character's own field.
+    Of(crate::bind_character_sim::LuaGameCharacterRef),
+}
 
 impl LuaObject for CharacterTraitsObject {
     fn class_name(&self) -> &str {
@@ -539,7 +544,7 @@ thread_local! {
     ];
 }
 
-fn gender_value(g: CharacterGender) -> Value {
+pub(crate) fn gender_value(g: CharacterGender) -> Value {
     GENDERS.with(|v| v[g as usize].clone())
 }
 
@@ -594,6 +599,18 @@ fn tdef(c: &NativeCall<'_>) -> LuaResult<CharacterTraitDefinitionRef> {
 
 fn register_trait_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let b = expose_class(thread, TRAIT_DEFINITION_CLASS, None);
+    // getTexture(): the constructor's Texture.getSharedTexture(textureName),
+    // else media/ui/Traits/trait_generic.png. Resolved on each call; the
+    // texture cache gives the same object.
+    b.method("getTexture", |c| {
+        let name = tdef(c)?.borrow().texture_name.clone();
+        let texture = match pz_render::get_shared_texture_ref(&name).map_err(crate::bind_render::texture_error)? {
+            Some(texture) => Some(texture),
+            None => pz_render::get_shared_texture_ref("media/ui/Traits/trait_generic.png")
+                .map_err(crate::bind_render::texture_error)?,
+        };
+        Ok(c.push(crate::bind_render::texture_value_ref(texture.as_ref())))
+    });
     let s = sm.clone();
     b.static_fn("getTraits", move |c| {
         let list = defs::character_trait_definitions(&s).iter().map(|d| trait_def_value(Some(d))).collect();
@@ -770,6 +787,16 @@ fn pdef(c: &NativeCall<'_>) -> LuaResult<CharacterProfessionDefinitionRef> {
 
 fn register_profession_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let b = expose_class(thread, PROFESSION_DEFINITION_CLASS, None);
+    // getTexture(): the constructor's Texture.trygetTexture(iconPathName)
+    // for a non-empty path, else null. Resolved on each call.
+    b.method("getTexture", |c| {
+        let path = pdef(c)?.borrow().icon_path_name.clone().filter(|p| !p.is_empty());
+        let texture = match path {
+            Some(path) => pz_render::try_get_texture_ref(&path).map_err(crate::bind_render::texture_error)?,
+            None => None,
+        };
+        Ok(c.push(crate::bind_render::texture_value_ref(texture.as_ref())))
+    });
     let s = sm.clone();
     b.static_fn("getProfessions", move |c| {
         let list = defs::character_profession_definitions(&s).iter().map(|d| profession_def_value(Some(d))).collect();
@@ -886,7 +913,17 @@ fn register_profession_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
 }
 
 fn traits_with<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut CharacterTraits) -> R) -> LuaResult<R> {
-    with_this::<CharacterTraitsObject, _>(c, |o| f(&mut o.0.borrow_mut()))
+    let o = crate::expose::this::<CharacterTraitsObject>(c)?;
+    match o.as_any().downcast_ref::<CharacterTraitsObject>().unwrap() {
+        CharacterTraitsObject::Owned(t) => {
+            let mut t = t.try_borrow_mut().map_err(|_| LuaError::runtime("CharacterTraits is in use"))?;
+            Ok(f(&mut t))
+        }
+        CharacterTraitsObject::Of(chr) => {
+            let mut chr = chr.try_borrow_mut().map_err(|_| LuaError::runtime("IsoGameCharacter is in use"))?;
+            Ok(f(&mut chr.character_traits))
+        }
+    }
 }
 
 fn register_character_traits(thread: &mut Thread, sm: &Rc<ScriptManager>) {
@@ -895,7 +932,7 @@ fn register_character_traits(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     b.ctor(move |c| {
         let t = CharacterTraits::new(&s);
         Ok(
-            c.push(Value::Object(Rc::new(CharacterTraitsObject(RefCell::new(
+            c.push(Value::Object(Rc::new(CharacterTraitsObject::Owned(RefCell::new(
                 t,
             ))))),
         )

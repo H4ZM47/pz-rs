@@ -361,6 +361,12 @@ impl TraceDescriptor<IsoObject> for ObjectDescriptor {
                 visitor.owner(component);
             }
         }
+        for container in object.runtime_containers.iter().flat_map(|r| r.iter()) {
+            visitor.owner(container);
+        }
+        if let Some(table) = &object.runtime_mod_data {
+            visitor.table(&table.0);
+        }
     }
 
     fn detach(object: &mut IsoObject) -> Option<Box<dyn std::any::Any>> {
@@ -374,6 +380,8 @@ impl TraceDescriptor<IsoObject> for ObjectDescriptor {
             floor,
             object.take_square_for_gc(),
             sprite,
+            object.runtime_containers.take(),
+            object.runtime_mod_data.take(),
         )))
     }
 }

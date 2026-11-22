@@ -258,7 +258,7 @@ impl WorldPick<'_> {
             id: o.id,
             class,
             sprite,
-            has_container: o.container.is_some(),
+            has_container: o.has_main_container(),
             offset_x,
             offset_y,
             render: self.infos.get(self.player, square, index, o.id),

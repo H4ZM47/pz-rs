@@ -192,7 +192,7 @@ pub fn fireplace_input(
         metal_drum: sp
             .as_deref()
             .is_some_and(|s| s.properties.get(&sprites.alias, "CustomName") == Some("Metal Drum")),
-        container_type: obj.container.as_ref().and_then(|c| c.kind.clone()),
+        container_type: obj.main_container_type(),
         collide_w: sp.as_deref().is_some_and(|s| s.properties.has(f.collideW)),
         collide_n: sp.as_deref().is_some_and(|s| s.properties.has(f.collideN)),
     })
