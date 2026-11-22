@@ -756,9 +756,9 @@ impl InventoryItem {
         let continuation = self.save_fields_prefix(w, env).map_err(SaveError::from)?;
         let name = self
             .textures
-            .archive_saved_name()
+            .saved_name()
             .map_err(|error| SaveError(format!("{error:?}")))?;
-        self.save_fields_suffix(w, env, continuation, name)
+        self.save_fields_suffix(w, env, continuation, name.as_deref())
     }
 
     pub(crate) fn save_native_prefix(

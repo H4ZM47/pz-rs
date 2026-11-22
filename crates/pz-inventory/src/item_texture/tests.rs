@@ -803,3 +803,73 @@ fn food_load_keeps_unsaved_herbalist_recipe_level_but_resets_and_loads_signed_po
         assert_eq!(food.poison_level_for_recipe, 91);
     });
 }
+
+#[test]
+fn value_save_of_live_textures_writes_native_name_and_round_trips() {
+    let _restore = Restore::new();
+    let question = texture(QUESTION_TEXTURE);
+    let custom_name = format!("media{}Item_Custom.png", std::path::MAIN_SEPARATOR);
+    let custom = texture(&custom_name);
+    let icon = texture(&format!("media{}Item_ScriptIcon.png", std::path::MAIN_SEPARATOR));
+    let (q, c) = (question.clone(), custom.clone());
+    pz_render::install_texture_ref_loader(Some(Rc::new(move |_, name| {
+        Ok(Some(if name == QUESTION_TEXTURE { q.clone() } else { c.clone() }))
+    })));
+    let mut t = template(ItemClass::Normal, None);
+    t.script = Some(script("ScriptIcon"));
+    let item = actual(t);
+    let has = |buf: &[u8], name: &str| buf.windows(name.len()).any(|x| x == name.as_bytes());
+
+    set_texture_ref(&item, Some(&custom)).unwrap();
+    let mut native = Writer::new();
+    save_item_ref(&item, &mut native, &Env).unwrap();
+    let mut value = Writer::new();
+    item.borrow().save(&mut value, &Env).unwrap();
+    assert_eq!(value.buf, native.buf, "value save matches native save");
+    assert!(has(&value.buf, &custom_name));
+
+    // The container decode keeps the name. Load also publishes the native
+    // customName mod data, so the decoded save is checked as a fixed point.
+    struct Decode(Rc<ItemTemplate>);
+    impl ItemEnv for Decode {
+        fn template(&self, _: i16) -> Option<Rc<ItemTemplate>> {
+            Some(self.0.clone())
+        }
+    }
+    let decode = Decode(item.borrow().template.clone());
+    let decoded = |buf: &[u8]| {
+        let crate::SavedItem::Item(loaded) = crate::SavedItem::decode(buf, 249, &decode) else {
+            panic!("record decodes to an item")
+        };
+        loaded
+    };
+    let loaded = decoded(&value.buf);
+    assert_eq!(loaded.textures.saved_name().unwrap(), Some(custom_name.clone()));
+    let mut again = Writer::new();
+    loaded.save(&mut again, &decode).unwrap();
+    assert!(again.buf.ends_with(custom_name.as_bytes()));
+    let mut third = Writer::new();
+    decoded(&again.buf).save(&mut third, &decode).unwrap();
+    assert_eq!(third.buf, again.buf);
+
+    // The live load path publishes the shared texture; the value save then
+    // writes the same name.
+    let mut reader = Reader::new(&value.buf[3..]);
+    drop(crate::component_host::load_item_ref(&item, &mut reader, 249, &Env).unwrap());
+    pointer(slot(&item, 0).unwrap(), &custom);
+    let mut again = Writer::new();
+    item.borrow().save(&mut again, &Env).unwrap();
+    assert!(again.buf.ends_with(custom_name.as_bytes()));
+
+    // Script icon texture and Question pointer write no texture name.
+    for skipped in [&icon, &question] {
+        set_texture_ref(&item, Some(skipped)).unwrap();
+        let mut native = Writer::new();
+        save_item_ref(&item, &mut native, &Env).unwrap();
+        let mut value = Writer::new();
+        item.borrow().save(&mut value, &Env).unwrap();
+        assert_eq!(value.buf, native.buf);
+        assert!(!has(&value.buf, "Item_"));
+        assert!(!has(&value.buf, QUESTION_TEXTURE));
+    }
+}
