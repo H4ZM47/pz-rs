@@ -272,7 +272,6 @@ pub const EVENT_NAMES: &[&str] = &[
     "OnSteamRefreshInternetServers",
     "OptionControllerButtonStyleChanged",
     "OptionGamepadBindingPresetChanged",
-    "OnElectricityChanged",
 ];
 
 /// Hooks registered by `LuaHookManager.AddEvents`.
@@ -533,7 +532,7 @@ mod electricity_tests {
         let env = TableRef::new();
         let mut thread = Thread::new(env.clone());
         pz_kahlua::stdlib::install(&mut thread, None).unwrap();
-        let events = EventManager::register(&env, "Events", EVENT_NAMES);
+        let events = EventManager::register(&env, "Events", &["OnElectricityChanged"]);
         let script = pz_kahlua::stdlib::load_string(
             "calls = 0; callback = function(value) calls = calls + value end; Events.OnElectricityChanged.Add(callback)",
             Some("electricity-event"),

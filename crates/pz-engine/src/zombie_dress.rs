@@ -70,7 +70,7 @@ pub fn dress_zombie(thread: &Thread, chr: &mut LuaGameCharacter) -> Result<(), S
     let settings = DressSettings {
         clothing_degradation: sandbox_int("ClothingDegradation", 3),
         remove_zombie_loot: current_bool("RemoveZombieLoot").unwrap_or(false),
-        tutorial: pz_lua_api::bind_core::shared_core().borrow().get_game_mode() == "Tutorial",
+        tutorial: pz_lua_api::bind_core::shared_core().borrow().is_tutorial().map_err(|error| error.to_string())?,
         // `IsoWorld.getWorldAgeDays()` is `(float) getWorldAgeDaysSinceBegin()`.
         world_age_days: days as f32,
         world_age_days_since_begin: days,
