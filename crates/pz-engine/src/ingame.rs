@@ -140,9 +140,13 @@ impl IngameState {
             // TODO(port): `LootRespawn.update`, the vehicle sound
             // `Manager`, `AnimEventEmulator`, `BodyDamageSync`,
             // `VirtualVehicleManager.update`,
-            // `LoopedRangedWeaponSounds`, `FliesSound`, `CorpseFlies`,
-            // `WorldMapVisited.update`.
+            // `LoopedRangedWeaponSounds`, `FliesSound`, `CorpseFlies`.
             pz_lua_api::item_sound::update();
+            // `WorldMapVisited.update()`: its getInstance NPE (no meta grid)
+            // propagates out of the update like the original's.
+            if let Err(fault) = pz_lua_api::worldmap::visited::update() {
+                crate::failure::record_first(cx.error, format!("WorldMapVisited.update: {fault}").into());
+            }
         }
         pz_lua_api::bind_search_mode::update(pz_lua_api::bind_climate::game_time_delta());
         // `RenderSettings.getInstance().update()`: the settings are
