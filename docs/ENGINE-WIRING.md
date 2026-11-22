@@ -1849,9 +1849,11 @@ registered):
       actual item identity and compression order; loaded clothing is retained.
 - [ ] Remaining mannequin lifecycle: attach the canonical Human worn owner at
       constructor time; resolve loaded implicit skin at the exact file-load
-      phase; restore actual parent/source-grid userdata; execute ordinary
-      save's wearItem/syncModel reconciliation for externally edited containers;
-      retain native script/model objects and implement SoftReset's job gate.
+      phase; restore actual parent/source-grid userdata; retain native
+      script/model objects and implement SoftReset's job gate. Live saves now
+      re-equip container items, refresh their visual state, and use the compressed
+      item order when writing worn membership. Native atlas and AnimatedModel
+      updates still require the render work below.
       Production erosion, MapObjects/LoadGridsquare and other addToWorld
       subsystem registries still need their actual adapters. Cursor square
       replacement errors are explicit; chunks are not yet canonical owners.
