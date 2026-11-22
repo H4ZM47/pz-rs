@@ -4,8 +4,7 @@
 //!
 //! The statics live on the shared Core's [`PerformanceSettings`]
 //! (`Core::performance`); `UIManager.useUiFbo` is the UI manager's flag.
-//! `setWaterQuality` and `setPuddlesQuality` also apply the setting to
-//! `IsoWater`/`IsoPuddles`, which are not ported, so they are not bound.
+//! The world renderer samples the water and puddle quality for each frame.
 //!
 //! [`PerformanceSettings`]: pz_core::core::PerformanceSettings
 
@@ -91,6 +90,21 @@ pub fn register(thread: &mut Thread, core: Rc<RefCell<Core>>) {
             Ok(0)
         });
     }
+    {
+        let core = core.clone();
+        b.method("setWaterQuality", move |c| {
+            core.borrow_mut().performance.water_quality = int_arg(c, 1);
+            Ok(0)
+        });
+    }
+    {
+        let core = core.clone();
+        b.method("setPuddlesQuality", move |c| {
+            let quality = int_arg(c, 1);
+            core.borrow_mut().performance.puddles_quality = if (0..=2).contains(&quality) { quality } else { 0 };
+            Ok(0)
+        });
+    }
     let instance = Value::Object(Rc::new(PerformanceSettingsObject));
     global(thread, "getPerformance", move |c| Ok(c.push(instance.clone())));
 }
@@ -135,6 +149,24 @@ mod tests {
         let on = ui_render_fps(&core.borrow());
         pz_ui::manager::with_ui(|m| m.use_ui_fbo = false);
         assert_eq!((on, ui_render_fps(&core.borrow())), (20, 60));
+    }
+
+    #[test]
+    fn installed_menu_quality_selectors_update_performance_settings() {
+        let core = Rc::new(RefCell::new(Core::new()));
+        run(core, r#"
+            local p = getPerformance()
+            for i = 0, 2 do
+                p:setWaterQuality(i)
+                p:setPuddlesQuality(i)
+                assert(p:getWaterQuality() == i and p:getPuddlesQuality() == i)
+            end
+            p:setWaterQuality(7)
+            p:setPuddlesQuality(3)
+            assert(p:getWaterQuality() == 7 and p:getPuddlesQuality() == 0)
+            p:setPuddlesQuality(-1)
+            assert(p:getPuddlesQuality() == 0)
+        "#);
     }
 
     #[test]

@@ -833,13 +833,9 @@ impl WorldRender {
         // TODO(port): the climate, water, puddles, sky reflection, rain
         // and fish splash inputs; with their defaults only the floor blood
         // draws.
-        let (blood_decals, world_age_hours) = surface_values();
+        let (settings, world_age_hours) = surface_values();
         let surfaces = Surfaces {
-            settings: SurfaceSettings {
-                blood_decals,
-                lock_fps: pz_lua_api::bind_climate::climate_settings().lock_fps,
-                ..Default::default()
-            },
+            settings,
             climate: Default::default(),
             water: Default::default(),
             puddles: Default::default(),
@@ -933,16 +929,24 @@ impl SurfaceTextures for BloodTextures {
     }
 }
 
-/// `Core.getOptionBloodDecals()` and `GameTime.getWorldAgeHours()`; a
-/// borrowed owner draws no blood this frame.
-fn surface_values() -> (i32, f32) {
-    let decals = pz_lua_api::bind_core::shared_core()
-        .try_borrow()
-        .map_or(0, |c| c.get_option_blood_decals());
+/// Snapshot the same Core options the native water, puddle and floor-blood
+/// passes read. A borrowed owner draws no blood this frame.
+fn surface_values() -> (SurfaceSettings, f32) {
+    let settings = pz_lua_api::bind_core::shared_core().try_borrow().map_or_else(
+        |_| SurfaceSettings { blood_decals: 0, ..Default::default() },
+        |core| SurfaceSettings {
+            water_quality: core.performance.water_quality,
+            puddles_quality: core.performance.puddles_quality,
+            perf_puddles: core.get_perf_puddles(),
+            blood_decals: core.get_option_blood_decals(),
+            lock_fps: core.performance.lock_fps,
+            use_shaders: core.get_use_shaders(),
+        },
+    );
     let age = pz_lua_api::bind_climate::shared_game_time()
         .try_borrow()
         .map_or(0.0, |t| t.world_age_hours() as f32);
-    (decals, age)
+    (settings, age)
 }
 
 impl IsoWorld {
