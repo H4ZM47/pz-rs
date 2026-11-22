@@ -977,6 +977,16 @@ all installed assets, render paths or foreign platforms.
       `with_host(|h| h.picking = Box::new(WorldPicking { world }))`; use
       `picking::context_pick` for `UIManager.setPicked` on mouse events
       (world-render thread) (#192).
+- [x] World mouse: `pz_engine::world_pick::install(render, sprites,
+      cameras)` after `install_hud_camera` and `uninstall()` on exit. It
+      puts one `EngineWorldMouse` into `UIManager` (`pz_ui::WorldMouse`:
+      `IsoObjectPicker.ContextPick` each frame, `OnObjectRightMouseButton*`
+      with `getObjectIndex`, the right-click state of `IsoPlayer`/the
+      clock) and into `IsoObjectPicker.Instance` for Lua
+      (`bind_object_picker`: `PickDoor/PickWindow/PickWindowFrame/
+      PickThumpable/PickTree`). `PickHoppable`/`PickCorpse`, the left
+      button (`OnObjectLeftMouseButton*`) and dragging moving objects are
+      open (world thread).
 - [ ] Object picking render side: keep a `pz_iso_render::RenderInfos`
       next to the chunk caches, build each player's `ChunkRenderer` with
       `.with_render_infos(&infos, player)` (chunk recording, composite and

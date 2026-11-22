@@ -19,7 +19,7 @@ use pz_iso_render::weather_fx::{IsoWeatherFx, WeatherFxView};
 use pz_iso_render::weather_fx_mask::{
     render_weather_fx, FxMaskCharacters, FxMaskFrame, FxMaskPlayer, FxMaskSprites, WeatherFxMask,
 };
-use pz_iso_render::{Camera, ChunkRenderer, CutawayWorld};
+use pz_iso_render::{Camera, ChunkRenderer, CutawayWorld, RenderInfos};
 use pz_lighting::jni::{IsoDirection, VisionConeInput};
 use pz_lua_api::bind_character_sim::LuaGameCharacter;
 use pz_render::tile_depth::{
@@ -97,6 +97,9 @@ pub struct WorldRender {
     pub lighting: WorldLighting,
     /// `FBORenderChunkManager`'s chunk textures, per player.
     caches: [ChunkCache; MAX_PLAYERS],
+    /// What the chunk renderer recorded about each drawn object
+    /// (`IsoObject.getRenderInfo(player)`), for the object picker.
+    pub infos: RenderInfos,
     cutaways: [Cutaways; MAX_PLAYERS],
     start: Instant,
     /// The lighting session failed; frames draw unlit.
@@ -168,6 +171,7 @@ impl WorldRender {
             world: RenderWorld::new(),
             lighting: WorldLighting::new(),
             caches: Default::default(),
+            infos: RenderInfos::new(),
             cutaways: std::array::from_fn(|_| Cutaways::new()),
             start: Instant::now(),
             lighting_error: false,
@@ -384,6 +388,7 @@ impl WorldRender {
     ) -> HostResult<()> {
         for (wx, wy) in events.removed.drain(..) {
             self.world.remove_chunk(wx, wy);
+            self.infos.forget_chunk(wx, wy);
             self.lighting.remove_chunk(wx, wy);
         }
         let mut tex = GameTextures {
@@ -691,7 +696,9 @@ impl WorldRender {
             state: &state,
             world: &self.world,
         };
-        let r = ChunkRenderer::new(cam, &maps, (v.width, v.height)).with_cutaways(Some(cv));
+        let r = ChunkRenderer::new(cam, &maps, (v.width, v.height))
+            .with_cutaways(Some(cv))
+            .with_render_infos(&self.infos, p);
         // `WeatherFxMask.initMask()` before the cell; `renderWeatherFX`
         // (`renderFxMask`) draws after it, in the world projection. The
         // mask's characters replay this frame's model draws.

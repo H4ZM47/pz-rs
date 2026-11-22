@@ -11,9 +11,11 @@
 //! 2. [`UIManager::update`]`(thread)`;
 //! 3. [`UIManager::render`]`(thread)`, then consume [`UIManager::sprite`].
 //!
-//! Parts tied to the game world (players, picking, the tooltip, clock,
-//! speed controls, moodles, zoom, tutorial, Lua debugger) are stubbed with
-//! `TODO(world)`.
+//! Parts tied to the game world (players, the tooltip, clock, speed
+//! controls, moodles, zoom, tutorial, Lua debugger) are stubbed with
+//! `TODO(world)`. The world's end of the mouse (the object picker and the
+//! player state the right button reads) is a [`WorldMouse`] the engine
+//! installs.
 
 use crate::element::UIElement;
 use crate::sprite::SpriteRenderer;
@@ -32,6 +34,44 @@ pub type TooltipHook = Rc<dyn Fn(&mut Thread, i32, i32) -> LuaResult<()>>;
 /// `Gizmos.getInstance().hitTest(mx, my)`, supplied by pz-lua-api: true
 /// when a gizmo drag takes the left button.
 pub type GizmoHitTestHook = Rc<dyn Fn(&mut Thread, i32, i32) -> bool>;
+
+/// `UIManager.picked` (`IsoObjectPicker.ClickObject`): the object under the
+/// mouse and the point inside its drawn rectangle.
+#[derive(Clone)]
+pub struct PickedObject {
+    /// The picked `IsoObject`'s Lua object.
+    pub tile: Value,
+    /// `ClickObject.lx` / `ly`.
+    pub lx: i32,
+    pub ly: i32,
+}
+
+/// What `UIManager.update` reads of the world for the mouse, supplied by
+/// the engine: the object picker, and the player and clock state the
+/// right button checks before it reaches the picked object.
+pub trait WorldMouse {
+    /// `IsoPlayer.players[0] != null`.
+    fn has_player0(&self) -> bool;
+    /// `IsoObjectPicker.Instance.ContextPick(mx, my)`.
+    fn context_pick(&self, t: &mut Thread, mx: i32, my: i32) -> LuaResult<Option<PickedObject>>;
+    /// `IsoObject.getObjectIndex()`: -1 when the object is off its square.
+    fn object_index(&self, tile: &Value) -> i32;
+    /// `IsoWorld.instance.currentCell != null`.
+    fn has_cell(&self) -> bool;
+    /// `IsoPlayer.getInstance()`: `None` without one, else `isAiming()` and
+    /// `isAsleep()`.
+    fn player_state(&self) -> Option<(bool, bool)>;
+    /// `GameTime.isGamePaused()`.
+    fn is_game_paused(&self) -> bool;
+    /// `UIManager.getSpeedControls().SetCurrentGameSpeed(speed)`.
+    fn set_current_game_speed(&self, speed: i32);
+    /// `IsoObject.onMouseRightClick(lx, ly)`.
+    fn on_mouse_right_click(&self, t: &mut Thread, tile: &Value, lx: i32, ly: i32) -> LuaResult<()>;
+    /// `IsoObject.onMouseRightReleased()`.
+    fn on_mouse_right_released(&self, t: &mut Thread, tile: &Value) -> LuaResult<()>;
+    /// `IsoPlayer.getInstance().setDragObject(null)`.
+    fn clear_drag_object(&self);
+}
 
 /// `Core.UnfocusActiveTextEntryBox()`, supplied by pz-lua-api.
 pub type UnfocusHook = Rc<dyn Fn(&mut Thread)>;
@@ -247,6 +287,12 @@ pub struct UIManager {
     pub update_tooltip_hook: Option<TooltipHook>,
     /// See [`GizmoHitTestHook`].
     pub gizmo_hit_test_hook: Option<GizmoHitTestHook>,
+    /// The world's end of the mouse; without one nothing is picked.
+    pub world_mouse: Option<Rc<dyn WorldMouse>>,
+    /// `UIManager.picked`: the last `ContextPick`.
+    pub picked: Option<PickedObject>,
+    /// `UIManager.rightDownObject`: the object the right button went down on.
+    pub right_down_object: Option<Value>,
     /// Fixed clock for tests (`System.currentTimeMillis`).
     pub time_override_ms: Option<i64>,
 }
@@ -311,6 +357,9 @@ impl Default for UIManager {
             resize_hook: None,
             update_tooltip_hook: None,
             gizmo_hit_test_hook: None,
+            world_mouse: None,
+            picked: None,
+            right_down_object: None,
             time_override_ms: None,
         }
     }
@@ -489,7 +538,7 @@ impl UIManager {
             return Ok(());
         };
 
-        let consumed = Self::update_mouse_buttons(t, mx, my);
+        let consumed = Self::update_mouse_buttons(t, mx, my)?;
         let _consumed_click = consumed & 1 == 1;
         let _consumed_rclick = consumed & 2 == 2;
         // TODO(world): "Attack/Click" keybind on picked objects
@@ -514,9 +563,20 @@ impl UIManager {
             // TODO(world): Core.doZoomScroll(0, del) when not consumed.
         }
 
-        let _consumed_move = Self::update_mouse_move(t, mx, my, false);
-        // TODO(world): with a player, an unconsumed move picks objects and
-        // triggers OnMouseMove(mx, my, mxw, myw).
+        let consumed_move = Self::update_mouse_move(t, mx, my, false);
+        // With a player, an unconsumed move picks the object under the
+        // mouse and triggers OnMouseMove (every frame, as the original).
+        // TODO(world): `getTileFromMouse` into `pickedTile`.
+        if !consumed_move {
+            if let Some(host) = with_ui(|m| m.world_mouse.clone()).filter(|h| h.has_player0()) {
+                let picked = host.context_pick(t, mx, my)?;
+                let world = with_ui(|m| {
+                    m.picked = picked;
+                    (m.mouse.world_x, m.mouse.world_y)
+                });
+                Self::trigger(t, "OnMouseMove", &[n(mx as f64), n(my as f64), n(world.0 as f64), n(world.1 as f64)]);
+            }
+        }
 
         with_ui(|m| {
             m.last_mouse_x = mx;
@@ -606,7 +666,7 @@ impl UIManager {
     }
 
     /// `updateMouseButtons(mx, my)`: bit 0 left consumed, bit 1 right.
-    fn update_mouse_buttons(t: &mut Thread, mx: i32, my: i32) -> i32 {
+    fn update_mouse_buttons(t: &mut Thread, mx: i32, my: i32) -> LuaResult<i32> {
         let mouse = with_ui(|m| m.mouse.clone());
         let mut consumed_click = false;
         let mut consumed_rclick = false;
@@ -688,7 +748,9 @@ impl UIManager {
         if mouse.is_button_pressed(1) {
             if !consumed_rclick {
                 Self::trigger(t, "OnRightMouseDown", &[fx.clone(), fy.clone()]);
-                // TODO(world): OnObjectRightMouseButtonDown on picked object.
+                if let Some(tile) = Self::check_picked() {
+                    Self::trigger(t, "OnObjectRightMouseButtonDown", &[tile, fx.clone(), fy.clone()]);
+                }
             } else {
                 with_ui(|m| {
                     if m.mouse.ui_blocked.len() > 1 {
@@ -696,12 +758,16 @@ impl UIManager {
                     }
                 });
             }
-            // TODO(world): speed controls / IsoObject.onMouseRightClick.
+            // The world part runs whether or not the UI took the press.
+            Self::world_right_pressed(t)?;
         } else if mouse.is_button_released(1) {
             if !consumed_rclick {
-                Self::trigger(t, "OnRightMouseUp", &[fx, fy]);
-                // TODO(world): OnObjectRightMouseButtonUp, drag object.
+                Self::trigger(t, "OnRightMouseUp", &[fx.clone(), fy.clone()]);
+                if let Some(tile) = Self::check_picked() {
+                    Self::trigger(t, "OnObjectRightMouseButtonUp", &[tile, fx, fy]);
+                }
             }
+            Self::world_right_released(t)?;
         } else if mouse.is_button_down(1) {
             let uis = Self::get_ui();
             for ui in uis.iter().rev() {
@@ -718,7 +784,52 @@ impl UIManager {
             Self::trigger(t, "OnKeyStartPressed", &[n(10001.0)]);
             Self::trigger(t, "OnKeyPressed", &[n(10001.0)]);
         }
-        consumed_click as i32 + if consumed_rclick { 2 } else { 0 }
+        Ok(consumed_click as i32 + if consumed_rclick { 2 } else { 0 })
+    }
+
+    /// `checkPicked()`: the picked object when there is one and it is
+    /// still on its square.
+    fn check_picked() -> Option<Value> {
+        let (picked, host) = with_ui(|m| (m.picked.clone(), m.world_mouse.clone()));
+        let (picked, host) = (picked?, host?);
+        (!matches!(picked.tile, Value::Nil) && host.object_index(&picked.tile) != -1).then_some(picked.tile)
+    }
+
+    /// The right press's world part: the first click of the picked object
+    /// resumes normal speed and remembers the object for the release.
+    fn world_right_pressed(t: &mut Thread) -> LuaResult<()> {
+        let (host, picked, speed_controls) = with_ui(|m| (m.world_mouse.clone(), m.picked.clone(), m.speed_controls.is_some()));
+        let Some(host) = host else { return Ok(()) };
+        if !host.has_cell() || !speed_controls {
+            return Ok(());
+        }
+        let Some(picked) = picked else { return Ok(()) };
+        let Some((aiming, asleep)) = host.player_state() else { return Ok(()) };
+        if aiming || asleep || host.is_game_paused() {
+            return Ok(());
+        }
+        host.set_current_game_speed(1);
+        host.on_mouse_right_click(t, &picked.tile, picked.lx, picked.ly)?;
+        with_ui(|m| m.right_down_object = Some(picked.tile));
+        Ok(())
+    }
+
+    /// The right release's world part: the drag ends, and the object the
+    /// button went down on is let go.
+    fn world_right_released(t: &mut Thread) -> LuaResult<()> {
+        let Some(host) = with_ui(|m| m.world_mouse.clone()) else { return Ok(()) };
+        let player = host.player_state();
+        if player.is_some() {
+            host.clear_drag_object();
+        }
+        let down = with_ui(|m| m.right_down_object.clone());
+        if let (true, Some(down), Some((aiming, asleep))) = (host.has_cell(), down, player) {
+            if !aiming && !asleep {
+                host.on_mouse_right_released(t, &down)?;
+                with_ui(|m| m.right_down_object = None);
+            }
+        }
+        Ok(())
     }
 
     /// `updateMouseMove(mx, my, consumedMove)`.

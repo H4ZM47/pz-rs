@@ -367,6 +367,13 @@ impl GameState for IngameState {
         pz_lua_api::hud::world_markers::with_markers(|m| m.init());
         // The HUD reads the iso cameras (`IsoCamera.cameras`).
         crate::world_hud::install_hud_camera(self.cameras.clone());
+        // The object picker behind the mouse: `UIManager.update`'s context
+        // pick and `IsoObjectPicker.Instance`.
+        if let Some(world) = cx.world.as_ref() {
+            if let Some(sprites) = world.sprites.clone() {
+                crate::world_pick::install(world.render.clone(), sprites, self.cameras.clone());
+            }
+        }
         cx.lua.trigger_event("OnGameStart", &[]);
         cx.lua.trigger_event("OnLoad", &[]);
         // TODO(port): `PoolCaps.onLoadingFinished()`,
@@ -379,6 +386,7 @@ impl GameState for IngameState {
         // TODO(port): the display focus listeners, Steam rich presence,
         // `UIManager.useUiFbo`, the FPS graph, `UIManager.updateBeforeFadeOut`.
         set_music_state("MainMenu");
+        crate::world_pick::uninstall();
         // TODO(port): the `ScreenFader` fade to black, rendering the world
         // until it ends; `RenderThread.setWaitForRenderState(false)`.
         if let Some(w) = cx.world.as_mut() {

@@ -43,6 +43,8 @@ pub enum PickClass {
     Generator,
     /// `IsoWaveSignal` (radios, televisions).
     WaveSignal,
+    /// `IsoTree`.
+    Tree,
 }
 
 /// The sprite properties the picker tests.
@@ -194,6 +196,7 @@ impl WorldPick<'_> {
             ObjectKind::WindowFrame { north } => PickClass::WindowFrame {
                 has_window: window_on_edge(sq, *north)?,
             },
+            ObjectKind::Tree(_) => PickClass::Tree,
             ObjectKind::Curtain(_) => PickClass::Curtain,
             ObjectKind::LightSwitch(_) => PickClass::LightSwitch,
             ObjectKind::Generator(_) => PickClass::Generator,

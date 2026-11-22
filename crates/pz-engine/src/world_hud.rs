@@ -94,6 +94,7 @@ fn kind(c: PickClass) -> PickKind {
         PickClass::LightSwitch => PickKind::LightSwitch,
         PickClass::Generator => PickKind::Generator,
         PickClass::WaveSignal => PickKind::WaveSignal,
+        PickClass::Tree => PickKind::Tree,
     }
 }
 
