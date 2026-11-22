@@ -626,6 +626,7 @@ fn by_type(
         let container = container.borrow();
         kinds.iter().flatten().any(|kind| **kind == *container.kind)
     }))
+    master_object::register(thread);
 }
 
 pub(crate) fn object_value(object: &IsoObjectRef) -> LuaResult<Value> {
@@ -772,5 +773,6 @@ pub(crate) fn has_component(value: &Value, kind: pz_entity::ComponentType) -> Lu
 }
 mod position;
 
+mod master_object;
 #[cfg(test)]
 mod tests;
