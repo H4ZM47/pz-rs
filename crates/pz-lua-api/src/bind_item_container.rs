@@ -1614,7 +1614,7 @@ pub(crate) fn on_fluid_update(item: &ItemRef) -> pz_entity::runtime_load::HostRe
 
 /// `item.getFluidContainer()` decoded against the environment's entity
 /// registries.
-fn fluid_container(i: &InventoryItem) -> Option<pz_entity::FluidContainer> {
+pub(crate) fn fluid_container(i: &InventoryItem) -> Option<pz_entity::FluidContainer> {
     let e = item_env();
     match e.entity() {
         Some(ctx) => i.get_fluid_container(ctx),
@@ -1623,7 +1623,7 @@ fn fluid_container(i: &InventoryItem) -> Option<pz_entity::FluidContainer> {
 }
 
 /// `FluidInstance.getFluid().getFluidTypeString()` (`None`: no fluid).
-fn fluid_name(f: &pz_entity::FluidInstance) -> Option<String> {
+pub(crate) fn fluid_name(f: &pz_entity::FluidInstance) -> Option<String> {
     use pz_entity::fluids::FluidRef;
     use pz_entity::Lookup;
     let e = item_env();

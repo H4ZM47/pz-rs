@@ -240,20 +240,29 @@ fn eval(class: &ClassFile, method: &str, params: Option<&[Value]>) -> Result<(Ve
                     }
                 }
             }
-            // invokedynamic (a lambda or string concatenation): its
-            // arguments are consumed and its value is not modelled.
+            // invokedynamic: a string concatenation becomes a call whose
+            // descriptor is its recipe (`\u{1}` marks an argument); a
+            // lambda's arguments are consumed and its value is not modelled.
             0xba => {
-                let n = match class.constant(u16_at(pc + 1)?)? {
+                let index = u16_at(pc + 1)?;
+                let n = match class.constant(index)? {
                     crate::class::Constant::InvokeDynamic(_, nt) => match class.constant(*nt)? {
                         crate::class::Constant::NameAndType(_, d) => descriptor_args(class.utf8(*d)?).0,
                         _ => 0,
                     },
                     _ => 0,
                 };
-                for _ in 0..n {
-                    pop(&mut stack);
-                }
-                stack.push(Value::Unknown);
+                let mut args: Vec<Value> = (0..n).map(|_| pop(&mut stack)).collect();
+                args.reverse();
+                stack.push(match class.indy_concat_recipe(index) {
+                    Some(recipe) => Value::Call {
+                        class: "java/lang/invoke/StringConcatFactory".into(),
+                        name: "makeConcatWithConstants".into(),
+                        descriptor: recipe,
+                        args,
+                    },
+                    None => Value::Unknown,
+                });
             }
             0xbc | 0xbd => {
                 let len = match pop(&mut stack) {
