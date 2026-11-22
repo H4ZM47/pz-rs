@@ -1019,6 +1019,12 @@ fn register_inventory_item(thread: &mut Thread) {
     get!(b, "isFavorite", |i| Value::from(i.favorite));
     get!(b, "isActivated", |i| Value::from(i.activated));
     get!(b, "isInfected", |i| Value::from(i.zombie_infected));
+    // `getR/G/B/A`: the components of `col` (the tint item icons are drawn
+    // with), not `colorRed/Green/Blue`.
+    get!(b, "getR", |i| f(i.col[0]));
+    get!(b, "getG", |i| f(i.col[1]));
+    get!(b, "getB", |i| f(i.col[2]));
+    get!(b, "getA", |i| f(i.col[3]));
     get!(b, "getColorRed", |i| f(i.color_red));
     get!(b, "getColorGreen", |i| f(i.color_green));
     get!(b, "getColorBlue", |i| f(i.color_blue));
@@ -1966,6 +1972,18 @@ mod tests {
         assert!(matches!(r[5], Value::Bool(true)));
         assert!(matches!(r[6], Value::Bool(true)));
         assert_eq!(item.borrow().condition, 0);
+    }
+
+    /// `ISEquippedItem.render` tints the hand icons with `getR/G/B/A`.
+    #[test]
+    fn item_tint_components() {
+        let mut thread = item_thread();
+        let item = make(ItemClass::Normal, "Bat", |_| {});
+        item.borrow_mut().col = [0.25, 0.5, 0.75, 0.125];
+        thread.globals().set_str("item", item_value(&item));
+        let r = run(&mut thread, "return item:getR(), item:getG(), item:getB(), item:getA()");
+        let n: Vec<f64> = r.iter().map(|v| match v { Value::Num(n) => *n, _ => f64::NAN }).collect();
+        assert_eq!(n, [0.25, 0.5, 0.75, 0.125]);
     }
 
     #[test]
