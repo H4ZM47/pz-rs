@@ -147,6 +147,10 @@ pub fn set_climate_settings(s: ClimateSettings) {
     SETTINGS.with(|c| *c.borrow_mut() = s);
 }
 
+pub(crate) fn set_lock_fps(fps: i32) {
+    SETTINGS.with(|c| c.borrow_mut().lock_fps = fps);
+}
+
 pub fn climate_settings() -> ClimateSettings {
     SETTINGS.with(|c| c.borrow().clone())
 }

@@ -544,6 +544,7 @@ pub fn register(
     events: Option<EventManager>,
     core: Rc<RefCell<Core>>,
 ) -> Rc<Ctx> {
+    sync_frame_rate(&core.borrow());
     let object = Value::Object(Rc::new(CoreObject { core: core.clone() }));
     let cx = Rc::new(Ctx {
         core,
@@ -743,6 +744,13 @@ fn register_statics(b: &ClassBuilder, cx: &Rc<Ctx>) {
 }
 
 /// Methods that are not a single option `getValue()` / `setValue()`.
+/// Update frame-counted UI and simulation timings when Core applies options.
+fn sync_frame_rate(core: &Core) {
+    let fps = core.performance.lock_fps;
+    pz_ui::with_ui(|m| m.lock_fps = fps);
+    crate::bind_climate::set_lock_fps(fps);
+}
+
 fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     macro_rules! get {
         ($name:literal, $f:ident) => {
@@ -830,7 +838,12 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
         "setOptionTieredZombieUpdates",
         set_option_tiered_zombie_updates
     );
-    set_int!("setFramerate", set_framerate);
+    def(b, cx, "setFramerate", |cx, c| {
+        let mut core = cx.core_mut();
+        core.set_framerate(int_arg(c, 1));
+        sync_frame_rate(&core);
+        Ok(Ret::Void)
+    });
     get!("loadedShader", loaded_shader);
     get!("getUseShaders", get_use_shaders);
     set_bool!("setUseShaders", set_use_shaders);
@@ -941,12 +954,14 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     });
 
     // ---- options.ini ----
-    def(b, cx, "loadOptions", |cx, _| {
-        Ok(cx.core_mut().load_options().map_err(io_error)?.into())
-    });
-    def(b, cx, "loadOptions_OLD", |cx, _| {
-        Ok(cx.core_mut().load_options().map_err(io_error)?.into())
-    });
+    for name in ["loadOptions", "loadOptions_OLD"] {
+        def(b, cx, name, |cx, _| {
+            let mut core = cx.core_mut();
+            let loaded = core.load_options().map_err(io_error)?;
+            sync_frame_rate(&core);
+            Ok(loaded.into())
+        });
+    }
     def(b, cx, "saveOptions", |cx, _| {
         cx.core_mut().save_options().map_err(io_error)?;
         Ok(Ret::Void)
@@ -2262,6 +2277,31 @@ mod tests {
         assert!(c2.load_options().unwrap());
         assert_eq!(c2.get_option_sound_volume(), 4);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn frame_rate_reaches_ui_and_simulation_after_register_set_and_reload() {
+        let core = Rc::new(RefCell::new(Core::new()));
+        let dir = std::env::temp_dir().join(format!("pz-rate-reload-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        core.borrow_mut().set_cache_dir(&dir);
+        core.borrow_mut().set_framerate(13);
+        let mut t = setup(core);
+        let check = |fps| {
+            assert_eq!(crate::bind_climate::climate_settings().lock_fps, fps);
+            pz_ui::with_ui(|m| {
+                m.fade(2.0, true);
+                assert_eq!(m.fade_in_time_max, fps * 2);
+            });
+        };
+        check(30);
+        run(&mut t, "getCore():setFramerate(6); getCore():saveOptions()");
+        check(120);
+        run(&mut t, "getCore():setFramerate(1)");
+        check(60);
+        run(&mut t, "getCore():loadOptions()");
+        check(120);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
