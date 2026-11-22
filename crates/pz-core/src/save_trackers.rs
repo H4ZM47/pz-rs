@@ -514,6 +514,14 @@ pub struct Statistics {
 
 /// `DataOutputStream.writeUTF`: a 16-bit length and modified UTF-8.
 fn write_modified_utf(out: &mut Vec<u8>, s: &str) -> io::Result<()> {
+    out.extend_from_slice(&encode_modified_utf(s)?);
+    Ok(())
+}
+
+/// The bytes `DataOutputStream.writeUTF(s)` writes: a big-endian 16-bit
+/// length, then `s` in Java's modified UTF-8 (UTF-16 units, NUL as two
+/// bytes). Strings over 65535 encoded bytes fail as in Java.
+pub fn encode_modified_utf(s: &str) -> io::Result<Vec<u8>> {
     let mut b = Vec::new();
     for c in s.encode_utf16() {
         match c {
@@ -534,15 +542,22 @@ fn write_modified_utf(out: &mut Vec<u8>, s: &str) -> io::Result<()> {
             "java.io.UTFDataFormatException: encoded string too long",
         ));
     }
+    let mut out = Vec::with_capacity(2 + b.len());
     out.put_i16(b.len() as u16 as i16);
     out.extend_from_slice(&b);
-    Ok(())
+    Ok(out)
 }
 
 /// `DataInputStream.readUTF`.
 fn read_modified_utf(r: &mut JavaReader<'_>) -> io::Result<String> {
     let n = r.get_u16()? as usize;
-    let b = r.take(n)?;
+    decode_modified_utf(r.take(n)?)
+}
+
+/// The string of `DataInputStream.readUTF`'s `n` body bytes (after its
+/// 16-bit length).
+pub fn decode_modified_utf(b: &[u8]) -> io::Result<String> {
+    let n = b.len();
     let mut units = Vec::with_capacity(n);
     let mut i = 0;
     let malformed = || bad("java.io.UTFDataFormatException: malformed input");
