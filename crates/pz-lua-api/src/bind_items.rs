@@ -29,6 +29,7 @@ mod on_create_callbacks;
 mod on_create_tests;
 pub(crate) mod on_create_data;
 mod reading;
+mod recipe_code_on_test;
 pub(crate) mod row_read_flags;
 
 use crate::bind_java_util::JavaList;
@@ -1158,6 +1159,20 @@ fn register_inventory_item(thread: &mut Thread) {
         i.custom_weight = bool_arg(c, 1);
         Ok(Value::Nil)
     });
+    with!(b, "setWorldScale", |i, c| {
+        i.world_scale = num_arg(c, 1) as f32;
+        Ok(Value::Nil)
+    });
+    // `setTooltip`: `getModData().rawset("Tooltip", tooltip)`, then the
+    // field. Here the field stays the script's tooltip (`getTooltip`
+    // reads the mod data first).
+    b.method("setTooltip", |c| {
+        let item = this(c)?;
+        let value = c.arg(1);
+        let value = (!value.is_nil()).then_some(value);
+        crate::item_tooltip::mod_set(&item, "Tooltip", value)?;
+        Ok(0)
+    });
     envd!(b, "setCurrentUses", |r, e, ctx, _o, c| {
         r.borrow_mut()
             .set_current_uses_with(int_arg(c, 1), Some(ctx));
@@ -1505,6 +1520,24 @@ fn register_food(thread: &mut Thread) {
     get!(b, "getProteins", |i| food(&i, |x| x.proteins));
     get!(b, "getLipids", |i| food(&i, |x| x.lipids));
     get!(b, "getCarbohydrates", |i| food(&i, |x| x.carbohydrates));
+    // `Food` setters for the fields above: plain stores.
+    macro_rules! set_food {
+        ($name:literal, $field:ident) => {
+            b.method($name, |c| {
+                let item = this(c)?;
+                if let ItemKind::Food(food) = &mut item.borrow_mut().kind {
+                    food.$field = num_arg(c, 1) as f32;
+                }
+                Ok(0)
+            });
+        };
+    }
+    set_food!("setCalories", calories);
+    set_food!("setProteins", proteins);
+    set_food!("setLipids", lipids);
+    set_food!("setCarbohydrates", carbohydrates);
+    set_food!("setHungChange", hung_change);
+    set_food!("setBaseHunger", base_hunger);
     get!(b, "getHeat", |i| food(&i, |x| x.heat));
     get!(b, "getPainReduction", |i| food(&i, |x| x.pain_reduction));
     get!(b, "getEndChange", |i| food(&i, |x| x.end_change));
@@ -1837,6 +1870,7 @@ pub fn register(thread: &mut Thread) {
         ))
     });
     native_item_code_on_create::register(thread);
+    recipe_code_on_test::register(thread);
 }
 
 #[cfg(test)]
@@ -2261,5 +2295,34 @@ mod tests {
         );
         assert!(num(&r[0]) == 0.0 && num(&r[0]).is_sign_negative());
         assert!(num(&r[1]) == 0.0 && num(&r[1]).is_sign_negative());
+    }
+
+    #[test]
+    fn fish_on_create_calls_are_bound() {
+        let mut t = item_thread();
+        let fish = make(ItemClass::Food, "FlatheadCatfish", |_| {});
+        let small = make(ItemClass::Food, "BaitFish", |_| {});
+        let other = make(ItemClass::Normal, "Rope", |_| {});
+        t.globals().set_str("fish", item_value(&fish));
+        t.globals().set_str("small", item_value(&small));
+        t.globals().set_str("other", item_value(&other));
+        let r = run(
+            &mut t,
+            "fish:setCalories(10) fish:setLipids(2) fish:setCarbohydrates(3) fish:setProteins(4)
+             fish:setBaseHunger(-0.25) fish:setHungChange(fish:getBaseHunger())
+             fish:setWorldScale(0.5) fish:setActualWeight(3) fish:setCustomWeight(true)
+             small:setActualWeight(0.5) small:setCustomWeight(true)
+             fish:setTooltip('Tooltip_Fishing_TooSmallForSlicing')
+             return fish:getCalories(), fish:getLipids(), fish:getCarbohydrates(), fish:getProteins(),
+                 fish:getHungChange(), fish:getModData().Tooltip,
+                 RecipeCodeOnTest.cutFish(fish, nil), RecipeCodeOnTest.cutFish(small, nil),
+                 RecipeCodeOnTest.cutFish(other, nil), RecipeCodeOnTest.cutFish(nil, nil)",
+        );
+        let nums: Vec<f64> = r[..5].iter().map(num).collect();
+        assert_eq!(nums, [10.0, 2.0, 3.0, 4.0, -0.25]);
+        assert_eq!(pz_kahlua::exec::java_value_of(&r[5]), "Tooltip_Fishing_TooSmallForSlicing");
+        assert_eq!(fish.borrow().world_scale, 0.5);
+        let cut: Vec<bool> = r[6..].iter().map(|v| matches!(v, Value::Bool(true))).collect();
+        assert_eq!(cut, [true, false, true, true]);
     }
 }
