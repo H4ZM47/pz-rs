@@ -245,8 +245,29 @@ pub(crate) fn item_argument(value: &Value) -> LuaResult<pz_inventory::shared::It
     Err(LuaError::runtime("expected InventoryItem receiver"))
 }
 
+/// `IsoObject.isGenericCraftingSurface()` for the object behind `world`.
+pub(crate) fn is_generic_crafting_surface(world: &LuaWorldObject) -> LuaResult<bool> {
+    class_of(&world.object)?;
+    let sprites = crate::bind_sprites::manager()?;
+    let sprites = sprites
+        .try_borrow()
+        .map_err(|_| borrowed("world object sprite manager"))?;
+    let object = world
+        .object
+        .try_borrow()
+        .map_err(|_| borrowed("world object crafting surface"))?;
+    object.is_generic_crafting_surface(&sprites).map_err(host_error)
+}
+
 pub(crate) fn register_classes(thread: &mut Thread) {
-    crate::expose::expose_class(thread, ISO_OBJECT, Some(GAME_ENTITY));
+    let object = crate::expose::expose_class(thread, ISO_OBJECT, Some(GAME_ENTITY));
+    object.method("isGenericCraftingSurface", |c| {
+        let surface = match object_from_value(&c.arg(0)) {
+            Some(world) => is_generic_crafting_surface(world)?,
+            None => return Err(LuaError::runtime("expected IsoObject receiver")),
+        };
+        Ok(c.push(surface))
+    });
     crate::expose::expose_class(thread, WORLD_INVENTORY_OBJECT, Some(ISO_OBJECT));
 }
 
