@@ -74,6 +74,22 @@ pub fn route_print(thread: &mut Thread) {
     thread.out = Box::new(|s| debug::with(|d| d.println(DebugType::Lua, s)));
 }
 
+/// Route what `KahluaThread` logs about Lua errors to this thread's log:
+/// `flushErrorMessage` (the `tableget` dump and `doStacktraceProper`'s Lua
+/// stack) writes `DebugType.General.error`, and `luaMainloop` calls
+/// `ExceptionLogger.logException(e)` for each exception a Lua frame raises.
+pub fn route_errors(thread: &mut Thread) {
+    thread.log = Box::new(|s| {
+        let caller = StackElement::new("se.krka.kahlua.vm.KahluaThread", "flushErrorMessage");
+        DebugType::General.error(Some(&caller), s)
+    });
+    thread.log_exception = Box::new(|e| {
+        let caller = StackElement::new("se.krka.kahlua.vm.KahluaThread", "luaMainloop");
+        let ex = LogThrowable::new(pz_kahlua::error_log::throwable_string(e));
+        debug::log_exception(&ex, Some(&caller));
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Argument helpers
 // ---------------------------------------------------------------------------
@@ -947,6 +963,27 @@ mod tests {
         assert_eq!(
             log.stderr(),
             "ERROR: Lua          f:0 at (UnknownStack)                      > boom 2.3\n"
+        );
+    }
+
+    #[test]
+    fn lua_errors_reach_the_log() {
+        let (mut t, sink) = setup();
+        route_errors(&mut t);
+        let e = run(&mut t, "local w = nil\nreturn w.width").unwrap_err();
+        assert!(e.starts_with("attempted index: width of non-table: null"), "{e}");
+        // The tableget dump, then the main loop's two entries.
+        assert_eq!(
+            sink.log().stderr(),
+            "ERROR: General      f:0 at KahluaThread.flushErrorMessage      > \
+             -------------------------------------------------------------\n\
+             attempted index: width of non-table: null\n\
+             ERROR: General      f:0> KahluaThread.luaMainloop> Exception thrown\n\
+             \tjava.lang.RuntimeException: attempted index: width of non-table: null at No Stack Trace Available.\n\
+             \tStack trace:\n\
+             ERROR: General      f:0 at KahluaThread.flushErrorMessage      > dumping Lua stack trace\n\
+             -----------------------------------------\nSTACK TRACE\n-----------------------------------------\n\
+             \tLua(BuiltIn).test(Unknown Source)\n"
         );
     }
 

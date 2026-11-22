@@ -123,6 +123,7 @@ impl LuaManager {
         let stdlib_path = fs.borrow().resolve("stdlib.lua");
         let stdlib_src = stdlib_path.and_then(|p| std::fs::read(p).ok());
         let stdlib_src = stdlib_src.map(|b| String::from_utf8_lossy(&b).into_owned());
+        crate::bind_debug::route_errors(&mut thread);
         stdlib::install(&mut thread, stdlib_src.as_deref())?;
         // The names the install's jar registers; the built-in lists when
         // there is no jar (unit tests, a bare media folder).
