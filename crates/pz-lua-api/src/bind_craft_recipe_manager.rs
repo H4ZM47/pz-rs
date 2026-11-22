@@ -729,25 +729,8 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
         let list = query_recipes(&query_sm, &query)?;
         Ok(c.push(script_list(&list)))
     });
-    // `hasPlayerRequiredSkill(requiredSkill, chr)`: false for a null
-    // argument.
-    b.static_fn("hasPlayerRequiredSkill", |c| {
-        let (skill, chr) = (c.arg(0), c.arg(1));
-        if skill.is_nil() || chr.is_nil() {
-            return Ok(c.push(false));
-        }
-        let call = |t: &mut Thread, this: &Value, name: &str, arg: Option<Value>| -> LuaResult<Value> {
-            let f = t.table_get(this, &Value::str(name))?;
-            let mut args = vec![this.clone()];
-            args.extend(arg);
-            t.call1(&f, &args)
-        };
-        let int = |v: &Value| pz_kahlua::exec::raw_tonumber(v).unwrap_or(0.0) as i32;
-        let perk = call(c.thread, &skill, "getPerk", None)?;
-        let have = int(&call(c.thread, &chr, "getPerkLevel", Some(perk))?);
-        let need = int(&call(c.thread, &skill, "getLevel", None)?);
-        Ok(c.push(have >= need))
-    });
+    // `hasPlayerRequiredSkill(requiredSkill, chr)` is registered with
+    // `RequiredSkill` in `bind_scripts::crafting`.
     b.static_fn("getUniqueRecipeItems", move |c| {
         let item = crate::bind_world_object::item_argument(&c.arg(0))?;
         let chr_value = c.arg(1);

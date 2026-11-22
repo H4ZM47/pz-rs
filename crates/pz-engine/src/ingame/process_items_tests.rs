@@ -41,6 +41,9 @@ fn paused_ingame_frames_preserve_real_cell_and_item_sound_queues() {
         pz_sound::system::SoundSystem::silent(),
     )));
     pz_lua_api::bind_world::set_cell(Some(pz_world::IsoCell::default()));
+    // An unpaused frame runs `WorldMapVisited.update()` (#265), which like
+    // the original needs `IsoWorld.instance.MetaGrid`.
+    pz_lua_api::bind_world::set_meta_grid(Some(pz_world::IsoMetaGrid::with_bounds(0, 0, 1, 1)));
     pz_lua_api::item_sound::reset();
     let item = pz_inventory::shared::new_item(InventoryItem::create(
         Rc::new(ItemTemplate::new(ItemClass::Normal, "Base", "Rock")),
@@ -122,5 +125,5 @@ fn paused_ingame_frames_preserve_real_cell_and_item_sound_queues() {
         cx.lua.thread.globals().get_str("processTickCount").as_num(),
         Some(1.0)
     );
-    assert!(cx.error.is_none());
+    assert!(cx.error.is_none(), "{:?}", cx.error.as_ref().map(|e| format!("{e:?}")));
 }

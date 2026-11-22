@@ -106,13 +106,15 @@ fn view3d_frame_makes_no_corpse_atlas_entry() {
         multiplier: 1.0,
     };
     let mut out = Vec::new();
+    // No regions and no weather fx (#268's inputs): neither reaches the corpses.
+    let regions = pz_world::isoregion::IsoRegions::new(0);
 
     renderer.view3d.mode = pz_world3d::ViewMode::FirstPerson;
-    renderer.render_player(&view, &mut v, Some(&mut models), &[], &mut out);
+    renderer.render_player(&view, &mut v, Some(&mut models), &[], &regions, None, &mut out);
     assert_eq!(renderer.corpse_error, None);
 
     // The isometric frame does reach the corpse.
     renderer.view3d.mode = pz_world3d::ViewMode::Iso;
-    renderer.render_player(&view, &mut v, Some(&mut models), &[], &mut out);
+    renderer.render_player(&view, &mut v, Some(&mut models), &[], &regions, None, &mut out);
     assert!(renderer.corpse_error.is_some());
 }

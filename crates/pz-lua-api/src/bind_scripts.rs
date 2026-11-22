@@ -1751,6 +1751,14 @@ mod tests {
         let sm = load("partial", &[("media/scripts/test.txt", scripts)]);
         // Resolves the output mapper results.
         sm.post_world_dictionary_init();
+        // `RequiredSkill.getPerk()` is the `PerkFactory.Perk` (#329).
+        {
+            use pz_scripts::registry::builtin::PerkDecl;
+            let decl = |f: &str| PerkDecl { field: f.into(), id: f.into(), parent: None };
+            sm.builtin_tables.borrow_mut().perks = ["None", "Woodwork", "MAX"].map(decl).to_vec();
+        }
+        crate::bind_characters::shared_characters().borrow_mut().perks =
+            pz_characters::skills::PerkFactory::from_tables(&sm.builtin_tables.borrow()).unwrap();
         let mut t = thread(sm);
         run(
             &mut t,
@@ -1765,7 +1773,7 @@ mod tests {
             assert(not sew:isUsesPartialItem(stone))
             assert(not sew:isUsesPartialItem(nil))
             assert(not eat:isUsesPartialItem(apple), "a destroy input")
-            assert(r:getRequiredSkill(0):getPerk() == 'W')
+            assert(tostring(r:getRequiredSkill(0):getPerk()) == "Woodwork")
             local mapper = r:getOutputs():get(0):getOutputMapper()
             assert(mapper:getOutputItem(nil):getFullName() == "Base.Stone")
             assert(mapper:getOutputItem(nil, true):getFullName() == "Base.Stone", "a mapper without inputs")
