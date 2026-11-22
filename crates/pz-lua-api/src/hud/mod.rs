@@ -1967,6 +1967,40 @@ mod tests {
         }
     }
 
+    /// `UIManager.getPicked()` is the context pick's `ClickObject`;
+    /// `getLastPicked()` is its tile once `updateTooltip` has run with the
+    /// mouse over it, and nil over nothing.
+    #[test]
+    fn picked_and_last_picked() {
+        install_textures(&[]);
+        install(HudHost {
+            players: Box::new(OnePlayer),
+            picking: Box::new(FakePicking),
+            ..HudHost::default()
+        });
+        let mut t = thread();
+        init_ui(&mut t);
+        assert!(eval(&mut t, "UIManager.getPicked() == nil and UIManager.getLastPicked() == nil").truthy());
+        with_ui(|m| {
+            m.picked = Some(pz_ui::PickedObject { tile: Value::str("barrel"), lx: 3, ly: 4 });
+        });
+        PICKED.with(|p| {
+            *p.borrow_mut() = Some(pz_ui::tooltip::TooltipObject {
+                id: 9,
+                have_special_tooltip: false,
+                square: Value::Nil,
+            })
+        });
+        assert!(eval(&mut t, "UIManager.getPicked() ~= nil and UIManager.getLastPicked() == nil").truthy());
+        tooltip::update_tooltip(&mut t, 400, 300).unwrap();
+        assert_eq!(eval(&mut t, "UIManager.getLastPicked()").as_str(), Some("barrel"));
+        // Nothing under the mouse.
+        with_ui(|m| m.picked = None);
+        PICKED.with(|p| *p.borrow_mut() = None);
+        tooltip::update_tooltip(&mut t, 400, 300).unwrap();
+        assert!(eval(&mut t, "UIManager.getPicked() == nil and UIManager.getLastPicked() == nil").truthy());
+    }
+
     /// The shared tooltip: built by init, follows a picked object with a
     /// special tooltip, filled by `DoSpecialTooltip` handlers through the
     /// Lua layout classes, hidden when nothing is drawn or nothing picked.

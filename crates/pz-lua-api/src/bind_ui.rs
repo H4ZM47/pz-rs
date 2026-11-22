@@ -938,6 +938,18 @@ fn register_element(thread: &mut Thread) {
     key_fn!("onKeyRelease", on_key_release, void);
 }
 
+/// `IsoObjectPicker.ClickObject` as Lua holds it.
+struct ClickObjectValue;
+
+impl LuaObject for ClickObjectValue {
+    fn class_name(&self) -> &str {
+        "zombie.iso.IsoObjectPicker$ClickObject"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 fn register_manager(thread: &mut Thread) {
     let b = expose_class(thread, UIMANAGER, None);
     b.field("DEBUGGER_FPS", 60);
@@ -1209,9 +1221,25 @@ fn register_manager(thread: &mut Thread) {
         Ok(c.push(0))
     });
     // TODO(world): picking and the remaining Java-side widgets.
+    // getPicked(): `UIManager.picked`, the last context pick's
+    // `IsoObjectPicker.ClickObject`. The class is not exposed, so Lua only
+    // holds and passes it.
+    b.static_fn("getPicked", |c| {
+        let v = with_ui(|m| m.picked.clone())
+            .map_or(Value::Nil, |_| Value::Object(Rc::new(ClickObjectValue)));
+        Ok(c.push(v))
+    });
+    // getLastPicked(): `UIManager.lastPicked`. `updateTooltip` sets it to
+    // `picked.tile` after the pick, so while it is set it is that tile.
+    b.static_fn("getLastPicked", |c| {
+        let v = if crate::hud::tooltip::has_last_picked() {
+            with_ui(|m| m.picked.as_ref().map(|p| p.tile.clone())).unwrap_or_default()
+        } else {
+            Value::Nil
+        };
+        Ok(c.push(v))
+    });
     s_nil!(
-        "getPicked",
-        "getLastPicked",
         "getPickedTile",
         "getPickedTileLocal",
         "getRightDownObject",

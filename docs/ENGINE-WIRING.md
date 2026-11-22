@@ -1003,6 +1003,11 @@ all installed assets, render paths or foreign platforms.
       pick in `UIManager.update` found. `IsoObject.setSpecialTooltip` /
       `haveSpecialTooltip` are bound for the map objects that set it
       (rain barrels, plants, traps).
+- [x] Lua `UIManager.getPicked()` / `getLastPicked()`: `UIManager.picked`
+      (the context pick's `ClickObject`, opaque to Lua) and
+      `UIManager.lastPicked` (its tile, set by `updateTooltip` while the
+      mouse is over it). `getPickedTile` / `getTileFromMouse` are still
+      nil (TODO(world): `getTileFromMouse`).
 - [x] Item tooltips: `item:DoTooltip(tooltip)` / `DoTooltipEmbedded` are
       bound with the item classes (`bind_items::register` →
       `item_tooltip::register`); the tooltip's `setCharacter` gives the
