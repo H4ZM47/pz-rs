@@ -198,6 +198,11 @@ impl WorldRender {
         }
         let look = on && !self.view3d_cursor_free;
         pz_input::set_mouse_look(look);
+        if !look {
+            // The world mouse follows the crosshair only under mouse-look
+            // (set in `render_player`); otherwise it is the real cursor.
+            pz_input::set_world_mouse(None);
+        }
         let (dx, dy) = pz_input::take_mouse_motion();
         if look {
             self.view3d.apply_mouse(dx, dy);
@@ -479,6 +484,19 @@ impl WorldRender {
         }
         let first_person = p == 0 && self.view3d.mode == pz_world3d::ViewMode::FirstPerson;
         let aspect = v.width as f32 / v.height.max(1) as f32;
+        // Port extension: under mouse-look the mouse acts where the
+        // crosshair meets the world. Picking and context menus read the
+        // isometric screen position, so hand them that point's.
+        let look = cam3.is_some() && pz_input::with_input(|i| i.mouse_look);
+        if let (true, Some(c3)) = (look, &cam3) {
+            let hit = c3.pick(aspect, 0.0, 0.0, &faces).map(|m| {
+                let [wx, wy, wz] = pz_world3d::from_model(m, [v.x, v.y, v.z]);
+                let sx = pz_render::iso::x_to_screen(wx, wy) - cam.off_x as f32;
+                let sy = pz_render::iso::y_to_screen(wx, wy, wz, 0) - cam.off_y as f32;
+                ((sx / cam.zoom) as i32, (sy / cam.zoom) as i32)
+            });
+            pz_input::set_world_mouse(hit);
+        }
         // TODO(port): corpses, world items, the water and sky surfaces
         // (`SkyBox`, `SurfaceChecks`) and the
         // `FrameExtras` (flies, highlights, markers, vision cone, fog).
@@ -580,9 +598,11 @@ impl WorldRender {
                 size,
                 view_proj: c3.view_proj(aspect).0,
                 sky: pz_world3d::frame::sky_colour(v.climate.climate.ambient),
+                eye: c3.eye,
                 faces: &faces,
                 models: &models,
                 screen: v.screen,
+                crosshair: look,
             };
             out.extend(pz_world3d::frame::scene_frame(&scene));
             return;

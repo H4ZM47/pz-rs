@@ -186,6 +186,9 @@ pub struct InputState {
     pub mouse_motion: (f64, f64),
     /// Whether mouse-look mode is requested.
     pub mouse_look: bool,
+    /// Port extension: where the world should treat the mouse as being
+    /// (unscaled screen pixels), set by the 3D view while mouse-look is on.
+    pub world_mouse: Option<(i32, i32)>,
     pub requests: Vec<WindowRequest>,
     /// Printable key names learned from the keyboard layout (LWJGL code ->
     /// upper-cased character), as `glfwGetKeyName` reports them.
@@ -206,6 +209,7 @@ impl Default for InputState {
             focused: true,
             mouse_motion: (0.0, 0.0),
             mouse_look: false,
+            world_mouse: None,
             requests: Vec::new(),
             layout_names: Vec::new(),
             start: Instant::now(),
@@ -328,6 +332,17 @@ pub fn set_mouse_look(on: bool) {
             i.request(WindowRequest::SetMouseLook(on));
         }
     });
+}
+
+/// Port extension: sets (or clears) the world mouse override, see
+/// [`InputState::world_mouse`].
+pub fn set_world_mouse(p: Option<(i32, i32)>) {
+    with_input(|i| i.world_mouse = p);
+}
+
+/// The world mouse override, if any.
+pub fn world_mouse() -> Option<(i32, i32)> {
+    with_input(|i| i.world_mouse)
 }
 
 #[cfg(test)]
