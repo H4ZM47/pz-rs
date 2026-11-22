@@ -219,8 +219,9 @@ impl ClimateContext for LuaClimateContext {
     fn is_debug(&self) -> bool {
         crate::bind_core::shared_core().borrow().debug
     }
-    fn game_mode(&self) -> String {
-        crate::bind_core::shared_core().borrow().get_game_mode()
+    fn is_winter_is_coming(&self) -> bool {
+        crate::bind_core::shared_core().borrow().is_game_mode_constant("WINTER_IS_COMING")
+            .expect("GameMode class authority unavailable")
     }
     fn is_force_snow(&self) -> bool {
         crate::bind_core::shared_core().borrow().is_force_snow()

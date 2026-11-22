@@ -2401,6 +2401,15 @@ mod tests {
 
     #[test]
     fn get_world_and_zone_registration() {
+        use pz_classfile::{StaticInit, Value as ClassValue};
+        let initializers = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial")].into_iter().map(|(field, id)| StaticInit {
+            class: "zombie/core/GameMode".into(), field: field.into(),
+            value: ClassValue::Call { class: "zombie/core/GameMode".into(), name: "registerBase".into(), descriptor: String::new(), args: vec![ClassValue::Str(id.into())] },
+        }).collect::<Vec<_>>();
+        let modes = Rc::new(pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&initializers).unwrap());
+        let mut core = pz_core::core::Core::default();
+        core.install_game_mode_statics(modes.clone()).unwrap();
+        crate::bind_core::install_core(Rc::new(RefCell::new(core)));
         let dir = load_world("lua-world");
         let maps = dir.0.join("media/maps/Test");
         std::fs::write(
@@ -2421,6 +2430,7 @@ mod tests {
         crate::bind_java_util::register(&mut t);
         register(&mut t);
         lua_world::register(&mut t, fs);
+        t.globals().set_str("tutorialMode", crate::bind_registry::key_value(crate::bind_registry::GAME_MODE_CLASS, modes.constant("TUTORIAL")));
         run(
             &mut t,
             r#"
@@ -2449,13 +2459,15 @@ mod tests {
             w:setLuaPosX(300); w:setLuaPosY(-5)
             check(w:getLuaPosX() == 300 and w:getLuaSpawnCellX() == 44 and w:getLuaSpawnCellY() == 251)
             w:setWorld("  save  "); check(w:getWorld() == "save")
-            w:setGameMode("LastStand"); check(w:getGameMode() == "LastStand")
+            w:setGameMode("Tutorial"); check(w:getGameMode() == tutorialMode)
+            w:setGameMode("Sandbox"); check(w:getGameMode() ~= tutorialMode)
+            w:setGameMode(tutorialMode); check(w:getGameMode() == tutorialMode)
             "#,
         );
         assert_eq!(lua_world::take_spawn_origins(), vec![(1, 2, 3, 4)]);
         assert!(lua_world::take_spawn_origins().is_empty());
         assert_eq!(lua_world::shared_water_flow().borrow().zones.len(), 1);
-        assert!(crate::bind_core::shared_core().borrow().last_stand);
+        assert!(crate::bind_core::shared_core().borrow().is_tutorial().unwrap());
         with_world(|w| {
             let g = w.meta_grid.as_ref().unwrap();
             let nav: Vec<_> = g

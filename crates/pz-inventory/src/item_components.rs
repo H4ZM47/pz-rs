@@ -285,6 +285,9 @@ impl ItemComponents {
         writer: &mut Writer,
         world_version: i32,
     ) -> Result<(), RuntimeError> {
+        if let Some(mut entity_writer) = writer.native_entity_writer() {
+            return self.runtime.write_to(&mut entity_writer, world_version);
+        }
         let mut entity_writer = pz_entity::io::Writer::new();
         let result = self.runtime.write_to(&mut entity_writer, world_version);
         writer.bytes(&entity_writer.buf);

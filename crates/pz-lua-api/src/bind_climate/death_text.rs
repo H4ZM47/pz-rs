@@ -91,7 +91,7 @@ pub(super) fn get_game_mode_text(c: &mut NativeCall<'_>) -> LuaResult<usize> {
     let core = crate::bind_core::shared_core();
     let s = {
         let core = core.borrow();
-        game_mode_text(&core.game_mode, core.challenge_id.as_deref(), core.debug, text_or_null)
+        game_mode_text(core.game_mode_name().unwrap_or("null"), core.challenge_id.as_deref(), core.debug, text_or_null)
     };
     Ok(c.push(s))
 }

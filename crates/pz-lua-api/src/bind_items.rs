@@ -31,6 +31,7 @@ pub(crate) mod on_create_data;
 mod reading;
 mod recipe_code_on_test;
 pub(crate) mod row_read_flags;
+mod texture_fields;
 
 use crate::bind_java_util::JavaList;
 use crate::expose::{
@@ -1924,6 +1925,7 @@ pub fn register(thread: &mut Thread) {
     reading::register(thread);
     row_read_flags::register(thread);
     context_menu::register(thread);
+    texture_fields::register(thread);
     for c in [
         "zombie.inventory.types.ComboItem",
         "zombie.inventory.types.AnimalInventoryItem",

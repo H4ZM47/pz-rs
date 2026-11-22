@@ -21,7 +21,7 @@ use pz_world::fix2x::Fix2xTable;
 use pz_world::isoregion::IsoRegions;
 use pz_world::meta_save::{DefaultMetaEnv, MetaWorld, NetRole};
 use pz_world::save::items::AllItems;
-use pz_world::save::{NoSaveHooks, SaveSettings, SaveTables};
+use pz_world::save::{SaveHooks, SaveSettings, SaveTables};
 use pz_world::streamer::{calc_chunk_width, ChunkStreamer, StreamCtx};
 use pz_world::zone_save::{ClockUuids, SpawnedZombieZones};
 use pz_world::{
@@ -31,6 +31,35 @@ use pz_world::{
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
+struct EngineSaveHooks<'a> {
+    render: &'a Rc<RefCell<Option<crate::world_render::WorldRender>>>,
+}
+impl SaveHooks for EngineSaveHooks<'_> {
+    fn mannequin_wear_item(&self, object: &pz_world::IsoObjectRef, item: &pz_inventory::shared::ItemRef) -> pz_inventory::io::SaveResult<()> {
+        use pz_inventory::io::SaveError;
+        if !pz_lua_api::world_mannequins::wear_item_for_save(object, item)? {
+            return Ok(());
+        }
+        let square = object.try_borrow()
+            .map_err(|_| SaveError("mannequin render invalidation: BorrowedObject".into()))?
+            .square_slot().cloned();
+        let Some(square) = square else { return Ok(()) };
+        let (x, y, z) = {
+            let square = square.try_borrow()
+                .map_err(|_| SaveError("mannequin render invalidation: BorrowedSquare".into()))?;
+            (square.x, square.y, square.z)
+        };
+        let mut render = self.render.try_borrow_mut()
+            .map_err(|_| SaveError("mannequin render invalidation: BorrowedRenderer".into()))?;
+        if let Some(render) = render.as_mut() {
+            render.invalidate_floor_chunk(x.div_euclid(8), y.div_euclid(8), z, u64::MAX);
+        }
+        // TODO(port): the actual renderSquareOverride, mannequin atlas and
+        // AnimatedModel owners are not yet wired into the renderer.
+        Ok(())
+    }
+}
 
 /// `IsoWorld.WorldVersion` in this build (the save format the port reads).
 pub const WORLD_VERSION: i32 = 249;
@@ -343,6 +372,7 @@ impl IsoWorld {
             world_gen,
             items,
             erosion,
+            render,
             ..
         } = self;
         // `GameTime.getWorldAgeHours()` as the item loads read it.
@@ -406,7 +436,7 @@ impl IsoWorld {
                     // The save's `WorldDictionary`; without one (a new game, see
                     // `world_dictionary::init`) items load raw.
                     items,
-                    save_hooks: &NoSaveHooks,
+                    save_hooks: &EngineSaveHooks { render },
                     brand_new: world_gen
                         .as_mut()
                         .map(|h| h as &mut dyn pz_world::chunk::BrandNewHook),
@@ -479,7 +509,7 @@ impl IsoWorld {
                 c.tutorial,
                 c.is_no_save(),
                 c.is_last_stand(),
-                c.game_mode.clone(),
+                c.game_mode_name().unwrap_or("null").to_owned(),
             )
         };
         if !tutorial {
@@ -1094,7 +1124,8 @@ end
         s.reset_to_default();
         // `updateFromLua()`.
         let mut g = gt.borrow_mut();
-        if pz_lua_api::bind_core::shared_core().borrow().game_mode == "LastStand" {
+        // Legacy name-based approximation; the installed caller still needs verification.
+        if pz_lua_api::bind_core::shared_core().borrow().game_mode_name() == Some("LastStand") {
             g.multiplier_bias = 1.2;
         }
         if let Some(v) = &vars {

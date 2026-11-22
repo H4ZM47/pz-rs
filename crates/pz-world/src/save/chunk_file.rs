@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use super::io::{crc32, err, has, BitHeaderWrite, Reader, SaveResult, Writer};
 use super::lua_table::LuaTable;
-use super::object_io::{load_object_slot_data_projection, save_object};
+use super::object_io::{load_object_slot_data_projection, save_object, save_object_ref};
 use super::vehicle::BaseVehicle;
 use super::visual::IsoDeadBody;
 use super::{SaveCtx, WORLD_VERSION};
@@ -30,6 +30,8 @@ use crate::java::fastfloor;
 use crate::objects::ObjectKind;
 
 mod activation;
+#[cfg(test)]
+mod live_save_tests;
 pub use activation::{
     finish_chunk_erosion, finish_square_erosion, ChunkActivationCursor, ChunkActivationError,
     ChunkActivationStep,
@@ -539,6 +541,81 @@ pub fn save_square(w: &mut Writer, ctx: &SaveCtx<'_>, sq: &IsoGridSquare) -> Sav
             save_object(w, ctx, &o)?;
         }
     }
+    save_square_tail(w, ctx, sq, header)
+}
+
+/// Actual square continuation. Retain the physical receiver, release its
+/// guard around object saves, and read late square fields after callbacks.
+/// The archive/value entry above remains a separate synchronous profile.
+pub fn save_square_ref(
+    w: &mut Writer,
+    ctx: &SaveCtx<'_>,
+    square: &crate::square_slot::SquareRef,
+) -> SaveResult<()> {
+    // save_chunk holds the chunk and its square slot for this entire call.
+    // The live mannequin path retains owners detached by its item callbacks.
+    let (header, had_objects) = {
+        let square = square.try_borrow().map_err(|_| {
+            super::io::SaveError("actual square save prefix: BorrowedSquare".into())
+        })?;
+        save_erosion_square(w, square.erosion.as_ref());
+        let mut header = BitHeaderWrite::alloc(w, 1);
+        let count = square.objects.len();
+        if count != 0 {
+            header.add(1);
+            match count {
+                2 => header.add(2),
+                3 => header.add(4),
+                1 => {},
+                _ => header.add(8),
+            }
+            if count >= 4 { w.i16(count as i16); }
+        }
+        (header, count != 0)
+    };
+    if had_objects {
+        let mut index = 0;
+        loop {
+            // Native re-reads objects.size/get on each iteration. Do not
+            // freeze a copied list before an earlier object's callbacks.
+            let object = {
+                let square = square.try_borrow().map_err(|_| {
+                    super::io::SaveError("actual square save objects: BorrowedSquare".into())
+                })?;
+                let Some(slot) = square.objects.get(index) else { break };
+                slot.ref_handle()
+            };
+            let id = object.try_borrow().map_err(|_| {
+                super::io::SaveError("actual square save flags: BorrowedObject".into())
+            })?.id;
+            let flags = {
+                let square = square.try_borrow().map_err(|_| {
+                    super::io::SaveError("actual square save flags: BorrowedSquare".into())
+                })?;
+                let mut flags = 0;
+                if square.special_objects.contains(&id) { flags |= 2; }
+                if square.world_objects.try_borrow().map_err(|_| {
+                    super::io::SaveError("actual square save world list: BorrowedList".into())
+                })?.contains_object(&object) { flags |= 4; }
+                flags
+            };
+            w.i8(flags);
+            save_object_ref(w, ctx, &object)?;
+            index += 1;
+        }
+    }
+    let square = square.try_borrow().map_err(|_| {
+        super::io::SaveError("actual square save tail: BorrowedSquare".into())
+    })?;
+    save_square_tail(w, ctx, &square, header)
+}
+
+fn save_square_tail(
+    w: &mut Writer,
+    ctx: &SaveCtx<'_>,
+    sq: &IsoGridSquare,
+    mut header: BitHeaderWrite,
+) -> SaveResult<()> {
     if sq.overlay_done {
         header.add(16);
     }
@@ -638,14 +715,19 @@ pub fn save_chunk(ch: &IsoChunk, ctx: &SaveCtx<'_>) -> SaveResult<Vec<u8>> {
                 let Some(gs_owner) = ch.get_grid_square(x, y, z) else {
                     continue;
                 };
-                let gs = gs_owner.borrow();
-                if !should_save(&gs) {
+                let should_save = {
+                    let square = gs_owner.try_borrow().map_err(|_| {
+                        super::io::SaveError("actual chunk save square: BorrowedSquare".into())
+                    })?;
+                    should_save(&square)
+                };
+                if !should_save {
                     continue;
                 }
                 flags |= 1i64 << (z + 32);
                 min1 = min1.min(z);
                 max1 = max1.max(z);
-                save_square(&mut w, ctx, &gs)?;
+                save_square_ref(&mut w, ctx, &gs_owner)?;
             }
             w.patch_i64(flag_pos, flags);
         }

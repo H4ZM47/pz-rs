@@ -97,17 +97,27 @@ struct App {
     ui_models: Option<Rc<RefCell<crate::ui_models::UiModels>>>,
 }
 
+fn launch_core(launch: &Launch) -> crate::failure::EngineResult<Rc<RefCell<Core>>> {
+    let core = pz_lua_api::bind_core::shared_core();
+    {
+        let mut c = core.borrow_mut();
+        let path = launch.game_dir.join("projectzomboid.jar");
+        if path.is_file() {
+            let jar = pz_classfile::Jar::open(path).map_err(|e| format!("open game JAR: {e}"))?;
+            crate::boot::install_game_mode_class(&jar, &mut c)?;
+        }
+        c.set_cache_dir(&launch.cache_dir);
+        let _ = c.load_options();
+    }
+    Ok(core)
+}
+
 /// Boot (`GameWindow.init`) and run the main menu until the window closes.
 pub fn run(launch: Launch) -> crate::failure::EngineResult<()> {
     let _retirement_boundary = HostRetirementBoundary;
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let core = pz_lua_api::bind_core::shared_core();
-    {
-        let mut c = core.borrow_mut();
-        c.set_cache_dir(&launch.cache_dir);
-        let _ = c.load_options();
-    }
+    let core = launch_core(&launch)?;
     let mut app = App {
         launch,
         window: None,
@@ -255,7 +265,8 @@ impl App {
                 crate::boot::load_key_bindings(self.lua.as_mut().ok_or("no Lua")?)?;
                 {
                     let mut c = self.core.borrow_mut();
-                    c.set_game_mode(&g.game_mode);
+                    c.set_game_mode(&g.game_mode)
+                        .map_err(|error| format!("set game mode: {error}"))?;
                     c.game_save_world = g.world.clone();
                     if g.new_game.is_some() {
                         c.game_map = g.map.clone();
@@ -449,6 +460,11 @@ impl App {
                 ..pz_gpu::FrameParams::ui(w as u32, h as u32)
             };
             gpu.render_frame(&[(params, &dl)], &mut tm.borrow_mut());
+            if record_gpu_fault(&mut self.error, gpu.error()) {
+                drop(collection_deferral);
+                drain_retired_host_owners();
+                return;
+            }
         }
         // `if (doRenderEvent) onRender()`: OnRenderTick after the frame.
         if pz_lua_api::bind_game_window::render_event_enabled() {
@@ -460,6 +476,19 @@ impl App {
         // Only this outer boundary permits final host destructors to reenter.
         drop(collection_deferral);
         drain_retired_host_owners();
+    }
+}
+
+/// Stop the frame at the same first-failure boundary as other engine errors.
+fn record_gpu_fault(
+    slot: &mut Option<crate::failure::EngineError>,
+    fault: Option<pz_gpu::GpuError>,
+) -> bool {
+    if let Some(fault) = fault {
+        crate::failure::record_first(slot, format!("graphics frame failed: {fault}").into());
+        true
+    } else {
+        false
     }
 }
 
@@ -648,12 +677,7 @@ fn close_headless(app: &mut App) -> crate::failure::EngineResult<()> {
 }
 
 fn headless_app(launch: Launch) -> crate::failure::EngineResult<App> {
-    let core = pz_lua_api::bind_core::shared_core();
-    {
-        let mut c = core.borrow_mut();
-        c.set_cache_dir(&launch.cache_dir);
-        let _ = c.load_options();
-    }
+    let core = launch_core(&launch)?;
     Ok(App {
         launch,
         window: None,
@@ -790,3 +814,34 @@ mod error_boundary_tests;
 
 #[cfg(test)]
 mod close_save_tests;
+
+#[cfg(test)]
+mod gpu_fault_tests {
+    use super::record_gpu_fault;
+    use pz_gpu::GpuError;
+
+    #[test]
+    fn gpu_fault_stops_frame_with_readable_cause() {
+        let mut error = None;
+        assert!(!record_gpu_fault(&mut error, None));
+        assert!(error.is_none());
+        assert!(record_gpu_fault(
+            &mut error,
+            Some(GpuError::DeviceLost("driver reset".into()))
+        ));
+        assert_eq!(
+            error.unwrap().to_string(),
+            "graphics frame failed: GPU device lost: driver reset"
+        );
+    }
+
+    #[test]
+    fn gpu_fault_preserves_first_engine_error() {
+        let mut error = Some("earlier failure".into());
+        assert!(record_gpu_fault(
+            &mut error,
+            Some(GpuError::Allocation("atlas".into()))
+        ));
+        assert_eq!(error.unwrap().to_string(), "earlier failure");
+    }
+}

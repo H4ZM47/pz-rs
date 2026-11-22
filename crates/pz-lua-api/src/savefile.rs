@@ -427,6 +427,11 @@ pub fn sanitize_world_name(name: &str) -> String {
     pz_fs::java::trim(&s).to_string()
 }
 
+/// A world or mode passed to a filesystem operation must name one directory.
+pub(crate) fn is_save_directory_name(name: &str) -> bool {
+    !name.trim_end_matches([' ', '.']).is_empty() && !name.contains(['/', '\\', ':', '\0'])
+}
+
 /// `GlobalObject.isInvalidForRenameSavefile`.
 fn invalid_for_rename(s: Option<&str>) -> bool {
     match s {

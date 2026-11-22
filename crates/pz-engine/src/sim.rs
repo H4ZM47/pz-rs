@@ -50,7 +50,7 @@ impl FrameSim {
         let (debug, game_mode) = {
             let c = pz_lua_api::bind_core::shared_core();
             let c = c.borrow();
-            (c.debug, c.game_mode.clone())
+            (c.debug, c.game_mode_name().unwrap_or("null").to_owned())
         };
         let lock_fps = pz_lua_api::bind_climate::climate_settings().lock_fps;
         let s = {

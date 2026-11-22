@@ -42,13 +42,17 @@ fn main() {
     let game = args.next().expect("game directory containing media/");
     let user = args.next().expect("user folder holding Saves/");
     let mode = args.next().unwrap_or_else(|| "Apocalypse".into());
+    let jar = pz_classfile::Jar::open(std::path::Path::new(&game).join("projectzomboid.jar")).expect("game jar");
+    let statics = pz_scripts::native_game_modes::native_game_mode_statics(&jar).expect("GameMode statics");
     let mut gfs = pz_fs::GameFs::new(game);
     gfs.set_cache_dir(user);
     let mut mgr =
         pz_lua_api::LuaManager::init(Rc::new(std::cell::RefCell::new(gfs))).expect("init");
-    pz_lua_api::bind_core::shared_core()
-        .borrow_mut()
-        .set_game_mode(&mode);
+    let core = pz_lua_api::bind_core::shared_core();
+    let mut core = core.borrow_mut();
+    core.install_game_mode_statics(statics).expect("install GameMode statics");
+    core.set_game_mode(&mode).expect("set game mode");
+    drop(core);
     let call = |mgr: &mut pz_lua_api::LuaManager, name: &str, args: &[Value]| {
         let f = mgr.thread.globals().get_str(name);
         mgr.thread.call1(&f, args).expect(name)

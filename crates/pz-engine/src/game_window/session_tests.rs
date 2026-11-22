@@ -438,7 +438,9 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     mannequin::install_outfit_fixtures(app.lua.as_mut().unwrap(), &game_dir, parts, &sprites);
     let expected_world_chunks = mannequin::check_live(true);
     let expected_mannequins = mannequin::saved_state();
+    assert!(app.error.is_none(), "session failed before native close: {:?}", app.error);
     app.close();
+    assert!(app.error.is_none(), "native close failed: {:?}", app.error);
     assert!(app.world.is_none(), "native close retained the gameplay world");
     assert_eq!(app.current_state(), None);
     // `GameWindow.exit` delivers `OnPostSave` twice.

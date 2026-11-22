@@ -153,9 +153,6 @@ pub struct SaveGame<'a> {
     pub no_save: bool,
     /// `IsoWorld.instance.currentCell != null`.
     pub has_cell: bool,
-    /// `Core.getInstance().getGameMode()`: `LastStand` and `Tutorial` are
-    /// not saved.
-    pub game_mode: &'a str,
     /// `Core.gameMap` (the `;`-separated map folders).
     pub game_map: Option<&'a str>,
     /// `SandboxOptions.instance.save(..)`: the bytes of `map_sand.bin`
@@ -242,8 +239,7 @@ pub trait SaveGameHooks {
 /// What [`save_game`] did besides writing files.
 #[derive(Debug, Default, PartialEq)]
 pub struct SaveReport {
-    /// Whether anything was saved (`isNoSave`, no cell, `LastStand` and
-    /// `Tutorial` save nothing).
+    /// Whether the active Core mode, no-save flag and current cell allow a save.
     pub saved: bool,
     /// `PlayerDB.savePlayers()` set `forceSavePlayers`: the next
     /// `PlayerDB.updateMain` saves the local players.
@@ -278,7 +274,7 @@ pub fn save_game(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks) -> io::Res
 /// Neither case fires `OnSave` or runs the later phases.
 pub fn save_game_before_event(g: &SaveGame<'_>) -> io::Result<SaveReport> {
     let mut report = SaveReport::default();
-    if g.no_save || !g.has_cell || g.game_mode == "LastStand" || g.game_mode == "Tutorial" {
+    if g.no_save || !g.has_cell || g.core.skips_world_save_for_mode() {
         return Ok(report);
     }
     report.saved = true;
@@ -464,10 +460,11 @@ pub fn create_world(cache_dir: &Path, world_name: Option<&str>) -> io::Result<()
     };
     let name = crate::savefile::sanitize_world_name(name);
     let core = crate::bind_core::shared_core();
-    let (mode, no_save) = {
-        let c = core.borrow();
-        (c.game_mode.clone(), c.is_no_save())
-    };
+    let mode = crate::bind_save::game_mode_cache_name().map_err(io::Error::other)?;
+    if !crate::savefile::is_save_directory_name(&mode) || !crate::savefile::is_save_directory_name(&name) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid game mode or world directory"));
+    }
+    let no_save = core.borrow().is_no_save();
     // `ZomboidFileSystem.getGameModeCacheDir()`: `getSaveDir()` makes
     // `<cache>/Saves`.
     let saves = cache_dir.join("Saves");

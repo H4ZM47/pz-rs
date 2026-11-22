@@ -243,7 +243,7 @@ pub struct PeriodInitEnv<'a> {
     pub simplex_offset_b: f64,
     pub values_env: ValuesEnv,
     /// `IsoWorld.instance.getGameMode()`.
-    pub game_mode: &'a str,
+    pub winter_is_coming: bool,
 }
 
 /// What `WeatherPeriod.update` drives and reads in the climate.
@@ -606,7 +606,7 @@ impl WeatherPeriod {
         let mut blizzard_chance = 0.0f32;
         let mut rain_time_multiplier = 1.0f32;
         let mut rnd = self.rand_range_f(0.0, 100.0);
-        let winter_is_coming = env.game_mode == "Winter is Coming";
+        let winter_is_coming = env.winter_is_coming;
         let season_id = if winter_is_coming { 5 } else { season.get_season() };
         let strength = self.front_cache.strength;
         match season_id {

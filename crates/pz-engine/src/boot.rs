@@ -93,6 +93,26 @@ pub fn mod_script_dirs(fs: &mut pz_fs::GameFs) -> Vec<pz_scripts::ModScriptDirs>
         .collect()
 }
 
+/// Load the Core API before reading options or registering Lua methods.
+pub(crate) fn install_game_mode_class(jar: &pz_classfile::Jar, core: &mut pz_core::core::Core)
+    -> Result<Option<pz_scripts::native_game_modes::NativeGameModeStaticsRef>, String>
+{
+    let class = pz_classfile::load_class(jar, "zombie/core/Core")
+        .map_err(|e| format!("read Core game mode signature: {e}"))?;
+    match class.method("getGameMode").map(|method| method.descriptor.as_str()) {
+        Some("()Ljava/lang/String;") if core.uses_named_game_mode() => Ok(None),
+        Some("()Ljava/lang/String;") => Err("cannot switch the running Core to a different game mode type".into()),
+        Some("()Lzombie/core/GameMode;") => {
+            let modes = pz_scripts::native_game_modes::native_game_mode_statics(jar)
+                .map_err(|e| format!("native game mode statics: {e}"))?;
+            core.install_game_mode_statics(modes.clone())
+                .map_err(|e| format!("install native game mode statics: {e}"))?;
+            Ok(Some(modes))
+        }
+        other => Err(format!("unsupported Core.getGameMode signature: {other:?}")),
+    }
+}
+
 /// The `Registries` bootstrap, `PerkFactory.init()`,
 /// `ScriptManager.instance.Load()` and the clothing loads after it
 /// (`ClothingDecals`, `BeardStyles`, `HairStyles`, `OutfitManager`,
@@ -108,7 +128,11 @@ pub fn load_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>) -> Result<
         .map_err(|error|format!("native item key registry jar: {error}"))?;
     let native_keys=pz_scripts::native_item_keys::native_item_key_statics(&jar)
         .map_err(|error|format!("native item key statics: {error}"))?;
-    let sm=pz_scripts::ScriptManager::with_native_item_key_statics(&native_keys);
+    let modes = install_game_mode_class(&jar, &mut pz_lua_api::bind_core::shared_core().borrow_mut())?;
+    let sm = match modes {
+        Some(modes) => pz_scripts::ScriptManager::with_native_key_statics(&native_keys, &modes),
+        None => pz_scripts::ScriptManager::with_native_item_key_statics(&native_keys),
+    };
     sm.load_builtin_registries(&game_dir.join("projectzomboid.jar"))
         .map_err(|e| format!("built-in registries: {e}"))?;
     let mut chars = pz_characters::Characters::default();

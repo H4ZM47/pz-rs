@@ -3,7 +3,8 @@
 A contributor-oriented summary of where pz-rs stands and what is left. It is
 derived from [ENGINE-WIRING.md](ENGINE-WIRING.md), [WORKSTREAMS.md](WORKSTREAMS.md)
 and [../PROGRESS.md](../PROGRESS.md) as of 2026-11-10 (commit `94e0a27`). Those
-files remain the detailed record; this one is the map. Where they disagree with
+files remain the detailed record; this one is the map. Boot entries were
+rechecked against source and GPU fault handling added on 2026-11-13. Where they disagree with
 this file, `ENGINE-WIRING.md` is the more current source.
 
 ## What the project replaces
@@ -33,22 +34,36 @@ calls. The workspace has 49 crates and roughly 650,000 lines of Rust with about
 2,900 unit tests. The client boots, runs the real main-menu Lua, and can create
 or load a single-player world (`pz-client --new-game NAME` /
 `--load-game MODE/NAME`, optionally `--headless-frames N`). It is not yet
-playable: the in-game session still stops on unbound API methods (the most
-recently recorded stop is `isFavouriteRecipeInput` at
-`ISInventoryPane.renderdetails:2338`), and many world systems are not yet
-connected to the frame loop.
+playable: sessions still encounter unbound API methods, and many world systems
+are not yet connected to the frame loop. An earlier inventory-drawing stop was
+`isFavouriteRecipeInput` at `ISInventoryPane.renderdetails:2338`.
+
+The November 13 installed Steam validation found a tile-directory mismatch:
+current assets use `media/tile_definitions`, while older layouts use `media`.
+The loader now supports both. Core now retains the actual nullable `GameMode`
+registry object, and `isTutorial()` compares it with the canonical static
+object. `OnElectricityChanged` is registered. The rerun passed shipped inventory
+creation, global-system ownership, pause/resume, sustained keyboard movement,
+return to idle, live animation, and the timed-action queue checks.
+
+The component serializer now writes directly to inventory compression's bounded
+buffer, and the installed rerun passed player-save and save-event checks.
+The next stop is mannequin chunk serialization: its live inventory is routed
+through the archive texture writer. That path is being connected to the actual
+item serializer. Save/reload remains unvalidated until the complete session
+test passes.
 
 The integration checklist in `ENGINE-WIRING.md` currently reads:
 
 | Section | Done | Open |
 | --- | ---: | ---: |
-| Boot (`GameWindow.init`) | 9 | 16 |
+| Boot (`GameWindow.init`) | 13 | 12 |
 | Per frame (`GameWindow.logic` / `render`) | 11 | 2 |
 | World (`GameLoadingState` / `IngameState`) | 31 | 99 |
-| World render pass | 4 | 27 |
+| World render pass | 5 | 26 |
 | World map | 1 | 5 |
 | Cleanups | 0 | 2 |
-| **Total** | **56** | **151** |
+| **Total** | **61** | **146** |
 
 A checked box means the connection is implemented, not that runtime parity
 with the original has been verified.
@@ -75,7 +90,7 @@ Numbering follows [WORKSTREAMS.md](WORKSTREAMS.md).
 
 ## What remains
 
-Grouped from the 151 open items in `ENGINE-WIRING.md`. Each bullet names the
+Grouped from the 146 open items in `ENGINE-WIRING.md`. Each bullet names the
 section to search there for exact hook names and call order.
 
 ### 1. Lua API coverage (workstream 2)
@@ -90,12 +105,12 @@ section to search there for exact hook names and call order.
 
 ### 2. Boot
 - [ ] Mods (when Core's mods option is on) and the real `MapGroupsHost`.
-- [ ] `PerkFactory::init` and `BodyLocations.lua` before Lua loads.
+- [x] `PerkFactory::init` before Lua initialization; `BodyLocations.lua`
+      through the shared-Lua load before client Lua.
 - [ ] Character simulation context, world sounds and states world installed
       at boot.
-- [ ] `ScriptManager` loading in the windowed engine boot (per the
-      checklist, only the client's `--png`/`--headless-frames` paths load
-      scripts).
+- [x] `ScriptManager` loading through `boot::load_scripts` in windowed
+      and headless engine startup.
 - [ ] HUD hosts for local/current player.
 
 ### 3. World simulation
@@ -155,7 +170,9 @@ section to search there for exact hook names and call order.
 - [ ] Character lights, outlines, held/attached item textures.
 - [ ] Frame extras: highlights, markers, area highlights, vision cone, fog.
 - [ ] Split screen.
-- [ ] GPU fault handling; vsync and frame size from Core options.
+- [x] GPU faults stop the frame and report the cause through the engine's
+      error exit. Actual device-loss testing remains open.
+- [ ] Vsync and frame size from Core options.
 
 ### 7. World map
 - [ ] Map host inputs, live `MapFilesInfo`, image frame hooks, visited

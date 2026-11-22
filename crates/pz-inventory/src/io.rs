@@ -259,6 +259,15 @@ impl Writer {
             native_buffer: Some(buffer.clone()),
         }
     }
+    /// Borrow the same actual destination for component codecs. No payload is
+    /// staged or copied and the native comparison catch remains authoritative.
+    pub(crate) fn native_entity_writer(&self) -> Option<pz_entity::io::Writer> {
+        self.native_buffer.as_ref().map(|buffer| {
+            pz_entity::io::Writer::with_target(Box::new(EntityWriterTarget(
+                Writer::for_native_buffer(buffer),
+            )))
+        })
+    }
     pub fn pos(&self) -> usize {
         match &self.native_buffer {
             Some(buffer) => native_buffer_position(buffer)
@@ -377,6 +386,13 @@ impl Writer {
             None => self.buf.truncate(at),
         }
     }
+}
+
+struct EntityWriterTarget(Writer);
+impl pz_entity::io::WriterTarget for EntityWriterTarget {
+    fn pos(&self) -> usize { self.0.pos() }
+    fn bytes(&mut self, bytes: &[u8]) { self.0.bytes(bytes); }
+    fn patch_bytes(&mut self, at: usize, bytes: &[u8]) { self.0.patch_bytes(at, bytes); }
 }
 
 /// Java `(int) f` for a float: truncation toward zero, saturating, NaN 0.
@@ -687,5 +703,43 @@ mod tests {
         assert!(native_buffer_set_position(&buffer, 1025).is_err());
         assert!(native_buffer_i32_at(&buffer, 1022).is_err());
         assert!(native_buffer_bytes(&buffer, 2, 1).is_err());
+    }
+
+    #[test]
+    fn entity_target_uses_the_same_buffer_for_primitives_headers_and_block_patches() {
+        use pz_entity::io::{HeaderSize, HeaderWrite};
+        let buffer = new_native_save_buffer();
+        let writer = Writer::for_native_buffer(&buffer);
+        let mut entity = writer.native_entity_writer().unwrap();
+        catch_native_overflow(|| {
+            entity.i8(9);
+            for (size, flags) in [(HeaderSize::Byte, 0x40), (HeaderSize::Short, 0x1234), (HeaderSize::Integer, 0x12345678)] {
+                let mut header = HeaderWrite::start(&mut entity, size);
+                header.add(flags);
+                header.write(&mut entity);
+            }
+            let start = entity.block_start();
+            entity.i16(7);
+            entity.block_end(start);
+        }).unwrap();
+        assert!(entity.buf.is_empty(), "direct targets must not stage bytes");
+        assert_eq!(native_buffer_bytes(&buffer, 0, 14).unwrap(), [9, 0x40, 0x12, 0x34, 0x12, 0x34, 0x56, 0x78, 0, 0, 0, 2, 0, 7]);
+        assert_eq!(writer.pos(), 14);
+        native_buffer_set_position(&buffer, 1021).unwrap();
+        let later = std::cell::Cell::new(false);
+        assert_eq!(catch_native_overflow(|| {
+            entity.i8(1);
+            entity.i32(99);
+            later.set(true);
+        }), Err(NativeWriterFault::Overflow));
+        assert_eq!(writer.pos(), 1022);
+        assert!(!later.get());
+        let mut target = EntityWriterTarget(Writer::for_native_buffer(&buffer));
+        assert_eq!(catch_native_overflow(|| {
+            pz_entity::io::WriterTarget::patch_bytes(&mut target, 1023, &[3, 4]);
+        }), Err(NativeWriterFault::Overflow));
+        assert_eq!(writer.pos(), 1023, "failed relative patch must not restore the old cursor");
+        let _guard = buffer.borrow_mut();
+        assert!(matches!(catch_native_overflow(|| entity.i8(0)), Err(NativeWriterFault::Host(RuntimeHostError::Borrowed(_)))));
     }
 }

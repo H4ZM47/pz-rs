@@ -4,6 +4,17 @@ use pz_sqlite::TextEncoding;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+
+fn test_game_modes() -> Rc<pz_scripts::native_game_modes::NativeGameModeStatics> {
+    use pz_classfile::{StaticInit, Value as ClassValue};
+    let initializers = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial"), ("APOCALYPSE", "Apocalypse"), ("CHALLENGES", "LastStand")]
+        .into_iter().map(|(field, id)| StaticInit {
+            class: "zombie/core/GameMode".into(), field: field.into(),
+            value: ClassValue::Call { class: "zombie/core/GameMode".into(), name: "registerBase".into(), descriptor: String::new(), args: vec![ClassValue::Str(id.into())] },
+        }).collect::<Vec<_>>();
+    Rc::new(pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&initializers).unwrap())
+}
+
 const LOCAL_PLAYERS: &str =
     "CREATE TABLE localPlayers (id INTEGER PRIMARY KEY NOT NULL,name STRING,\
 wx INTEGER,wy INTEGER,x FLOAT,y FLOAT,z FLOAT,worldversion INTEGER,data BLOB,isDead BOOLEAN)";
@@ -132,9 +143,12 @@ fn setup(tag: &str) -> Env {
     let fs = Rc::new(RefCell::new(gfs));
     let mut mgr = LuaManager::init(fs).unwrap();
     {
+        let mut fresh = pz_core::core::Core::default();
+        fresh.install_game_mode_statics(test_game_modes()).unwrap();
+        crate::bind_core::install_core(Rc::new(RefCell::new(fresh)));
         let core = shared_core();
         let mut core = core.borrow_mut();
-        core.set_game_mode("Sandbox");
+        core.set_game_mode("Sandbox").unwrap();
         core.game_save_world = "w1".into();
     }
     run(
@@ -223,7 +237,7 @@ fn save_listing_and_info() {
     {
         let core = shared_core();
         let mut core = core.borrow_mut();
-        core.set_game_mode("Apocalypse");
+        core.set_game_mode("Apocalypse").unwrap();
         core.game_save_world = "w2".into();
     }
     std::fs::remove_file(env.saves.join("Apocalypse/w2/vehicles.db")).unwrap();
@@ -293,6 +307,9 @@ fn save_folder_changes() {
             map_order: vec!["Muldraugh, KY".into()],
         },
     );
+    let modes = test_game_modes();
+    let last_stand = modes.constant("CHALLENGES").unwrap();
+    env.mgr.thread.globals().set_str("lastStandMode", crate::bind_registry::key_value(crate::bind_registry::GAME_MODE_CLASS, Some(last_stand)));
     run(
         &mut env.mgr,
         r#"
@@ -309,7 +326,7 @@ fn save_folder_changes() {
         manipulateSavefile("Sandbox/m", "WriteModsDotTxt")
         assert(not pcall(manipulateSavefile, "Sandbox/m", "Nope"))
         manipulateSavefile("Sandbox/missing", "Nope")
-        deleteAllGameModeSaves("LastStand")
+        deleteAllGameModeSaves(lastStandMode)
         deleteDatabase("Sandbox/coop")
         setSavefilePlayer1("Sandbox", "w1", 5)
         assert(sanitizeWorldName("  my world/1:\\?*<>| ") == "__my_world1_")
@@ -344,7 +361,7 @@ fn save_folder_changes() {
     assert!(s.join("Sandbox/blah/map").is_dir());
     assert_eq!(shared_core().borrow().game_save_world, "blah");
     assert!(!s.join("LastStand").exists());
-    assert_eq!(shared_core().borrow().game_mode, "Sandbox");
+    assert_eq!(shared_core().borrow().game_mode_name(), Some("Sandbox"));
     assert!(!cache.join("db/coop.db").exists());
     let ids: Vec<_> = crate::savefile::get_players(false, &s.join("Sandbox/w1").to_string_lossy())
         .unwrap()
@@ -505,4 +522,33 @@ fn all_saved_players_reads_every_entry() {
         assert(not ok)
         "#,
     );
+}
+
+#[test]
+fn null_mode_cache_directory_restores_canonical_sandbox() {
+    let previous = shared_core();
+    struct Restore(Rc<RefCell<pz_core::core::Core>>);
+    impl Drop for Restore {
+        fn drop(&mut self) { crate::bind_core::install_core(self.0.clone()); }
+    }
+    let _restore = Restore(previous);
+    let modes = test_game_modes();
+    let sandbox = modes.constant("SANDBOX").unwrap().clone();
+    let mut core = pz_core::core::Core::default();
+    core.install_game_mode_statics(modes).unwrap();
+    core.set_game_mode_ref(None).unwrap();
+    let core = Rc::new(RefCell::new(core));
+    crate::bind_core::install_core(core.clone());
+    assert_eq!(game_mode_cache_name().unwrap(), "Sandbox");
+    assert!(Rc::ptr_eq(&core.borrow().get_game_mode_ref().unwrap(), &sandbox));
+}
+
+#[test]
+fn save_info_null_mode_projects_java_null_without_mutating_core() {
+    let mut env = setup("null_mode_info");
+    std::fs::create_dir_all(env.saves.join("null/w1")).unwrap();
+    let core = shared_core();
+    core.borrow_mut().set_game_mode_ref(None).unwrap();
+    run(&mut env.mgr, "assert(getSaveInfo('w1').saveDir == 'null/w1')");
+    assert!(core.borrow().get_game_mode_ref().is_none());
 }

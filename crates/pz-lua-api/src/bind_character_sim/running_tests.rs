@@ -1,6 +1,17 @@
 use super::tests::{run, setup_with};
 use super::*;
 
+
+fn test_game_modes() -> Rc<pz_scripts::native_game_modes::NativeGameModeStatics> {
+    use pz_classfile::{StaticInit, Value as ClassValue};
+    let initializers = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial"), ("APOCALYPSE", "Apocalypse"), ("CHALLENGES", "LastStand")]
+        .into_iter().map(|(field, id)| StaticInit {
+            class: "zombie/core/GameMode".into(), field: field.into(),
+            value: ClassValue::Call { class: "zombie/core/GameMode".into(), name: "registerBase".into(), descriptor: String::new(), args: vec![ClassValue::Str(id.into())] },
+        }).collect::<Vec<_>>();
+    Rc::new(pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&initializers).unwrap())
+}
+
 #[test]
 fn running_queries_share_actual_flags_moodle_gates_and_live_core_mode() {
     let sm = ScriptManager::new();
@@ -14,8 +25,9 @@ fn running_queries_share_actual_flags_moodle_gates_and_live_core_mode() {
     }
     let _restore = RestoreCore(crate::bind_core::shared_core());
     let core = Rc::new(RefCell::new(pz_core::core::Core::default()));
+    core.borrow_mut().install_game_mode_statics(test_game_modes()).unwrap();
     crate::bind_core::install_core(core.clone());
-    core.borrow_mut().game_mode = "Sandbox".into();
+    core.borrow_mut().set_game_mode("Sandbox").unwrap();
     player.borrow_mut().running = true;
     player.borrow_mut().environment.sprinting = true;
     player.borrow_mut().environment.allow_sprint = true;
@@ -30,12 +42,12 @@ fn running_queries_share_actual_flags_moodle_gates_and_live_core_mode() {
             assert(player:canSprint() == expectedSprinting)
         "#).unwrap();
     }
-    core.borrow_mut().game_mode = "Tutorial".into();
+    core.borrow_mut().set_game_mode("Tutorial").unwrap();
     run(&mut thread, "assert(player:canSprint()); assert(player:isSprinting())").unwrap();
     player.borrow_mut().environment.allow_sprint = false;
     run(&mut thread, "assert(not player:canSprint()); assert(not player:isSprinting())").unwrap();
     player.borrow_mut().environment.allow_sprint = true;
-    core.borrow_mut().game_mode = "Sandbox".into();
+    core.borrow_mut().set_game_mode("Sandbox").unwrap();
     run(&mut thread, "assert(not player:canSprint()); assert(not player:isSprinting())").unwrap();
     player.borrow_mut().moodles.moodle_mut(&endurance).unwrap().update_moodle_level(0);
     player.borrow_mut().running = false;

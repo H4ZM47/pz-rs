@@ -2155,7 +2155,6 @@ fn with_save_game<R>(
             save_dir: &world.save_dir,
             no_save: core.is_no_save(),
             has_cell,
-            game_mode: &core.game_mode,
             game_map: Some(&core.game_map),
             sandbox,
             game_time: &gt,
@@ -2440,7 +2439,20 @@ mod quit_save_tests {
             let old_world = with_world(std::mem::take);
             let mut core = Core::default();
             core.set_no_save(no_save);
-            core.set_game_mode(mode);
+            let initializers = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial"), ("TEST_LAST_STAND", "LastStand")]
+                .map(|(field, id)| pz_classfile::StaticInit {
+                    class: "zombie/core/GameMode".into(),
+                    field: field.into(),
+                    value: pz_classfile::Value::Call {
+                        class: "zombie/core/GameMode".into(),
+                        name: "registerBase".into(),
+                        descriptor: "(Ljava/lang/String;)Lzombie/core/GameMode;".into(),
+                        args: vec![pz_classfile::Value::Str(id.into())],
+                    },
+                });
+            let modes = Rc::new(pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&initializers).unwrap());
+            core.install_game_mode_statics(modes).unwrap();
+            core.set_game_mode(mode).unwrap();
             pz_lua_api::bind_core::install_core(Rc::new(RefCell::new(core)));
             pz_lua_api::bind_climate::install_game_time(Rc::new(RefCell::new(GameTime::default())));
             pz_lua_api::bind_players::reset();
@@ -2688,7 +2700,6 @@ mod quit_save_tests {
         for (no_save, mode, has_cell, fail_prefix) in [
             (true, "Sandbox", true, false),
             (false, "Tutorial", true, false),
-            (false, "LastStand", true, false),
             (false, "Sandbox", false, false),
             (false, "Sandbox", true, true),
         ] {

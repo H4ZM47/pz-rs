@@ -39,7 +39,7 @@
 use crate::events::EventManager;
 use crate::expose::{bool_arg, expose_class, global, int_arg, num_arg, str_arg, ClassBuilder};
 use pz_core::core::{
-    ColorInfo, Core, EventArg, GameVersion, KeyBinding, SimpleAccessor, SIMPLE_ACCESSORS,
+    ColorInfo, Core, EventArg, GameVersion, KeyBinding, SimpleAccessor,
 };
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, TableRef, Thread, Value};
@@ -117,6 +117,16 @@ pub(crate) fn try_format_core_is_dev() -> LuaResult<bool> {
 mod formatting_core_tests;
 #[cfg(test)]
 mod debug_enabled_tests;
+mod game_modes;
+
+pub fn game_mode_error(error: pz_scripts::native_item_keys::ScriptAccessError) -> LuaError {
+    use pz_scripts::native_item_keys::ScriptAccessError;
+    match error {
+        ScriptAccessError::Borrowed(operation) => LuaError::Runtime { class: "pz.host.Borrowed", message: operation.into() },
+        ScriptAccessError::Unsupported(operation) => LuaError::Runtime { class: "pz.host.Unsupported", message: operation.into() },
+        ScriptAccessError::Native(error) => crate::bind_registry::java_error(error),
+    }
+}
 
 /// The Lua object for the Core singleton.
 pub struct CoreObject {
@@ -546,6 +556,17 @@ pub fn register(
     register_statics(&b, &cx);
     register_simple(&b, &cx);
     register_methods(&b, &cx);
+    if cx.core().uses_named_game_mode() {
+        def(&b, &cx, "getGameMode", |cx, _| {
+            Ok(Ret::Val(cx.core().game_mode_name().map_or(Value::Nil, Value::str)))
+        });
+        def(&b, &cx, "setGameMode", |cx, call| {
+            cx.core_mut().set_game_mode_name(str_arg(call, 1).as_deref()).map_err(game_mode_error)?;
+            Ok(Ret::Void)
+        });
+    } else {
+        game_modes::register(&b);
+    }
     let obj = object;
     global(thread, "getCore", move |c| Ok(c.push(obj.clone())));
     // GlobalObject.getDebug's single-player branch reads the same live Core
@@ -566,9 +587,9 @@ pub fn register(
 }
 
 fn register_simple(b: &ClassBuilder, cx: &Rc<Ctx>) {
-    for acc in SIMPLE_ACCESSORS {
+    for acc in cx.core().option_accessors() {
         let name = acc.java_name();
-        match *acc {
+        match acc {
             SimpleAccessor::GetBool(_, f) => {
                 def(b, cx, name, move |cx, _| Ok(f(&cx.core()).into()))
             }
@@ -631,7 +652,6 @@ fn register_statics(b: &ClassBuilder, cx: &Rc<Ctx>) {
         b.field("initialHeight", core.initial_height as f64);
         b.field("maxJukeBoxesActive", core.max_juke_boxes_active);
         b.field("numJukeBoxesActive", core.num_juke_boxes_active);
-        b.field("gameMode", core.game_mode.as_str());
         b.field("addZombieOnCellLoad", core.add_zombie_on_cell_load);
         b.field("preset", core.preset.as_str());
         // `debug` is @HiddenFromLua.
@@ -823,17 +843,6 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     void!("shadersOptionChanged", shaders_option_changed);
     void!("initGlobalShader", init_global_shader);
     void!("initShaders", init_shaders);
-    get!("getGameMode", get_game_mode);
-    def(b, cx, "setGameMode", |cx, c| {
-        let Some(m) = opt_str(c, 1) else {
-            return Err(java_error(
-                "gameMode is null",
-                "java.lang.NullPointerException",
-            ));
-        };
-        cx.core_mut().set_game_mode(&m);
-        Ok(Ret::Void)
-    });
     get!("getDebug", get_debug);
 
     // ---- screenshots / frames (TODO(render)) ----
@@ -1139,8 +1148,6 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
         "getOptionTextureCompression",
         get_option_texture_compression
     );
-    get!("getOptionTexture2x", get_option_texture2x);
-    set_bool!("setOptionTexture2x", set_option_texture2x);
     def(b, cx, "getMaxTextureSizeFromFlags", |cx, c| {
         Ok(cx
             .core()
@@ -1161,8 +1168,12 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     });
     get!("getMaxTextureSize", get_max_texture_size);
     get!("getMaxVehicleTextureSize", get_max_vehicle_texture_size);
-    get!("getOptionZoomLevels1x", get_option_zoom_levels1x);
-    set_str!("setOptionZoomLevels1x", set_option_zoom_levels1x);
+    if cx.core().uses_named_game_mode() {
+        get!("getOptionTexture2x", get_option_texture2x);
+        set_bool!("setOptionTexture2x", set_option_texture2x);
+        get!("getOptionZoomLevels1x", get_option_zoom_levels1x);
+        set_str!("setOptionZoomLevels1x", set_option_zoom_levels1x);
+    }
     get!("getOptionZoomLevels2x", get_option_zoom_levels2x);
     set_str!("setOptionZoomLevels2x", set_option_zoom_levels2x);
     set_str!("setOptionScreenFilter", set_option_screen_filter);
@@ -1902,7 +1913,7 @@ mod tests {
     getOptionVSync getOptionValidTargetReticleTextureIndex getOptionVehicleEngineVolume
     getOptionVoiceAGCMode getOptionVoiceEnable getOptionVoiceMode getOptionVoiceRecordDevice
     getOptionVoiceVADMode getOptionVoiceVolumeMic getOptionVoiceVolumePlayers
-    getOptionWorldMapBrightness getOptionZoom getOptionZoomLevels1x getOptionZoomLevels2x
+    getOptionWorldMapBrightness getOptionZoom getOptionZoomLevels2x
     getPerfPuddles getPerfPuddlesOnLoad getPerfReflections getPerfReflectionsOnLoad getPerfSkybox
     getPerfSkyboxOnLoad getScreenHeight getScreenModes getScreenWidth getSelectedMap
     getServerVOIPEnable getTargetColor getTermsOfServiceVersion getVersion
@@ -1910,7 +1921,7 @@ mod tests {
     isDisplayCursor isDisplayPlayerModel isFullScreen isKey isModsPopupDone isOption3DGroundItem
     isOptionAutoProneAtk isOptionShowChatTimestamp isOptionShowChatTitle isOptiondblTapJogToSprint
     isPopulateServerListOnStart isShowFirstTimeSearchTutorial isShowYourUsername isToggleToAim
-    isToggleToRun isToggleToSprint isTutorialDone isZoomEnabled quit quitToDesktop reinitKeyMaps
+    isToggleToRun isToggleToSprint isTutorial isTutorialDone isZoomEnabled quit quitToDesktop reinitKeyMaps
     saveOptions setAccountUsed setAnimalCheat setAutoZoom setBadHighlitedColor setBlinkingMoodle
     setCelsius setCollideZombies setContentTranslationsEnabled setDisplayCursor
     setDisplayPlayerModel setFlashIsoCursor setForceSnow setFramerate setGoodHighlitedColor
@@ -1947,7 +1958,7 @@ mod tests {
     setOptionVSync setOptionValidTargetReticleTextureIndex setOptionVehicleEngineVolume
     setOptionVoiceAGCMode setOptionVoiceEnable setOptionVoiceMode setOptionVoiceRecordDevice
     setOptionVoiceVADMode setOptionVoiceVolumeMic setOptionVoiceVolumePlayers
-    setOptionWorldMapBrightness setOptionZoom setOptionZoomLevels1x setOptionZoomLevels2x
+    setOptionWorldMapBrightness setOptionZoom setOptionZoomLevels2x
     setOptiondblTapJogToSprint setPerfPuddles setPerfReflections setPerfSkybox
     setPopulateServerListOnStart setResolutionAndFullScreen setSelectedMap
     setShowFirstTimeSearchTutorial setShowYourUsername setTargetColor setTermsOfServiceVersion
@@ -1956,11 +1967,20 @@ mod tests {
 ";
 
     fn setup(core: Rc<RefCell<Core>>) -> Thread {
+        let declarations = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial")].map(|(field, id)| pz_classfile::StaticInit {
+            class: "zombie/core/GameMode".into(), field: field.into(), value: pz_classfile::Value::Call {
+                class: "zombie/core/GameMode".into(), name: "registerBase".into(), descriptor: String::new(),
+                args: vec![pz_classfile::Value::Str(id.into())],
+            },
+        });
+        let modes = Rc::new(pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&declarations).unwrap());
+        core.borrow_mut().install_game_mode_statics(modes.clone()).unwrap();
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         let env = t.globals().clone();
         let events = EventManager::register(&env, "Events", EVENT_NAMES);
         crate::bind_java_util::register(&mut t);
+        crate::bind_registry::register(&mut t, Rc::new(pz_scripts::ScriptManager::with_native_game_mode_statics(&modes)));
         register(&mut t, Some(events), core);
         // `assert` lives in the game's stdlib.lua, which these tests don't load.
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end");
@@ -1997,7 +2017,7 @@ mod tests {
         for (i, n) in LUA_CALLED.split_whitespace().enumerate() {
             list.set_int(i as i64 + 1, n);
         }
-        assert_eq!(list.len(), 325);
+        assert_eq!(list.len(), 324);
         t.globals().set_str("names", list);
         run(
             &mut t,
@@ -2032,11 +2052,18 @@ mod tests {
             r#"
             local core = getCore()
             assert(core:getScreenWidth() == 1280 and core:getScreenHeight() == 720)
-            assert(core:getGameMode() == "Sandbox")
+            assert(core:getGameMode() == GameMode.SANDBOX)
             assert(core:getDebug() == false)
             assert(core:getVersion() == "42.21.0 4a0e9546ec")
             assert(Core.getTileScale() == 2)
             assert(Core.isLastStand() == false)
+
+            assert(core:isOptionShowConnectionInfo() == false)
+            assert(core:isOptionShowServerInfo() == false)
+            core:setOptionShowConnectionInfo(true)
+            core:setOptionShowServerInfo(true)
+            assert(core:isOptionShowConnectionInfo() == true)
+            assert(core:isOptionShowServerInfo() == true)
 
             assert(core:getOptionAmbientVolume() == 5)
             core:setOptionAmbientVolume(8)
@@ -2086,8 +2113,8 @@ mod tests {
             core:setOptionControllerButtonStyle(3)
             assert(core:getOptionControllerButtonStyleString() == "STEAMDECK")
 
-            core:setGameMode("LastStand")
-            assert(core:getGameMode() == "LastStand")
+            core:setGameMode("Tutorial")
+            assert(core:getGameMode() == GameMode.TUTORIAL)
 
             core:setSelectedMap("Muldraugh, KY")
             assert(core:getSelectedMap() == "Muldraugh, KY")
@@ -2112,7 +2139,7 @@ mod tests {
         assert_eq!(c.get_option_ambient_volume(), 3);
         assert!(!c.is_toggle_to_sprint());
         assert_eq!(c.get_auto_zoom(2), Some(true));
-        assert_eq!(c.get_game_mode(), "LastStand");
+        assert_eq!(c.game_mode_name(), Some("Tutorial"));
         assert!(!c.add_zombie_on_cell_load);
         assert_eq!(c.width, 1920);
         assert!(c.get_option_on_startup("x").is_some());

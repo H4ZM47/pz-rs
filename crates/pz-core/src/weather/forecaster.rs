@@ -332,7 +332,6 @@ impl ClimateForecaster {
                     if overlap_strength < 0.1 {
                         df.weather_starts = true;
                         df.weather_start_time = i as f32;
-                        let mode = ctx.game_mode();
                         let current = cm.get_season().cloned().unwrap_or_else(|| base.clone());
                         let penv = PeriodInitEnv {
                             clock,
@@ -341,7 +340,7 @@ impl ClimateForecaster {
                             simplex_offset_a: cm.simplex_offset_a,
                             simplex_offset_b: cm.simplex_offset_b,
                             values_env: env,
-                            game_mode: &mode,
+                            winter_is_coming: cm.winter_is_coming,
                         };
                         let front = df.air_front.clone();
                         df.weather_period.init(&front, values.get_cache_world_age_hours(), y, m, d, -1, -1.0, &penv, ctx);
