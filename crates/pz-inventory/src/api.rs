@@ -160,6 +160,93 @@ impl InventoryItem {
         h
     }
 
+    /// Port of `Food.getCalories()`.
+    pub fn get_calories(&self) -> f32 {
+        self.food().map_or(0.0, |f| f.calories)
+    }
+
+    /// Port of `Food.getCarbohydrates()`.
+    pub fn get_carbohydrates(&self) -> f32 {
+        self.food().map_or(0.0, |f| f.carbohydrates)
+    }
+
+    /// Port of `Food.getProteins()`.
+    pub fn get_proteins(&self) -> f32 {
+        self.food().map_or(0.0, |f| f.proteins)
+    }
+
+    /// Port of `Food.getLipids()`.
+    pub fn get_lipids(&self) -> f32 {
+        self.food().map_or(0.0, |f| f.lipids)
+    }
+
+    /// Port of `Food.getPainReduction()`.
+    pub fn get_pain_reduction(&self) -> f32 {
+        self.food().map_or(0.0, |f| f.pain_reduction)
+    }
+
+    /// Port of `Food.getFluReduction()`.
+    pub fn get_flu_reduction(&self) -> i32 {
+        self.food().map_or(0, |f| f.flu_reduction)
+    }
+
+    /// Port of `Food.getThirstChange()` (burnt `/ 5`, cooked `/ 1.1`).
+    pub fn get_thirst_change(&self) -> f32 {
+        let Some(f) = self.food() else { return 0.0 };
+        if f.burnt {
+            f.thirst_change / 5.0
+        } else if f.cooked {
+            f.thirst_change / 1.1
+        } else {
+            f.thirst_change
+        }
+    }
+
+    /// Port of `Food.getEnduranceChange()`.
+    pub fn get_endurance_change(&self) -> f32 {
+        let Some(f) = self.food() else { return 0.0 };
+        if f.burnt {
+            f.end_change / 3.0
+        } else if f.age >= f.off_age as f32 && f.age < f.off_age_max as f32 {
+            f.end_change / 1.3
+        } else if f.cooked {
+            f.end_change * 1.3
+        } else {
+            f.end_change
+        }
+    }
+
+    /// Port of `Food.getFoodSicknessChange()`.
+    pub fn get_food_sickness_change(&self) -> i32 {
+        let Some(f) = self.food() else { return 0 };
+        let v = f.food_sickness_change as f32;
+        if f.burnt {
+            (v / 3.0) as i32
+        } else if f.age >= f.off_age as f32 && f.age < f.off_age_max as f32 {
+            (v / 1.3) as i32
+        } else if f.age >= f.off_age_max as f32 {
+            (v / 2.2) as i32
+        } else if f.cooked {
+            (v * 1.3) as i32
+        } else {
+            f.food_sickness_change
+        }
+    }
+
+    /// Port of `Food.setHungChange(float)`.
+    pub fn set_hung_change(&mut self, v: f32) {
+        if let ItemKind::Food(f) = &mut self.kind {
+            f.hung_change = v;
+        }
+    }
+
+    /// Port of `Food.multiplyFoodValues(float)`.
+    pub fn multiply_food_values(&mut self, p: f32) {
+        if let ItemKind::Food(f) = &mut self.kind {
+            f.multiply_food_values(p);
+        }
+    }
+
     /// Port of `Food.getHungChange()`.
     pub fn get_hung_change(&self) -> f32 {
         self.food().map_or(0.0, |f| f.hung_change)

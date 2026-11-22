@@ -17,6 +17,7 @@ use crate::bind_world_object::{runtime_error, unsupported};
 use crate::item_tooltip::components;
 use crate::expose::{expose_class, JavaEnum};
 
+const FOOD_CLASS: &str = "zombie.inventory.types.Food";
 const HAND_WEAPON_CLASS: &str = "zombie.inventory.types.HandWeapon";
 
 fn null_pointer() -> LuaError {
@@ -100,6 +101,14 @@ pub(super) fn register(thread: &mut Thread) {
         ("getMakeUpType", |s| {
             s.make_up_type.as_deref().map(Value::from).unwrap_or_default()
         }),
+        ("getOpeningRecipe", |s| {
+            s.opening_recipe.as_deref().map(Value::from).unwrap_or_default()
+        }),
+        ("getEatType", |s| s.eat_type.as_deref().map(Value::from).unwrap_or_default()),
+        // The item shares the script's list (`setRequireInHandOrInventory`).
+        ("getRequireInHandOrInventory", |s| {
+            opt_string_list(s.require_in_hand_or_inventory.as_ref().map(|l| l.iter().flatten()))
+        }),
         ("getClothingItemExtraOption", |s| {
             opt_string_list(s.clothing_item_extra_option.as_ref())
         }),
@@ -132,6 +141,17 @@ pub(super) fn register(thread: &mut Thread) {
             Ok(c.push(script.map_or(Value::Nil, |s| get(&s.0.borrow()))))
         });
     }
+    // `scriptItem == null ? 0 : scriptItem.getEatTime()`.
+    item.method("getEatTime", |c| {
+        let script = this(c)?.borrow().template.script.clone();
+        Ok(c.push(script.map_or(0, |s| s.0.borrow().eat_time)))
+    });
+    // `Food.customEatSound`, copied from the script at creation.
+    let food = expose_class(thread, FOOD_CLASS, Some(INVENTORY_ITEM_CLASS));
+    food.method("getCustomEatSound", |c| {
+        let v = script(c)?.0.borrow().custom_eat_sound.as_deref().map(Value::from).unwrap_or_default();
+        Ok(c.push(v))
+    });
 
     item.method("getScriptItem", |c| {
         let script = this(c)?.borrow().template.script.clone();

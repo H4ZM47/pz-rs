@@ -1284,11 +1284,12 @@ fn register_inventory_item(thread: &mut Thread) {
                 "Use" => (bool_arg(c, 1), bool_arg(c, 2), bool_arg(c, 3)),
                 _ => (false, false, false),
             };
+            let owner = e.owner(&r);
             let out = r.borrow_mut().use_with(
                 crafting,
                 in_container,
                 sync,
-                e.owner(&r).as_ref(),
+                owner.as_ref(),
                 e.context(),
             );
             e.outcome(&r, ItemOutcome::Use(Box::new(out)));
