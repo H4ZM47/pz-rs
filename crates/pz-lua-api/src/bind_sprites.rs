@@ -20,6 +20,7 @@ const SPRITE: &str = "zombie.iso.sprite.IsoSprite";
 const PROPS: &str = "zombie.core.properties.PropertyContainer";
 
 thread_local! {
+    static MANAGER_INSTANCE: Rc<ManagerObj> = Rc::new(ManagerObj);
     static SPRITES: RefCell<Option<Rc<RefCell<IsoSpriteManager>>>> = const { RefCell::new(None) };
 }
 
@@ -58,6 +59,11 @@ pub fn sprite_property(name: &str, key: &str) -> Option<Option<String>> {
 }
 
 struct ManagerObj;
+
+/// Lua handle for the permanent IsoSpriteManager.instance.
+pub fn instance_value() -> Value {
+    MANAGER_INSTANCE.with(|instance| Value::Object(instance.clone()))
+}
 
 impl LuaObject for ManagerObj {
     fn class_name(&self) -> &str {
@@ -165,7 +171,7 @@ fn key_name(c: &NativeCall<'_>, i: usize) -> Option<String> {
 
 pub fn register(thread: &mut Thread) {
     let b = expose_class(thread, MANAGER, Some("java.lang.Object"));
-    b.field("instance", Value::Object(Rc::new(ManagerObj)));
+    b.field("instance", instance_value());
     // `getSprite(String)` (adding a sprite for an unknown name) and
     // `getSprite(int)`.
     b.method("getSprite", |c| {

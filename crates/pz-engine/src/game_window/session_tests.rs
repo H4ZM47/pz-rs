@@ -54,6 +54,28 @@ fn lua_check(lua: &mut LuaManager, source: &str) {
     });
 }
 
+fn observe_tile_definitions(lua: &mut LuaManager) {
+    lua_check(lua, r#"
+        rustTileEvents = 0
+        Events.OnLoadedTileDefinitions.Add(function(manager)
+            assert(manager == IsoSpriteManager.instance)
+            local fence = manager:getSprite('fencing_01_1')
+            assert(manager:getSprite(fence:getID()):getName() == 'fencing_01_1')
+            local props = manager:getSprite('rust_session_tile_probe'):getProperties()
+            assert(not props:has(IsoFlagType.solid))
+            props:set(IsoFlagType.solid)
+            rustTileEvents = rustTileEvents + 1
+        end)
+    "#);
+}
+
+fn verify_tile_definitions(lua: &mut LuaManager) {
+    lua_check(lua, r#"
+        assert(rustTileEvents == 1)
+        assert(IsoSpriteManager.instance:getSprite('rust_session_tile_probe'):getProperties():has(IsoFlagType.solid))
+    "#);
+}
+
 fn save_counts(lua: &LuaManager) -> (Option<f64>, Option<f64>) {
     let globals = lua.thread.globals();
     (
@@ -315,6 +337,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     .expect("create Rust session");
     app.core.borrow_mut().set_no_save(false);
     app.boot().expect("boot Rust session from installed media");
+    observe_tile_definitions(app.lua.as_mut().unwrap());
     movement_diagnostics(&mut app, "boot");
 
     // Use the real loading/state-machine path, including population startup.
@@ -325,6 +348,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         }
     }
     assert_eq!(app.current_state(), Some(INGAME), "session never entered gameplay; cache: {}", cache_dir.display());
+    verify_tile_definitions(app.lua.as_mut().unwrap());
     run_frames(&mut app, 4);
     movement_diagnostics(&mut app, "before W");
     let player = bind_players::player(0).expect("new session created local player 0");
@@ -469,6 +493,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     }
     assert!(pz_lua_api::global_objects_save::save_dir().is_none(), "native close retained the global-system save directory");
     assert!(bind_players::player(0).is_none(), "native close retained player 0");
+    assert!(pz_lua_api::bind_sprites::sprite_property("rust_session_tile_probe", "solid").is_none(), "closed world retained its sprite manager");
     drop(app);
 
     // A row readback cannot establish that a session is loadable. Reboot
@@ -487,6 +512,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     .expect("create Rust saved session");
     reloaded.core.borrow_mut().set_no_save(false);
     reloaded.boot().expect("boot Rust saved session from installed media");
+    observe_tile_definitions(reloaded.lua.as_mut().unwrap());
     lua_check(reloaded.lua.as_mut().unwrap(), r#"
         rustSessionReloadNewGameCount = 0
         Events.OnNewGame.Add(function() rustSessionReloadNewGameCount = rustSessionReloadNewGameCount + 1 end)
@@ -498,6 +524,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         }
     }
     assert_eq!(reloaded.current_state(), Some(INGAME), "saved session never entered gameplay; cache: {}", cache_dir.display());
+    verify_tile_definitions(reloaded.lua.as_mut().unwrap());
     let reloaded_chunks = mannequin::check_live(false);
     assert_eq!(mannequin::saved_state(), expected_mannequins, "mannequin outfit/identity/pose/skin changed across close and fresh reload");
     let loaded_player = bind_players::player(0).expect("saved session reconstructed local player 0");

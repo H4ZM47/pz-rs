@@ -640,14 +640,13 @@ impl IsoWorld {
             &entity_names,
         )?;
         sprites.post_tile_definitions(&pz_world::sprite::EntitySpriteConfig::from_scripts(&sm));
-        println!("triggerEvent OnLoadedTileDefinitions");
-        // TODO(port): the `IsoSpriteManager` Lua object (no binding yet).
-        lua.trigger_event("OnLoadedTileDefinitions", &[Value::Nil]);
-        // `!IsoSprite.hasNoTextures()`: a client has every tile's textures.
-        // TODO(port): the world tile packs are not loaded at boot yet.
-        sprites.loaded_tile_definitions(&|_| true)?;
         let sprites = Rc::new(RefCell::new(sprites));
         pz_lua_api::bind_sprites::install_sprite_manager(Some(sprites.clone()));
+        println!("triggerEvent OnLoadedTileDefinitions");
+        lua.trigger_event("OnLoadedTileDefinitions", &[pz_lua_api::bind_sprites::instance_value()]);
+        // `!IsoSprite.hasNoTextures()`: a client has every tile's textures.
+        // TODO(port): the world tile packs are not loaded at boot yet.
+        sprites.borrow_mut().loaded_tile_definitions(&|_| true)?;
         self.sprites = Some(sprites);
         self.object_tables = Some(ObjectTables::from_game_jar(&self.jar())?);
         self.save_tables = Some(SaveTables::from_game_jar(&self.jar())?);

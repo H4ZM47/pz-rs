@@ -85,7 +85,7 @@ Numbering follows [WORKSTREAMS.md](WORKSTREAMS.md).
 | # | Workstream | Crates | Status |
 | --- | --- | --- | --- |
 | 1 | Kahlua compiler, VM, stdlib | `pz-kahlua` | **Largely done.** All 1,395 shipped Lua files compile to bytecode byte-identical to the original compiler; VM, coroutines and the standard libraries are ported. Ongoing work is GC/ownership behaviour at host boundaries. |
-| 2 | Lua API bindings | `pz-lua-api` | **In progress; the largest open area.** The biggest crate (~120k lines) and still the usual place a session stops. The port registers all 58 public Build 42.21 item-creation callback names. Two mannequin callbacks still return an unsupported-operation error. |
+| 2 | Lua API bindings | `pz-lua-api` | **In progress; the largest open area.** The biggest crate (~120k lines) and still the usual place a session stops. The port registers all 58 public Build 42.21 item-creation callback names. Installed-session tests cover stock and dressed moveable mannequin payloads. |
 | 3 | File system and mods | `pz-fs` | Boot loads the selected mods when Core enables mods. Lua map groups use the active game filesystem. |
 | 4 | Textures, packs, draw list | `pz-render`, `pz-gpu` | **Done for UI and chunk rendering.** GPU readback tests are part of the four-platform CI run (they may skip where a runner has no suitable graphics adapter). |
 | 5 | Fonts and translations | `pz-text` | **Done.** |

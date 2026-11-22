@@ -312,9 +312,9 @@ draws in the same order. Their tables (`Brochure`, `Flier`, `Newspaper`,
 `Book`, `Magazine`, `ComicBook`, `Photo`, `Job`, the `ItemGenerationConstants`
 lists and the `ModelKey` / `ItemKey` / `FluidKey` / `ItemTag` ids they use) are
 read from the installed jar's static initialisers (`on_create_data`), so
-nothing is hard-coded. The exceptions are `onCreateScarecrow` and
-`onCreateSkeletonDisplay`, which build an `IsoMannequin` and fail as
-`pz.host.Unsupported`. `scratchTicketWinner` draws from the weighted
+the installed tables supply their values. `onCreateScarecrow` and
+`onCreateSkeletonDisplay` initialize a detached mannequin from its script
+and serialize it into the moveable item with its clothing and worn indices. `scratchTicketWinner` draws from the weighted
 `ticketWinnings` map in declaration order: the JDK shuffles that immutable
 map's iteration order per run, so no order is the original's.
 Constructor/private helpers, successful resolver cache and native factory
