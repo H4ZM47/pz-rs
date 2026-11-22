@@ -35,6 +35,86 @@ thread_local! {
     static NAME_LISTS: RefCell<HashMap<usize, Weak<JavaList>>> = RefCell::default();
 }
 
+/// `TileOverlays.instance.updateTileOverlaySprite(obj)` for `objects[index]`
+/// on square `sq`, whose sprite is named `sprite_name`: the picked overlay
+/// sprite goes first in the object's `attachedAnimSprite`, tinted with the
+/// usage's alpha, `copyTargetAlpha` off and `multiplyObjectAlpha` on.
+pub fn update_tile_overlay_sprite(
+    objects: &[pz_world::IsoObjectRef],
+    index: usize,
+    sprite_name: &str,
+    sq: pz_world::tile_overlays::OverlaySquare<'_>,
+) -> LuaResult<()> {
+    let busy = |what: &str| LuaError::runtime(format!("updateTileOverlaySprite: {what} is in use"));
+    let sprites = crate::bind_sprites::manager()?;
+    let pick = {
+        let manager = sprites.try_borrow().map_err(|_| busy("IsoSpriteManager"))?;
+        // `isTableSurface()` / `isTableTopObject()`: the sprite's
+        // `IsTable` / `IsTableTop` property.
+        let has = |o: &pz_world::IsoObjectRef, prop: &str| -> LuaResult<bool> {
+            let body = o.try_borrow().map_err(|_| busy("IsoObject"))?;
+            let sprite = body
+                .sprite
+                .try_read(&manager)
+                .map_err(|e| LuaError::runtime(format!("updateTileOverlaySprite: sprite: {e:?}")))?;
+            Ok(sprite.is_some_and(|s| manager.has_prop(&s, prop)))
+        };
+        // `hasObjectOnTop(obj)`: a table surface with a table-top object or
+        // another table surface above it on the square.
+        let mut on_top: LuaResult<bool> = Ok(false);
+        let picked = shared_tile_overlays().try_borrow().map_err(|_| busy("TileOverlays"))?.pick_overlay(
+            Some(sprite_name),
+            sq,
+            false,
+            || {
+                on_top = (|| {
+                    if !has(&objects[index], "IsTable")? {
+                        return Ok(false);
+                    }
+                    for o in &objects[index + 1..] {
+                        if has(o, "IsTableTop")? || has(o, "IsTable")? {
+                            return Ok(true);
+                        }
+                    }
+                    Ok(false)
+                })();
+                *on_top.as_ref().unwrap_or(&true)
+            },
+            |name| pz_render::get_shared_texture(name).is_some(),
+        );
+        on_top?;
+        picked
+    };
+    let Some(pick) = pick else { return Ok(()) };
+    // `IsoSpriteManager.instance.getSprite(name)`: the named sprite, or a
+    // new one under that name; then `sprite.name = name`.
+    let sprite = {
+        let mut manager = sprites.try_borrow_mut().map_err(|_| busy("IsoSpriteManager"))?;
+        let idx = match manager.named_map.get(&pick.sprite) {
+            Some(&idx) => idx,
+            None => manager.add_sprite_named(&pick.sprite),
+        };
+        manager.sprites[idx].name = Some(pick.sprite.clone());
+        idx
+    };
+    let mut instance = pz_world::objects::IsoSpriteInstance::new(sprite);
+    if let Some([r, g, b, a]) = pick.tint {
+        instance.tint_r = r;
+        instance.tint_g = g;
+        instance.tint_b = b;
+        instance.alpha = a;
+    }
+    instance.copy_target_alpha = false;
+    instance.multiply_object_alpha = true;
+    objects[index]
+        .try_borrow_mut()
+        .map_err(|_| busy("IsoObject"))?
+        .attached_anim_sprite
+        .get_or_insert_with(|| Vec::with_capacity(4))
+        .insert(0, instance);
+    Ok(())
+}
+
 /// `TileOverlays.instance`.
 pub fn shared_tile_overlays() -> Rc<RefCell<TileOverlays>> {
     TILES.with(Rc::clone)

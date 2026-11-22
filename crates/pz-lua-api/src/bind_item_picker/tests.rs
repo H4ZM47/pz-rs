@@ -224,6 +224,20 @@ fn load_gridsquare_fills_named_objects_once_and_marks_the_square() {
     cell.chunks.insert((0, 0), chunk);
     let old_cell = crate::bind_world::with_world(|w| w.cell.take());
     crate::bind_world::set_cell(Some(cell));
+    // A tile overlay for the counter (chance 1: always), with its texture.
+    crate::bind_tile_overlays::shared_tile_overlays()
+        .borrow_mut()
+        .add_overlays(&[pz_world::tile_overlays::OverlayDef {
+            tile: "fixtures_counters_01_0".into(),
+            entries: vec![pz_world::tile_overlays::OverlayEntryDef {
+                room: Some("other".into()),
+                chance: 1,
+                usage: Some(String::new()),
+                tiles: vec!["overlay_crumbs_01_0".into()],
+            }],
+        }])
+        .unwrap();
+    crate::hud::test_util::install_textures(&[("overlay_crumbs_01_0", 64, 128)]);
 
     let main = |i: usize| {
         let v = crate::bind_world_object::object_value(&objects[i]).unwrap();
@@ -237,6 +251,20 @@ fn load_gridsquare_fills_named_objects_once_and_marks_the_square() {
     // Without a sprite name `checkObject` returns before the container.
     assert!(!unnamed.borrow().explored);
     assert!(unnamed.borrow().items.is_empty());
+    // `updateTileOverlaySprite`: the overlay goes first in the named
+    // object's `attachedAnimSprite`; the unnamed object gets none.
+    let overlay = |i: usize| {
+        let o = objects[i].borrow();
+        let sprites = crate::bind_sprites::manager().unwrap();
+        let sprites = sprites.borrow();
+        o.attached_anim_sprite.as_ref().map(|list| {
+            list.iter()
+                .map(|a| (sprites.sprites[a.sprite].name.clone(), a.copy_target_alpha, a.multiply_object_alpha))
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(overlay(0), Some(vec![(Some("overlay_crumbs_01_0".to_string()), false, true)]));
+    assert_eq!(overlay(1), None);
     let done = crate::bind_world::with_world(|w| {
         w.cell.as_ref().unwrap().get_grid_square(1, 1, 0).unwrap().borrow().overlay_done
     });

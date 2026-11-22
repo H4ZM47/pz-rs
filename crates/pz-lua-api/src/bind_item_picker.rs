@@ -303,9 +303,10 @@ fn roll_item(
 /// `IsoChunk.loadGridSquareIfNeeded` then
 /// `LoadGridsquarePerformanceWorkaround.LoadGridsquare` in single player:
 /// once per square, the main container of each object with a named sprite
-/// (not a floor item) is filled if unexplored and marked explored.
-/// Not ported: `ItemPickerJava.updateOverlaySprite` and
-/// `TileOverlays.updateTileOverlaySprite`.
+/// (not a floor item) is filled if unexplored and marked explored, then an
+/// object without container overlays gets its tile overlay
+/// (`TileOverlays.updateTileOverlaySprite`).
+/// Not ported: `ItemPickerJava.updateOverlaySprite`.
 pub fn load_gridsquare(t: &mut Thread, x: i32, y: i32, z: i32) -> LuaResult<()> {
     // Before `ItemPickerJava.Parse` there are no tables (the game always
     // parses them before a chunk loads).
@@ -331,8 +332,14 @@ pub fn load_gridsquare(t: &mut Thread, x: i32, y: i32, z: i32) -> LuaResult<()> 
     };
     let sprites = crate::bind_sprites::manager()?;
     let square_value = crate::bind_world::square_value(x, y, z);
-    for object in &objects {
-        let named = {
+    // `square.getRoom().getName()` for the overlay choice.
+    let room = crate::bind_world::with_world(|w| {
+        let meta = w.meta_grid.as_ref()?;
+        let sq = square.try_borrow().ok()?;
+        sq.room_def(meta).map(|r| r.name.clone())
+    });
+    for (index, object) in objects.iter().enumerate() {
+        let name = {
             let body = object
                 .try_borrow()
                 .map_err(|_| LuaError::runtime("LoadGridsquare: IsoObject is in use"))?;
@@ -346,11 +353,11 @@ pub fn load_gridsquare(t: &mut Thread, x: i32, y: i32, z: i32) -> LuaResult<()> 
                 .sprite
                 .try_read(&sprites)
                 .map_err(|e| LuaError::runtime(format!("LoadGridsquare: sprite: {e:?}")))?;
-            sprite.is_some_and(|sprite| sprite.name.is_some())
+            sprite.and_then(|sprite| sprite.name.clone())
         };
-        if !named {
+        let Some(name) = name else {
             continue;
-        }
+        };
         let value = crate::bind_world_object::object_value(object)?;
         crate::bind_world_object::adopt_square(&value, object, &square_value)?;
         let main = object
@@ -359,11 +366,21 @@ pub fn load_gridsquare(t: &mut Thread, x: i32, y: i32, z: i32) -> LuaResult<()> 
             .runtime_containers
             .as_ref()
             .and_then(|r| r.main.clone());
-        let Some(container) = main else { continue };
-        if !container.borrow().explored {
-            let player = player_instance(t)?;
-            fill_container(t, &d, &container, &player)?;
-            container.borrow_mut().explored = true;
+        if let Some(container) = main {
+            if !container.borrow().explored {
+                let player = player_instance(t)?;
+                fill_container(t, &d, &container, &player)?;
+                container.borrow_mut().explored = true;
+            }
+        }
+        let container_overlays = crate::bind_tile_overlays::shared_container_overlays();
+        let has_container_overlays = container_overlays
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("LoadGridsquare: ContainerOverlays is in use"))?
+            .has_overlays(Some(&name));
+        if !has_container_overlays {
+            let sq = pz_world::tile_overlays::OverlaySquare { x, y, z, room: room.as_deref() };
+            crate::bind_tile_overlays::update_tile_overlay_sprite(&objects, index, &name, sq)?;
         }
     }
     square.try_borrow_mut().map_err(|_| in_use())?.overlay_done = true;
