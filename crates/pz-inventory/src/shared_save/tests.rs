@@ -652,3 +652,49 @@ fn live_moddata_overflow_replays_before_provider_failure_and_restores_real_id() 
     prefix.i16(0);
     assert_eq!(writer.buf, prefix.buf);
 }
+
+/// CompressIdenticalItems saves each candidate with InventoryItem.save into
+/// its scratch ByteBuffer; saveEntity writes the components there too.
+fn identical_items_with_component_round_trip(component: pz_entity::Component) {
+    use crate::component::{encode_component, BLOB_WORLD_VERSION};
+    use crate::item_components::ItemComponents;
+    let _restore = Restore::new();
+    let t = Rc::new(template(ItemClass::Normal, "WaterBottle"));
+    let env = Env(vec![t.clone()]);
+    let root = crate::shared::SharedContainer::default().into_ref();
+    let mut items = Vec::new();
+    for item_id in [11, 12] {
+        let item = actual(t.clone(), 1, item_id);
+        item.borrow_mut().components = ItemComponents::from_encoded_blobs(
+            vec![encode_component(component.clone())],
+            BLOB_WORLD_VERSION,
+        )
+        .unwrap();
+        root.borrow_mut().items.push(item.clone());
+        items.push(item);
+    }
+    let mut w = Writer::new();
+    save_container_ref(&root, &mut w, &env).unwrap();
+    assert_eq!(items[0].borrow().id, 11);
+    assert_eq!(items[1].borrow().id, 12);
+    let back = decoded(&w, &env);
+    assert_eq!(back.items.len(), 2);
+    for item in &back.items {
+        assert_eq!(item.as_item().unwrap().components.len(), 1);
+    }
+}
+
+#[test]
+fn identical_items_with_components_compare_in_native_buffer() {
+    identical_items_with_component_round_trip(pz_entity::Component::FluidContainer(
+        pz_entity::FluidContainer::default(),
+    ));
+}
+
+#[test]
+fn identical_items_with_large_component_retry_after_native_overflow() {
+    identical_items_with_component_round_trip(pz_entity::Component::Opaque {
+        kind: ComponentType::FurnaceLogic,
+        data: vec![7; 3000],
+    });
+}
