@@ -873,7 +873,11 @@ impl IsoWorld {
             let chars = pz_lua_api::bind_characters::shared_characters();
             let made = chars.borrow_mut().create_survivor(&sm);
             match made {
-                Ok(d) => self.lua_player_desc = Some(Rc::new(RefCell::new(d))),
+                Ok(d) => {
+                    let d = Rc::new(RefCell::new(d));
+                    self.dress_new_game_desc(lua, &d);
+                    self.lua_player_desc = Some(d);
+                }
                 Err(e) => self.log_error(format!("SurvivorFactory.CreateSurvivor: {e:?}")),
             }
         }
@@ -891,6 +895,67 @@ impl IsoWorld {
         };
         // What the menu's `getWorld():setLuaPosX/Y/Z` would have set.
         pz_lua_api::bind_world::lua_world::set_lua_pos(self.lua_pos);
+    }
+
+    /// The clothes the character creation screen gives a new descriptor:
+    /// `CharacterCreationMain:setVisible` calls `randomGenericOutfit`,
+    /// which runs `dressWithDefinitions` with
+    /// `ClothingSelectionDefinitions.default` (worn items cleared first),
+    /// then with the profession's definitions. This runs the same Lua on the
+    /// descriptor. No traits are chosen here, so the trait outfits
+    /// (`TraitClothingSelectionDefinitions`) are not applied.
+    fn dress_new_game_desc(&mut self, lua: &mut LuaManager, desc: &Rc<RefCell<LuaSurvivorDesc>>) {
+        const SRC: &str = r#"
+local desc = ...
+local function dressWithDefinitions(definition, resetWornItems)
+    if resetWornItems then
+        desc:getWornItems():clear()
+    end
+    for bodyLocation, profTable in pairs(definition) do
+        local chance = profTable.chance
+        if not chance or ZombRand(100) < chance then
+            desc:setWornItem(ItemBodyLocation.get(ResourceLocation.of(bodyLocation)), nil)
+            local items = profTable.items
+            local itemType = items[ZombRand(0, #items)+1]
+            if itemType then
+                local item = instanceItem(itemType)
+                if item then
+                    desc:setWornItem(ItemBodyLocation.get(ResourceLocation.of(bodyLocation)), item)
+                end
+            end
+        end
+    end
+end
+local default = ClothingSelectionDefinitions.default
+if desc:isFemale() then
+    dressWithDefinitions(default.Female, true)
+else
+    dressWithDefinitions(default.Male, true)
+end
+local profession = ClothingSelectionDefinitions[desc:getCharacterProfession():getName()]
+if profession then
+    if desc:isFemale() then
+        dressWithDefinitions(profession.Female, false)
+    elseif profession.Male then
+        dressWithDefinitions(profession.Male, false)
+    else
+        dressWithDefinitions(profession.Female, false)
+    end
+end
+"#;
+        let g = lua.thread.globals().clone();
+        let result = pz_kahlua::stdlib::load_string(SRC, Some("randomGenericOutfit"), g)
+            .map_err(|e| format!("{e:?}"))
+            .and_then(|f| {
+                let arg = pz_lua_api::bind_characters::survivor_desc_value(desc);
+                lua.thread
+                    .pcall(&f, &[arg])
+                    .map(|_| ())
+                    .map_err(|(e, _)| pz_kahlua::exec::java_value_of(&e))
+            });
+        if let Err(e) = result {
+            self.log_error(format!("CharacterCreationMain:randomGenericOutfit: {e}"));
+        }
     }
 
     /// The single-map spawn region `SpawnRegionMgr` builds
@@ -1495,15 +1560,19 @@ impl IsoWorld {
                 pz_characters::character::items::blood_part::MAX,
             ));
             let group = desc.borrow().worn_items.body_location_group().clone();
-            chr.descriptor = Some(desc);
+            chr.descriptor = Some(desc.clone());
             chr.init_worn_items(sm, group);
             chr.vars.x = x as f32 + 0.5;
             chr.vars.y = y as f32 + 0.5;
             chr.vars.z = z as f32;
             chr.vars.dir = pz_world::square::IsoDirections::SE;
+            let chr = Rc::new(RefCell::new(chr));
+            // `Dressup(desc)`: the player wears new copies of the clothes
+            // the descriptor wears.
+            pz_lua_api::character_dressup::dressup(&mut lua.thread, sm, &chr, &desc)
+                .map_err(|e| format!("IsoPlayer.Dressup: {e}"))?;
             // `player.sqlId = 1`.
             self.player_sql_ids[0] = 1;
-            let chr = Rc::new(RefCell::new(chr));
             self.place_player(chr.clone());
             player = Some(chr);
         }
