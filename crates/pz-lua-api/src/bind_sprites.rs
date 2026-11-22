@@ -355,25 +355,25 @@ mod tests {
         register(&mut t);
         let run = |t: &mut Thread, code| {
             let f = pz_kahlua::stdlib::load_string(code, Some("sprite owners"), t.globals().clone()).unwrap();
-            t.call(&f, &[]).unwrap();
+            let values = t.call(&f, &[]).unwrap();
+            assert!(!values.is_empty() && values.iter().all(|v| matches!(v, Value::Bool(true))), "{values:?}");
         };
         run(&mut t, r#"
             retained = IsoSpriteManager.instance:getSprite('old')
             retainedProps = retained:getProperties()
-            assert(retained == IsoSpriteManager.instance:getSprite('old'))
-            assert(retainedProps == retained:getProperties())
             retainedProps:set('CustomName', 'Original')
+            return retained == IsoSpriteManager.instance:getSprite('old'), retainedProps == retained:getProperties()
         "#);
         install_sprite_manager(Some(make_manager()));
         run(&mut t, r#"
             local current = IsoSpriteManager.instance:getSprite('new')
-            assert(current ~= retained and retained:getName() == 'old')
-            assert(retained:getProperties() == retainedProps)
-            assert(retainedProps:get('CustomName') == 'Original')
-            retainedProps:set('CustomName', 'Retained')
-            assert(current:getProperties():get('CustomName') == nil)
-            assert(retained:getProperties():get('CustomName') == 'Retained')
+            local old, props = retained, retainedProps
             retained, retainedProps = nil, nil
+            local original = props:get('CustomName')
+            props:set('CustomName', 'Retained')
+            return current ~= old, old:getName() == 'old', old:getProperties() == props,
+                original == 'Original', current:getProperties():get('CustomName') == nil,
+                old:getProperties():get('CustomName') == 'Retained'
         "#);
         assert!(old_lifetime.upgrade().is_none());
         install_sprite_manager(previous);
