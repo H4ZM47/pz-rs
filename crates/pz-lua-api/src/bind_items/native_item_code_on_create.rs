@@ -1,10 +1,12 @@
 //! Genuine static ItemCodeOnCreate entry points over actual item allocations.
 //!
-//! Implemented: onCreateRecipeMagazine and the custom-colour callbacks
+//! Implemented: onCreateRecipeMagazine, the custom-colour callbacks
 //! (onCreateLipstick, onCreateFabricRoll, onCreateSprayPaint,
-//! onCreateToyPlane, onCreateRandomColor). Other declared handlers, the
-//! public constructor, inherited helpers and factory/callback phase parity are
-//! separate capabilities; no replacement Lua callbacks are installed here.
+//! onCreateToyPlane, onCreateRandomColor) and the ID card callbacks
+//! (onCreateIDCard, onCreateIDCardFemale, onCreateIDCardMale). Other declared
+//! handlers, the public constructor, inherited helpers and factory/callback
+//! phase parity are separate capabilities; no replacement Lua callbacks are
+//! installed here.
 
 use pz_entity::RetiredComponents;
 use pz_inventory::moddata::{get_mod_data_ref, ModDataError};
@@ -216,11 +218,94 @@ const CUSTOM_COLOR_CALLBACKS: [(&str, ColorSource, &str); 5] = [
     ("onCreateRandomColor", ColorSource::Random, "MethodCaller null-receiver NPE diagnostic state for onCreateRandomColor"),
 ];
 
+// ---- ID card callbacks ----------------------------------------------------------------------
+
+/// Which survivor name an ID card callback gives.
+#[derive(Clone, Copy)]
+enum CardGender {
+    /// `onCreateIDCard`: a `Rand.NextBool(2)` draw picks female.
+    Random,
+    Female,
+    Male,
+}
+
+/// The shared private body of the ID card callbacks. The item's name becomes
+/// the `IGUI_ItemWithDisplayName` text with two arguments: the item's display
+/// name, and a random survivor forename and surname of the given gender with
+/// one space between them. A `Literature` card also gets a `Rand.Next(1000000)`
+/// draw as its `lockedBy` text. The display name is read before the names are
+/// drawn.
+fn on_create_id_card(item: &ItemRef, female: bool) -> LuaResult<()> {
+    let display = {
+        let body = item.try_borrow().map_err(|_| {
+            ModDataError::Borrowed("ItemCodeOnCreate.onCreateIDCard item").to_lua_error()
+        })?;
+        crate::bind_item_name::display_name(&body, super::env().as_ref())
+    };
+    let (forename, surname) = {
+        let characters = crate::bind_characters::shared_characters();
+        let characters = characters
+            .try_borrow()
+            .map_err(|_| ModDataError::Borrowed("SurvivorFactory names").to_lua_error())?;
+        let forename = characters
+            .random_forename(female)
+            .map_err(crate::bind_registry::java_error)?;
+        let surname = characters
+            .random_surname()
+            .map_err(crate::bind_registry::java_error)?;
+        (forename, surname)
+    };
+    let key = "IGUI_ItemWithDisplayName";
+    let args = [
+        pz_text::jfmt::JavaArg::Str(display),
+        pz_text::jfmt::JavaArg::Str(format!("{forename} {surname}")),
+    ];
+    let name = crate::bind_text::with_translator(|t| t.get_text(key, &args))
+        .unwrap_or_else(|| key.to_owned());
+    {
+        let mut body = item.try_borrow_mut().map_err(|_| {
+            ModDataError::Borrowed("ItemCodeOnCreate.onCreateIDCard item").to_lua_error()
+        })?;
+        body.set_name(&name);
+        if let pz_inventory::ItemKind::Literature(data) = &mut body.kind {
+            data.locked_by = Some(pz_core::random::next(1_000_000).to_string());
+        }
+    }
+    pz_inventory::shared::observe_item(item);
+    Ok(())
+}
+
+/// The public callbacks pass the gender to the private body. For
+/// `onCreateIDCard` the gender draw comes first, so it happens even for a
+/// null item; the null receiver then faults in the body.
+fn invoke_id_card(call: &mut NativeCall<'_>, gender: CardGender, name: &'static str) -> LuaResult<usize> {
+    let item = item_argument(call)?;
+    let female = match gender {
+        CardGender::Random => pz_core::random::next(2) == 0,
+        CardGender::Female => true,
+        CardGender::Male => false,
+    };
+    let Some(item) = item else {
+        return Err(ModDataError::Unsupported(name).to_lua_error());
+    };
+    on_create_id_card(&item, female)?;
+    Ok(0)
+}
+
+const ID_CARD_CALLBACKS: [(&str, CardGender, &str); 3] = [
+    ("onCreateIDCard", CardGender::Random, "MethodCaller null-receiver NPE diagnostic state for onCreateIDCard"),
+    ("onCreateIDCardFemale", CardGender::Female, "MethodCaller null-receiver NPE diagnostic state for onCreateIDCardFemale"),
+    ("onCreateIDCardMale", CardGender::Male, "MethodCaller null-receiver NPE diagnostic state for onCreateIDCardMale"),
+];
+
 pub(super) fn register(thread: &mut Thread) {
     let class = crate::expose::expose_class(thread, CLASS, Some(SUPERCLASS));
     class.static_fn("onCreateRecipeMagazine", invoke);
     for (name, source, null_receiver) in CUSTOM_COLOR_CALLBACKS {
         class.static_fn(name, move |c| invoke_custom_color(c, source, null_receiver));
+    }
+    for (name, gender, null_receiver) in ID_CARD_CALLBACKS {
+        class.static_fn(name, move |c| invoke_id_card(c, gender, null_receiver));
     }
 }
 
@@ -647,5 +732,124 @@ mod custom_color_tests {
         let item = item(&mut thread);
         run(&mut thread, "ItemCodeOnCreate.onCreateRandomColor(item)").unwrap();
         assert!(item.borrow().custom_color);
+    }
+}
+
+#[cfg(test)]
+mod id_card_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use pz_inventory::{shared, InventoryItem, ItemClass, ItemKind, ItemTemplate};
+    use pz_kahlua::{stdlib, TableRef, Thread, Value};
+
+    fn thread() -> Thread {
+        let mut thread = Thread::new(TableRef::new());
+        stdlib::install(&mut thread, None).unwrap();
+        crate::bind_java_util::register(&mut thread);
+        crate::bind_globals::register(&mut thread);
+        crate::bind_items::register(&mut thread);
+        let mut translator = pz_text::Translator::new(pz_text::TranslatorEnv::default());
+        translator.table_mut(pz_text::translator::Table::IgUi).insert(
+            "IGUI_ItemWithDisplayName".into(),
+            pz_text::translator::format_fixer("%1: %2"),
+        );
+        crate::bind_text::install(crate::bind_text::TextState {
+            translator: Rc::new(RefCell::new(translator)),
+            text_manager: Rc::default(),
+            draw: None,
+            known_file: Rc::new(|_| false),
+        });
+        let characters = crate::bind_characters::shared_characters();
+        let mut characters = characters.borrow_mut();
+        characters.add_female_forename("Kate");
+        characters.add_male_forename("Bob");
+        characters.add_surname("Smith");
+        drop(characters);
+        thread
+    }
+
+    fn run(thread: &mut Thread, src: &str) -> Result<Vec<Value>, String> {
+        let f = stdlib::load_string(src, Some("test"), thread.globals().clone()).unwrap();
+        thread.pcall(&f, &[]).map_err(|(m, _)| pz_kahlua::exec::java_value_of(&m))
+    }
+
+    fn card(thread: &mut Thread, class: ItemClass) -> super::ItemRef {
+        let item = shared::try_new_item(InventoryItem::create(
+            Rc::new(ItemTemplate::new(class, "Base", "IDcard")),
+            1,
+        ))
+        .unwrap();
+        thread.globals().set_str("item", crate::bind_items::try_item_value(&item).unwrap());
+        item
+    }
+
+    fn display(item: &super::ItemRef) -> String {
+        crate::bind_item_name::display_name(&item.borrow(), super::super::env().as_ref())
+    }
+
+    #[test]
+    fn female_and_male_cards_take_the_display_name_and_a_survivor_name() {
+        let mut thread = thread();
+        for (callback, forename) in [("onCreateIDCardFemale", "SurvivorName_Kate"), ("onCreateIDCardMale", "SurvivorName_Bob")] {
+            let item = card(&mut thread, ItemClass::Normal);
+            let expected = format!("{}: {forename} SurvivorSurname_Smith", display(&item));
+            let r = run(&mut thread, &format!("return select('#', ItemCodeOnCreate.{callback}(item))")).unwrap();
+            assert_eq!(r[0].as_num(), Some(0.0), "{callback}");
+            assert_eq!(item.borrow().name, expected, "{callback}");
+        }
+    }
+
+    #[test]
+    fn random_card_draws_the_gender_then_the_names_then_the_lock() {
+        let mut thread = thread();
+        for seed in 0..8 {
+            let item = card(&mut thread, ItemClass::Literature);
+            let expected_display = display(&item);
+            pz_core::random::set_seed(seed);
+            let (female, lock) = pz_core::random::with_standard(|r| {
+                let female = r.next(2) == 0;
+                r.next(1);
+                r.next(1);
+                (female, r.next(1_000_000))
+            });
+            pz_core::random::set_seed(seed);
+            run(&mut thread, "ItemCodeOnCreate.onCreateIDCard(item)").unwrap();
+            let body = item.borrow();
+            let forename = if female { "SurvivorName_Kate" } else { "SurvivorName_Bob" };
+            assert_eq!(body.name, format!("{expected_display}: {forename} SurvivorSurname_Smith"));
+            let ItemKind::Literature(data) = &body.kind else {
+                unreachable!()
+            };
+            assert_eq!(data.locked_by, Some(lock.to_string()));
+        }
+    }
+
+    #[test]
+    fn a_card_that_is_not_literature_gets_no_lock_and_bad_arguments_fail() {
+        let mut thread = thread();
+        let item = card(&mut thread, ItemClass::Normal);
+        run(&mut thread, "ItemCodeOnCreate.onCreateIDCardMale(item)").unwrap();
+        assert!(!matches!(item.borrow().kind, ItemKind::Literature(_)));
+        let e = run(&mut thread, "ItemCodeOnCreate.onCreateIDCard('x')").unwrap_err();
+        assert!(e.contains("expected argument of type InventoryItem"), "{e}");
+        let e = run(&mut thread, "ItemCodeOnCreate.onCreateIDCardFemale()").unwrap_err();
+        assert!(e.contains("expected 1 argument, got 0"), "{e}");
+        let e = run(&mut thread, "ItemCodeOnCreate.onCreateIDCardFemale(nil)").unwrap_err();
+        assert!(e.contains("onCreateIDCardFemale"), "{e}");
+    }
+
+    #[test]
+    fn a_null_random_card_still_draws_the_gender() {
+        let mut thread = thread();
+        pz_core::random::set_seed(3);
+        let expected = pz_core::random::with_standard(|r| {
+            r.next(2);
+            r.next(1_000_000)
+        });
+        pz_core::random::set_seed(3);
+        let e = run(&mut thread, "ItemCodeOnCreate.onCreateIDCard(nil)").unwrap_err();
+        assert!(e.contains("onCreateIDCard"), "{e}");
+        assert_eq!(pz_core::random::next(1_000_000), expected);
     }
 }
