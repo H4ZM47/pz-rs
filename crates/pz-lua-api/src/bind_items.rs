@@ -884,6 +884,18 @@ fn register_inventory_item(thread: &mut Thread) {
         let hidden = script.0.borrow().hidden;
         Ok(c.push(hidden))
     });
+    for (name, unequip) in [("getEquipSound", false), ("getUnequipSound", true)] {
+        // `scriptItem.getEquipSound()` / `getUnequipSound()`.
+        b.method(name, move |c| {
+            let script = this(c)?.borrow().template.script.clone().ok_or_else(|| LuaError::Runtime {
+                message: String::new(),
+                class: "java.lang.NullPointerException",
+            })?;
+            let script = script.0.borrow();
+            let sound = if unequip { &script.unequip_sound } else { &script.equip_sound };
+            Ok(c.push(sound.as_deref().map_or(Value::Nil, Value::str)))
+        });
+    }
     // `getName` and `getDisplayName` with the class overrides and state
     // prefixes ([`crate::bind_item_name`]).
     get!(b, "getDisplayName", |i| Value::from(
