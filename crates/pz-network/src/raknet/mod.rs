@@ -17,6 +17,7 @@ pub mod codec;
 pub mod connected;
 pub mod datagram;
 pub mod offline;
+pub mod session;
 
 pub use codec::{DecodeError, DecodeResult, Reader, Writer};
 

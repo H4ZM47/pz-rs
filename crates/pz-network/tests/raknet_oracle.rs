@@ -151,3 +151,113 @@ fn connects_to_the_original_server() {
     bye.ordering_index = 1;
     sock.send(&Datagram::data(2, vec![bye]).encode()).unwrap();
 }
+
+/// Offline handshake; returns the settled MTU.
+fn open_connection(sock: &UdpSocket, server: SocketAddr, client_guid: u64) -> u16 {
+    let req1 = OfflineMessage::OpenConnectionRequest1 {
+        protocol: PROTOCOL_VERSION,
+        mtu: MTU_SIZES[0],
+    };
+    sock.send(&req1.encode()).unwrap();
+    let mtu = recv_until(sock, |b| match OfflineMessage::decode(b) {
+        Ok(Some(OfflineMessage::OpenConnectionReply1 { mtu, .. })) => Some(mtu),
+        _ => None,
+    });
+    let req2 = OfflineMessage::OpenConnectionRequest2 {
+        server_address: server,
+        mtu,
+        client_guid,
+    };
+    sock.send(&req2.encode()).unwrap();
+    recv_until(sock, |b| match OfflineMessage::decode(b) {
+        Ok(Some(OfflineMessage::OpenConnectionReply2 { mtu, .. })) => Some(mtu),
+        _ => None,
+    })
+}
+
+#[test]
+fn holds_a_session_with_the_original_server() {
+    use pz_network::raknet::session::Session;
+    let Ok(target) = std::env::var("PZ_RAKNET_ORACLE") else {
+        return;
+    };
+    let server: SocketAddr = target.parse().expect("PZ_RAKNET_ORACLE must be host:port");
+    let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.connect(server).unwrap();
+    sock.set_read_timeout(Some(Duration::from_millis(10)))
+        .unwrap();
+    let mtu = open_connection(&sock, server, 0x5a5a_0000_8765_4321);
+
+    let start = Instant::now();
+    let now = || start.elapsed().as_millis() as u64;
+    let mut session = Session::new(mtu, now());
+    let request = ControlMessage::ConnectionRequest {
+        client_guid: 0x5a5a_0000_8765_4321,
+        time: now(),
+        security: false,
+        password: vec![],
+    };
+    session.send(&request.encode(), Reliability::Reliable, 0);
+
+    let mut accepted = false;
+    let mut pings = 0;
+    let mut buf = [0u8; 2048];
+    let hold = Duration::from_secs(6);
+    while start.elapsed() < hold {
+        if let Ok(n) = sock.recv(&mut buf) {
+            session
+                .handle_datagram(&buf[..n], now())
+                .expect("server datagram decodes");
+        }
+        while let Some(msg) = session.receive() {
+            match ControlMessage::decode(&msg.payload).expect("control message decodes") {
+                Some(ControlMessage::ConnectionRequestAccepted {
+                    request_time,
+                    accept_time,
+                    ..
+                }) => {
+                    accepted = true;
+                    let reply = ControlMessage::NewIncomingConnection {
+                        server_address: server,
+                        internal_addresses: vec![],
+                        ping_time: request_time,
+                        pong_time: accept_time,
+                    };
+                    session.send(&reply.encode(), Reliability::ReliableOrdered, 0);
+                }
+                Some(ControlMessage::ConnectedPing { time }) => {
+                    pings += 1;
+                    let pong = ControlMessage::ConnectedPong {
+                        ping_time: time,
+                        pong_time: now(),
+                    };
+                    session.send(&pong.encode(), Reliability::Unreliable, 0);
+                }
+                other => eprintln!("oracle sent {other:?} ({} bytes)", msg.payload.len()),
+            }
+        }
+        for d in session.poll_transmit(now()) {
+            sock.send(&d).unwrap();
+        }
+    }
+    assert!(accepted, "server never accepted the connection");
+    assert!(
+        !session.has_unacked(),
+        "server left reliable frames unacknowledged"
+    );
+    assert!(session.idle_ms(now()) < 6000, "server went silent");
+    eprintln!(
+        "session held {hold:?}: {pings} pings answered, rtt {:?} ms, {:?}",
+        session.rtt_ms(),
+        session.stats
+    );
+
+    session.send(
+        &ControlMessage::Disconnect.encode(),
+        Reliability::ReliableOrdered,
+        0,
+    );
+    for d in session.poll_transmit(now()) {
+        sock.send(&d).unwrap();
+    }
+}
