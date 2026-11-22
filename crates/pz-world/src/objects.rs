@@ -522,6 +522,7 @@ pub struct IsoMannequin {
     /// A loaded visual without an explicit texture needs the real host skin
     /// list/RNG getter before activation. No placeholder style is selected.
     pub pending_loaded_skin_resolution: bool,
+    pub pending_inventory: Option<std::rc::Rc<crate::mannequin::MannequinInventoryRecord>>,
     /// The mannequin's container (saved after the visual, not with the
     /// `IsoObject` containers) and its worn items as
     /// `(body location, index into the saved items)`.

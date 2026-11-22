@@ -496,7 +496,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         }
     }
     assert_eq!(reloaded.current_state(), Some(INGAME), "saved session never entered gameplay; cache: {}", cache_dir.display());
-    mannequin::check_live(false);
+    let reloaded_chunks = mannequin::check_live(false);
     assert_eq!(mannequin::saved_state(), expected_mannequins, "mannequin outfit/identity/pose/skin changed across close and fresh reload");
     let loaded_player = bind_players::player(0).expect("saved session reconstructed local player 0");
     assert!(!Rc::ptr_eq(&player, &loaded_player), "saved session reused the closed session's player");
@@ -529,10 +529,21 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     movement_diagnostics(&mut reloaded, "reloaded");
     let old_scripts = pz_lua_api::bind_registry::shared_script_manager();
     let old_globals = reloaded.lua.as_ref().unwrap().thread.globals().clone();
+    // Preserve the first save in the isolated test cache. Each resident
+    // chunk must be written again by quit; the earlier files cannot satisfy it.
+    let first_save = cache_dir.join("first-close-chunks");
+    std::fs::create_dir(&first_save).unwrap();
+    for &(wx, wy) in &reloaded_chunks {
+        let path = pz_world::save::chunk_file::chunk_path(&save_dir, wx, wy);
+        if path.is_file() {
+            std::fs::rename(&path, first_save.join(format!("{wx}_{wy}.bin"))).unwrap();
+        }
+    }
     reloaded.core.borrow_mut().exiting = true;
     run_frames(&mut reloaded, 1);
     assert_eq!(reloaded.current_state(), Some("zombie.gameStates.MainScreenState"), "quit did not return to the main menu");
     assert!(reloaded.world.is_none(), "menu return retained the old world");
+    mannequin::check_saved(&save_dir, &reloaded_chunks);
     assert!(!Rc::ptr_eq(&old_scripts, &pz_lua_api::bind_registry::shared_script_manager()), "menu retained the old script definitions");
     assert!(reloaded.lua.as_ref().unwrap().thread.globals().get_str("rustSessionOldEnvironment").is_nil(), "menu retained old Lua globals");
     assert_eq!(old_globals.get_str("rustSessionOldMenuCount").as_num(), Some(0.0), "old menu callback ran after reset");

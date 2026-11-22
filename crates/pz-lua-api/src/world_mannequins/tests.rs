@@ -63,7 +63,7 @@ fn loaded_inventory_keeps_actual_container_and_worn_prefix_on_bad_location() {
         None,
     ));
     let object = object.ref_handle();
-    promote_loaded_inventory(&object, &scripts).unwrap();
+    promote_loaded_inventory(&object, &scripts, None).unwrap();
     let (container, worn) = {
         let object = object.borrow();
         let ObjectKind::Mannequin(m) = &object.kind else {
@@ -83,7 +83,7 @@ fn loaded_inventory_keeps_actual_container_and_worn_prefix_on_bad_location() {
     assert!(Rc::ptr_eq(member.location.as_ref().unwrap(), &hat));
     assert!(Rc::ptr_eq(&member.item, &container.borrow().items[0]));
     assert_eq!(member.item.borrow().id, 31);
-    promote_loaded_inventory(&object, &scripts).unwrap();
+    promote_loaded_inventory(&object, &scripts, None).unwrap();
     let object = object.borrow();
     let ObjectKind::Mannequin(m) = &object.kind else {
         unreachable!()

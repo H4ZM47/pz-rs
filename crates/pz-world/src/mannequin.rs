@@ -16,6 +16,16 @@ use pz_inventory::worn_items::InventoryWornItemsRef;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Original compressed item records and worn indices. Streaming reads the
+/// archive on the chunk path, then the main-thread activation can run the
+/// actual item factory and restore per-item assets and container backlinks.
+#[derive(Debug)]
+pub struct MannequinInventoryRecord {
+    pub world_version: i32,
+    pub bytes: Vec<u8>,
+    pub worn: Vec<(String, i16)>,
+}
+
 /// Previous owners moved out of a mannequin. Drop after releasing object,
 /// world and sprite guards; an actual inventory can own opaque host parents.
 #[must_use]
@@ -46,6 +56,7 @@ impl IsoMannequin {
             outfit: None,
             item_visuals: Vec::new(),
             pending_loaded_skin_resolution: false,
+            pending_inventory: None,
             container: None,
             worn_items: Vec::new(),
             runtime_container: None,
@@ -60,6 +71,7 @@ impl IsoMannequin {
         container: ContainerRef,
         worn: InventoryWornItemsRef,
     ) -> MannequinInventoryRetirement {
+        self.pending_inventory = None;
         MannequinInventoryRetirement {
             container: self.runtime_container.replace(container),
             worn_items: self.runtime_worn_items.replace(worn),
@@ -168,6 +180,7 @@ impl Clone for IsoMannequin {
             outfit: self.outfit.clone(),
             item_visuals: self.item_visuals.clone(),
             pending_loaded_skin_resolution: self.pending_loaded_skin_resolution,
+            pending_inventory: self.pending_inventory.clone(),
             container: if runtime_container.is_some() {
                 None
             } else {

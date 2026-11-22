@@ -57,7 +57,7 @@ pub(super) fn install_outfit_fixtures(
         // extra receivers isolate both clothing outcomes without RNG retries.
         pz_lua_api::world_mannequins::activate(
             &mut lua.thread, &receiver, Some(&sprite_name), Some(&zone),
-            game_dir, no_black_clothes,
+            game_dir, no_black_clothes, None,
         ).expect("activate installed outfit fixture");
     }
 }

@@ -114,7 +114,11 @@ fn init_script(m: &mut IsoMannequin, scripts: &ScriptManager) {
     }
 }
 
-fn promote_loaded_inventory(object: &IsoObjectRef, scripts: &ScriptManager) -> ScriptResult {
+fn promote_loaded_inventory(
+    object: &IsoObjectRef,
+    scripts: &ScriptManager,
+    env: Option<&dyn pz_inventory::ItemEnv>,
+) -> ScriptResult {
     let registry = scripts
         .registries
         .get("item_body_location")
@@ -123,38 +127,37 @@ fn promote_loaded_inventory(object: &IsoObjectRef, scripts: &ScriptManager) -> S
         .borrow_mut()
         .body_locations
         .get_group("Human")?;
-    let saved = {
-        let mut object = object
-            .try_borrow_mut()
-            .map_err(|_| borrowed("IsoMannequin"))?;
-        let ObjectKind::Mannequin(m) = &mut object.kind else {
-            return Ok(());
-        };
-        if m.runtime_container.is_some() {
-            return Ok(());
+    let record = {
+        let body = object.try_borrow().map_err(|_| borrowed("IsoMannequin"))?;
+        let ObjectKind::Mannequin(m) = &body.kind else { return Ok(()) };
+        if m.runtime_container.is_some() { return Ok(()) }
+        m.pending_inventory.as_ref().zip(m.container.as_ref())
+            .map(|(record, saved)| (record.clone(), saved.id))
+    };
+    let (container, saved_items, worn) = if let Some((record, id)) = record {
+        let env = env.ok_or_else(|| ScriptError::new("mannequin load requires the world item factory"))?;
+        let container = SharedContainer::new(id, "mannequin").into_ref();
+        let mut reader = pz_inventory::io::Reader::new(&record.bytes);
+        let items = pz_inventory::shared_load::load_container_ref(&container, &mut reader, record.world_version, env)
+            .map_err(|failure| ScriptError::new(format!("mannequin container load: {failure:?}")))?;
+        if reader.remaining() != 0 {
+            return Err(ScriptError::new("mannequin container load left unread item bytes"));
         }
-        m.container
-            .take()
-            .map(|c| (c, std::mem::take(&mut m.worn_items)))
+        (container, items, record.worn.clone())
+    } else {
+        let mut body = object.try_borrow_mut().map_err(|_| borrowed("IsoMannequin"))?;
+        let ObjectKind::Mannequin(m) = &mut body.kind else { return Ok(()) };
+        let Some(saved) = m.container.take() else { return Ok(()) };
+        let known: Vec<_> = saved.items.iter()
+            .map(|item| matches!(item, pz_inventory::SavedItem::Item(_))).collect();
+        let container = SharedContainer::from_container(saved);
+        let saved_items = {
+            let body = container.borrow();
+            let mut items = body.items.iter().cloned();
+            known.into_iter().map(|present| if present { items.next() } else { None }).collect()
+        };
+        (container, saved_items, std::mem::take(&mut m.worn_items))
     };
-    let Some((saved, worn)) = saved else {
-        return Ok(());
-    };
-    let mut decoded = 0;
-    let input_to_decoded: Vec<_> = saved
-        .items
-        .iter()
-        .map(|item| {
-            if matches!(item, pz_inventory::SavedItem::Item(_)) {
-                let index = decoded;
-                decoded += 1;
-                Some(index)
-            } else {
-                None
-            }
-        })
-        .collect();
-    let container = SharedContainer::from_container(saved);
     let members = Rc::new(RefCell::new(WornItems::new(group.clone())));
     let retired = {
         let mut object = object
@@ -173,8 +176,7 @@ fn promote_loaded_inventory(object: &IsoObjectRef, scripts: &ScriptManager) -> S
             let key = registry.borrow().get_id(&location)?;
             let item = usize::try_from(index)
                 .ok()
-                .and_then(|i| input_to_decoded.get(i).copied().flatten())
-                .and_then(|i| container.borrow().items.get(i).cloned());
+                .and_then(|i| saved_items.get(i)).cloned().flatten();
             let Some(item) = item else { continue };
             if group.borrow().location(key.as_ref())?.is_none() {
                 continue;
@@ -382,9 +384,10 @@ pub fn activate(
     zone: Option<&MannequinZoneData>,
     game_dir: &Path,
     no_black_clothes: bool,
+    item_env: Option<&dyn pz_inventory::ItemEnv>,
 ) -> WornInventoryResult {
     let scripts = crate::bind_registry::shared_script_manager();
-    promote_loaded_inventory(object, &scripts)?;
+    promote_loaded_inventory(object, &scripts, item_env)?;
     let group = crate::bind_characters::shared_characters()
         .borrow_mut()
         .body_locations

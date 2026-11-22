@@ -1319,17 +1319,25 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
                 container
             });
             container.items.clear();
+            let mut pending_inventory = None;
             let mut worn_items = Vec::new();
             if r.bool()? {
                 let id = r.i32()?;
                 let mut c = ItemContainer::new(None);
+                let start = r.pos;
                 let saved_items = c.load_saved(r, wv, ctx.items)?;
+                let mut record = crate::mannequin::MannequinInventoryRecord {
+                    world_version: wv,
+                    bytes: r.buf[start..r.pos].to_vec(),
+                    worn: Vec::new(),
+                };
                 c.id = id;
                 container = c;
                 let n = r.i8()?;
                 for _ in 0..n.max(0) {
                     let location = r.string()?;
                     let index = r.i16()?;
+                    record.worn.push((location.clone(), index));
                     if let Some(index) = usize::try_from(index)
                         .ok()
                         .and_then(|i| saved_items.get(i))
@@ -1339,6 +1347,7 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
                         worn_items.push((location, index as i16));
                     }
                 }
+                pending_inventory = Some(std::rc::Rc::new(record));
             }
             *slot = Box::new(IsoMannequin {
                 dir,
@@ -1351,6 +1360,7 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
                 human_visual,
                 texture_name,
                 pending_loaded_skin_resolution,
+                pending_inventory,
                 container: Some(container),
                 worn_items,
                 ..IsoMannequin::new(ctx.tables.blood_body_parts)

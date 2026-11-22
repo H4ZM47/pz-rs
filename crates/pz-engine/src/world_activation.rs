@@ -162,6 +162,7 @@ impl IsoWorld {
                                             zone.as_ref(),
                                             &self.game_dir,
                                             no_black_clothes,
+                                            self.items.as_ref().map(|env| env as &dyn pz_inventory::ItemEnv),
                                         )
                                         .map_err(
                                             |error| {
