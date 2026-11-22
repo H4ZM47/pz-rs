@@ -9,7 +9,6 @@
 //! Not ported yet, and reported with `unsupported` when reached:
 //! - `CraftRecipeData.createRecipeOutputs` (and after it the craft surface
 //!   and workstation tests) for a recipe whose inputs the containers cover;
-//! - `IsoPlayer.tooDarkToRead` for such a recipe;
 //! - `CraftRecipe.validateBenefitFromRecipeAtHand` for a learned recipe
 //!   whose skill requirement the character does not meet
 //!   (`tooDarkToRead`, `hasRecipeAtHand`);
@@ -18,11 +17,13 @@
 mod handcraft;
 pub mod item_status;
 mod logic;
+pub(crate) use logic::data_mapper_output_item;
+mod recipe_code;
 
 use crate::bind_character_sim::CharacterObject;
 use crate::bind_item_container::LuaItemContainer;
 use crate::bind_items::ItemRef;
-use crate::bind_java_util::JavaList;
+use crate::bind_java_util::{class_cast, JavaList};
 use crate::bind_scripts::script_list;
 use crate::expose::expose_class;
 use item_status::{CraftItem, CraftItemClass, FoodState};
@@ -142,8 +143,9 @@ pub trait RecipeCharacter {
     /// `getKnownRecipes().contains(name)`.
     fn knows(&self, name: &str) -> bool;
     /// `CraftRecipeManager.itemGetQueuedAmount(chr, item, cache)`: how much
-    /// of the item the queued `ISHandcraftAction`s use.
-    fn item_queued_amount(&self, item: &dyn CraftItem) -> LuaResult<f32>;
+    /// of the item the queued `ISHandcraftAction`s use. `ratio` is the
+    /// cache's `getRecipeData().getVariableInputRatio()`, 1 without a cache.
+    fn item_queued_amount(&self, item: &dyn CraftItem, ratio: f32) -> LuaResult<f32>;
     /// `IsoPlayer.tooDarkToRead()`.
     fn too_dark_to_read(&self) -> LuaResult<bool> {
         Err(crate::bind_world_object::unsupported("IsoPlayer.tooDarkToRead"))
@@ -178,6 +180,55 @@ fn validate_benefit_from_recipe_at_hand(recipe: &CraftRecipe, chr: &dyn RecipeCh
     // TODO(CraftRecipe.validateBenefitFromRecipeAtHand): `tooDarkToRead`,
     // the one-level skill gap test and `hasRecipeAtHand`.
     Err(crate::bind_world_object::unsupported("CraftRecipe.validateBenefitFromRecipeAtHand"))
+}
+
+/// `CraftRecipe.couldBenefitFromRecipeAtHand(chr)`: a known recipe that
+/// must be learned, for a player who lacks at most one level of each
+/// required skill and of at least one. A recipe without required skills
+/// gives false.
+fn could_benefit_from_recipe_at_hand(recipe: &CraftRecipe, chr: &dyn RecipeCharacter) -> bool {
+    if !recipe.need_to_be_learn() || !is_recipe_actually_known(recipe, chr) || !chr.is_player() {
+        return false;
+    }
+    let skills = recipe.skill_required.as_deref().unwrap_or_default();
+    if skills.is_empty() {
+        return false;
+    }
+    skills.iter().all(|s| {
+        let level = chr.perk_level(s.perk());
+        level >= s.level() || s.level() - level == 1
+    })
+}
+
+/// `CraftRecipe.characterHasRequiredSkills(chr)`.
+fn character_has_required_skills(recipe: &CraftRecipe, chr: &dyn RecipeCharacter) -> bool {
+    recipe.skill_required.iter().flatten().all(|s| chr.perk_level(s.perk()) >= s.level())
+}
+
+/// The `CraftRecipe` members that read the character argument.
+fn register_recipe_character_checks(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Characters>>) {
+    let b = expose_class(thread, crate::bind_scripts::CRAFT_RECIPE_CLASS, None);
+    let checks: [(&str, fn(&CraftRecipe, &dyn RecipeCharacter) -> bool, bool); 2] = [
+        ("couldBenefitFromRecipeAtHand", could_benefit_from_recipe_at_hand, false),
+        ("characterHasRequiredSkills", character_has_required_skills, true),
+    ];
+    for (name, check, nil_is_false) in checks {
+        let (sm, chars) = (sm.clone(), chars.clone());
+        crate::bind_scripts::method(&b, name, move |c, h| {
+            let chr_value = c.arg(1);
+            let character = match &chr_value {
+                Value::Nil if nil_is_false => return Ok(Value::Bool(false)),
+                Value::Nil => return Err(npe("IsoGameCharacter")),
+                Value::Object(o) => (&**o as &dyn Any)
+                    .downcast_ref::<CharacterObject>()
+                    .ok_or_else(|| LuaError::runtime("expected IsoGameCharacter"))?,
+                _ => return Err(LuaError::runtime("expected IsoGameCharacter")),
+            };
+            let chr =
+                LuaRecipeCharacter { sm: &sm, chars: &chars, character, value: chr_value.clone(), env: c.thread.globals().clone() };
+            Ok(Value::Bool(h.read(|r: &CraftRecipe| check(r, &chr))?))
+        });
+    }
 }
 
 /// `CraftRecipeManager.validateHasRequiredSkill(recipe, chr, containers)`.
@@ -307,7 +358,7 @@ pub(crate) fn cached_recipe_info(
             .ok_or_else(|| LuaError::runtime("expected IsoGameCharacter"))?,
         _ => return Err(npe("IsoGameCharacter")),
     };
-    let lua_chr = LuaRecipeCharacter { chars, character, value: chr_value.clone(), env: thread.globals().clone() };
+    let lua_chr = LuaRecipeCharacter { sm, chars, character, value: chr_value.clone(), env: thread.globals().clone() };
     if !is_valid_recipe_for_character(recipe, Some(&lua_chr), false)? {
         return Ok((false, false));
     }
@@ -324,11 +375,28 @@ pub(crate) fn cached_recipe_info(
 
 /// The `IsoGameCharacter` argument, read through the shared characters.
 struct LuaRecipeCharacter<'a> {
+    sm: &'a ScriptManager,
     chars: &'a RefCell<Characters>,
     character: &'a CharacterObject,
     value: Value,
     /// `LuaManager.env`.
     env: TableRef,
+}
+
+impl LuaRecipeCharacter<'_> {
+    /// `CraftRecipeManager.isCurrentCraftActionPending(chr, table)`: the
+    /// first of `getCharacterActions()` is this action and it has not set
+    /// `craftStarted`.
+    fn is_current_craft_action_pending(&self, table: &TableRef) -> LuaResult<bool> {
+        let first = self.character.0.borrow().character_actions.borrow().first().cloned();
+        let started = match table.rawget(&Value::str("craftStarted")) {
+            Value::Nil => None,
+            Value::Bool(b) => Some(b),
+            other => return Err(class_cast(&other, "java.lang.Boolean")),
+        };
+        let current = first.is_some_and(|a| a.borrow().table.as_ref().is_some_and(|t| t.ptr_eq(table)));
+        Ok(current && started != Some(true))
+    }
 }
 
 impl RecipeCharacter for LuaRecipeCharacter<'_> {
@@ -346,9 +414,10 @@ impl RecipeCharacter for LuaRecipeCharacter<'_> {
     fn knows(&self, name: &str) -> bool {
         self.character.0.borrow().known_recipes.iter().any(|k| k == name)
     }
-    /// `ISTimedActionQueue.queues[chr].queue`: 0 without a queue; the
-    /// `ISHandcraftAction` entries (their `manualInputs`) are not ported.
-    fn item_queued_amount(&self, _item: &dyn CraftItem) -> LuaResult<f32> {
+    /// `ISTimedActionQueue.queues[chr].queue`: 0 without a queue. A queued
+    /// `ISHandcraftAction` that has not started counts its `manualInputs`
+    /// lists that hold only this item.
+    fn item_queued_amount(&self, item: &dyn CraftItem, ratio: f32) -> LuaResult<f32> {
         let table = |v: Value| match v {
             Value::Table(t) => Some(t),
             _ => None,
@@ -360,17 +429,122 @@ impl RecipeCharacter for LuaRecipeCharacter<'_> {
         else {
             return Ok(0.0);
         };
+        let mut total = 0.0f32;
         for (_, action) in queue.entries() {
-            let is_handcraft = table(action)
-                .and_then(|a| a.metatable())
+            let Some(action) = table(action) else { continue };
+            let is_handcraft = action
+                .metatable()
                 .is_some_and(|m| matches!(m.get_str("Type"), Value::Str(s) if &*s == "ISHandcraftAction"));
-            if is_handcraft {
-                return Err(crate::bind_world_object::unsupported(
-                    "CraftRecipeManager.itemGetQueuedAmount (ISHandcraftAction)",
-                ));
+            if !is_handcraft || self.is_current_craft_action_pending(&action)? {
+                continue;
+            }
+            let manual = match action.rawget(&Value::str("manualInputs")) {
+                Value::Table(t) => t,
+                Value::Nil => continue,
+                other => return Err(class_cast(&other, "se.krka.kahlua.vm.KahluaTable")),
+            };
+            let recipe = action.rawget(&Value::str("craftRecipe"));
+            for (index, list) in manual.entries() {
+                let list = match &list {
+                    Value::Nil => continue,
+                    Value::Object(o) if o.as_any().is::<JavaList>() => o.as_any().downcast_ref::<JavaList>().unwrap().snapshot(),
+                    other => return Err(class_cast(other, "java.util.List")),
+                };
+                let holds_item = |v: &Value| {
+                    crate::bind_items::item_arg_value(v).is_some_and(|i| Rc::as_ptr(&i) as *const () as usize == item.key())
+                };
+                if list.len() != 1 || !list.iter().any(holds_item) {
+                    continue;
+                }
+                let index = match index {
+                    Value::Num(n) => n as i32,
+                    other => return Err(class_cast(&other, "java.lang.Double")),
+                };
+                let recipe = match &recipe {
+                    Value::Object(o) => o.as_any().downcast_ref::<crate::bind_scripts::ScriptHandle>().map(|h| h.root.clone()),
+                    _ => None,
+                };
+                let recipe = recipe.ok_or_else(|| LuaError::runtime("java.lang.NullPointerException"))?;
+                let recipe = recipe
+                    .downcast::<CraftRecipe>()
+                    .ok_or_else(|| LuaError::runtime("java.lang.ClassCastException"))?;
+                let recipe = recipe.borrow();
+                let Some(line) = recipe.io_for_index(index) else { continue };
+                let input = line
+                    .as_input()
+                    .ok_or_else(|| LuaError::runtime("java.lang.ClassCastException: OutputScript cannot be cast to InputScript"))?;
+                if let Some(from) = input.consume_from_item_script() {
+                    let from = recipe
+                        .io_lines()
+                        .get(from)
+                        .and_then(|l| l.as_input())
+                        .ok_or_else(|| LuaError::runtime("java.lang.NullPointerException"))?;
+                    total += match from.resource_type() {
+                        ResourceType::Item | ResourceType::Energy => input.amount() as i32 as f32,
+                        ResourceType::Fluid => input.amount(),
+                        ResourceType::Any => 0.0,
+                    };
+                    continue;
+                }
+                if item_status::consumes_entire_item(input, item) {
+                    return Ok(f32::MAX);
+                }
+                if input.is_keep() {
+                    continue;
+                }
+                let amount = if input.is_variable_amount() {
+                    input.int_amount() as f32 * ratio
+                } else {
+                    input.int_amount() as f32
+                };
+                let n = if amount > 1e-5 { (amount as f64).ceil() as f32 } else { 0.0 };
+                let full_name = item.script_item().ok_or_else(|| LuaError::runtime("java.lang.NullPointerException"))?.borrow().full_name();
+                total += (n * input.relative_scale(&full_name)) as i32 as f32;
             }
         }
-        Ok(0.0)
+        Ok(total)
+    }
+    /// `IsoPlayer.tooDarkToRead()` (`is_player` has passed).
+    ///
+    /// The characters hold no `AttachedItems` yet, so only the hands can
+    /// light the page. `getWornItemsVisionModifier()` is the value
+    /// `updateWornItemsVisionModifier` keeps when the worn items change; it
+    /// is computed here from the worn items.
+    fn too_dark_to_read(&self) -> LuaResult<bool> {
+        let ctx = crate::bind_character_sim::current_sim_context();
+        let chr = self.character.0.borrow();
+        if !chr.is_local_player(ctx.as_ref()) {
+            return Ok(false);
+        }
+        let Some((x, y, z)) = chr.current_square_xyz() else {
+            return Ok(false);
+        };
+        if crate::bind_world::square_value(x, y, z).is_nil() {
+            return Ok(false);
+        }
+        let index = chr.player.player_index;
+        let lit = |i: Option<crate::bind_items::ItemRef>| i.is_some_and(|i| i.borrow().is_emitting_light());
+        if lit(chr.items.primary_hand_item()) || lit(chr.items.secondary_hand_item()) {
+            return Ok(false);
+        }
+        let light = crate::bind_world::square_queries::square_lighting(index, x, y, z).light_level;
+        let mut modifier = 1.0f32;
+        for item in chr.items.worn() {
+            let Some(script) = pz_characters::character::items::script_item(self.sm, &item.borrow()) else {
+                continue;
+            };
+            let v = script.borrow().vision_modifier;
+            if v != 1.0 && v > 0.0 {
+                modifier /= v;
+            }
+        }
+        // `fcmpg`: a NaN level is not dark.
+        let dark = (light / modifier + light) / 2.0 < 0.43;
+        if dark && chr.path.vehicle.is_some() {
+            // `getVehicle().getBatteryCharge() == 0`.
+            return Err(crate::bind_world_object::unsupported("IsoPlayer.tooDarkToRead (BaseVehicle.getBatteryCharge)"));
+        }
+        Ok(dark)
     }
 }
 
@@ -396,6 +570,9 @@ impl LuaCraftItem {
 impl CraftItem for LuaCraftItem {
     fn key(&self) -> usize {
         Rc::as_ptr(&self.item) as *const () as usize
+    }
+    fn has_replace_on_use(&self) -> bool {
+        self.item.borrow().get_replace_on_use().is_some()
     }
     fn script_item(&self) -> Option<Rc<RefCell<Item>>> {
         self.script.clone()
@@ -539,6 +716,8 @@ pub(crate) fn container_items(containers: &Value) -> LuaResult<Vec<ItemRef>> {
 
 pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Characters>>) {
     logic::register(thread, sm.clone(), chars.clone());
+    register_recipe_character_checks(thread, sm.clone(), chars.clone());
+    recipe_code::register(thread, sm.clone());
     let b = expose_class(thread, CRAFT_RECIPE_MANAGER_CLASS, None);
     let query_sm = sm.clone();
     b.static_fn("queryRecipes", move |c| {
@@ -549,6 +728,25 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
         };
         let list = query_recipes(&query_sm, &query)?;
         Ok(c.push(script_list(&list)))
+    });
+    // `hasPlayerRequiredSkill(requiredSkill, chr)`: false for a null
+    // argument.
+    b.static_fn("hasPlayerRequiredSkill", |c| {
+        let (skill, chr) = (c.arg(0), c.arg(1));
+        if skill.is_nil() || chr.is_nil() {
+            return Ok(c.push(false));
+        }
+        let call = |t: &mut Thread, this: &Value, name: &str, arg: Option<Value>| -> LuaResult<Value> {
+            let f = t.table_get(this, &Value::str(name))?;
+            let mut args = vec![this.clone()];
+            args.extend(arg);
+            t.call1(&f, &args)
+        };
+        let int = |v: &Value| pz_kahlua::exec::raw_tonumber(v).unwrap_or(0.0) as i32;
+        let perk = call(c.thread, &skill, "getPerk", None)?;
+        let have = int(&call(c.thread, &chr, "getPerkLevel", Some(perk))?);
+        let need = int(&call(c.thread, &skill, "getLevel", None)?);
+        Ok(c.push(have >= need))
     });
     b.static_fn("getUniqueRecipeItems", move |c| {
         let item = crate::bind_world_object::item_argument(&c.arg(0))?;
@@ -563,8 +761,13 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
             _ => return Err(LuaError::runtime("expected IsoGameCharacter")),
         };
         let containers = container_items(&c.arg(2))?;
-        let lua_chr =
-            LuaRecipeCharacter { chars: &chars, character, value: chr_value.clone(), env: c.thread.globals().clone() };
+        let lua_chr = LuaRecipeCharacter {
+            sm: &sm,
+            chars: &chars,
+            character,
+            value: chr_value.clone(),
+            env: c.thread.globals().clone(),
+        };
         let item = LuaCraftItem::new(&sm, item, &chr_value)?;
         let containers =
             containers.into_iter().map(|i| LuaCraftItem::new(&sm, i, &chr_value)).collect::<LuaResult<Vec<_>>>()?;

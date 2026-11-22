@@ -466,6 +466,11 @@ pub struct InventoryItem {
     pub condition_max: i32,
     /// Actual independent `InventoryItem.broken`; Java defaults false. Not saved.
     pub broken: bool,
+    /// `jobDelta`: the progress bar of the timed action using the item.
+    /// Not saved.
+    pub job_delta: f32,
+    /// `jobType`: the name shown on that progress bar. Not saved.
+    pub job_type: Option<String>,
     pub visual: Option<ItemVisual>,
     pub custom_color: bool,
     pub col: Rgba,
@@ -639,6 +644,8 @@ impl InventoryItem {
             condition: t.condition_max,
             condition_max: t.condition_max,
             broken: false,
+            job_delta: 0.0,
+            job_type: None,
             visual: None,
             custom_color: false,
             col: WHITE,

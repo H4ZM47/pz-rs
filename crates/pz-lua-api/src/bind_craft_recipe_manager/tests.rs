@@ -67,7 +67,7 @@ impl RecipeCharacter for Chr {
     fn knows(&self, name: &str) -> bool {
         self.known.contains(&name)
     }
-    fn item_queued_amount(&self, _item: &dyn CraftItem) -> LuaResult<f32> {
+    fn item_queued_amount(&self, _item: &dyn CraftItem, _ratio: f32) -> LuaResult<f32> {
         Ok(self.queued)
     }
     fn too_dark_to_read(&self) -> LuaResult<bool> {
@@ -124,6 +124,9 @@ fn it(sm: &ScriptManager, key: usize, name: &str) -> It {
 impl CraftItem for It {
     fn key(&self) -> usize {
         self.key
+    }
+    fn has_replace_on_use(&self) -> bool {
+        false
     }
     fn script_item(&self) -> Option<Rc<RefCell<Item>>> {
         self.script.clone()
@@ -328,15 +331,14 @@ fn context_click_needs_every_input_from_the_containers() {
     let nail = |k| it(&sm, k, "Nails");
     assert!(!perform(&sm, "SpikeBat", &bat, &[bat.clone()], &chr).unwrap());
     assert!(!perform(&sm, "SpikeBat", &bat, &[bat.clone(), nail(2)], &chr).unwrap());
-    let err = perform(&sm, "SpikeBat", &bat, &[nail(2), bat.clone(), nail(3)], &chr).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (SpikeBat)"), "{err:?}");
+    assert!(perform(&sm, "SpikeBat", &bat, &[nail(2), bat.clone(), nail(3)], &chr).unwrap());
     // The clicked item counts even when no container holds it.
-    let err = perform(&sm, "SpikeBat", &bat, &[nail(2), nail(3)], &chr).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (SpikeBat)"), "{err:?}");
-    // Too dark to read, once the inputs are covered.
+    assert!(perform(&sm, "SpikeBat", &bat, &[nail(2), nail(3)], &chr).unwrap());
+    // Too dark to read.
     assert!(!perform(&sm, "SpikeBat", &bat, &[nail(2), nail(3)], &Chr { dark: true, ..player() }).unwrap());
+    // A surface recipe then needs the craft surface in range.
     let err = perform(&sm, "Hammer", &nail(2), &[nail(2)], &Chr { dark: true, ..player() }).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (Hammer)"), "{err:?}");
+    assert!(is_unsupported(&err, "isCharacterInRangeOfWorkbench"), "{err:?}");
 }
 
 #[test]
@@ -345,21 +347,19 @@ fn an_item_covers_one_input_only() {
     let chr = player();
     let bat = it(&sm, 1, "BaseballBat");
     assert!(!perform(&sm, "TwoBats", &bat, &[bat.clone()], &chr).unwrap());
-    let err = perform(&sm, "TwoBats", &bat, &[bat.clone(), it(&sm, 2, "BaseballBat")], &chr).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (TwoBats)"), "{err:?}");
+    assert!(perform(&sm, "TwoBats", &bat, &[bat.clone(), it(&sm, 2, "BaseballBat")], &chr).unwrap());
     // Uses add up: three one-use apples or one three-use apple.
     let apple = |k, uses| It { uses, ..it(&sm, k, "Apple") };
     assert!(!perform(&sm, "Uses", &apple(1, 1), &[apple(1, 1), apple(2, 1)], &chr).unwrap());
-    assert!(perform(&sm, "Uses", &apple(1, 1), &[apple(1, 1), apple(2, 1), apple(3, 1)], &chr).is_err());
-    assert!(perform(&sm, "Uses", &apple(1, 3), &[apple(1, 3)], &chr).is_err());
+    assert!(perform(&sm, "Uses", &apple(1, 1), &[apple(1, 1), apple(2, 1), apple(3, 1)], &chr).unwrap());
+    assert!(perform(&sm, "Uses", &apple(1, 3), &[apple(1, 3)], &chr).unwrap());
 }
 
 #[test]
 fn input_tags_list_the_items_that_have_them() {
     let sm = manager("");
     let chr = player();
-    let err = perform(&sm, "Glue", &it(&sm, 1, "BaseballBat"), &[], &chr).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (Glue)"), "{err:?}");
+    assert!(perform(&sm, "Glue", &it(&sm, 1, "BaseballBat"), &[], &chr).unwrap());
     assert!(!accepts(&sm, "Glue", &it(&sm, 1, "Apple"), &chr).unwrap());
     assert!(!accepts(&sm, "Glue", &It { script: None, ..it(&sm, 1, "BaseballBat") }, &chr).unwrap());
 }
@@ -370,12 +370,11 @@ fn an_undamaged_bat_lists_no_hand_recipe_without_nails() {
     // Glue is covered by the bat itself and cannot be done in the dark.
     let dark = Chr { dark: true, ..player() };
     assert!(unique(&sm, "BaseballBat", &dark).unwrap().is_empty());
-    let err = unique(&sm, "BaseballBat", &player()).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs ("), "{err:?}");
-    // FixBat needs a damaged bat.
+    assert_eq!(unique(&sm, "BaseballBat", &player()).unwrap(), ["Glue"]);
+    // FixBat needs a damaged bat, and then the craft surface.
     let bat = It { condition: 3, ..it(&sm, 1, "BaseballBat") };
     let err = unique_with(&sm, &bat, &dark, &[]).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (FixBat)"), "{err:?}");
+    assert!(is_unsupported(&err, "isCharacterInRangeOfWorkbench"), "{err:?}");
 }
 
 #[test]
@@ -393,8 +392,7 @@ fn on_test_rejections_skip_the_recipe() {
     .unwrap();
     assert!(list.is_empty());
     assert_eq!(calls, [("Recipe.OnTest.No".to_string(), 7)]);
-    let err = unique_with(&sm, &apple, &chr, &[]).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (Tested)"), "{err:?}");
+    assert_eq!(unique_with(&sm, &apple, &chr, &[]).unwrap(), ["Tested"]);
 }
 
 #[test]
@@ -479,10 +477,86 @@ fn lua_get_unique_recipe_items() {
     assert!(err.contains("NullPointerException"), "{err}");
     let err = run(&mut t, "return CraftRecipeManager.getUniqueRecipeItems(bat, player, nil)").unwrap_err();
     assert!(err.contains("NullPointerException"), "{err}");
-    // SpikeBat lacks the nails; Glue is covered by the bat, and the
-    // player's light is not ported.
-    let err = run(&mut t, "return CraftRecipeManager.getUniqueRecipeItems(bat, player, ArrayList.new())").unwrap_err();
-    assert!(err.contains("tooDarkToRead"), "{err}");
+    // SpikeBat lacks the nails; Glue is covered by the bat. The character
+    // is not a local player, so it is never too dark to read.
+    let out =
+        run(&mut t, "return CraftRecipeManager.getUniqueRecipeItems(bat, player, ArrayList.new()):get(0):getName()")
+            .unwrap();
+    assert!(out[0].raw_equals(&Value::str("Glue")), "{out:?}");
+}
+
+#[test]
+fn a_queued_handcraft_action_holds_back_its_manual_inputs() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let sm = manager(
+        "craftRecipe SliceApple { time = 10, Tags = InHandCraft, inputs { item 1 [Base.Apple] mode:destroy, } outputs { item 1 Base.Apple, } }",
+    );
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    crate::bind_items::register(&mut t);
+    crate::bind_scripts::register(&mut t, sm.clone());
+    register(&mut t, sm.clone(), Rc::new(RefCell::new(Characters::default())));
+    let player = Rc::new(RefCell::new(crate::bind_character_sim::LuaGameCharacter::new(
+        &ScriptManager::new(),
+        pz_characters::CharacterKind::Player,
+    )));
+    let player = Value::Object(Rc::new(CharacterObject::try_new(&player).unwrap()));
+    t.globals().set_str("player", player);
+    for name in ["apple", "other"] {
+        t.globals().set_str(name, crate::bind_items::try_item_value(&item(&sm, ItemClass::Food, "Apple")).unwrap());
+    }
+    let count = |t: &mut Thread, item: &str| {
+        let out = run(t, &format!("return CraftRecipeManager.getUniqueRecipeItems({item}, player, ArrayList.new()):size()"));
+        out.unwrap()[0].clone()
+    };
+    assert!(count(&mut t, "apple").raw_equals(&Value::Num(1.0)));
+    // The action holds the apple in its only input (index 0): a destroy
+    // input takes all of it.
+    let out = run(
+        &mut t,
+        r#"
+        local list, recipe = CraftRecipeManager.queryRecipes("InHandCraft")
+        for i = 0, list:size() - 1 do
+            if list:get(i):getName() == "SliceApple" then recipe = list:get(i) end
+        end
+        local inputs = ArrayList.new()
+        inputs:add(apple)
+        local action = setmetatable({ manualInputs = { [0] = inputs }, craftRecipe = recipe }, { Type = "ISHandcraftAction" })
+        ISTimedActionQueue = { queues = { [player] = { queue = { action } } } }
+        return recipe:getName()
+        "#,
+    )
+    .unwrap();
+    assert!(out[0].raw_equals(&Value::str("SliceApple")), "{out:?}");
+    assert!(count(&mut t, "apple").raw_equals(&Value::Num(0.0)));
+    assert!(count(&mut t, "other").raw_equals(&Value::Num(1.0)), "another apple is not held");
+    // A list of two items holds back neither.
+    run(&mut t, "ISTimedActionQueue.queues[player].queue[1].manualInputs[0]:add(other)").unwrap();
+    assert!(count(&mut t, "apple").raw_equals(&Value::Num(1.0)));
+}
+
+#[test]
+fn generic_packing_takes_an_undamaged_item_of_the_script_colour() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let sm = manager("");
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    crate::bind_items::register(&mut t);
+    crate::bind_scripts::register(&mut t, sm.clone());
+    register(&mut t, sm.clone(), Rc::new(RefCell::new(Characters::default())));
+    let bat = item(&sm, ItemClass::Weapon, "BaseballBat");
+    t.globals().set_str("bat", crate::bind_items::try_item_value(&bat).unwrap());
+    let packs = |t: &mut Thread| run(t, "return RecipeCodeOnTest.genericPacking(bat, nil)").unwrap()[0].clone();
+    assert!(packs(&mut t).raw_equals(&Value::Bool(true)));
+    bat.borrow_mut().color_red = 0.5;
+    assert!(packs(&mut t).raw_equals(&Value::Bool(false)), "another colour");
+    bat.borrow_mut().color_red = 1.0;
+    let max = bat.borrow().condition_max;
+    bat.borrow_mut().condition = max - 1;
+    assert!(packs(&mut t).raw_equals(&Value::Bool(false)), "damaged");
+    assert!(run(&mut t, "return RecipeCodeOnTest.genericPacking(nil, nil)").is_err());
 }
 
 #[test]
@@ -551,6 +625,142 @@ fn consume_from_item_fluids_count_the_fluid_of_each_item() {
     assert!(!perform(&sm, "Fill", &low, &[low.clone()], &chr).unwrap());
     let a = with_fluid(apple(1), &[("Water", 0.3)], 1.0);
     let b = with_fluid(apple(2), &[("Water", 0.3)], 1.0);
-    let err = perform(&sm, "Fill", &a, &[a.clone(), b], &chr).unwrap_err();
-    assert!(is_unsupported(&err, "createRecipeOutputs (Fill)"), "{err:?}");
+    assert!(perform(&sm, "Fill", &a, &[a.clone(), b], &chr).unwrap());
+}
+
+/// The crafting window's path through `CraftRecipeData`: `setRecipe`'s
+/// `canConsumeInputs`, `autoPopulateInputs`, the craft count, `canPerform`,
+/// then `perform`'s real consume and outputs.
+#[test]
+fn the_window_logic_counts_crafts_and_consumes_the_populated_inputs() {
+    let sm = manager("");
+    let chr = player();
+    let r = recipe(&sm, "SpikeBat");
+    let r = r.borrow();
+    let items =
+        [it(&sm, 1, "BaseballBat"), it(&sm, 2, "Nails"), it(&sm, 3, "Nails"), it(&sm, 4, "Nails"), it(&sm, 5, "Nails"), it(&sm, 6, "Apple")];
+    let refs: Vec<&dyn CraftItem> = items.iter().map(|i| i as &dyn CraftItem).collect();
+    let all: Vec<usize> = items.iter().map(|i| i.key).collect();
+    let t = &mut |_: &str, _: usize| true;
+    let mut d = handcraft::RecipeData::new(&r, &refs, &chr);
+    assert!(d.consume_inputs_internal(true, Some(&all), true, true, t).unwrap());
+    assert_eq!(d.st.all_viable_items, [1, 2, 3]);
+    let viable = d.st.all_viable_items.clone();
+    d.populate_inputs(&viable, false, t).unwrap();
+    assert_eq!(d.st.inputs.iter().map(|i| i.items.clone()).collect::<Vec<_>>(), [vec![1], vec![2, 3]]);
+    assert!(d.consume_inputs_internal(true, None, true, false, t).unwrap());
+    // One bat, four nails (two per craft).
+    assert_eq!(d.possible_craft_count(&all, false, &mut Vec::new(), t).unwrap(), 1);
+    assert_eq!(d.possible_craft_count(&all[1..], false, &mut Vec::new(), t).unwrap(), 0);
+    // With manual input selection only the applied item types count.
+    let mut consumed = Vec::new();
+    assert_eq!(d.possible_craft_count(&all, true, &mut consumed, t).unwrap(), 1);
+    assert_eq!(consumed, [1, 2, 3, 4, 5]);
+    // `getMulticraftConsumedItemsFor`: the applied items, then the other
+    // counted items of the same types.
+    let mut nails = Vec::new();
+    d.multicraft_consumed_items_for(1, &consumed, &mut nails, t).unwrap();
+    assert_eq!(nails, [2, 3, 4, 5]);
+    let mut bats = Vec::new();
+    d.multicraft_consumed_items_for(0, &consumed, &mut bats, t).unwrap();
+    assert_eq!(bats, [1]);
+    assert_eq!(d.applied_input_item_types(), ["Base.BaseballBat", "Base.Nails", "Base.Nails"]);
+    assert_eq!(d.items_of_types(&all, &["Base.Nails".to_string()]), [2, 3, 4, 5]);
+    assert!(d.can_perform(Some(&all), true, true, t).unwrap());
+    assert!(matches!(d.st.to_output[..], [handcraft::OutputItem::Script(_)]));
+
+    assert!(d.consume_inputs_internal(false, Some(&all), false, false, t).unwrap());
+    assert!(d.create_outputs_internal(false).unwrap());
+    assert!(matches!(&d.st.to_output[..], [handcraft::OutputItem::Create(s)] if Rc::ptr_eq(s, &script_item(&sm, "BaseballBat"))));
+    assert_eq!(d.st.consumed_used_items, [1, 2, 3]);
+    assert_eq!(d.consumed_items(), [1, 2, 3]);
+    assert_eq!(d.all_input_items(), [1, 2, 3]);
+
+    // The nails are gone from the applied items: no input can be covered.
+    d.st.inputs[1].cache.applied.clear();
+    assert_eq!(d.possible_craft_count(&all, true, &mut Vec::new(), t).unwrap(), 0);
+
+    // `refresh`: the inputs that are not kept drop their items.
+    d.verify_input_items(1, &all, t).unwrap();
+    assert!(d.st.inputs[1].items.is_empty());
+    d.populate_inputs(&[4, 5], true, t).unwrap();
+    assert_eq!(d.st.inputs.iter().map(|i| i.items.clone()).collect::<Vec<_>>(), [vec![], vec![4, 5]]);
+
+    // The action's manual inputs: cleared, then set per input.
+    d.clear_manual_inputs();
+    assert!(d.st.inputs.iter().all(|i| i.items.is_empty()));
+    assert!(!d.are_all_input_items_satisfied(t).unwrap());
+    assert!(!d.set_manual_inputs_for(1, &[4], t).unwrap(), "one nail is not enough");
+    assert!(d.set_manual_inputs_for(1, &[4, 5], t).unwrap());
+    assert!(!d.are_all_input_items_satisfied(t).unwrap(), "no bat yet");
+    assert!(d.set_manual_inputs_for(0, &[1], t).unwrap());
+    assert_eq!(d.st.inputs.iter().map(|i| i.items.clone()).collect::<Vec<_>>(), [vec![1], vec![4, 5]]);
+    assert!(d.are_all_input_items_satisfied(t).unwrap());
+}
+
+#[test]
+fn a_known_recipe_one_level_short_could_benefit_from_a_recipe_at_hand() {
+    let sm = manager(
+        "craftRecipe Skilled { time = 10, Tags = InHandCraft, SkillRequired = Woodwork:3, inputs { item 1 [Base.Apple], } outputs { item 1 Base.Apple, } }
+         craftRecipe Learned { time = 10, Tags = InHandCraft, needToBeLearn = true, SkillRequired = Woodwork:3, inputs { item 1 [Base.Apple], } outputs { item 1 Base.Apple, } }
+         craftRecipe Plain { time = 10, Tags = InHandCraft, needToBeLearn = true, inputs { item 1 [Base.Apple], } outputs { item 1 Base.Apple, } }",
+    );
+    let recipe = |n: &str| sm.get_script(ScriptType::CraftRecipe, &format!("Base.{n}")).unwrap().downcast::<CraftRecipe>().unwrap();
+    let (skilled, learned, plain) = (recipe("Skilled"), recipe("Learned"), recipe("Plain"));
+    let (skilled, learned, plain) = (skilled.borrow(), learned.borrow(), plain.borrow());
+    let chr = |level: i32| Chr {
+        player: true,
+        levels: vec![("Woodwork", level)],
+        known: vec!["Learned", "Plain"],
+        ..Chr::default()
+    };
+
+    assert!(could_benefit_from_recipe_at_hand(&learned, &chr(2)));
+    assert!(could_benefit_from_recipe_at_hand(&learned, &chr(3)), "no skill is short");
+    assert!(!could_benefit_from_recipe_at_hand(&learned, &chr(1)), "two levels short");
+    assert!(!could_benefit_from_recipe_at_hand(&skilled, &chr(2)), "need not be learned");
+    assert!(!could_benefit_from_recipe_at_hand(&plain, &chr(2)), "no required skill");
+    assert!(!could_benefit_from_recipe_at_hand(&learned, &Chr { known: vec![], ..chr(2) }), "unknown");
+    assert!(!could_benefit_from_recipe_at_hand(&learned, &Chr { player: false, ..chr(2) }));
+
+    assert!(character_has_required_skills(&learned, &chr(3)));
+    assert!(!character_has_required_skills(&learned, &chr(2)));
+    assert!(character_has_required_skills(&plain, &chr(0)));
+}
+
+/// `OutputMapper.getOutputItem(data, manual)`: an entree whose pattern items
+/// each match a different mapper input (by its first input item when manual,
+/// else by its most recent applied item), else the default result, which
+/// needs every mapper input filled when manual.
+#[test]
+fn output_mapper_entrees_match_the_input_items() {
+    let sm = manager(
+        "craftRecipe Mapped { time = 10, inputs { item 1 [Base.Apple;Base.Nails] mappers[M], item 1 [Base.Apple;Base.BaseballBat] mappers[M], } \
+         outputs { item 1 mapper:M, } itemMapper M { Base.BaseballBat = Base.Apple;Base.Nails, Base.Nails = Base.Apple;Base.Apple, Default = Base.Apple, } }",
+    );
+    let chr = player();
+    let r = recipe(&sm, "Mapped");
+    let r = r.borrow();
+    let items = [it(&sm, 1, "Apple"), it(&sm, 2, "Nails"), it(&sm, 3, "Apple"), it(&sm, 4, "BaseballBat")];
+    let refs: Vec<&dyn CraftItem> = items.iter().map(|i| i as &dyn CraftItem).collect();
+    let mapper = r.output_mapper_for(r.outputs().next().unwrap()).unwrap();
+    let name = |s: Option<ScriptRef>| s.map(|s| s.downcast::<Item>().unwrap().borrow().module_dot_type.clone());
+    let mut d = handcraft::RecipeData::new(&r, &refs, &chr);
+    // Nothing selected: no entree matches; the manual default needs both inputs.
+    assert_eq!(name(d.mapper_output_item(mapper, false)).as_deref(), Some("Base.Apple"));
+    assert_eq!(name(d.mapper_output_item(mapper, true)), None);
+    // Apple and nails, one per input.
+    d.st.inputs[0].items = vec![2];
+    d.st.inputs[1].items = vec![1];
+    assert_eq!(name(d.mapper_output_item(mapper, true)).as_deref(), Some("Base.BaseballBat"));
+    // Two apples: the second pattern apple needs another input.
+    d.st.inputs[0].items = vec![1];
+    d.st.inputs[1].items = vec![3];
+    assert_eq!(name(d.mapper_output_item(mapper, true)).as_deref(), Some("Base.Nails"));
+    // Not manual: the most recent applied item of each input.
+    d.st.inputs[0].cache.applied = vec![2, 1];
+    d.st.inputs[1].cache.applied = vec![4];
+    assert_eq!(name(d.mapper_output_item(mapper, false)).as_deref(), Some("Base.Apple"));
+    d.st.inputs[1].cache.applied = vec![4, 3];
+    assert_eq!(name(d.mapper_output_item(mapper, false)).as_deref(), Some("Base.Nails"));
 }

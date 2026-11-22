@@ -4,14 +4,18 @@
 //! (`CraftRecipeListNodeCollection` of `CraftRecipeListNode`s) and its
 //! `CachedRecipeInfo`s.
 //!
-//! Ported for a logic without a craft bench and with no recipe selected:
-//! the constructor, the event listeners, the manual input flags, the view
-//! settings kept in the player's mod data, the containers and their items,
-//! the recipe list with its category filter and sort, and the cached
-//! recipe info. Selecting a recipe (`CraftRecipeData` with inputs, the
-//! input item nodes), the filter string, the craft action and the methods
-//! that only matter once a recipe is selected report `unsupported`.
+//! Ported for a logic without a craft bench: the constructor, the event
+//! listeners, the manual input flags, the view settings kept in the
+//! player's mod data, the containers and their items, the recipe list with
+//! its category filter and sort, the cached recipe info, and (in `recipe`)
+//! the selected recipe, the craft action and `performCurrentRecipe`. The
+//! filter string, manual input selection and the input item nodes report
+//! `unsupported`.
 
+mod recipe;
+pub(crate) use recipe::data_mapper_output_item;
+
+use super::handcraft::DataState;
 use super::{cached_recipe_info, container_items};
 use crate::bind_character_sim::{CharacterObject, LuaGameCharacterRef};
 use crate::bind_items::ItemRef;
@@ -177,6 +181,12 @@ struct State {
     events: Vec<(&'static str, Vec<Handler>)>,
     manual_select_inputs: bool,
     show_manual_select_inputs: bool,
+    /// `manualInputAllowedItemTypes`: with it set, `populateInputs` only
+    /// offers items of these full types.
+    manual_input_allowed_item_types: Vec<String>,
+    /// `multicraftConsumedItems` (item keys): what the last
+    /// `getPossibleCraftCount(true)` counted.
+    multicraft_consumed_items: Vec<usize>,
     manual_select_input_script_filter: Value,
     compare_mode: CompareMode,
     containers: Vec<Value>,
@@ -187,9 +197,19 @@ struct State {
     filtered: Rc<NodeCollection>,
     cached_infos: Vec<(ScriptRef, Info)>,
     cached_infos_dirty: bool,
-    /// `recipeData.getRecipe()`; always null so far (see `setRecipe`).
+    /// `recipeData.getRecipe()`.
     recipe: Option<ScriptRef>,
+    /// The state of `recipeData` (no inputs while `recipe` is null).
+    data: DataState,
+    /// The items `data` names, kept so that their keys stay theirs.
+    held: Vec<ItemRef>,
     cached_possible_craft_count: i32,
+    cached_can_perform: bool,
+    cached_can_perform_dirty: bool,
+    craft_action_in_progress: bool,
+    craft_action_table: Value,
+    /// `numCraftActionInProgress`.
+    craft_action_count: i32,
 }
 
 pub struct HandcraftLogicObject {
@@ -240,18 +260,6 @@ struct InfoObject {
 impl LuaObject for InfoObject {
     fn class_name(&self) -> &str {
         CACHED_RECIPE_INFO_CLASS
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-/// The logic's `CraftRecipeData` while it has no recipe.
-struct RecipeDataObject;
-
-impl LuaObject for RecipeDataObject {
-    fn class_name(&self) -> &str {
-        CRAFT_RECIPE_DATA_CLASS
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -720,6 +728,8 @@ fn construct(c: &mut NativeCall<'_>, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<
         events: EVENTS.iter().map(|&name| (name, Vec::new())).collect(),
         manual_select_inputs: false,
         show_manual_select_inputs: false,
+        manual_input_allowed_item_types: Vec::new(),
+        multicraft_consumed_items: Vec::new(),
         manual_select_input_script_filter: Value::Nil,
         compare_mode: CompareMode::Name,
         containers: Vec::new(),
@@ -731,7 +741,14 @@ fn construct(c: &mut NativeCall<'_>, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<
         cached_infos: Vec::new(),
         cached_infos_dirty: false,
         recipe: None,
+        data: DataState::empty(Vec::new()),
+        held: Vec::new(),
         cached_possible_craft_count: 0,
+        cached_can_perform: false,
+        cached_can_perform_dirty: true,
+        craft_action_in_progress: false,
+        craft_action_table: Value::Nil,
+        craft_action_count: 0,
     };
     let mode = st.recipe_sort_mode()?;
     st.set_sort_mode_internal(&mode);
@@ -743,40 +760,33 @@ fn construct(c: &mut NativeCall<'_>, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<
     Ok(c.push(Value::Object(o)))
 }
 
-/// `HandcraftLogic.setRecipe`.
-fn set_recipe(o: &Rc<dyn LuaObject>, recipe: Option<ScriptRef>) -> LuaResult<()> {
-    let st = state(o).borrow();
-    let same = match (&st.recipe, &recipe) {
-        (None, None) => true,
-        (Some(a), Some(b)) => a.ptr_eq(b),
-        _ => false,
-    };
-    if same {
-        return Ok(());
+/// `HandcraftLogic.setRecipe`: a changed recipe is saved as the last
+/// selected one, then `BaseCraftingLogic.setRecipe`.
+fn set_recipe(thread: &mut Thread, o: &Rc<dyn LuaObject>, recipe: Option<ScriptRef>) -> LuaResult<()> {
+    {
+        let st = state(o).borrow();
+        let same = match (&st.recipe, &recipe) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.ptr_eq(b),
+            _ => false,
+        };
+        if same {
+            return Ok(());
+        }
+        // `setLastSelectedRecipe("handcraft", recipe)`.
+        let full_type = match &recipe {
+            Some(r) => Value::str(&r.full_type().map_err(|e| LuaError::runtime(e.0))?),
+            None => Value::Nil,
+        };
+        st.set_mod_data("LastRecipe", full_type);
     }
-    // `setLastSelectedRecipe("handcraft", recipe)`.
-    let full_type = match &recipe {
-        Some(r) => Value::str(&r.full_type().map_err(|e| LuaError::runtime(e.0))?),
-        None => Value::Nil,
-    };
-    st.set_mod_data("LastRecipe", full_type);
-    Err(unsupported("BaseCraftingLogic.setRecipe (CraftRecipeData input and output data)"))
+    recipe::base_set_recipe(thread, o, recipe)
 }
 
 /// Methods that need the parts of the crafting logic not ported yet.
 const NOT_PORTED: &[&str] = &[
     "getSourceResources",
-    "refresh",
-    "canPerformCurrentRecipe",
-    "cachedCanPerformCurrentRecipe",
-    "performCurrentRecipe",
-    "startCraftAction",
-    "stopCraftAction",
     "getResidualFluidFromInput",
-    "getVariableInputRatio",
-    "isInputSatisfied",
-    "getInputCount",
-    "getInputUses",
     "getInputItemNodes",
     "getInputItemNodesForInput",
     "getSatisfiedInputItems",
@@ -784,9 +794,6 @@ const NOT_PORTED: &[&str] = &[
     "offerInputItem",
     "removeInputItem",
     "clearManualInputsFor",
-    "updateManualInputAllowedItemTypes",
-    "isUsingRecipeAtHandBenefit",
-    "getUsingRecipeAtHandItem",
     "getResultTexture",
 ];
 
@@ -795,7 +802,7 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
     expose_enum(thread, EXPANDED_STATE_CLASS, &["CLOSED", "PARTIAL", "OPEN"]);
     register_nodes(thread);
     register_info(thread);
-    register_recipe_data(thread);
+    recipe::register_recipe_data(thread);
 
     let base = expose_class(thread, BASE_CRAFTING_LOGIC_CLASS, None);
     // `getFavouriteModDataString(recipe)`: "recipeFavourite:" and the
@@ -816,6 +823,7 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
     for name in NOT_PORTED {
         b.method(name, move |_| Err(unsupported(format!("HandcraftLogic.{name}"))));
     }
+    recipe::register(&b);
 
     b.method("getPlayer", |c| {
         let v = state(&logic(c)?).borrow().player.clone();
@@ -835,34 +843,14 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
         state(&logic(c)?).borrow_mut().iso_object = v;
         Ok(0)
     });
-    // No craft action is started yet: `craftActionInProgress` stays false
-    // and `craftActionTable` null.
-    b.method("isCraftActionInProgress", |c| {
-        logic(c)?;
-        Ok(c.push(false))
-    });
-    b.method("getCraftActionTable", |c| {
-        logic(c)?;
-        Ok(c.push(Value::Nil))
-    });
     b.method("getRecipe", |c| {
         let v = state(&logic(c)?).borrow().recipe.clone();
         Ok(c.push(script_value(v.as_ref())))
     });
-    b.method("getRecipeData", |c| {
-        let o = logic(c)?;
-        if state(&o).borrow().recipe.is_some() {
-            return Err(unsupported("HandcraftLogic.getRecipeData with a recipe"));
-        }
-        Ok(c.push(Value::Object(Rc::new(RecipeDataObject))))
-    });
-    // `HandcraftLogic.setRecipe(recipe)` returns when the recipe does not
-    // change. Otherwise it saves the last selected recipe and calls
-    // `BaseCraftingLogic.setRecipe`, which needs the input and output data of
-    // `CraftRecipeData`.
     b.method("setRecipe", |c| {
         let o = logic(c)?;
-        set_recipe(&o, recipe_arg(&c.arg(1))?)?;
+        let recipe = recipe_arg(&c.arg(1))?;
+        set_recipe(c.thread, &o, recipe)?;
         Ok(0)
     });
     // `checkValidRecipeSelected()`: keep the recipe if the filtered list
@@ -876,32 +864,9 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
             (contains, recipes.into_iter().next())
         };
         if !contains {
-            set_recipe(&o, first)?;
+            set_recipe(c.thread, &o, first)?;
         }
         Ok(0)
-    });
-    b.method("autoPopulateInputs", |c| {
-        let o = logic(c)?;
-        if state(&o).borrow().recipe.is_some() {
-            return Err(unsupported("HandcraftLogic.autoPopulateInputs with a recipe"));
-        }
-        auto_populate_inputs(c.thread, &o);
-        Ok(0)
-    });
-    // `getPossibleCraftCount(recalculate)`: with no inputs,
-    // `CraftRecipeData.getPossibleCraftCount` gives 100.
-    b.method("getPossibleCraftCount", |c| {
-        let o = logic(c)?;
-        let mut st = state(&o).borrow_mut();
-        if st.recipe.is_some() {
-            return Err(unsupported("HandcraftLogic.getPossibleCraftCount with a recipe"));
-        }
-        if matches!(c.arg(1), Value::Bool(true)) {
-            st.cached_possible_craft_count = 100;
-        }
-        let v = st.cached_possible_craft_count;
-        drop(st);
-        Ok(c.push(v))
     });
 
     b.method("getContainers", |c| {
@@ -931,11 +896,15 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
         };
         if changed {
             if state(&o).borrow().recipe.is_some() {
-                return Err(unsupported("HandcraftLogic.setContainers with a recipe"));
+                recipe::set_containers_with_recipe(c.thread, &o)?;
             }
-            // `populateInputs` and the input item nodes have nothing to do
-            // without a recipe.
-            state(&o).borrow_mut().cached_infos_dirty = true;
+            // `inputItemNodeCollection.setItems(allItems)`: the nodes are
+            // only read with manual input selection.
+            {
+                let mut st = state(&o).borrow_mut();
+                st.cached_infos_dirty = true;
+                st.cached_can_perform_dirty = true;
+            }
             trigger_event(c.thread, &o, "onUpdateContainers", &[]);
             trigger_event(c.thread, &o, "onRebuildInputItemNodes", &[]);
         }
@@ -1109,14 +1078,6 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
     });
 }
 
-/// `autoPopulateInputs()` with no recipe: no viable items or resources, no
-/// inputs to populate or consume, a craft count of 100, then
-/// `onInputsChanged`.
-fn auto_populate_inputs(thread: &mut Thread, o: &Rc<dyn LuaObject>) {
-    state(o).borrow_mut().cached_possible_craft_count = 100;
-    trigger_event(thread, o, "onInputsChanged", &[]);
-}
-
 fn register_nodes(thread: &mut Thread) {
     let b = expose_class(thread, NODE_COLLECTION_CLASS, None);
     let coll = |c: &NativeCall<'_>| -> LuaResult<Rc<NodeCollection>> {
@@ -1190,7 +1151,24 @@ fn register_nodes(thread: &mut Thread) {
         n.expanded.set(state);
         Ok(0)
     });
-    n.method("getIconTexture", |_| Err(unsupported("CraftRecipeListNode.getIconTexture (CraftRecipeGroup icon)")));
+    // `getIconTexture()`: what `createRecipeNode` takes from the recipe
+    // (`CraftRecipe.getIconTexture()`), or what `createGroupNode` takes
+    // from the group (`CraftRecipeGroup.getIconTexture()`, which is
+    // `Texture.getTexture(iconPath)`).
+    n.method("getIconTexture", move |c| {
+        let n = node(c)?;
+        let v = if let Some(recipe) = &n.recipe {
+            let recipe = recipe.downcast::<CraftRecipe>().ok_or_else(class_cast)?;
+            let v = crate::bind_scripts::recipe_icon_texture(&recipe.borrow())?;
+            v
+        } else if let Some(group) = n.group {
+            let texture = pz_render::try_get_texture_ref(group.icon_path()).map_err(crate::bind_render::texture_error)?;
+            crate::bind_render::texture_value_ref(texture.as_ref())
+        } else {
+            Value::Nil
+        };
+        Ok(c.push(v))
+    });
     n.method("getGroup", |_| Err(unsupported("CraftRecipeListNode.getGroup (CraftRecipeGroup)")));
     n.method("toggleExpandedState", |_| Err(unsupported("CraftRecipeListNode.toggleExpandedState")));
 }
@@ -1216,31 +1194,6 @@ fn register_info(thread: &mut Thread) {
         let o = this::<InfoObject>(c)?;
         let r = o.as_any().downcast_ref::<InfoObject>().unwrap().recipe.clone();
         Ok(c.push(script_value(Some(&r))))
-    });
-}
-
-/// The `CraftRecipeData` of a logic with no recipe: it has no inputs or
-/// outputs.
-fn register_recipe_data(thread: &mut Thread) {
-    let b = expose_class(thread, CRAFT_RECIPE_DATA_CLASS, None);
-    let data = |c: &NativeCall<'_>| this::<RecipeDataObject>(c).map(drop);
-    b.method("getRecipe", move |c| {
-        data(c)?;
-        Ok(c.push(Value::Nil))
-    });
-    // `getDataForInputScript(input)`: no input matches.
-    b.method("getDataForInputScript", move |c| {
-        data(c)?;
-        Ok(c.push(Value::Nil))
-    });
-    // `containsInputItem(item)`: no input holds it. The
-    // `(InputScriptData, item)` form needs an input's data.
-    b.method("containsInputItem", move |c| {
-        data(c)?;
-        if c.nargs() > 2 {
-            return Err(npe());
-        }
-        Ok(c.push(false))
     });
 }
 

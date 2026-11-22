@@ -30,7 +30,7 @@ pub fn install_square_light(source: Option<SquareLightSource>) {
     drop(retired);
 }
 
-fn square_lighting(player: i32, x: i32, y: i32, z: i32) -> SquareLighting {
+pub(crate) fn square_lighting(player: i32, x: i32, y: i32, z: i32) -> SquareLighting {
     let source = SQUARE_LIGHT.with(|s| s.borrow().clone());
     source.and_then(|f| f(player, x, y, z)).unwrap_or(UNDECODED)
 }

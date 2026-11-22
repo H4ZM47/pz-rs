@@ -6,8 +6,8 @@
 //! the character overload of `isUsedInRecipes` and `isUsedInBuildRecipes`;
 //! TODO(IsoGameCharacter)), `getLootType`
 //! (TODO(ItemPickerJava)), `getNumSpawned` (TODO(InstanceTracker)),
-//! `getDiscomfortModifier` (TODO(SandboxOptions)), `getNormalTexture`
-//! (TODO(Texture)), `getClothingItemAsset`/`setClothingItemAsset`
+//! `getDiscomfortModifier` (TODO(SandboxOptions)),
+//! `getClothingItemAsset`/`setClothingItemAsset`
 //! (TODO(ClothingItem)), `getBloodClothingType` (TODO(BloodClothingType)),
 //! `getMuzzleFlashModelKey` (TODO(ModelKey)), `getVehiclePartModels`,
 //! `getReplaceTypesMap`, `setPaletteChoices` and `setWeaponCategories`
@@ -362,6 +362,7 @@ fn register_fields(b: &ClassBuilder) {
     get(b, "getEjectAmmoSound", |i: &Item| i.eject_ammo_sound.clone());
     get(b, "getObsolete", |i: &Item| i.obsolete);
     get(b, "getIcon", |i: &Item| i.icon.clone());
+    get(b, "getNormalTexture", |i: &Item| crate::bind_render::texture_value_ref(i.normal_texture_slot()));
     get(b, "getEquipSound", |i: &Item| i.equip_sound.clone());
     get(b, "getUnequipSound", |i: &Item| i.unequip_sound.clone());
     get(b, "isDisappearOnUse", |i: &Item| i.disappear_on_use);

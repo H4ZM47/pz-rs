@@ -1219,6 +1219,15 @@ fn register_inventory_item(thread: &mut Thread) {
         Err(LuaError::runtime(
             "TODO(IsoGameCharacter): isFavouriteRecipeInput needs getUsedInRecipes(character)",
         ))
+    get!(b, "getJobDelta", |i| Value::from(i.job_delta as f64));
+    with!(b, "setJobDelta", |i, c| {
+        i.job_delta = num_arg(c, 1) as f32;
+        Ok(Value::Nil)
+    });
+    get!(b, "getJobType", |i| i.job_type.as_deref().map_or(Value::Nil, Value::str));
+    with!(b, "setJobType", |i, c| {
+        i.job_type = str_arg(c, 1).map(|s| s.to_string());
+        Ok(Value::Nil)
     });
     with!(b, "setFavorite", |i, c| {
         i.favorite = bool_arg(c, 1);
