@@ -505,3 +505,56 @@ fn door_state_and_square_are_readable_from_lua() {
     }
     assert!(matches!(run(&mut t, "return door:IsOpen()")[0], Value::Bool(true)));
 }
+
+#[test]
+fn get_sprite_returns_the_tile_sprite_or_nil() {
+    let _restore = Restore::new();
+    let mut t = thread();
+    crate::bind_sprites::register(&mut t);
+    let mut sprites = pz_world::sprite::IsoSpriteManager::new(pz_world::sprite::test_tables());
+    let bin = sprites.add_sprite_named("trashcontainers_01_16");
+    sprites.sprites[bin].name = Some("trashcontainers_01_16".into());
+    let old = crate::bind_sprites::manager().ok();
+    crate::bind_sprites::install_sprite_manager(Some(Rc::new(RefCell::new(sprites))));
+    let tiled = ObjectSlot::new(IsoObject::new(1, ObjectKind::Object, Some(bin))).ref_handle();
+    let bare = ObjectSlot::new(IsoObject::new(2, ObjectKind::Object, None)).ref_handle();
+    t.globals().set_str("tiled", object_value(&tiled).unwrap());
+    t.globals().set_str("bare", object_value(&bare).unwrap());
+    let values = run(
+        &mut t,
+        "return tiled:getSprite():getName(), bare:getSprite() == nil, \
+         tiled:getSprite():getProperties():has('IsTrashCan')",
+    );
+    crate::bind_sprites::install_sprite_manager(old);
+    assert_eq!(values[0].as_str(), Some("trashcontainers_01_16"));
+    assert!(matches!(values[1], Value::Bool(true)));
+    assert!(matches!(values[2], Value::Bool(false)));
+}
+
+#[test]
+fn base_object_answers_the_loot_window_fire_and_bbq_checks() {
+    let _restore = Restore::new();
+    let mut t = thread();
+    let mut named = IsoObject::new(1, ObjectKind::Object, None);
+    named.name = Some(pz_world::objects::ObjectName::Str("Campfire".into()));
+    let named = ObjectSlot::new(named).ref_handle();
+    let plain = ObjectSlot::new(IsoObject::new(2, ObjectKind::Object, None)).ref_handle();
+    let mut lit = pz_world::objects::IsoBarbecue::default();
+    lit.lit = true;
+    lit.fuel_amount_minutes = 30;
+    let bbq = ObjectSlot::new(IsoObject::new(3, ObjectKind::Barbecue(lit), None)).ref_handle();
+    t.globals().set_str("named", object_value(&named).unwrap());
+    t.globals().set_str("plain", object_value(&plain).unwrap());
+    t.globals().set_str("bbq", object_value(&bbq).unwrap());
+    let values = run(
+        &mut t,
+        "return named:getName(), plain:getName() == nil, plain:isFireInteractionObject(), \
+         plain:isPropaneBBQ(), plain:isLit(), plain:hasPropaneTank(), \
+         bbq:isFireInteractionObject(), bbq:isPropaneBBQ(), bbq:isLit(), bbq:hasFuel(), \
+         bbq:hasPropaneTank(), plain.hasFuel == nil",
+    );
+    assert_eq!(values[0].as_str(), Some("Campfire"));
+    let flags: Vec<bool> = values[1..].iter().map(|v| matches!(v, Value::Bool(true))).collect();
+    // A barbecue without a sprite is not a propane one, so it has no tank.
+    assert_eq!(flags, [true, false, false, false, false, true, false, true, true, false, true]);
+}

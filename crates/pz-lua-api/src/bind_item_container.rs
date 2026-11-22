@@ -968,7 +968,7 @@ fn contains_in(_t: &mut Thread, c: &ContainerRef, item: &ItemRef, do_inv: bool) 
 }
 
 /// `isItemAllowed(item)`.
-fn is_item_allowed(t: &mut Thread, c: &ContainerRef, item: Option<&ItemRef>) -> LuaResult<bool> {
+pub(crate) fn is_item_allowed(t: &mut Thread, c: &ContainerRef, item: Option<&ItemRef>) -> LuaResult<bool> {
     let Some(item) = item else {
         return Ok(false);
     };
@@ -1050,7 +1050,7 @@ fn is_item_allowed(t: &mut Thread, c: &ContainerRef, item: Option<&ItemRef>) -> 
 
 /// `hasRoomFor(chr, weightVal, weightAddedToFloor)` without vehicle seats
 /// or a bag's world item (neither is shared yet).
-fn has_room_for_weight(
+pub(crate) fn has_room_for_weight(
     t: &mut Thread,
     c: &ContainerRef,
     chr: &Value,

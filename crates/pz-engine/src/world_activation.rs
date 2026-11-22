@@ -214,6 +214,34 @@ impl IsoWorld {
                             result
                                 .ok_or("chunk completion requires streaming state")?
                                 .map_err(|e| e.to_string())?;
+                            // `doLoadGridsquare`: `loadGridSquareIfNeeded` for
+                            // each square, levels then x then y; it logs an
+                            // exception and goes on.
+                            let (wx, wy) = (cursor.wx, cursor.wy);
+                            let levels = with_world(|w| {
+                                let chunk = w.cell.as_ref()?.chunks.get(&(wx, wy))?;
+                                Some((chunk.min_level, chunk.max_level))
+                            });
+                            if let Some((min, max)) = levels {
+                                let w = pz_world::chunk::CHUNK_WIDTH;
+                                for z in min..=max {
+                                    for x in 0..w {
+                                        for y in 0..w {
+                                            let (x, y) = (wx * w + x, wy * w + y);
+                                            if let Err(e) =
+                                                pz_lua_api::bind_item_picker::load_gridsquare(
+                                                    &mut lua.thread,
+                                                    x,
+                                                    y,
+                                                    z,
+                                                )
+                                            {
+                                                eprintln!("LoadGridsquare {x},{y},{z}: {e}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             self.with_stream(|streamer, cell, ctx| {
                                 streamer.process_next_pending_load_grid_square(cell, ctx)
                             });

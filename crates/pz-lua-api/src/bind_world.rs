@@ -1913,6 +1913,45 @@ fn square_room(x: i32, y: i32, z: i32) -> LuaResult<Option<usize>> {
     })
 }
 
+/// The room of a square as `ItemPickerJava` reads it (`getRoom()`'s
+/// name, `RoomDef` bounds and the building's room count).
+pub(crate) struct SquareRoom {
+    pub id: i64,
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub x2: i32,
+    pub y2: i32,
+    pub building_rooms: Option<usize>,
+}
+
+/// [`SquareRoom`] of the square at `(x, y, z)`; `None` outside rooms or
+/// when the square or the meta grid is not loaded.
+pub(crate) fn square_room_info(x: i32, y: i32, z: i32) -> Option<SquareRoom> {
+    let r = square_room(x, y, z).ok()??;
+    grid(|g| {
+        let d = &g.room_defs[r];
+        Ok(SquareRoom {
+            id: d.id,
+            name: d.name.clone(),
+            x: d.x,
+            y: d.y,
+            x2: d.x2,
+            y2: d.y2,
+            building_rooms: d.building.map(|b| g.building_defs[b.0 as usize].rooms.len()),
+        })
+    })
+    .ok()
+}
+
+/// `IsoWorld.getMetaChunk(wx, wy)`'s zombie intensity (`None` without a
+/// meta grid or outside it).
+pub(crate) fn meta_chunk_zombie_intensity(wx: i32, wy: i32) -> Option<u8> {
+    let (cx, cy) = (wx.div_euclid(32), wy.div_euclid(32));
+    let i = ((wy - cy * 32) * 32 + (wx - cx * 32)) as usize;
+    grid(|g| Ok(g.meta_chunk_mut(cx, cy, i).map(|c| c.get_zombie_intensity()))).ok()?
+}
+
 fn square_building(x: i32, y: i32, z: i32) -> LuaResult<Option<usize>> {
     match square_room(x, y, z)? {
         Some(r) => grid(|g| Ok(g.room_defs[r].building.map(|b| b.0 as usize))),
