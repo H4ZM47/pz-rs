@@ -388,6 +388,19 @@ pub(crate) fn register_classes(thread: &mut Thread) {
             _ => Err(unsupported("IsoObject.getSprite: the sprite has no Lua object")),
         }
     });
+    // getOverlaySprite(): `overlaySprite`. STUB: a `WorldDictionary` name
+    // id is not resolved.
+    object.method("getOverlaySprite", |c| {
+        let object = receiver_object(c)?;
+        let name = match &object.try_borrow().map_err(|_| borrowed("IsoObject body"))?.overlay_sprite {
+            Some(pz_world::objects::OverlaySprite { name: pz_world::objects::SpriteName::Str(n), .. }) => n.clone(),
+            Some(_) => return Err(unsupported("IsoObject.getOverlaySprite: dictionary sprite name")),
+            None => return Ok(c.push(Value::Nil)),
+        };
+        let sprites = crate::bind_sprites::manager()?;
+        let idx = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?.named_map.get(name.as_str()).copied();
+        Ok(c.push(crate::bind_sprites::sprite_value(idx, false)))
+    });
     // getName(): `name`. STUB: a `WorldDictionary` name id is not resolved.
     object.method("getName", |c| {
         let object = receiver_object(c)?;

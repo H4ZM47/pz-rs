@@ -366,12 +366,21 @@ pub fn load_gridsquare(t: &mut Thread, x: i32, y: i32, z: i32) -> LuaResult<()> 
             .runtime_containers
             .as_ref()
             .and_then(|r| r.main.clone());
-        if let Some(container) = main {
-            if !container.borrow().explored {
-                let player = player_instance(t)?;
-                fill_container(t, &d, &container, &player)?;
-                container.borrow_mut().explored = true;
+        let sq = pz_world::tile_overlays::OverlaySquare { x, y, z, room: room.as_deref() };
+        let empty = match main {
+            Some(container) => {
+                if !container.borrow().explored {
+                    let player = player_instance(t)?;
+                    fill_container(t, &d, &container, &player)?;
+                    container.borrow_mut().explored = true;
+                }
+                container.borrow().items.is_empty()
             }
+            None => false,
+        };
+        // `checkObject`: an empty container keeps no overlay update.
+        if !empty {
+            crate::bind_tile_overlays::update_container_overlay_sprite(object, sq)?;
         }
         let container_overlays = crate::bind_tile_overlays::shared_container_overlays();
         let has_container_overlays = container_overlays
@@ -379,7 +388,6 @@ pub fn load_gridsquare(t: &mut Thread, x: i32, y: i32, z: i32) -> LuaResult<()> 
             .map_err(|_| LuaError::runtime("LoadGridsquare: ContainerOverlays is in use"))?
             .has_overlays(Some(&name));
         if !has_container_overlays {
-            let sq = pz_world::tile_overlays::OverlaySquare { x, y, z, room: room.as_deref() };
             crate::bind_tile_overlays::update_tile_overlay_sprite(&objects, index, &name, sq)?;
         }
     }

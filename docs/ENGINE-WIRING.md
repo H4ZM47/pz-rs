@@ -853,12 +853,16 @@ all installed assets, render paths or foreign platforms.
       `bind_tile_overlays::update_tile_overlay_sprite` for each named object
       without container overlays; `shared_tile_overlays().pick_overlay(..)`
       puts the sprite first in `attachedAnimSprite`.
-- [ ] Container overlays and the rest of the overlay lifecycle:
-      `ContainerOverlays.updateContainerOverlaySprite` from
-      `shared_container_overlays()` sets the overlay sprite
-      (`ItemPickerJava.updateOverlaySprite` after a fill);
-      `fixTableTopOverlays(square)` after moving objects; both `Reset()` on
-      world unload.
+- [x] Container overlays when a square's objects are loaded:
+      `load_gridsquare` (`LoadGridsquarePerformanceWorkaround.checkObject`)
+      calls `bind_tile_overlays::update_container_overlay_sprite`
+      (`ItemPickerJava.updateOverlaySprite`) for each named object whose
+      container is not empty; `set_overlay_sprite` sets `overlay_sprite`,
+      and `render_world` gives it to the renderer as `RenderObject.overlay`.
+- [ ] The rest of the overlay lifecycle: Lua `ItemPicker.updateOverlaySprite`
+      after a transfer (still a no-op), `invalidateRenderChunkLevel` for a
+      change after load, `fixTableTopOverlays(square)` after moving objects;
+      both `Reset()` on world unload.
 - [ ] `BrokenFences.destroyFence(obj, dir)` (thumping, vehicles): the engine's
       `StatesEngine::destroy_fence` / `is_breakable_fence` /
       `broken_fence_items` read `bind_broken_fences::shared_broken_fences()`

@@ -115,6 +115,72 @@ pub fn update_tile_overlay_sprite(
     Ok(())
 }
 
+/// `ContainerOverlays.instance.updateContainerOverlaySprite(obj)`
+/// (`ItemPickerJava.updateOverlaySprite`) for `object` on square `sq`: the
+/// "many items" or "few items" (fewer than 7) overlay for its sprite and
+/// room goes to `setOverlaySprite`; an empty or missing container clears it.
+/// Stoves and feeding troughs keep theirs.
+pub fn update_container_overlay_sprite(
+    object: &pz_world::IsoObjectRef,
+    sq: pz_world::tile_overlays::OverlaySquare<'_>,
+) -> LuaResult<()> {
+    let busy = |what: &str| LuaError::runtime(format!("updateContainerOverlaySprite: {what} is in use"));
+    let sprites = crate::bind_sprites::manager()?;
+    let (sprite_name, count) = {
+        let body = object.try_borrow().map_err(|_| busy("IsoObject"))?;
+        if matches!(body.kind, pz_world::ObjectKind::Stove(_) | pz_world::ObjectKind::FeedingTrough(_)) {
+            return Ok(());
+        }
+        let manager = sprites.try_borrow().map_err(|_| busy("IsoSpriteManager"))?;
+        let sprite = body
+            .sprite
+            .try_read(&manager)
+            .map_err(|e| LuaError::runtime(format!("updateContainerOverlaySprite: sprite: {e:?}")))?;
+        let count = match body.runtime_containers.as_ref().and_then(|r| r.main.as_ref()) {
+            Some(c) => Some(c.try_borrow().map_err(|_| busy("ItemContainer"))?.items.len()),
+            None => None,
+        };
+        (sprite.and_then(|s| s.name.clone()), count)
+    };
+    let name = shared_container_overlays()
+        .try_borrow()
+        .map_err(|_| busy("ContainerOverlays"))?
+        .pick_overlay(sprite_name.as_deref(), count, sq, false, |n| pz_render::get_shared_texture(n).is_some());
+    set_overlay_sprite(object, name.as_deref())
+}
+
+/// `IsoObject.setOverlaySprite(name)` (colour -1, the overlay colour
+/// cleared): a null or blank name removes the overlay; the same name with
+/// no colour is left alone; otherwise the named sprite (created under that
+/// name when missing) becomes the overlay.
+/// TODO(port): `invalidateRenderChunkLevel` for a change after load.
+pub fn set_overlay_sprite(object: &pz_world::IsoObjectRef, name: Option<&str>) -> LuaResult<()> {
+    let busy = |what: &str| LuaError::runtime(format!("setOverlaySprite: {what} is in use"));
+    let name = name.filter(|n| !n.trim().is_empty());
+    let mut body = object.try_borrow_mut().map_err(|_| busy("IsoObject"))?;
+    let Some(name) = name else {
+        body.overlay_sprite = None;
+        return Ok(());
+    };
+    if let Some(ov) = &body.overlay_sprite {
+        if ov.color.is_none() && matches!(&ov.name, pz_world::objects::SpriteName::Str(n) if n == name) {
+            return Ok(());
+        }
+    }
+    let sprites = crate::bind_sprites::manager()?;
+    let mut manager = sprites.try_borrow_mut().map_err(|_| busy("IsoSpriteManager"))?;
+    let idx = match manager.named_map.get(name) {
+        Some(&idx) => idx,
+        None => manager.add_sprite_named(name),
+    };
+    manager.sprites[idx].name = Some(name.to_string());
+    body.overlay_sprite = Some(pz_world::objects::OverlaySprite {
+        name: pz_world::objects::SpriteName::Str(name.to_string()),
+        color: None,
+    });
+    Ok(())
+}
+
 /// `TileOverlays.instance`.
 pub fn shared_tile_overlays() -> Rc<RefCell<TileOverlays>> {
     TILES.with(Rc::clone)
