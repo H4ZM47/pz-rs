@@ -53,12 +53,24 @@ pub fn load_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>) -> Result<
         .map_err(|error|format!("native item key registry jar: {error}"))?;
     let native_keys=pz_scripts::native_item_keys::native_item_key_statics(&jar)
         .map_err(|error|format!("native item key statics: {error}"))?;
-    let native_modes = pz_scripts::native_game_modes::native_game_mode_statics(&jar)
-        .map_err(|error| format!("native game mode statics: {error}"))?;
-    pz_lua_api::bind_core::shared_core().borrow_mut()
-        .install_game_mode_statics(native_modes.clone())
-        .map_err(|error| format!("install native game mode statics: {error}"))?;
-    let sm = pz_scripts::ScriptManager::with_native_key_statics(&native_keys, &native_modes);
+    let core_class = pz_classfile::load_class(&jar, "zombie/core/Core")
+        .map_err(|e| format!("read Core game mode signature: {e}"))?;
+    let sm = match core_class.method("getGameMode").map(|method| method.descriptor.as_str()) {
+        Some("()Ljava/lang/String;") => {
+            if !pz_lua_api::bind_core::shared_core().borrow().uses_named_game_mode() {
+                return Err("cannot switch the running Core to a different game mode type".into());
+            }
+            pz_scripts::ScriptManager::with_native_item_key_statics(&native_keys)
+        }
+        Some("()Lzombie/core/GameMode;") => {
+            let modes = pz_scripts::native_game_modes::native_game_mode_statics(&jar)
+                .map_err(|e| format!("native game mode statics: {e}"))?;
+            pz_lua_api::bind_core::shared_core().borrow_mut().install_game_mode_statics(modes.clone())
+                .map_err(|e| format!("install native game mode statics: {e}"))?;
+            pz_scripts::ScriptManager::with_native_key_statics(&native_keys, &modes)
+        }
+        other => return Err(format!("unsupported Core.getGameMode signature: {other:?}")),
+    };
     sm.load_builtin_registries(&game_dir.join("projectzomboid.jar"))
         .map_err(|e| format!("built-in registries: {e}"))?;
     let mut chars = pz_characters::Characters::default();

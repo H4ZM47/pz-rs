@@ -153,9 +153,6 @@ pub struct SaveGame<'a> {
     pub no_save: bool,
     /// `IsoWorld.instance.currentCell != null`.
     pub has_cell: bool,
-    /// `Core.getInstance().getGameMode()`: `LastStand` and `Tutorial` are
-    /// not saved.
-    pub game_mode: &'a str,
     /// `Core.gameMap` (the `;`-separated map folders).
     pub game_map: Option<&'a str>,
     /// `SandboxOptions.instance.save(..)`: the bytes of `map_sand.bin`
@@ -242,8 +239,7 @@ pub trait SaveGameHooks {
 /// What [`save_game`] did besides writing files.
 #[derive(Debug, Default, PartialEq)]
 pub struct SaveReport {
-    /// Whether anything was saved (`isNoSave`, no cell, `LastStand` and
-    /// `Tutorial` save nothing).
+    /// Whether the active Core mode, no-save flag and current cell allow a save.
     pub saved: bool,
     /// `PlayerDB.savePlayers()` set `forceSavePlayers`: the next
     /// `PlayerDB.updateMain` saves the local players.
@@ -278,7 +274,7 @@ pub fn save_game(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks) -> io::Res
 /// Neither case fires `OnSave` or runs the later phases.
 pub fn save_game_before_event(g: &SaveGame<'_>) -> io::Result<SaveReport> {
     let mut report = SaveReport::default();
-    if g.no_save || !g.has_cell || g.game_mode == "LastStand" || g.game_mode == "Tutorial" {
+    if g.no_save || !g.has_cell || g.core.skips_world_save_for_mode() {
         return Ok(report);
     }
     report.saved = true;

@@ -323,7 +323,24 @@ fn real_options_ini_round_trips() {
     c.load_options().unwrap();
     let saved = std::fs::read_to_string(dir.join("options.ini")).unwrap();
     if cfg!(target_os = "macos") {
-        assert_eq!(saved, original);
+        // Native loadOptions caps an uncapped configuration at 60 FPS before saving.
+        let uncapped = original.lines().any(|line| line == "uncappedFPS=true");
+        let mut expected = String::new();
+        for line in original.split_inclusive('\n') {
+            let key_value = line.trim_end_matches(['\r', '\n']);
+            let normalized = if uncapped && key_value.starts_with("frameRate=") {
+                "frameRate=60"
+            } else if uncapped && key_value == "uncappedFPS=true" {
+                "uncappedFPS=false"
+            } else {
+                key_value
+            };
+            expected.push_str(normalized);
+            expected.push_str(&line[key_value.len()..]);
+        }
+        assert_eq!(saved, expected);
+        c.load_options().unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("options.ini")).unwrap(), saved);
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -476,17 +493,20 @@ fn setters_validate_like_java() {
 fn game_mode_field_preserves_identity_null_and_constructor_authority() {
     let statics = mode_statics();
     let mut core = Core::new();
-    assert!(matches!(core.is_tutorial(), Err(ScriptAccessError::Unsupported(_))));
+    assert!(core.uses_named_game_mode());
+    assert!(!core.is_tutorial().unwrap());
     core.install_game_mode_statics(statics.clone()).unwrap();
     assert!(Rc::ptr_eq(&core.get_game_mode_ref().unwrap(), statics.constant("SANDBOX").unwrap()));
     core.set_game_mode("base:TUTORIAL").unwrap();
     assert!(core.is_tutorial().unwrap());
+    assert!(core.skips_world_save_for_mode());
     assert!(!core.add_zombie_on_cell_load);
     let tutorial = statics.constant("TUTORIAL").unwrap();
     let same_name = Rc::new(RegistryKey { location: tutorial.location.clone(), name: tutorial.name.clone(), item_key: None });
     core.set_game_mode_ref(Some(same_name.clone())).unwrap();
     assert!(Rc::ptr_eq(&core.get_game_mode_ref().unwrap(), &same_name));
     assert!(!core.is_tutorial().unwrap());
+    assert!(!core.skips_world_save_for_mode());
     assert!(core.add_zombie_on_cell_load);
     core.set_game_mode_ref(None).unwrap();
     assert!(core.get_game_mode_ref().is_none());

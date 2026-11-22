@@ -321,6 +321,16 @@ fn register_world_settings(b: &ClassBuilder) {
     let str_or_nil = |v: Option<String>| v.map_or(Value::Nil, |s| Value::str(&s));
     void(b, "setGameMode", move |c| {
         self_world(c)?;
+        if core().borrow().uses_named_game_mode() {
+            let name = str_arg(c, 1);
+            let core = core();
+            let mut core = core.borrow_mut();
+            core.set_game_mode_name(name.as_deref()).map_err(crate::bind_core::game_mode_error)?;
+            core.last_stand = name.as_deref() == Some("LastStand");
+            core.set_challenge(false);
+            core.challenge_id = None;
+            return Ok(());
+        }
         let arg = c.arg(1);
         enum ModeArg { Name(String), Object(Option<Rc<pz_scripts::registry::RegistryKey>>) }
         let mode = match &arg {
@@ -342,8 +352,13 @@ fn register_world_settings(b: &ClassBuilder) {
     });
     get(b, "getGameMode", move |c| {
         self_world(c)?;
+        let core = core();
+        let core = core.borrow();
+        if core.uses_named_game_mode() {
+            return Ok(core.game_mode_name().map_or(Value::Nil, Value::str));
+        }
         Ok(crate::bind_registry::key_value(
-            crate::bind_registry::GAME_MODE_CLASS, core().borrow().get_game_mode_ref().as_ref(),
+            crate::bind_registry::GAME_MODE_CLASS, core.get_game_mode_ref().as_ref(),
         ))
     });
     void(b, "setPreset", move |c| {

@@ -132,7 +132,6 @@ impl World {
             save_dir: dir,
             no_save: false,
             has_cell: true,
-            game_mode: "Sandbox",
             game_map: Some("Muldraugh, KY"),
             sandbox: b"SAND",
             game_time: &self.gt,
@@ -311,8 +310,9 @@ fn games_that_are_not_saved_write_nothing() {
     ] {
         let d = Dir::new();
         let mut w = World::new();
+        w.core.set_game_mode(mode).unwrap();
         let mut g = w.game(&d.0, &[]);
-        (g.no_save, g.has_cell, g.game_mode) = (no_save, has_cell, mode);
+        (g.no_save, g.has_cell) = (no_save, has_cell);
         let mut log = Log {
             dir: &d.0,
             calls: Vec::new(),

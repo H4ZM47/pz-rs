@@ -456,6 +456,12 @@ pub const GAME_VERSION: (i32, i32, &str) = (42, 21, "");
 /// The release git revision string baked into the build.
 pub const GIT_REVISION: &str = "4a0e9546ec";
 
+/// The installed Core.getGameMode signature determines the Lua value and setter semantics.
+enum CoreGameMode {
+    Name(Option<String>),
+    Registry { statics: NativeGameModeStaticsRef, mode: Option<Rc<RegistryKey>> },
+}
+
 /// `zombie.core.Core`.
 pub struct Core {
     options: Vec<ConfigOption>,
@@ -485,8 +491,7 @@ pub struct Core {
     pub initial_height: f32,
     pub max_juke_boxes_active: i32,
     pub num_juke_boxes_active: i32,
-    game_mode: Option<Rc<RegistryKey>>,
-    game_mode_statics: Option<NativeGameModeStaticsRef>,
+    game_mode: CoreGameMode,
     pub add_zombie_on_cell_load: bool,
     pub preset: String,
     pub gl_version: Option<String>,
@@ -954,8 +959,7 @@ impl Core {
             initial_height: 720.0,
             max_juke_boxes_active: 10,
             num_juke_boxes_active: 0,
-            game_mode: None,
-            game_mode_statics: None,
+            game_mode: CoreGameMode::Name(Some("Sandbox".to_owned())),
             add_zombie_on_cell_load: true,
             preset: "Apocalypse".into(),
             gl_version: None,
@@ -1715,59 +1719,97 @@ impl Core {
     /// TODO(render): `SceneShaderStore.initShaders()`, puddles, water.
     pub fn init_shaders(&mut self) {}
 
-    pub fn get_game_mode(&self) -> Option<Rc<RegistryKey>> {
-        self.game_mode.clone()
+    pub fn uses_named_game_mode(&self) -> bool {
+        matches!(self.game_mode, CoreGameMode::Name(_))
     }
 
-    pub fn get_game_mode_ref(&self) -> Option<Rc<RegistryKey>> { self.game_mode.clone() }
+    pub fn get_game_mode_ref(&self) -> Option<Rc<RegistryKey>> {
+        match &self.game_mode {
+            CoreGameMode::Name(_) => None,
+            CoreGameMode::Registry { mode, .. } => mode.clone(),
+        }
+    }
 
-    /// Explicit constructor continuation after the real GameMode class globals
-    /// exist. Rebinding a Lua environment never resets the retained mode.
     pub fn install_game_mode_statics(&mut self, statics: NativeGameModeStaticsRef) -> Result<(), ScriptAccessError> {
-        if let Some(current) = &self.game_mode_statics {
+        if let CoreGameMode::Registry { statics: current, .. } = &self.game_mode {
             if Rc::ptr_eq(current, &statics) { return Ok(()); }
             return Err(ScriptAccessError::Unsupported("different live Core GameMode authority"));
         }
-        self.game_mode = Some(statics.constant("SANDBOX").cloned()
-            .ok_or(ScriptAccessError::Unsupported("Core constructor GameMode.SANDBOX"))?);
-        self.game_mode_statics = Some(statics);
+        let sandbox = statics.constant("SANDBOX").cloned()
+            .ok_or(ScriptAccessError::Unsupported("Core constructor GameMode.SANDBOX"))?;
+        self.game_mode = CoreGameMode::Registry { statics, mode: Some(sandbox) };
         Ok(())
     }
 
     pub fn game_mode_name(&self) -> Option<&str> {
-        self.game_mode.as_ref().map(|mode| mode.name.as_str())
+        match &self.game_mode {
+            CoreGameMode::Name(name) => name.as_deref(),
+            CoreGameMode::Registry { mode, .. } => mode.as_ref().map(|mode| mode.name.as_str()),
+        }
     }
 
     pub fn game_mode_sandbox_ref(&self) -> Result<Rc<RegistryKey>, ScriptAccessError> {
-        self.game_mode_statics.as_ref()
-            .and_then(|statics| statics.constant("SANDBOX"))
-            .cloned().ok_or(ScriptAccessError::Unsupported("Core GameMode.SANDBOX authority unavailable"))
+        let CoreGameMode::Registry { statics, .. } = &self.game_mode else {
+            return Err(ScriptAccessError::Unsupported("Core has a String game mode"));
+        };
+        statics.constant("SANDBOX").cloned()
+            .ok_or(ScriptAccessError::Unsupported("Core GameMode.SANDBOX authority unavailable"))
     }
 
     pub fn is_tutorial(&self) -> Result<bool, ScriptAccessError> {
         self.is_game_mode_constant("TUTORIAL")
     }
 
+    pub fn skips_world_save_for_mode(&self) -> bool {
+        match &self.game_mode {
+            CoreGameMode::Name(name) => matches!(name.as_deref(), Some("Tutorial" | "LastStand")),
+            CoreGameMode::Registry { statics, mode } => mode.as_ref().zip(statics.constant("TUTORIAL"))
+                .is_some_and(|(current, tutorial)| Rc::ptr_eq(current, tutorial)),
+        }
+    }
+
     pub fn is_game_mode_constant(&self, field: &str) -> Result<bool, ScriptAccessError> {
-        let statics = self.game_mode_statics.as_ref()
-            .ok_or(ScriptAccessError::Unsupported("Core GameMode class authority unavailable"))?;
-        let constant = statics.constant(field)
-            .ok_or(ScriptAccessError::Unsupported("Core GameMode static unavailable"))?;
-        Ok(self.game_mode.as_ref().is_some_and(|mode| Rc::ptr_eq(mode, constant)))
+        match &self.game_mode {
+            CoreGameMode::Name(name) => {
+                let literal = match field {
+                    "TUTORIAL" => "Tutorial",
+                    "MULTIPLAYER" => "Multiplayer",
+                    "WINTER_IS_COMING" => "Winter is Coming",
+                    _ => return Err(ScriptAccessError::Unsupported("unknown String game mode comparison")),
+                };
+                Ok(name.as_deref() == Some(literal))
+            }
+            CoreGameMode::Registry { statics, mode } => {
+                let constant = statics.constant(field)
+                    .ok_or(ScriptAccessError::Unsupported("Core GameMode static unavailable"))?;
+                Ok(mode.as_ref().is_some_and(|mode| Rc::ptr_eq(mode, constant)))
+            }
+        }
     }
 
-    /// Native String overload: resolve the real registry before assignment.
-    /// An unknown, valid identifier is a genuine null GameMode.
     pub fn set_game_mode(&mut self, id: &str) -> Result<(), ScriptAccessError> {
-        let statics = self.game_mode_statics.as_ref()
-            .ok_or(ScriptAccessError::Unsupported("Core GameMode class authority unavailable"))?;
-        let mode = statics.get_id(id)?;
-        self.set_game_mode_ref(mode)
+        match &self.game_mode {
+            CoreGameMode::Name(_) => self.set_game_mode_name(Some(id)),
+            CoreGameMode::Registry { statics, .. } => self.set_game_mode_ref(statics.get_id(id)?),
+        }
     }
 
-    pub fn set_game_mode_ref(&mut self, mode: Option<Rc<RegistryKey>>) -> Result<(), ScriptAccessError> {
-        self.game_mode = mode;
-        // The installed setter publishes the field before this query.
+    /// Build 42.21 publishes the String field before calling equals on it.
+    pub fn set_game_mode_name(&mut self, id: Option<&str>) -> Result<(), ScriptAccessError> {
+        let CoreGameMode::Name(name) = &mut self.game_mode else {
+            return Err(ScriptAccessError::Unsupported("Core has a registry game mode"));
+        };
+        *name = id.map(str::to_owned);
+        let id = id.ok_or_else(|| ScriptAccessError::Native(pz_scripts::ScriptError::new("java.lang.NullPointerException: gameMode is null")))?;
+        self.add_zombie_on_cell_load = id != "Tutorial" && id != "LastStand";
+        Ok(())
+    }
+
+    pub fn set_game_mode_ref(&mut self, value: Option<Rc<RegistryKey>>) -> Result<(), ScriptAccessError> {
+        let CoreGameMode::Registry { mode, .. } = &mut self.game_mode else {
+            return Err(ScriptAccessError::Unsupported("Core has a String game mode"));
+        };
+        *mode = value;
         self.add_zombie_on_cell_load = !self.is_tutorial()?;
         Ok(())
     }

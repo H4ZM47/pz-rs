@@ -56,9 +56,13 @@ pub fn save_dir(fs: &RefCell<GameFs>) -> String {
 pub fn game_mode_cache_name() -> Result<String, pz_scripts::native_item_keys::ScriptAccessError> {
     let core = shared_core();
     let mut core = core.try_borrow_mut().map_err(|_| pz_scripts::native_item_keys::ScriptAccessError::Borrowed("Core game mode cache directory"))?;
-    if core.get_game_mode_ref().is_none() {
-        let sandbox = core.game_mode_sandbox_ref()?;
-        core.set_game_mode_ref(Some(sandbox))?;
+    if core.game_mode_name().is_none() {
+        if core.uses_named_game_mode() {
+            core.set_game_mode("Sandbox")?;
+        } else {
+            let sandbox = core.game_mode_sandbox_ref()?;
+            core.set_game_mode_ref(Some(sandbox))?;
+        }
     }
     Ok(core.game_mode_name().expect("sandbox assignment retained mode").to_owned())
 }
@@ -744,21 +748,45 @@ fn register_save_changes(mgr: &mut LuaManager) {
     });
 
     fs_global(mgr, "deleteAllGameModeSaves", |c, fs| {
-        let mode = crate::bind_registry::game_mode_arg(&c.arg(0))?;
         let core = shared_core();
         let borrowed = || crate::bind_core::game_mode_error(
             pz_scripts::native_item_keys::ScriptAccessError::Borrowed("Core delete game mode saves")
         );
-        let old = core.try_borrow().map_err(|_| borrowed())?.get_game_mode_ref();
-        core.try_borrow_mut().map_err(|_| borrowed())?.set_game_mode_ref(mode).map_err(crate::bind_core::game_mode_error)?;
-        let cache_mode = game_mode_cache_name().map_err(crate::bind_core::game_mode_error)?;
-        let path = format!("{}{SEP}{cache_mode}", save_dir(fs));
-        if savefile::exists(&path) {
-            if let Err(e) = savefile::delete_tree(&path) {
-                eprintln!("ERROR: General: {e}");
+        let mut core = core.try_borrow_mut().map_err(|_| borrowed())?;
+        // Keep the argument and previous field in the build's actual representation.
+        let (name, old_key) = if core.uses_named_game_mode() {
+            let old = core.game_mode_name().map(str::to_owned);
+            let requested = str_arg(c, 0);
+            core.set_game_mode_name(requested.as_deref()).map_err(crate::bind_core::game_mode_error)?;
+            (old, None)
+        } else {
+            let requested = crate::bind_registry::game_mode_arg(&c.arg(0))?;
+            let old = core.get_game_mode_ref();
+            core.set_game_mode_ref(requested).map_err(crate::bind_core::game_mode_error)?;
+            if core.game_mode_name().is_none() {
+                let sandbox = core.game_mode_sandbox_ref().map_err(crate::bind_core::game_mode_error)?;
+                core.set_game_mode_ref(Some(sandbox)).map_err(crate::bind_core::game_mode_error)?;
+            }
+            (None, old)
+        };
+        let mode = core.game_mode_name().expect("game mode directory has a name");
+        let valid = !mode.is_empty() && mode != "." && mode != ".." && !mode.contains(['/', '\\', ':', '\0']);
+        if valid {
+            let path = format!("{}{SEP}{mode}", save_dir(fs));
+            if savefile::exists(&path) {
+                if let Err(e) = savefile::delete_tree(&path) {
+                    eprintln!("ERROR: General: {e}");
+                }
             }
         }
-        core.try_borrow_mut().map_err(|_| borrowed())?.set_game_mode_ref(old).map_err(crate::bind_core::game_mode_error)?;
+        if core.uses_named_game_mode() {
+            core.set_game_mode_name(name.as_deref())
+        } else {
+            core.set_game_mode_ref(old_key)
+        }.map_err(crate::bind_core::game_mode_error)?;
+        if !valid {
+            return Err(java_error("invalid game mode directory", "java.lang.IllegalArgumentException"));
+        }
         Ok(Value::Nil)
     });
 

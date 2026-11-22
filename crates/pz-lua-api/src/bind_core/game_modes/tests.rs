@@ -183,3 +183,23 @@ fn mode_conversion_and_arity_faults_precede_body_access_and_stay_typed() {
         .unwrap(),
     );
 }
+
+#[test]
+fn build_42_21_core_exposes_string_modes_and_keeps_custom_names() {
+    let core = Rc::new(RefCell::new(Core::new()));
+    let mut thread = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut thread, None).unwrap();
+    crate::bind_core::register(&mut thread, None, core.clone());
+    booleans(call(&mut thread, r#"
+        local c = getCore()
+        local defaultMode = c:getGameMode()
+        c:setGameMode("A Really CD DA")
+        local custom = c:getGameMode()
+        c:setGameMode("LastStand")
+        return defaultMode == "Sandbox", custom == "A Really CD DA",
+               c:getGameMode() == "LastStand", c.isTutorial == nil
+    "#).unwrap());
+    assert!(!core.borrow().add_zombie_on_cell_load);
+    assert!(call(&mut thread, "getCore():setGameMode(nil)").is_err());
+    assert_eq!(core.borrow().game_mode_name(), None);
+}

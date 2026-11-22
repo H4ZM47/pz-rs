@@ -554,7 +554,17 @@ pub fn register(
     register_statics(&b, &cx);
     register_simple(&b, &cx);
     register_methods(&b, &cx);
-    game_modes::register(&b);
+    if cx.core().uses_named_game_mode() {
+        def(&b, &cx, "getGameMode", |cx, _| {
+            Ok(Ret::Val(cx.core().game_mode_name().map_or(Value::Nil, Value::str)))
+        });
+        def(&b, &cx, "setGameMode", |cx, call| {
+            cx.core_mut().set_game_mode_name(str_arg(call, 1).as_deref()).map_err(game_mode_error)?;
+            Ok(Ret::Void)
+        });
+    } else {
+        game_modes::register(&b);
+    }
     let obj = object;
     global(thread, "getCore", move |c| Ok(c.push(obj.clone())));
     // GlobalObject.getDebug's single-player branch reads the same live Core

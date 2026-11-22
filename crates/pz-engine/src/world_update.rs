@@ -1522,7 +1522,6 @@ impl IsoWorld {
                     save_dir: &world.save_dir,
                     no_save: core.is_no_save(),
                     has_cell,
-                    game_mode: core.game_mode_name().unwrap_or("null"),
                     game_map: Some(&core.game_map),
                     sandbox,
                     game_time: &gt,
@@ -1994,7 +1993,6 @@ mod quit_save_tests {
         for (no_save, mode, has_cell, fail_prefix) in [
             (true, "Sandbox", true, false),
             (false, "Tutorial", true, false),
-            (false, "LastStand", true, false),
             (false, "Sandbox", false, false),
             (false, "Sandbox", true, true),
         ] {
