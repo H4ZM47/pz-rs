@@ -159,6 +159,9 @@ pub struct PlayerControl {
     /// `nextRandXpCheckTimes`: perk id to the wall-clock millisecond of its
     /// next `isRandXp` roll.
     pub next_rand_xp_check_times: std::collections::HashMap<String, i64>,
+    /// `invPageDirty`: the inventory page should refresh its containers
+    /// (`ISInventoryPage.prerender` reads and clears it).
+    pub inv_page_dirty: bool,
 }
 
 impl Default for PlayerControl {
@@ -218,6 +221,7 @@ impl Default for PlayerControl {
             seen_this_frame: false,
             could_be_seen_this_frame: false,
             is_farming: false,
+            inv_page_dirty: false,
             action_blocks_movement: false,
             action_overrides_animation: false,
             has_actions: false,

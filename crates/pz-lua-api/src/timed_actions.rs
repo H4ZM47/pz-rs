@@ -884,6 +884,14 @@ pub fn register(thread: &mut Thread) {
         chr_of(c)?.borrow_mut().player.is_farming = bool_arg(c, 1);
         Ok(0)
     });
+    player.method("isInvPageDirty", |c| {
+        let value = chr_of(c)?.borrow().player.inv_page_dirty;
+        Ok(c.push(value))
+    });
+    player.method("setInvPageDirty", |c| {
+        chr_of(c)?.borrow_mut().player.inv_page_dirty = bool_arg(c, 1);
+        Ok(0)
+    });
 }
 
 #[cfg(test)]
