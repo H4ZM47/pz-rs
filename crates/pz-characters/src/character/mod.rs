@@ -42,6 +42,7 @@ pub mod clothing_wetness;
 pub mod collide;
 pub mod collision;
 pub mod combat;
+pub mod corpse;
 pub mod context;
 pub mod eat;
 pub mod fall;
