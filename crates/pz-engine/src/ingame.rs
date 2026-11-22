@@ -554,7 +554,9 @@ impl GameState for IngameState {
                 self.renderframetext(cx, n);
             }
         }
-        // TODO(port): `UIManager.resize()`.
+        // The clock's visibility, digits and alarm come from the players'
+        // alarm clocks here, then the moodles and speed controls follow it.
+        pz_ui::UIManager::resize();
         self.renderframeui(cx, out);
     }
 }
