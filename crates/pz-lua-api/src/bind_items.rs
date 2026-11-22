@@ -583,6 +583,38 @@ pub fn item_value(item: &ItemRef) -> Value {
     Value::Object(object)
 }
 
+/// `Key.setHighlightDoors(playerNum, item)`. The original un-highlights
+/// the doors it highlighted for `playerNum` and forgets its key; then, for
+/// a key that is not a padlock key, it highlights the doors within 20
+/// tiles of the player that the key opens. The port draws no object
+/// highlights, so there is nothing to un-highlight, and highlighting a
+/// key's doors is unsupported.
+fn set_highlight_doors(c: &mut NativeCall<'_>) -> LuaResult<usize> {
+    let player = int_arg(c, 0);
+    let item = match c.arg(1) {
+        Value::Nil => None,
+        _ => Some(item_arg(c, 1)?),
+    };
+    // `highlightDoor` has one slot per local player.
+    if !(0..4).contains(&player) {
+        return Err(LuaError::Runtime {
+            message: format!("Index {player} out of bounds for length 4"),
+            class: "java.lang.ArrayIndexOutOfBoundsException",
+        });
+    }
+    let opens_doors = item.is_some_and(|i| {
+        let i = i.borrow();
+        let digital = i.template.script.as_ref().is_some_and(|s| s.0.borrow().digital_padlock);
+        matches!(i.kind, ItemKind::Key { .. }) && !i.template.padlock && !digital
+    });
+    if opens_doors {
+        return Err(crate::bind_world_object::unsupported(
+            "Key.setHighlightDoors: highlighting the doors a key opens (IsoObject.setHighlighted)",
+        ));
+    }
+    Ok(0)
+}
+
 /// The item behind a Lua `InventoryItem` object.
 pub fn item_arg_value(v: &Value) -> Option<ItemRef> {
     match v {
@@ -1885,6 +1917,8 @@ pub fn register(thread: &mut Thread) {
     ] {
         expose_class(thread, c, Some(INVENTORY_ITEM_CLASS));
     }
+    expose_class(thread, "zombie.inventory.types.Key", Some(INVENTORY_ITEM_CLASS))
+        .static_fn("setHighlightDoors", set_highlight_doors);
     // `getDeviceData` is `Radio`'s own method, so other items have none.
     let b = expose_class(
         thread,
@@ -1972,6 +2006,28 @@ mod tests {
         assert!(matches!(r[5], Value::Bool(true)));
         assert!(matches!(r[6], Value::Bool(true)));
         assert_eq!(item.borrow().condition, 0);
+    }
+
+    /// `ISInventoryPane.updateTooltip` calls `Key.setHighlightDoors` for
+    /// whatever item is under the mouse, or nil.
+    #[test]
+    fn key_set_highlight_doors() {
+        let mut thread = item_thread();
+        let bat = make(ItemClass::Normal, "Bat", |_| {});
+        let key = make(ItemClass::Key, "Key1", |_| {});
+        let padlock = make(ItemClass::Key, "Padlock", |t| t.padlock = true);
+        for (name, item) in [("bat", &bat), ("key", &key), ("padlock", &padlock)] {
+            thread.globals().set_str(name, item_value(item));
+        }
+        run(&mut thread, "Key.setHighlightDoors(0, nil) Key.setHighlightDoors(1, bat) Key.setHighlightDoors(3, padlock)");
+        let globals = thread.globals().clone();
+        let f = |src: &str| pz_kahlua::stdlib::load_string(src, Some("test"), globals.clone()).unwrap();
+        let err = |t: &mut Thread, src: &str| match t.pcall(&f(src), &[]) {
+            Err((e, _)) => pz_kahlua::exec::java_value_of(&e),
+            Ok(_) => String::new(),
+        };
+        assert!(err(&mut thread, "Key.setHighlightDoors(0, key)").contains("Key.setHighlightDoors"));
+        assert!(err(&mut thread, "Key.setHighlightDoors(4, nil)").starts_with("Index 4 out of bounds for length 4"));
     }
 
     /// `ISEquippedItem.render` tints the hand icons with `getR/G/B/A`.
