@@ -13,8 +13,10 @@ use std::rc::Rc;
 use pz_entity::runtime_load::{HostResult, RuntimeHostError};
 use pz_kahlua::{LuaResult, Thread, Value};
 use pz_lua_api::bind_object_picker::{self, ObjectPicker, Pick};
+use pz_lua_api::hud::host::{with_host, HudPicking, NoHud};
 use pz_lua_api::hud::picking::{self, ClickObject, PickObject, PickPlayer, PickWorld};
 use pz_lua_api::hud::speed_controls::SpeedControls;
+use pz_ui::tooltip::TooltipObject;
 use pz_ui::{with_ui, PickedObject, WorldMouse};
 use pz_world::IsoSpriteManager;
 use pz_world_render::{SharedCameraFrame, WorldPick, WorldView};
@@ -40,6 +42,8 @@ pub struct EngineWorldMouse {
     cameras: SharedCameraFrame,
     /// The square of the last picked object (`UIManager.picked`).
     picked_square: Cell<[i32; 3]>,
+    /// `UIManager.picked.tile` as the shared tooltip reads it.
+    picked_tile: RefCell<Option<TooltipObject>>,
 }
 
 impl EngineWorldMouse {
@@ -53,6 +57,7 @@ impl EngineWorldMouse {
             sprites,
             cameras,
             picked_square: Cell::new([0; 3]),
+            picked_tile: RefCell::new(None),
         }
     }
 
@@ -146,6 +151,14 @@ impl WorldMouse for EngineWorldMouse {
         if let Some(c) = &picked {
             self.picked_square.set(c.tile.square);
         }
+        *self.picked_tile.borrow_mut() = picked.as_ref().map(|c| {
+            let [x, y, z] = c.tile.square;
+            TooltipObject {
+                id: c.tile.id,
+                have_special_tooltip: c.tile.have_special_tooltip,
+                square: pz_lua_api::bind_world::square_value(x, y, z),
+            }
+        });
         let Some(c) = picked else {
             return Ok(None);
         };
@@ -219,6 +232,20 @@ impl ObjectPicker for EngineWorldMouse {
     }
 }
 
+/// `UIManager.getPicked().tile` for `UIManager.updateTooltip`: the
+/// object the last context pick found.
+struct PickedTile(Rc<EngineWorldMouse>);
+
+impl HudPicking for PickedTile {
+    fn picked_tile(&self) -> LuaResult<Option<TooltipObject>> {
+        Ok(self.0.picked_tile.borrow().clone())
+    }
+
+    fn square_coords(&self, square: &Value) -> Option<(i32, i32, i32)> {
+        pz_lua_api::bind_world::square_coords(square)
+    }
+}
+
 /// Installs the world's end of the mouse for the game that is starting.
 pub fn install(
     render: Rc<RefCell<Option<WorldRender>>>,
@@ -227,11 +254,13 @@ pub fn install(
 ) {
     let mouse = Rc::new(EngineWorldMouse::new(render, sprites, cameras));
     with_ui(|m| m.world_mouse = Some(mouse.clone()));
+    with_host(|h| h.picking = Box::new(PickedTile(mouse.clone())));
     bind_object_picker::set_object_picker(Some(mouse));
 }
 
 /// Takes it away again when the game ends.
 pub fn uninstall() {
     with_ui(|m| m.world_mouse = None);
+    with_host(|h| h.picking = Box::new(NoHud));
     bind_object_picker::set_object_picker(None);
 }
