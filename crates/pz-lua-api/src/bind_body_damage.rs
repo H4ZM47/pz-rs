@@ -11,7 +11,6 @@
 
 use crate::bind_registry::shared_script_manager;
 use crate::expose::{expose_enum, int_arg, num_arg, str_arg, this, JavaEnum};
-use pz_characters::Characters;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_scripts::registry::builtin::BodyPartDecl;
 use pz_scripts::ScriptManager;
@@ -146,7 +145,7 @@ fn register_body_part_type(thread: &mut Thread, parts: Vec<BodyPartDecl>) {
     b.static_fn("getDisplayName", move |c| {
         let i = enum_arg(c, 0, BODY_PART_TYPE_CLASS)?.unwrap_or(max);
         // `Translator.getText(null)` for a part without a key.
-        let text = p[i].display_name_key.as_deref().map(Characters::translate);
+        let text = p[i].display_name_key.as_deref().map(crate::bind_text::translate);
         Ok(c.push(text.map(Value::from).unwrap_or_default()))
     });
 
@@ -272,5 +271,35 @@ mod tests {
         let p = pz_kahlua::compiler::compile(src, Some("t"), Some("t"), None).unwrap();
         let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
         t.pcall(&f, &[]).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e))).unwrap();
+    }
+
+    /// `getDisplayName` is `Translator.getText(displayNameKey)`; the health
+    /// panel's part names come from it.
+    #[test]
+    fn display_name_is_translated() {
+        use std::cell::RefCell;
+        let mut t = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        let sm = Rc::new(ScriptManager::new());
+        sm.builtin_tables.borrow_mut().body_parts = vec![
+            part("Hand_L", "Left_Hand", Some("IGUI_health_Left_Hand"), None, 0.5),
+            part("MAX", "MAX", Some("IGUI_health_Unknown_Body_Part"), None, 1.0),
+        ];
+        register(&mut t, &sm);
+        let mut translator = pz_text::Translator::new(pz_text::TranslatorEnv::default());
+        translator
+            .table_mut(pz_text::translator::Table::IgUi)
+            .insert("IGUI_health_Left_Hand".into(), pz_text::translator::format_fixer("Left Hand"));
+        crate::bind_text::install(crate::bind_text::TextState {
+            translator: Rc::new(RefCell::new(translator)),
+            text_manager: Rc::default(),
+            draw: None,
+            known_file: Rc::new(|_| false),
+        });
+        let src = r#"return BodyPartType.getDisplayName(BodyPartType.Hand_L)"#;
+        let p = pz_kahlua::compiler::compile(src, Some("t"), Some("t"), None).unwrap();
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
+        let r = t.pcall(&f, &[]).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e))).unwrap();
+        assert_eq!(pz_kahlua::exec::java_value_of(&r[0]), "Left Hand");
     }
 }

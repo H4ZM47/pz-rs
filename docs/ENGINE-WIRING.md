@@ -996,14 +996,16 @@ all installed assets, render paths or foreign platforms.
       `player_index` (`IsoPlayer.getPlayerIndex()`) and
       `frame_player_index` (`IsoCamera.frameState.playerIndex`) before the
       HUD updates and renders (world-render thread) (#198).
-- [ ] Health panel: `HudBodyDamage` (`isFemale`, `getBodyDamage().getHealth()`,
+- [x] Health panel: `HudBodyDamage` (`isFemale`, `getBodyDamage().getHealth()`,
       each `BodyPart`'s wound state as a `BodyPartView`; the remote
       `getBodyDamageRemote()` for another MP player; characters thread) and
       `HudDebug::ui_render_outline` (`Core.debug` plus the debug option)
       feed `NewHealthPanel`/`UI_BodyPart`, built by `ISNewHealthPanel` (#155).
       `HudBodyDamage` for local characters is `CharacterBodyDamage`
       (installed by `install_character_hud_hosts`); the remote path is
-      TODO(network).
+      TODO(network). The part names in the wound list are
+      `BodyPartType.getDisplayName`, translated through
+      `bind_text::translate` (`Translator.getText`).
 - [ ] Debug console (built in `hud::init_ui`): with `Core.debug`, the
       `TOGGLE_LUA_CONSOLE` key toggles `UIManager.debug_console`'s visibility
       in `GameWindow.logic`; `DebugLog`'s stream calls
