@@ -600,7 +600,9 @@ impl IsoMetaGrid {
             draw(120);
             for &member in &def.rooms {
                 let member_id = self.room_defs[member.0 as usize].id;
-                if self.get_room_def_by_id(member_id).is_some() && state.created.insert(member) {
+                let Some(member) = self.get_cell_data(room_id::get_cell_x(member_id), room_id::get_cell_y(member_id))
+                    .and_then(|cell| cell.rooms.get(&member_id)).copied() else { continue };
+                if state.created.insert(member) {
                     state.rooms.push(member);
                 }
             }
@@ -1742,6 +1744,11 @@ mod building_api_tests {
                 vec![room("emptyoutside", 0, &[(5, 1, 1, 1)])],
             ).unwrap();
             let (first, second, exterior) = (RoomIdx(0), RoomIdx(1), RoomIdx(2));
+            // The basement helper registers indoor IDs. A lot header also
+            // registers exterior definitions, which this map fixture needs.
+            let exterior_id = room_id::make_id(0, 0, 2);
+            g.room_defs[exterior.0 as usize].id = exterior_id;
+            g.get_cell_data_mut(0, 0).unwrap().rooms.insert(exterior_id, exterior);
             let ids: Vec<_> = g.room_defs.iter().map(|r| r.id).collect();
             let mut draws = Vec::new();
             for index in [if exterior_first { exterior } else { second }, first, exterior, second] {
