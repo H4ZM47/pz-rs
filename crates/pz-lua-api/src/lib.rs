@@ -262,6 +262,7 @@ pub fn register_all(mgr: &mut LuaManager) {
         bind_randomized_world::register_from_jar(&mut mgr.thread, jar.as_ref());
     }
     bind_sprites::register(&mut mgr.thread);
+    bind_map_groups::install_host(Rc::new(bind_map_groups::GameFsHost::new(mgr.fs.clone())));
     bind_map_groups::register(&mut mgr.thread, move || fs.borrow().media_file("maps"));
     bind_server::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
     bind_server_list::register(&mut mgr.thread, mgr.fs.clone());

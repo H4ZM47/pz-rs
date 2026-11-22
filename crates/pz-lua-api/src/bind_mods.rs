@@ -96,6 +96,30 @@ impl ActiveMods {
         !pz_fs::java::is_null_or_whitespace(id) && self.mods.items.borrow().iter().any(|x| java_equals(x, &Value::str(id)))
     }
 
+    /// `checkMissingMaps()`: the map order only matters when this list's
+    /// mods have map conflicts (vanilla maps excluded). With conflicts, drop
+    /// map-order names no group has; without, clear the map order.
+    pub fn check_missing_maps(&self, fs: &mut GameFs) {
+        if self.map_order.items.borrow().is_empty() {
+            return;
+        }
+        let view = pz_world::map_groups::ActiveModsView { mods: self.mod_ids(), map_order: self.map_order_names() };
+        let maps = fs.media_file("maps");
+        let cell = RefCell::new(fs);
+        let dirs = |id: &str| crate::bind_map_groups::available_mod_dirs(&mut cell.borrow_mut(), id);
+        let mut groups = pz_world::map_groups::MapGroups::new();
+        groups.create_groups(&view, &dirs, &maps, false, false);
+        if groups.check_map_conflicts(&crate::bind_map_groups::translate) {
+            let all = groups.get_all_maps_in_order();
+            self.map_order
+                .items
+                .borrow_mut()
+                .retain(|v| v.as_str().is_some_and(|name| all.iter().any(|m| m == name)));
+        } else {
+            self.map_order.items.borrow_mut().clear();
+        }
+    }
+
     /// `checkMissingMods`: drops mods that are missing or unavailable.
     pub fn check_missing_mods(&self, fs: &mut GameFs) {
         let ids = self.mods.items.borrow().clone();
@@ -163,7 +187,7 @@ pub fn read_default(fs: &mut GameFs) -> Vec<String> {
     let Ok(m) = get_by_id("default") else { return Vec::new() };
     m.set_from(&file);
     m.check_missing_mods(fs);
-    // TODO(pz-world): `checkMissingMaps` once MapGroups is on main.
+    m.check_missing_maps(fs);
     set_loaded_mods(&m);
     m.mod_ids()
 }
@@ -355,5 +379,35 @@ mod tests {
         set_loaded_mods(&a);
         a.clear();
         assert!(LOADED.with(|l| l.mod_ids()) == ["ModA"]);
+    }
+
+    #[test]
+    fn missing_maps_and_real_map_groups_host() {
+        let root = std::env::temp_dir().join(format!("pz-lua-missing-maps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let file = |rel: &str, text: &str| {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        file("game/media/maps/Base/map.info", "title=Base\n");
+        file("user/mods/ModA/common/mod.info", "id=ModA\n");
+        file("user/mods/ModA/42/media/maps/ModMap/map.info", "title=ModMap\nlots=Base\n");
+        let fs = Rc::new(RefCell::new(GameFs::new(root.join("game"))));
+        fs.borrow_mut().set_cache_dir(root.join("user"));
+        // ChooseGameInfo.getAvailableModDetails through the real host.
+        let host = crate::bind_map_groups::GameFsHost::new(fs.clone());
+        use crate::bind_map_groups::MapGroupsHost;
+        let (common, version) = host.mod_dirs("ModA").unwrap();
+        assert!(common.ends_with("common") && version.ends_with("42"), "{common} {version}");
+        assert!(host.mod_dirs("Missing").is_none());
+        assert!(host.maps_dir().ends_with("maps"));
+        // No conflicts: the map order is cleared, as in the original.
+        let m = get_by_id("missing-maps-test").unwrap();
+        m.set_mod_active("ModA", true);
+        m.map_order.items.borrow_mut().push(Value::str("ModMap"));
+        m.check_missing_maps(&mut fs.borrow_mut());
+        assert!(m.map_order_names().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
