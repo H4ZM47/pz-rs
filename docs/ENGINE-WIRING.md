@@ -1991,7 +1991,7 @@ registered):
       `vispoly.wgsl`); any other backend must handle them.
 
 ## Cleanups
-- [ ] Fold bind_vehicles' item subset into the full item bindings (#86).
+- [x] Fold bind_vehicles' item subset into the full item bindings (#86).
 - [ ] Convert remaining bare prints to DebugLog (#66 meta_grid.rs, #67
       meta_zones.rs/zone_save.rs) (#69).
 
