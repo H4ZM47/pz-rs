@@ -17,7 +17,11 @@ use super::{
     get, grid, java_err, key_of, npe, obj, opt, self_world, void, with_world_state_cell, wrong, Key,
     ZoneClass,
 };
-use crate::bind_java_util::list_value;
+use crate::bind_characters::{
+    adopt_survivor_desc_value, desc_arg, survivor_desc_value, LuaSurvivorDesc,
+};
+use crate::bind_java_util::{list_value, JavaList};
+use crate::bind_registry::{key_arg, KeyObject};
 use crate::expose::{expose_class, global, int_arg, num_arg, str_arg, ClassBuilder};
 use pz_fs::GameFs;
 use pz_iso_render::water_flow::IsoWaterFlow;
@@ -40,6 +44,10 @@ pub struct LuaWorldFields {
 
 thread_local! {
     static FIELDS: RefCell<LuaWorldFields> = RefCell::default();
+    /// `IsoWorld.luaDesc`.
+    static LUA_DESC: RefCell<Option<Rc<RefCell<LuaSurvivorDesc>>>> = const { RefCell::new(None) };
+    /// `IsoWorld.luatraits` (one `ArrayList`, as `getLuaTraits` returns it).
+    static LUA_TRAITS: Value = list_value(Vec::new());
     /// `ZombiePopulationManager.instance.spawnOrigins`: `(x, y, w, h)`.
     static SPAWN_ORIGINS: RefCell<Vec<(i32, i32, i32, i32)>> = RefCell::default();
     static WATER_FLOW: Rc<RefCell<IsoWaterFlow>> = Rc::default();
@@ -53,6 +61,30 @@ thread_local! {
 /// The `IsoWorld` fields Lua set.
 pub fn lua_world_fields() -> LuaWorldFields {
     FIELDS.with(|f| f.borrow().clone())
+}
+
+/// `IsoWorld.luaDesc`, as Lua set it (`setLuaPlayerDesc`).
+pub fn lua_player_desc() -> Option<Rc<RefCell<LuaSurvivorDesc>>> {
+    LUA_DESC.with(|d| d.borrow().clone())
+}
+
+/// `IsoWorld.luatraits`, as Lua left it (`addLuaTrait`,
+/// `getLuaTraits()`). An element that is not a `CharacterTrait` is `None`.
+pub fn lua_traits() -> Vec<Option<Rc<pz_scripts::registry::RegistryKey>>> {
+    LUA_TRAITS.with(|l| {
+        let Value::Object(o) = l else { return Vec::new() };
+        let Some(list) = o.as_any().downcast_ref::<JavaList>() else {
+            return Vec::new();
+        };
+        let items = list.items.borrow();
+        items
+            .iter()
+            .map(|v| match v {
+                Value::Object(o) => o.as_any().downcast_ref::<KeyObject>().map(|k| k.key.clone()),
+                _ => None,
+            })
+            .collect()
+    })
 }
 
 /// Set `IsoWorld.luaPosX/Y/Z` (as the main menu's Lua does).
@@ -458,6 +490,47 @@ fn register_world_settings(b: &ClassBuilder) {
         Ok(Value::str(
             &FIELDS.with(|w| w.borrow().spawn_region.clone()),
         ))
+    });
+    void(b, "setLuaPlayerDesc", |c| {
+        self_world(c)?;
+        let d = match c.arg(1) {
+            Value::Nil => None,
+            v => {
+                let d = desc_arg(c, 1)?;
+                // `getLuaPlayerDesc` returns this same object.
+                adopt_survivor_desc_value(&v);
+                Some(d)
+            }
+        };
+        LUA_DESC.with(|l| *l.borrow_mut() = d);
+        Ok(())
+    });
+    get(b, "getLuaPlayerDesc", |c| {
+        self_world(c)?;
+        Ok(lua_player_desc().map_or(Value::Nil, |d| survivor_desc_value(&d)))
+    });
+    get(b, "getLuaTraits", |c| {
+        self_world(c)?;
+        Ok(LUA_TRAITS.with(Value::clone))
+    });
+    // `getLuaTraits().add(trait)`.
+    void(b, "addLuaTrait", |c| {
+        self_world(c)?;
+        let t = match c.arg(1) {
+            Value::Nil => Value::Nil,
+            v => {
+                key_arg(c, 1)?;
+                v
+            }
+        };
+        LUA_TRAITS.with(|l| {
+            if let Value::Object(o) = l {
+                if let Some(list) = o.as_any().downcast_ref::<JavaList>() {
+                    list.items.borrow_mut().push(t);
+                }
+            }
+        });
+        Ok(())
     });
 }
 

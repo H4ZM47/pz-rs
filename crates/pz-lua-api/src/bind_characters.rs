@@ -2362,4 +2362,38 @@ mod tests {
         .unwrap();
         assert!(chars.borrow().survivor_desc.hair_common_colors.is_empty());
     }
+
+    #[test]
+    fn world_lua_player_desc_and_traits() {
+        let (mut t, _) = setup();
+        crate::bind_java_util::register(&mut t);
+        let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(std::env::temp_dir())));
+        crate::bind_world::lua_world::register(&mut t, fs);
+        run(
+            &mut t,
+            r#"
+            local w = getWorld()
+            assert(w:getLuaPlayerDesc() == nil)
+            local d = SurvivorDesc.new()
+            w:setLuaPlayerDesc(d)
+            assert(w:getLuaPlayerDesc() == d)
+            local l = w:getLuaTraits()
+            assert(l == w:getLuaTraits() and l:size() == 0)
+            w:addLuaTrait(CharacterTrait.BRAVE)
+            l:add(CharacterTrait.TIMID)
+            assert(not pcall(function() w:addLuaTrait("brave") end))
+            assert(l:size() == 2)
+            "#,
+        )
+        .unwrap();
+        use crate::bind_world::lua_world;
+        assert!(lua_world::lua_player_desc().is_some());
+        let traits: Vec<_> = lua_world::lua_traits()
+            .iter()
+            .map(|k| k.as_ref().map(|k| k.location.id()))
+            .collect();
+        assert_eq!(traits, [Some("t:brave".to_string()), Some("t:timid".to_string())]);
+        run(&mut t, "getWorld():getLuaTraits():clear(); getWorld():setLuaPlayerDesc(nil)").unwrap();
+        assert!(lua_world::lua_traits().is_empty() && lua_world::lua_player_desc().is_none());
+    }
 }
