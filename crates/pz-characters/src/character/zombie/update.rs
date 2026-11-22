@@ -473,8 +473,13 @@ impl<I: 'static> GameCharacter<I> {
                 }
             }
         }
-        // super.update(): the state machine, fire, then updateTextObjects
-        // (the chat element's part is queued).
+        // super.update(): IsoGameCharacter.updateInternal's
+        // updateSeenVisibility (it returns before it without a square or
+        // when dead), the state machine, fire, then updateTextObjects (the
+        // chat element's part is queued).
+        if self.current_square_xyz().is_some() && !self.is_dead() {
+            self.update_seen_visibility(cx)?;
+        }
         self.state_machine_update(cx);
         if cx.has_host_error() { return Ok(()); }
         self.update_fire(cx);

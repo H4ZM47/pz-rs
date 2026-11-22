@@ -912,11 +912,14 @@ impl CharacterItems {
         while let Some(id) = self.worn_items.as_ref().and_then(|w| w.item_by_index(i)) {
             i += 1;
             let Some(item_ref) = self.item(id) else { continue };
-            let item = &*item_ref.borrow();
-            if !is_clothing(item) {
-                continue;
-            }
-            let chance = script_item(sm, item).map_or(0, |s| s.borrow().chance_to_fall);
+            // The item is not borrowed past here: `Remove` sets its container.
+            let chance = {
+                let item = item_ref.borrow();
+                if !is_clothing(&item) {
+                    continue;
+                }
+                script_item(sm, &item).map_or(0, |s| s.borrow().chance_to_fall)
+            };
             let mut chance_to_fall = chance;
             if hit_head {
                 chance_to_fall += 40;

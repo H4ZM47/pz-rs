@@ -56,11 +56,17 @@ pub enum PlayerUpdatePhase {
     Start,
     AfterAiming(AimInputLocals),
     AfterMovement { strafe_x: f32, strafe_y: f32 },
+    /// After the host ran [`super::los::update_player_los`].
+    AfterLos,
 }
 
 #[derive(Debug)]
 pub enum PlayerUpdateStep {
     StopActionQueue { reason: &'static str, resume: PlayerUpdatePhase },
+    /// `updateLOS()`: the host runs [`super::los::update_player_los`]
+    /// with the player in the world's character list, then resumes with
+    /// [`PlayerUpdatePhase::AfterLos`].
+    UpdateLos,
     TimedActions,
     Done,
 }
@@ -135,6 +141,9 @@ impl<I: 'static> GameCharacter<I> {
                     out.events.push(PlayerEvent::StopActionQueue(reason));
                     phase = resume;
                 }
+                // This driver has the player outside the world's character
+                // list, so it cannot run updateLOS; hosts with the list do.
+                PlayerUpdateStep::UpdateLos => phase = PlayerUpdatePhase::AfterLos,
                 PlayerUpdateStep::TimedActions => return Ok((out, true)),
                 PlayerUpdateStep::Done => return Ok((out, false)),
             }
@@ -174,16 +183,21 @@ impl<I: 'static> GameCharacter<I> {
             PlayerUpdatePhase::AfterMovement { strafe_x, strafe_y } => {
                 self.update_internal2_tail(strafe_x, strafe_y, cx)?
             }
+            PlayerUpdatePhase::AfterLos => {
+                return if self.update_character_before_actions(cx)? {
+                    Ok(PlayerUpdateStep::TimedActions)
+                } else {
+                    Ok(PlayerUpdateStep::Done)
+                };
+            }
         };
         if cx.has_host_error() { return Ok(PlayerUpdateStep::Done); }
         match step {
             ControlFlow::Break((reason, resume)) => Ok(PlayerUpdateStep::StopActionQueue { reason, resume }),
-            ControlFlow::Continue(update_base) => {
-                // updateLOS: the spotting of other characters is the world's.
-                if update_base && self.update_character_before_actions(cx)? {
-                    Ok(PlayerUpdateStep::TimedActions)
-                } else { Ok(PlayerUpdateStep::Done) }
-            }
+            // updateLOS() for a local (not remote) player, then
+            // IsoGameCharacter.update().
+            ControlFlow::Continue(true) => Ok(PlayerUpdateStep::UpdateLos),
+            ControlFlow::Continue(false) => Ok(PlayerUpdateStep::Done),
         }
     }
 

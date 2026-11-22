@@ -144,6 +144,9 @@ pub struct IsoWorld {
     pub preset: String,
     /// `IsoCell.getZombieList()`: the real zombies.
     pub zombies: Vec<LuaGameCharacter>,
+    /// The stand-ins the local players' cells hold while their characters
+    /// are lent to [`Self::zombies`] (`IsoWorld::lend_players`).
+    pub player_stand_ins: Vec<LuaGameCharacter>,
     /// The last `IsoMovingObject` id handed out (`IDMax`).
     pub next_object_id: i32,
     /// Object state the character states keep outside the objects.
@@ -267,6 +270,7 @@ impl IsoWorld {
             statistics: Statistics::default(),
             preset: String::new(),
             zombies: Vec::new(),
+            player_stand_ins: Vec::new(),
             next_object_id: 0,
             states_runtime: Default::default(),
             action_groups: pz_characters::character::state::ActionGroups::from_media(

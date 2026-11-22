@@ -58,7 +58,9 @@ use pz_characters::character::state::{
 use pz_characters::character::player::context::{ContextQuery, ContextSpecial};
 use pz_characters::character::player::ContextualAction;
 use pz_characters::GameCharacter;
-use pz_pathfind::mover::{CharacterView, MoverId, ObjectRef};
+use pz_pathfind::behavior::{BehaviorResult, CharacterLookup, PathFindBehavior2};
+use pz_pathfind::host::{PathEnv, PathHost};
+use pz_pathfind::mover::{CharacterView, MoverId, ObjectRef, PathMover, PathWorldHooks};
 use pz_world::java::{fastfloor, GameRand};
 use pz_world::los::{self, TestResults};
 use pz_world::object_slot::IsoObjectRef;
@@ -513,6 +515,12 @@ pub trait StatesEngine {
     fn vehicle_thump(&mut self, _vehicle: i16, _chr: &Thumper) {}
 }
 
+/// The host's key of `chr`: its `IsoMovingObject` id, the low half of its
+/// mover id ([`GameCharacter::mover_id_of`]).
+fn character_id(chr: &dyn PathMover) -> i32 {
+    chr.mover_id().0 as u32 as i32
+}
+
 /// [`StateWorld`] over the loaded cell.
 pub struct StatesWorldAdapter<'a> {
     pub cell: &'a mut IsoCell,
@@ -527,6 +535,20 @@ pub struct StatesWorldAdapter<'a> {
     characters: Option<&'a mut dyn std::any::Any>,
     /// The list index of each character out with `take_character`.
     taken: Vec<(i32, usize)>,
+    /// The world's path finding (`PathfindNative.instance` and each
+    /// character's `PathFindBehavior2`), set with [`Self::with_path`];
+    /// `None`: the path calls do nothing.
+    path: Option<(&'a mut PathHost, &'a dyn PathWorldHooks)>,
+}
+
+/// The characters a `pathToCharacter` goal is looked up in: the list the
+/// adapter reaches by id. The character that asks is out of it.
+struct ListLookup<'l, I: 'static>(&'l [GameCharacter<I>]);
+
+impl<I: 'static> CharacterLookup for ListLookup<'_, I> {
+    fn character(&self, id: MoverId) -> Option<&dyn CharacterView> {
+        self.0.iter().find(|c| c.mover_id_of() == id).map(|c| c as &dyn CharacterView)
+    }
 }
 
 impl<'a> StatesWorldAdapter<'a> {
@@ -535,6 +557,38 @@ impl<'a> StatesWorldAdapter<'a> {
     pub fn with_characters<I: 'static>(mut self, characters: &'a mut Vec<GameCharacter<I>>) -> Self {
         self.characters = Some(characters);
         self
+    }
+
+    /// Lets the states find paths through `host` (`PathFindBehavior2`'s
+    /// calls), with `hooks` for the game settings they read.
+    pub fn with_path(mut self, host: &'a mut PathHost, hooks: &'a dyn PathWorldHooks) -> Self {
+        self.path = Some((host, hooks));
+        self
+    }
+
+    /// `f` with the path host and the world as the behaviours see it: the
+    /// squares, the game settings and the other characters.
+    fn with_path_env<I: 'static, R>(
+        &mut self,
+        f: impl FnOnce(&mut PathHost, &PathEnv<'_, '_, '_, IsoCell>) -> R,
+    ) -> Option<R> {
+        let (host, hooks) = self.path.as_mut()?;
+        let bits_hooks = pz_pathfind::square_bits::DefaultBitsHooks;
+        let bits = pz_pathfind::square_bits::SquareBits::new(&*self.sprites, self.meta, &*self.cell, &bits_hooks).ok()?;
+        let map = pz_pathfind::main_thread::MainThreadMap::new(&bits, &pz_pathfind::game_vehicle::NoVehicles);
+        let list: &[GameCharacter<I>] = self
+            .characters
+            .as_deref()
+            .and_then(|c| c.downcast_ref::<Vec<GameCharacter<I>>>())
+            .map_or(&[], |l| l.as_slice());
+        let env = PathEnv {
+            map: &map,
+            world: *hooks,
+            vehicles: &pz_pathfind::behavior::NoVehicleScripts,
+            seating: &pz_pathfind::behavior::NoSeating,
+            characters: &ListLookup(list),
+        };
+        Some(f(host, &env))
     }
 
     fn character_list<I: 'static>(&mut self) -> Option<&mut Vec<GameCharacter<I>>> {
@@ -558,6 +612,7 @@ impl<'a> StatesWorldAdapter<'a> {
             engine,
             characters: None,
             taken: Vec::new(),
+            path: None,
         }
     }
 
@@ -761,18 +816,67 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     fn character_mut(&mut self, id: i32) -> Option<&mut GameCharacter<I>> {
         self.character_list::<I>()?.iter_mut().find(|c| c.id == id)
     }
+    fn path_to_location(&mut self, chr: &mut dyn PathMover, x: i32, y: i32, z: i32) {
+        if let Some((host, _)) = self.path.as_mut() {
+            host.path_to_location(character_id(chr), chr, x, y, z);
+        }
+    }
+    fn path_to_location_f(&mut self, chr: &mut dyn PathMover, x: f32, y: f32, z: f32) {
+        if let Some((host, _)) = self.path.as_mut() {
+            host.path_to_location_f(character_id(chr), chr, x, y, z);
+        }
+    }
+    fn path_to_sound(&mut self, chr: &mut dyn PathMover, x: i32, y: i32, z: i32) {
+        if let Some((host, _)) = self.path.as_mut() {
+            host.path_to_sound(character_id(chr), chr, x, y, z);
+        }
+    }
+    fn path_to_character(&mut self, chr: &mut dyn PathMover, target: MoverId) {
+        self.with_path_env::<I, _>(|host, env| host.path_to_character(character_id(chr), chr, env, target));
+    }
+    fn path_update(&mut self, chr: &mut dyn PathMover) -> BehaviorResult {
+        self.with_path_env::<I, _>(|host, env| host.path_update(character_id(chr), chr, env))
+            .unwrap_or(BehaviorResult::Failed)
+    }
+    fn path_cancel(&mut self, chr: &mut dyn PathMover) {
+        if let Some((host, _)) = self.path.as_mut() {
+            host.path_cancel(character_id(chr), chr);
+        }
+    }
+    fn path_behavior(&self, id: i32) -> Option<&PathFindBehavior2> {
+        self.path.as_ref()?.0.behavior(id)
+    }
+    fn walking_on_the_spot_reset(&mut self, id: i32, x: f32, y: f32) {
+        if let Some((host, _)) = self.path.as_mut() {
+            host.walking_on_the_spot_reset(id, x, y);
+        }
+    }
+    fn walking_on_the_spot_check(&mut self, id: i32, x: f32, y: f32) -> bool {
+        match self.path.as_mut() {
+            Some((host, hooks)) => host.walking_on_the_spot_check(id, x, y, *hooks),
+            None => false,
+        }
+    }
+    /// The last character fills the taken one's place, so a take and its
+    /// put are O(1) (the zombie update takes every zombie each frame).
     fn take_character(&mut self, id: i32) -> Option<GameCharacter<I>> {
         let list = self.character_list::<I>()?;
         let i = list.iter().position(|c| c.id == id)?;
-        let chr = list.remove(i);
+        let chr = list.swap_remove(i);
         self.taken.push((id, i));
         Some(chr)
     }
+    /// Puts the character back at its index and the one that filled it
+    /// back at the end: puts in the reverse order of the takes restore the
+    /// list order exactly.
     fn put_character(&mut self, chr: GameCharacter<I>) {
-        let at = self.taken.iter().position(|t| t.0 == chr.id).map(|k| self.taken.remove(k).1);
+        let at = self.taken.iter().rposition(|t| t.0 == chr.id).map(|k| self.taken.remove(k).1);
         let Some(list) = self.character_list::<I>() else { return };
-        let i = at.unwrap_or(list.len()).min(list.len());
-        list.insert(i, chr);
+        list.push(chr);
+        let last = list.len() - 1;
+        if let Some(i) = at.filter(|i| *i < last) {
+            list.swap(i, last);
+        }
     }
     fn characters_near(&self, x: f32, y: f32, _z: f32, radius: f32) -> Vec<i32> {
         let Some(list) = self.characters.as_deref().and_then(|c| c.downcast_ref::<Vec<GameCharacter<I>>>()) else {
@@ -1312,7 +1416,10 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     }
 
     fn path_cancel_request(&mut self, chr: &mut dyn pz_pathfind::mover::PathMover) {
-        self.engine.path_cancel_request(chr.mover_id());
+        match self.path.as_mut() {
+            Some((host, _)) => host.service_mut().cancel_request(chr.mover_id()),
+            None => self.engine.path_cancel_request(chr.mover_id()),
+        }
     }
 
     fn players_on_square(&self, sq: (i32, i32, i32)) -> Vec<i32> {

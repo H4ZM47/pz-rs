@@ -35,6 +35,12 @@ fn square_lighting(player: i32, x: i32, y: i32, z: i32) -> SquareLighting {
     source.and_then(|f| f(player, x, y, z)).unwrap_or(UNDECODED)
 }
 
+/// `square.lighting[player]`'s visibility bits (1 seen, 2 canSee, 4
+/// couldSee) for the character states' world; 0 for an undecoded square.
+pub fn square_vis(player: i32, x: i32, y: i32, z: i32) -> u8 {
+    square_lighting(player, x, y, z).vis
+}
+
 /// `lighting[playerIndex]`: Java throws for an index outside the array.
 fn player_index(c: &NativeCall<'_>, i: usize, allow_minus_one: bool) -> LuaResult<i32> {
     let player = int_arg(c, i);
