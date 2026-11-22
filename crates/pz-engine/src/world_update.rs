@@ -374,6 +374,20 @@ pub(crate) fn with_states<R>(
     floor_world: Option<&Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
     f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
 ) -> Option<R> {
+    with_states_and_characters(sprites, runtime, models, sim, floor_world, None, f)
+}
+
+/// [`with_states`] where the states also reach `characters` by id (the
+/// real zombies a player's attack finds and hits).
+pub(crate) fn with_states_and_characters<R>(
+    sprites: &Rc<RefCell<IsoSpriteManager>>,
+    runtime: &mut StatesRuntime,
+    models: Option<&mut WorldModels>,
+    sim: &FrameSim,
+    floor_world: Option<&Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
+    characters: Option<&mut Vec<LuaGameCharacter>>,
+    f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
+) -> Option<R> {
     let movers = player_squares();
     let animation_time_delta = sim
         .game_time
@@ -399,6 +413,9 @@ pub(crate) fn with_states<R>(
             runtime,
             &mut engine,
         );
+        if let Some(characters) = characters {
+            adapter = adapter.with_characters(characters);
+        }
         Some(f(&mut adapter))
     })
 }
@@ -631,17 +648,19 @@ impl IsoWorld {
                         action_groups,
                         models,
                         floor_world,
+                        zombies,
                         ..
                     } = self;
                     let Some(sprites) = sprites.as_mut() else {
                         return Ok(());
                     };
-                    with_states(
+                    with_states_and_characters(
                         sprites,
                         states_runtime,
                         models.as_mut(),
                         sim,
                         floor_world.as_ref(),
+                        Some(zombies),
                         |w| {
                             if first_phase {
                                 fill_square_environment(&mut chr, w.cell);
@@ -676,9 +695,9 @@ impl IsoWorld {
                             }
                             pz_characters::character::player::PlayerUpdateStep::TimedActions => {
                                 pz_lua_api::timed_actions::update(&mut lua.thread, &p);
-                                let IsoWorld { sprites, states_runtime, models, floor_world, .. } = self;
+                                let IsoWorld { sprites, states_runtime, models, floor_world, zombies, .. } = self;
                                 if let Some(sprites) = sprites.as_mut() {
-                                    let result = with_states(sprites, states_runtime, models.as_mut(), sim, floor_world.as_ref(), |w| {
+                                    let result = with_states_and_characters(sprites, states_runtime, models.as_mut(), sim, floor_world.as_ref(), Some(zombies), |w| {
                                         pz_lua_api::bind_states::with_state_registry(|_| {
                                             let chars = chars.borrow();
                                             let mut cx = StateCx::new(&sm, &chars, &player_sim, w);
@@ -931,12 +950,13 @@ impl IsoWorld {
                             let Some(sprites) = self.sprites.as_ref() else {
                                 return Ok(());
                             };
-                            let result = with_states(
+                            let result = with_states_and_characters(
                                 sprites,
                                 &mut self.states_runtime,
                                 Some(&mut models),
                                 sim,
                                 self.floor_world.as_ref(),
+                                Some(&mut self.zombies),
                                 |w| {
                                     let chars = chars.borrow();
                                     let mut cx = StateCx::new(&sm, &chars, sim, w);

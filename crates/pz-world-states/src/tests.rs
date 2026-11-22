@@ -1984,4 +1984,26 @@ mod context {
             assert_eq!(a.context_special_at(&query(10, 10), IsoDirections::N, which).unwrap(), None);
         }
     }
+#[test]
+fn characters_by_id() {
+    let mut w = World::new();
+    let mut list = vec![zombie(10.5, 10.5, 1), zombie(12.5, 10.5, 1), zombie(20.5, 10.5, 1)];
+    for (i, z) in list.iter_mut().enumerate() {
+        z.id = 10 + i as i32;
+    }
+    {
+        let a = w.adapter();
+        assert!(StateWorld::<()>::characters_near(&a, 10.5, 10.5, 0.0, 3.0).is_empty());
+    }
+    let mut a = w.adapter().with_characters(&mut list);
+    assert_eq!(StateWorld::<()>::characters_near(&a, 10.5, 10.5, 0.0, 3.0), vec![10, 11]);
+    StateWorld::<()>::character_mut(&mut a, 11).unwrap().health = 0.5;
+    assert!(StateWorld::<()>::character_mut(&mut a, 99).is_none());
+    // A taken character goes back to its place in the list.
+    let z = StateWorld::<()>::take_character(&mut a, 11).unwrap();
+    assert!(StateWorld::<()>::character_mut(&mut a, 11).is_none());
+    StateWorld::<()>::put_character(&mut a, z);
+    drop(a);
+    assert_eq!(list.iter().map(|z| z.id).collect::<Vec<_>>(), vec![10, 11, 12]);
+    assert_eq!(list[1].health, 0.5);
 }
