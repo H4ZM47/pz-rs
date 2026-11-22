@@ -97,6 +97,7 @@ struct It {
     equipped: bool,
     condition: i32,
     condition_max: i32,
+    fluid: Option<item_status::FluidState>,
 }
 
 fn it(sm: &ScriptManager, key: usize, name: &str) -> It {
@@ -116,6 +117,7 @@ fn it(sm: &ScriptManager, key: usize, name: &str) -> It {
         equipped: false,
         condition: 10,
         condition_max: 10,
+        fluid: None,
     }
 }
 
@@ -175,7 +177,10 @@ impl CraftItem for It {
         true
     }
     fn is_fluid_container(&self) -> LuaResult<bool> {
-        Ok(false)
+        Ok(self.fluid.is_some())
+    }
+    fn fluid_container(&self) -> LuaResult<Option<item_status::FluidState>> {
+        Ok(self.fluid.clone())
     }
 }
 
@@ -237,7 +242,7 @@ fn recipe(sm: &ScriptManager, name: &str) -> Rc<RefCell<CraftRecipe>> {
 fn accepts(sm: &ScriptManager, name: &str, item: &It, chr: &Chr) -> LuaResult<bool> {
     let r = recipe(sm, name);
     let r = r.borrow();
-    let out = item_status::consume_input_item_test(r.inputs().next().unwrap(), &r, item, chr, &mut |_, _| true);
+    let out = item_status::consume_input_item_test(r.inputs().next().unwrap(), &r, item, chr, &mut |_, _| true, None);
     out
 }
 
@@ -500,4 +505,52 @@ fn lua_query_recipes() {
     .unwrap();
     let want = [Value::Num(3.0), Value::str("Hammer"), Value::Num(0.0), Value::Num(5.0)];
     assert!(out.iter().zip(&want).all(|(a, b)| a.raw_equals(b)) && out.len() == 4, "{out:?}");
+}
+
+const FLUID_RECIPES: &str = "
+    craftRecipe Fill { time = 10, Tags = InHandCraft, inputs { item 1 [Base.Apple] mode:keep, -fluid 0.5 [Water], } outputs { item 1 Base.Apple, } }
+    craftRecipe FillAny { time = 10, Tags = InHandCraft, inputs { item 1 [Base.Apple] mode:keep, -fluid 0.5 [*], } outputs { item 1 Base.Apple, } }
+";
+
+/// Installs an item environment whose fluid registry has Water and Bleach.
+fn install_fluids() {
+    use pz_scripts::objects::definitions::FluidCategory;
+    let mut fluids = pz_entity::FluidRegistry::default();
+    for (name, categories) in [("Water", vec![FluidCategory::Water]), ("Bleach", vec![FluidCategory::Hazardous])] {
+        fluids.insert(None, pz_entity::FluidInfo { name: name.into(), categories, ..Default::default() });
+    }
+    let ctx = pz_entity::BasicContext { fluids: Some(fluids), ..Default::default() };
+    crate::bind_items::install_item_runtime(None, Some(ctx));
+}
+
+fn with_fluid(item: It, fluids: &[(&str, f32)], capacity: f32) -> It {
+    let fluids: Vec<_> = fluids
+        .iter()
+        .map(|(n, a)| (Some(item_status::FluidId { name: n.to_string(), categories: Vec::new() }), *a))
+        .collect();
+    let amount = fluids.iter().map(|f| f.1).sum();
+    It { fluid: Some(item_status::FluidState { amount, capacity, fluids }), ..item }
+}
+
+#[test]
+fn consume_from_item_fluids_count_the_fluid_of_each_item() {
+    install_fluids();
+    let sm = manager(FLUID_RECIPES);
+    let chr = player();
+    let apple = |k| it(&sm, k, "Apple");
+    // The fluid line's filter, then any amount above the epsilon.
+    assert!(accepts(&sm, "Fill", &with_fluid(apple(1), &[("Water", 1.0)], 1.0), &chr).unwrap());
+    assert!(accepts(&sm, "Fill", &with_fluid(apple(1), &[("Water", 0.2)], 1.0), &chr).unwrap());
+    assert!(!accepts(&sm, "Fill", &with_fluid(apple(1), &[("Bleach", 1.0)], 1.0), &chr).unwrap());
+    assert!(!accepts(&sm, "Fill", &with_fluid(apple(1), &[], 1.0), &chr).unwrap());
+    assert!(!accepts(&sm, "Fill", &apple(1), &chr).unwrap());
+    assert!(accepts(&sm, "FillAny", &with_fluid(apple(1), &[("Bleach", 1.0)], 1.0), &chr).unwrap());
+    // The amount (0.5) comes from the fluid line: 0.2 is not enough, two
+    // items of 0.3 are.
+    let low = with_fluid(apple(1), &[("Water", 0.2)], 1.0);
+    assert!(!perform(&sm, "Fill", &low, &[low.clone()], &chr).unwrap());
+    let a = with_fluid(apple(1), &[("Water", 0.3)], 1.0);
+    let b = with_fluid(apple(2), &[("Water", 0.3)], 1.0);
+    let err = perform(&sm, "Fill", &a, &[a.clone(), b], &chr).unwrap_err();
+    assert!(is_unsupported(&err, "createRecipeOutputs (Fill)"), "{err:?}");
 }

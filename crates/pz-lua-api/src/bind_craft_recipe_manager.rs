@@ -231,7 +231,7 @@ fn valid_input_script_for_item(
         if input.resource_type() != ResourceType::Item {
             continue;
         }
-        if item_status::consume_input_item_test(input, recipe, item, chr, on_test)? {
+        if item_status::consume_input_item_test(input, recipe, item, chr, on_test, None)? {
             return Ok(Some(i));
         }
     }
@@ -471,6 +471,36 @@ impl CraftItem for LuaCraftItem {
     }
     fn is_fluid_container(&self) -> LuaResult<bool> {
         Ok(crate::bind_world_object::fluid_component(&self.value)?.is_some())
+    }
+    fn fluid_container(&self) -> LuaResult<Option<item_status::FluidState>> {
+        let Some(fc) = crate::bind_item_container::fluid_container(&self.item.borrow()) else {
+            return Ok(None);
+        };
+        let env = crate::bind_items::item_env();
+        let default = pz_entity::BasicContext::default();
+        let ctx = env.entity().unwrap_or(&default);
+        let mut fluids = Vec::new();
+        for f in &fc.fluids {
+            let id = match crate::bind_item_container::fluid_name(f) {
+                Some(name) => {
+                    let categories = match ctx.fluid_by_name(&name) {
+                        pz_entity::Lookup::Found(info) => {
+                            info.categories.iter().map(|c| c.name().to_string()).collect()
+                        }
+                        pz_entity::Lookup::Missing => Vec::new(),
+                        pz_entity::Lookup::Unknown => {
+                            return Err(crate::bind_world_object::unsupported(
+                                "Fluid.isCategory without the fluid registry",
+                            ))
+                        }
+                    };
+                    Some(item_status::FluidId { name, categories })
+                }
+                None => None,
+            };
+            fluids.push((id, f.amount));
+        }
+        Ok(Some(item_status::FluidState { amount: fc.get_amount(), capacity: fc.get_capacity(), fluids }))
     }
 }
 
