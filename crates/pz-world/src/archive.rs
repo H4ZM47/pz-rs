@@ -287,6 +287,7 @@ pub(crate) fn copy_objects(
         check_object(owner, *origin, &mut check)?;
     }
     for (index, corpse) in square.static_moving.iter().enumerate() {
+        let corpse = corpse.borrow();
         check
             .optional_table(&corpse.base.mod_data)
             .map_err(|cause| SquareArchiveError::Inventory {
@@ -296,6 +297,14 @@ pub(crate) fn copy_objects(
         if let Some(container) = &corpse.container {
             check
                 .container(container)
+                .map_err(|cause| SquareArchiveError::Inventory {
+                    location: ArchiveLocation::Corpse(index),
+                    cause,
+                })?;
+        }
+        if let Some(r) = &corpse.runtime {
+            check
+                .container_ref(&r.container)
                 .map_err(|cause| SquareArchiveError::Inventory {
                     location: ArchiveLocation::Corpse(index),
                     cause,

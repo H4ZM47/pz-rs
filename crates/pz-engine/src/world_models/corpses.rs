@@ -216,26 +216,38 @@ impl WorldModels {
         let env = pz_lua_api::bind_items::item_env();
         let item_assets = env.context().assets();
         let mut visuals = Vec::new();
-        if let Some(container) = body.container.as_mut() {
+        let mut add_visual = |location: &str, item: &mut pz_inventory::InventoryItem| -> Result<(), String> {
+            let assets = item_assets.ok_or("worn-item visual assets are unavailable")?;
+            let key = ResourceLocation::of(location)
+                .ok()
+                .and_then(|l| ItemBodyLocation::get(&sm, &l));
+            if let Some(v) = ResolvedItemVisual::try_from_item(
+                item,
+                assets,
+                &pz_inventory::context::NoOwner,
+                env.visual_rng(),
+                key,
+            )
+            .map_err(|e| e.to_string())?
+            {
+                visuals.push(v);
+            }
+            Ok(())
+        };
+        if let Some(r) = &body.runtime {
+            for (location, item) in &r.worn {
+                let Some(item) = item else { continue };
+                let Ok(mut item) = item.try_borrow_mut() else {
+                    return Err("a worn item is borrowed".into());
+                };
+                add_visual(location, &mut item)?;
+            }
+        } else if let Some(container) = body.container.as_mut() {
             for (location, index) in &body.worn_items {
                 let Some(SavedItem::Item(item)) = container.items.get_mut(*index as usize) else {
                     continue;
                 };
-                let assets = item_assets.ok_or("worn-item visual assets are unavailable")?;
-                let key = ResourceLocation::of(location)
-                    .ok()
-                    .and_then(|l| ItemBodyLocation::get(&sm, &l));
-                if let Some(v) = ResolvedItemVisual::try_from_item(
-                    item,
-                    assets,
-                    &pz_inventory::context::NoOwner,
-                    env.visual_rng(),
-                    key,
-                )
-                .map_err(|e| e.to_string())?
-                {
-                    visuals.push(v);
-                }
+                add_visual(location, item)?;
             }
         }
         let CorpseVisual::Human(hv) = &mut body.visual else {
@@ -357,43 +369,12 @@ impl WorldModels {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pz_world::save::visual::{BoneTransform as SavedBone, MovingBase};
+    use pz_world::save::visual::BoneTransform as SavedBone;
 
     fn body(ragdoll: Option<Vec<SavedBone>>) -> IsoDeadBody {
         IsoDeadBody {
-            base: MovingBase {
-                offset_x: 0.0,
-                offset_y: 0.0,
-                x: 1.5,
-                y: 2.5,
-                z: 0.0,
-                dir: 0,
-                mod_data: None,
-            },
-            female: false,
-            was_zombie: true,
-            animal: None,
-            object_id: (1, 0),
-            persistent_outfit_id: 0,
-            desc: None,
-            visual: CorpseVisual::Human(Box::new(HumanVisual::new(0))),
-            container: None,
-            worn_items: vec![],
-            attached_items: vec![],
-            death_time: 0.0,
-            reanimate_time: 0.0,
-            fall_on_front: false,
-            killed_by_fall: false,
-            was_skeleton: false,
-            angle: 0.0,
-            zombie_rot_stage_at_death: 0,
-            animal_rot_stage_at_death: 0,
-            rotten_texture: String::new(),
-            skel_inv_icon: String::new(),
-            crawling: false,
-            fake_dead: false,
             ragdoll,
-            burn_timer: 0.0,
+            ..IsoDeadBody::for_tests(1.5, 2.5, 0.0)
         }
     }
 

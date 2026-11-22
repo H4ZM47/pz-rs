@@ -487,7 +487,7 @@ impl WorldRender {
                     if sq_owner.borrow().static_moving.is_empty() {
                         continue;
                     }
-                    let mut sq = sq_owner.borrow_mut();
+                    let sq = sq_owner.borrow();
                     let (sx, sy, sz) = (sq.x, sq.y, sq.z);
                     let outside = sq.is_exterior(view.sprites);
                     let room = sq.room_id != -1;
@@ -505,7 +505,10 @@ impl WorldRender {
                         })
                         .collect();
                     let vert_light = self.lighting.square_light(p, sx, sy, sz).map(|l| l.vert_light);
-                    for body in sq.static_moving.iter_mut() {
+                    for body in &sq.static_moving {
+                        let Ok(mut body) = body.try_borrow_mut() else {
+                            continue;
+                        };
                         let rgb = vert_light
                             .as_ref()
                             .map(|vl| {
@@ -524,7 +527,7 @@ impl WorldRender {
                             light: [rgb[0], rgb[1], rgb[2], 1.0],
                             world_age_days,
                         };
-                        match models.render_corpse(body, &input, cam, jobs) {
+                        match models.render_corpse(&mut body, &input, cam, jobs) {
                             Ok(Some(d)) => {
                                 objects.corpses.extend(d.draws);
                                 objects.corpse_shadows.push(d.shadow);

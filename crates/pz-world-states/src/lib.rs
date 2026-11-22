@@ -712,7 +712,7 @@ impl<'a> StatesWorldAdapter<'a> {
     }
 
     fn corpse_info(&self, sq: &IsoGridSquare, i: usize) -> CorpseInfo {
-        let b = &sq.static_moving[i];
+        let b = sq.static_moving[i].borrow();
         let id = corpse_id(sq.x, sq.y, sq.z, i);
         let animal = b.animal.as_ref().is_some_and(|a| !a.animal_type.is_empty());
         let skel = b

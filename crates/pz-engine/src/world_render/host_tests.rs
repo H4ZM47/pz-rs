@@ -43,7 +43,7 @@ fn failed_chunk_input_keeps_current_and_later_notifications_for_retry() {
 
 #[test]
 fn view3d_frame_makes_no_corpse_atlas_entry() {
-    use pz_world::save::visual::{CorpseVisual, HumanVisual, IsoDeadBody, MovingBase};
+    use pz_world::save::visual::IsoDeadBody;
     use pz_world::{IsoCell, IsoChunk, IsoGridSquare, IsoMetaGrid, IsoSpriteManager};
     use pz_world_render::{ClimateInput, PlayerRenderInput};
     use std::cell::RefCell;
@@ -57,33 +57,12 @@ fn view3d_frame_makes_no_corpse_atlas_entry() {
     let mut models = WorldModels::new(path, fs, textures);
     let mut chunk = IsoChunk::new(0, 0);
     chunk.set_square(1, 2, 0, Some(IsoGridSquare::new(1, 2, 0).into()));
-    chunk.get_grid_square(1, 2, 0).unwrap().borrow_mut().static_moving.push(IsoDeadBody {
-        base: MovingBase { offset_x: 0.0, offset_y: 0.0, x: 1.5, y: 2.5, z: 0.0, dir: 0, mod_data: None },
-        female: false,
-        was_zombie: true,
-        animal: None,
-        object_id: (1, 4),
-        persistent_outfit_id: 0,
-        desc: None,
-        visual: CorpseVisual::Human(Box::new(HumanVisual::new(0))),
-        container: None,
-        worn_items: vec![],
-        attached_items: vec![],
-        death_time: 0.0,
-        reanimate_time: -1.0,
-        fall_on_front: false,
-        killed_by_fall: false,
-        was_skeleton: false,
-        angle: 0.0,
-        zombie_rot_stage_at_death: 0,
-        animal_rot_stage_at_death: 0,
-        rotten_texture: String::new(),
-        skel_inv_icon: String::new(),
-        crawling: false,
-        fake_dead: false,
-        ragdoll: None,
-        burn_timer: 0.0,
-    });
+    chunk
+        .get_grid_square(1, 2, 0)
+        .unwrap()
+        .borrow_mut()
+        .static_moving
+        .push(Rc::new(RefCell::new(IsoDeadBody::for_tests(1.5, 2.5, 0.0))));
     let mut cell = IsoCell::default();
     cell.chunks.insert((0, 0), chunk);
     let meta = IsoMetaGrid::with_bounds(0, 0, 1, 1);

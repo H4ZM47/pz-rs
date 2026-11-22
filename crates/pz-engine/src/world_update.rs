@@ -970,7 +970,7 @@ impl IsoWorld {
             floor_world.as_ref(),
             |w| {
                 let chars = chars.borrow();
-                for id in &placed {
+                for (id, _) in &placed {
                     let Some(i) = zombies.iter().position(|z| z.id == *id) else {
                         continue;
                     };
@@ -986,13 +986,11 @@ impl IsoWorld {
         if let Some(Err(error)) = result {
             return self.finish_state_host_fault(lua, None, sim, Vec::new(), error);
         }
-        for _ in &placed {
-            // The original passes the body, which has no Lua object;
-            // vanilla's listener (`ISInventoryPage`) ignores it.
-            lua.trigger_event("OnContainerUpdate", &[]);
-            if lua.events.callbacks("OnDeadBodySpawn") > 0 {
-                self.log_update_error("unsupported: OnDeadBodySpawn (IsoDeadBody has no Lua object)".into());
-            }
+        for body in placed.iter().filter_map(|(_, body)| body.as_ref()) {
+            // `IsoDeadBody(chr, false, true)`: both with the body.
+            let body = pz_lua_api::bind_dead_body::dead_body_value(body);
+            lua.trigger_event("OnContainerUpdate", std::slice::from_ref(&body));
+            lua.trigger_event("OnDeadBodySpawn", &[body]);
         }
         Ok(())
     }
@@ -1000,8 +998,13 @@ impl IsoWorld {
     /// The corpse side of `new IsoDeadBody(chr)` for each dying zombie
     /// ([`pz_characters::GameCharacter::become_dead_body`] with
     /// [`pz_world::square_mutation::MutationEnv::place_new_corpse`]).
-    /// Returns the zombies whose corpse is on its square, and the errors.
-    fn place_new_corpses(&mut self, dying: &[i32], death_time: f32) -> (Vec<i32>, Vec<String>) {
+    /// Returns the zombies whose corpse is on its square with the corpse
+    /// (none when only `CorpseCount` failed), and the errors.
+    fn place_new_corpses(
+        &mut self,
+        dying: &[i32],
+        death_time: f32,
+    ) -> (Vec<(i32, Option<pz_world::save::visual::DeadBodyRef>)>, Vec<String>) {
         let num_players = pz_lua_api::bind_players::num_players();
         let IsoWorld {
             door_tables,
@@ -1054,6 +1057,7 @@ impl IsoWorld {
                 let Some(z) = zombies.iter_mut().find(|z| z.id == *id) else {
                     continue;
                 };
+                let mut corpse = None;
                 let result = z.become_dead_body(death_time, |body| {
                     // `chr.getCurrentSquare()`, else `getGridSquare(x, y, z)`.
                     let pos = (
@@ -1062,7 +1066,10 @@ impl IsoWorld {
                         body.base.z.floor() as i32,
                     );
                     match env.place_new_corpse(pos, body) {
-                        Ok(on_square) => on_square,
+                        Ok(body) => {
+                            corpse = body;
+                            corpse.is_some()
+                        }
                         Err(e) => {
                             // Only `CorpseCount.corpseAdded` failed: the
                             // corpse is already on its square.
@@ -1072,7 +1079,7 @@ impl IsoWorld {
                     }
                 });
                 match result {
-                    Ok(true) => placed.push(*id),
+                    Ok(true) => placed.push((*id, corpse)),
                     Ok(false) => errors.push(format!("IsoDeadBody: no loaded square for zombie {id}")),
                     Err(e) => errors.push(format!("IsoZombie.becomeCorpse: {e}")),
                 }

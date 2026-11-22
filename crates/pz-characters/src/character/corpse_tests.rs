@@ -59,6 +59,9 @@ fn zombie_corpse_takes_the_inventory_and_worn_items() {
     assert_eq!(body.object_id.1, 4);
     let container = body.container.as_ref().unwrap();
     assert!(container.explored);
+    // `IsoDeadBody.setContainer`: a female corpse's type and capacity.
+    assert_eq!(container.kind.as_deref(), Some("inventoryfemale"));
+    assert_eq!(container.capacity, 12);
     assert_eq!(container.items.iter().map(|i| i.id()).collect::<Vec<_>>(), vec![3, 4]);
     assert_eq!(body.worn_items, vec![(shirt.location.id(), 1)]);
     // The zombie is left a new empty inventory and no worn items.
