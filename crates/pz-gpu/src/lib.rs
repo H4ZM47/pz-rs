@@ -2070,11 +2070,30 @@ impl Gpu {
     /// (every mip level for `MIPMAPS` textures) and picks the sampler.
     fn ensure_texture(&mut self, id: u32, textures: &mut TextureManager) {
         let Some(d) = textures.data(id) else { return };
+        let one = d.width == 1 && d.height == 1;
+        let filter = (d.min_nearest() || one, d.mag_nearest() || one, d.mipmaps() && !one, d.clamp_to_edge());
         if self.textures.contains_key(&id) {
             // A respecified image (`glTexImage2D` on a live texture, e.g. a
             // video frame) replaces the upload.
             if self.versions.get(&id) == Some(&d.version) || (d.ready && d.image.is_none()) {
                 return;
+            }
+            // glTexImage2D can keep the existing allocation and sampler
+            // bindings when a movie supplies its next frame at the same size.
+            if d.ready && !d.mipmaps() && self.filters.get(&id) == Some(&filter) {
+                if let (Some(view), Some(image)) = (self.views.get(&id), &d.image) {
+                    let texture = view.texture();
+                    let level = &image.data;
+                    if texture.width() == level.width as u32 && texture.height() == level.height as u32
+                        && texture.mip_level_count() == 1 && texture.format() == wgpu::TextureFormat::Rgba8Unorm
+                        && texture.usage().contains(wgpu::TextureUsages::COPY_DST)
+                    {
+                        self.upload_level(texture, 0, texture.width(), texture.height(), &level.pixels);
+                        self.versions.insert(id, d.version);
+                        textures.data_mut(id).unwrap().image = None;
+                        return;
+                    }
+                }
             }
             self.textures.remove(&id);
             self.views.remove(&id);
@@ -2089,11 +2108,9 @@ impl Gpu {
         if levels.is_empty() {
             return;
         }
-        // 1x1 textures are always sampled GL_NEAREST.
-        let one = d.width == 1 && d.height == 1;
-        let filter = (d.min_nearest() || one, d.mag_nearest() || one, d.mipmaps() && !one, d.clamp_to_edge());
-        let pixels: Vec<Vec<u8>> = levels.iter().map(|l| l.pixels.clone()).collect();
-        let (bind_group, view) = self.create_texture(levels[0].width as u32, levels[0].height as u32, &pixels, filter);
+        let (width, height) = (levels[0].width as u32, levels[0].height as u32);
+        let pixels: Vec<Vec<u8>> = levels.into_iter().map(|level| level.pixels).collect();
+        let (bind_group, view) = self.create_texture(width, height, &pixels, filter);
         self.textures.insert(id, bind_group);
         self.versions.insert(id, d.version);
         self.filters.insert(id, filter);
@@ -2198,6 +2215,15 @@ impl Gpu {
         self.sampled.insert((id, filter), bg);
     }
 
+    fn upload_level(&self, texture: &wgpu::Texture, level: u32, w: u32, h: u32, pixels: &[u8]) {
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture, mip_level: level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            pixels,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+    }
+
     fn create_texture(&mut self, width: u32, height: u32, levels: &[Vec<u8>], filter: Filter) -> (wgpu::BindGroup, wgpu::TextureView) {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -2211,12 +2237,7 @@ impl Gpu {
         });
         let (mut w, mut h) = (width, height);
         for (level, px) in levels.iter().enumerate() {
-            self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: level as u32, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                px,
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
-                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            );
+            self.upload_level(&texture, level as u32, w, h, px);
             w = (w / 2).max(1);
             h = (h / 2).max(1);
         }
