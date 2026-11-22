@@ -604,6 +604,7 @@ enum Handle {
     Xp,
     PerkInfo,
     WornItems,
+    HumanVisual,
 }
 
 /// One Lua object per (kind, owner, member), so Lua `==` is identity.
@@ -955,6 +956,18 @@ fn register_clothing(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         }
         let v = canonical((Handle::WornItems, Rc::as_ptr(&chr) as usize, 0), || {
             Value::Object(Rc::new(WornItemsObject::Character(chr.clone())))
+        });
+        Ok(c.push(v))
+    });
+    // `getHumanVisual()`: the character's `HumanVisual` (`nil` for a
+    // character without one).
+    b.method("getHumanVisual", |c| {
+        let chr = chr_of(c)?;
+        if chr.borrow().human_visual.is_none() {
+            return Ok(c.push(Value::Nil));
+        }
+        let v = canonical((Handle::HumanVisual, Rc::as_ptr(&chr) as usize, 0), || {
+            Value::Object(Rc::new(crate::bind_characters::HumanVisualObject::Character(chr.clone())))
         });
         Ok(c.push(v))
     });

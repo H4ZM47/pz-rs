@@ -1571,6 +1571,9 @@ end
             // the descriptor wears.
             pz_lua_api::character_dressup::dressup(&mut lua.thread, sm, &chr, &desc)
                 .map_err(|e| format!("IsoPlayer.Dressup: {e}"))?;
+            // `getHumanVisual().copyFrom(descriptor.getHumanVisual())`.
+            pz_lua_api::character_dressup::copy_human_visual(&lua.thread, &chr, &desc)
+                .map_err(|e| format!("IsoPlayer HumanVisual.copyFrom: {e}"))?;
             // `player.sqlId = 1`.
             self.player_sql_ids[0] = 1;
             self.place_player(chr.clone());

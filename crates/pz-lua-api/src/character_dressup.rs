@@ -1,5 +1,7 @@
-//! `IsoGameCharacter.Dressup(desc)`: the character wears new copies of the
-//! descriptor's worn items, which then go into its inventory.
+//! The parts of `new IsoPlayer(cell, desc, ...)` that copy the descriptor's
+//! look: `IsoGameCharacter.Dressup(desc)` (the character wears new copies of
+//! the descriptor's worn items, which then go into its inventory) and
+//! `getHumanVisual().copyFrom(desc.getHumanVisual())`.
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -94,5 +96,27 @@ pub fn dressup(
         pz_inventory::component_host::retire_components(pins);
     }
     chr.try_borrow_mut().map_err(|_| borrowed("IsoGameCharacter"))?.on_worn_items_changed(sm);
+    Ok(())
+}
+
+/// `getHumanVisual().copyFrom(desc.getHumanVisual())`, right after
+/// `Dressup` in the `IsoPlayer` constructor. `HumanVisual.copyFrom` first
+/// settles the descriptor's lazy hair colour, natural hair and beard
+/// colours, hair and beard models and skin texture (its owner is the
+/// descriptor), then copies every field. Nothing happens without a human
+/// visual on the character.
+pub fn copy_human_visual(
+    thread: &Thread,
+    chr: &LuaGameCharacterRef,
+    desc: &Rc<RefCell<LuaSurvivorDesc>>,
+) -> Result<(), ScriptError> {
+    let mut c = chr.try_borrow_mut().map_err(|_| borrowed("IsoGameCharacter"))?;
+    let Some(human) = c.human_visual.as_mut() else {
+        return Ok(());
+    };
+    let mut d = desc.try_borrow_mut().map_err(|_| borrowed("SurvivorDesc"))?;
+    let mut src = std::mem::replace(&mut d.human_visual, pz_inventory::visual::HumanVisual::new(0));
+    crate::bind_appearance::with_styles(thread, |styles| human.copy_from(&mut src, &*d, styles));
+    d.human_visual = src;
     Ok(())
 }
