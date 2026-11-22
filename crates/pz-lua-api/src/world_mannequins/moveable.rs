@@ -1,6 +1,6 @@
 //! ItemCodeOnCreate's detached mannequins and IsoMannequin.setCustomSettingsToItem.
 use super::*;
-use pz_inventory::io::{SaveResult, Writer};
+use pz_inventory::io::{self, NativeWriterFault, SaveResult, Writer};
 use pz_kahlua::{LuaError, LuaResult, Value};
 use pz_world::save::{SaveCtx, SaveHooks, SaveSettings, SaveTables, WORLD_VERSION};
 use std::path::PathBuf;
@@ -12,6 +12,8 @@ struct ItemSource {
 
 thread_local! {
     static SOURCE: RefCell<Option<Rc<ItemSource>>> = const { RefCell::new(None) };
+    // SliceY.SliceBuffer is reused on the serial game thread.
+    static SLICE: io::NativeSaveBufferRef = io::native_save_buffer_with_capacity(0xA00000);
 }
 
 pub(crate) fn install_item_source(game_dir: PathBuf, jar: Option<&pz_classfile::Jar>) {
@@ -94,30 +96,42 @@ pub(crate) fn create_moveable(
     let sprites = sprites
         .try_borrow()
         .map_err(|_| LuaError::runtime("mannequin sprite manager is borrowed"))?;
-    let mut writer = Writer::new();
-    writer.i32(WORLD_VERSION);
-    let result = crate::bind_items::with_factory_env(|items, _| {
-        let ctx = SaveCtx {
-            sprites: &sprites,
-            tables: &source.tables,
-            settings: &SaveSettings::default(),
-            items,
-            hooks: &DetachedSave,
-            meta: None,
-        };
-        pz_world::save::object_io::save_object_ref(&mut writer, &ctx, &object)
+    let buffer = SLICE.with(Rc::clone);
+    io::native_buffer_clear(&buffer).map_err(|e| LuaError::runtime(format!("{e:?}")))?;
+    let _deferral = pz_kahlua::gc::defer_collection();
+    let result = Writer::write_native(&buffer, |writer| {
+        writer.i32(WORLD_VERSION);
+        crate::bind_items::with_factory_env(|items, _| {
+            let ctx = SaveCtx {
+                sprites: &sprites,
+                tables: &source.tables,
+                settings: &SaveSettings::default(),
+                items,
+                hooks: &DetachedSave,
+                meta: None,
+            };
+            pz_world::save::object_io::save_object_ref(writer, &ctx, &object)
+        })
     });
     drop(sprites);
-    if let Err(error) = result {
-        eprintln!("Couldn't set custom settings for {name}: {error}");
-        return Ok(());
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            eprintln!("Couldn't set custom settings for {name}: {error}");
+            return Ok(());
+        }
+        Err(NativeWriterFault::Overflow) => {
+            return Err(LuaError::runtime("java.nio.BufferOverflowException"))
+        }
+        Err(NativeWriterFault::Host(error)) => return Err(LuaError::runtime(format!("{error:?}"))),
     }
-    if writer.buf.len() > 0xA00000 {
-        return Err(LuaError::runtime("java.nio.BufferOverflowException"));
-    }
+    let end =
+        io::native_buffer_position(&buffer).map_err(|e| LuaError::runtime(format!("{e:?}")))?;
+    let bytes = io::native_buffer_bytes(&buffer, 0, end)
+        .map_err(|e| LuaError::runtime(format!("{e:?}")))?;
     item.try_borrow_mut()
         .map_err(|_| LuaError::runtime("moveable item is borrowed"))?
-        .byte_data = Some(writer.buf);
+        .byte_data = Some(bytes);
     let container = match &object.borrow().kind {
         ObjectKind::Mannequin(m) => m.runtime_container.clone(),
         _ => None,

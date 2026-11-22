@@ -116,8 +116,12 @@ pub struct NativeSaveBuffer {
 pub type NativeSaveBufferRef = Rc<RefCell<NativeSaveBuffer>>;
 
 pub fn new_native_save_buffer() -> NativeSaveBufferRef {
+    native_save_buffer_with_capacity(1024)
+}
+
+pub fn native_save_buffer_with_capacity(capacity: usize) -> NativeSaveBufferRef {
     Rc::new(RefCell::new(NativeSaveBuffer {
-        bytes: vec![0; 1024],
+        bytes: vec![0; capacity],
         position: 0,
     }))
 }
@@ -249,6 +253,12 @@ pub struct Writer {
 impl Writer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Serialize into the supplied fixed-size native allocation. Nested codecs
+    /// see its actual position and stop on the write that crosses its limit.
+    pub fn write_native<R>(buffer: &NativeSaveBufferRef, f: impl FnOnce(&mut Self) -> R) -> Result<R, NativeWriterFault> {
+        catch_native_overflow(|| f(&mut Self::for_native_buffer(buffer)))
     }
 
     /// Same actual buffer, including when nested calls replace the TLS slot.
