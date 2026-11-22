@@ -212,8 +212,8 @@ pub enum SimEvent {
     /// killer by id).
     Kill { attacker: Option<i32> },
     /// `onKilled(killer, weapon, isGory)` (the subclass reaction, run by
-    /// the owner of the corpse code).
-    Killed { attacker: Option<i32> },
+    /// the owner of the corpse code) for the character `victim`.
+    Killed { attacker: Option<i32>, victim: i32 },
     /// `LuaEventManager.triggerEvent("OnWeaponHitCharacter", wielder,
     /// target, weapon, damageSplit)` (characters by id).
     WeaponHitCharacter { wielder: i32, target: i32, damage: f32 },

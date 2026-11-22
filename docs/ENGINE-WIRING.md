@@ -753,8 +753,12 @@ all installed assets, render paths or foreign platforms.
       `CorpseCount`, render invalidation), then `zombie_remove_from_world`,
       removal from `IsoWorld::zombies`, and `OnContainerUpdate` and
       `OnDeadBodySpawn` with the corpse's Lua object. A zombie whose corpse
-      cannot be made or placed stays with its items. Not wired:
-      `DoZombieInventory` and `DoDeath` (`onKilled`), `dropHeldItems`,
+      cannot be made or placed stays with its items. `SimEvent::Killed`
+      names the victim, and a killed zombie runs `DoZombieInventory`
+      (`zombie_inventory`: the worn items from its item visuals and the
+      attached items go into its emptied inventory). Not wired: `DoDeath`
+      (`onKilled`), `ItemSpawner.spawnItem` for `itemsToSpawnAtDeath`
+      (reported as unsupported), the corpse's attached items, `dropHeldItems`,
       `ObjectIDManager`, `FliesSound`, the ragdoll pose, and the Lua
       objects for `OnZombieDead` and `OnCharacterDeath` (reported as
       unsupported when they have listeners). `die()` from the population

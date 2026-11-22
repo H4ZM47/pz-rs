@@ -125,9 +125,8 @@ impl<I: 'static> GameCharacter<I> {
             visual: CorpseVisual::Human(Box::new(visual)),
             container: Some(container),
             worn_items,
-            // TODO(port): `IsoZombie.DoZombieInventory` (from `onKilled`)
-            // puts the attached weapon in the inventory; without it the
-            // zombie's attached items are not in the container.
+            // TODO(port): `setAttachedItems(chr.getAttachedItems())`; the
+            // attached items are in the container after `DoZombieInventory`.
             attached_items: Vec::new(),
             death_time,
             reanimate_time: -1.0,

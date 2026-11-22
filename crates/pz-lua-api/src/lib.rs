@@ -112,6 +112,7 @@ pub mod session_reset;
 pub mod world_save;
 pub mod world_mannequins;
 pub mod character_dressup;
+pub mod zombie_inventory;
 pub mod timed_actions;
 pub mod worldmap;
 
