@@ -109,6 +109,9 @@ fn script_getters_read_the_retained_script_and_fail_without_one() {
     script.can_bandage = true;
     script.make_up_type = Some("Lipstick".into());
     script.clothing_item_extra_option = Some(vec!["Hood".into(), "Open".into()]);
+    script.attachments_provided = Some(vec!["SmallBeltLeft".into(), "SmallBeltRight".into()]);
+    script.attachment_replacement = Some("Bag".into());
+    script.attachment_type = Some("Knife".into());
     let script = ScriptItemRef(Rc::new(RefCell::new(script)));
     let mut t = ItemTemplate::new(ItemClass::Normal, "Base", "Kit");
     t.script = Some(script.clone());
@@ -125,6 +128,12 @@ fn script_getters_read_the_retained_script_and_fail_without_one() {
          kit:getClothingItemExtraOption(), kit:getScriptItem() == script",
     );
     assert_eq!(show(&values), ["true", "false", "Lipstick", "[Hood, Open]", "true"]);
+    let values = run(
+        &mut thread,
+        "return kit:getAttachmentsProvided():size(), kit:getAttachmentsProvided():get(1), \
+         kit:getAttachmentReplacement(), kit:getAttachmentType()",
+    );
+    assert_eq!(show(&values), ["2", "SmallBeltRight", "Bag", "Knife"]);
 
     // A later script change is visible through the item.
     script.0.borrow_mut().trap = true;
@@ -132,7 +141,10 @@ fn script_getters_read_the_retained_script_and_fail_without_one() {
     assert_eq!(show(&run(&mut thread, "return kit:isTrap(), kit:getMakeUpType()")), ["true", "nil"]);
 
     publish(&thread, "rock", ItemTemplate::new(ItemClass::Normal, "Base", "Rock"));
-    assert_eq!(show(&run(&mut thread, "return rock:getScriptItem()")), ["nil"]);
+    assert_eq!(
+        show(&run(&mut thread, "return rock:getScriptItem(), rock:getAttachmentsProvided(), rock:getAttachmentType()")),
+        ["nil", "nil", "nil"]
+    );
     for name in ["isCanBandage", "isTrap", "getMakeUpType", "getClothingItemExtraOption"] {
         let error = failure(&mut thread, &format!("return rock:{name}()"));
         assert!(error.contains("NullPointerException"), "{name}: {error}");
