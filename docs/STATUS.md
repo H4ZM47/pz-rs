@@ -49,8 +49,17 @@ This run used the port's version 249 save format. Native Build 42.22 writes
 version 251. Native-save interchange and installed Windows/Linux sessions
 still need separate tests.
 
+Both the development and release builds on Apple Silicon exercised the ordinary
+windowed `--new-game` and `--load-game` paths in separate processes.
+Each ran twelve gameplay ticks, saved,
+returned to the menu, and exited. The second process recovered the first
+process's player mod-data marker and position. On both loads a Lua mod
+received the live tile-definition manager and retrieved the same tile by name
+and by numeric ID.
+
 The x64 Windows and Linux client binaries linked locally. The Intel macOS
-binary ran under Rosetta and rendered the installed menu. The macOS menu
+binary ran under Rosetta, rendered the installed menu, and passed the same
+two-process, windowed save and reload check. The macOS menu
 opens the installed audio banks and plays colour BIKi video. All 26,751 YUV frames across
 the 105 installed clips matched FFmpeg. The first three title frames
 also matched the game's Bink RGBA output pixel for pixel. Bink 2 video and

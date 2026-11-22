@@ -6,9 +6,9 @@ Linux, with the game's own Lua scripts and assets running unmodified on a
 native engine: no JVM, no Java bridge and no C Lua at runtime.
 
 > [!IMPORTANT]
-> **Not yet playable.** The client boots, runs the game's main menu and can
-> create or load a single-player world, but an in-game session still stops on
-> Lua API methods that are not bound yet.
+> **Single-player development build.** The macOS client can start a world,
+> move the player, run a timed action, save, and reload into gameplay.
+> Missing Lua methods and unfinished world systems limit which activities work.
 >
 > **No game files are in this repository.** pz-rs reads `media/` (Lua,
 > scripts, textures, maps, sounds, translations) and some built-in constants
@@ -69,9 +69,10 @@ checklist of what remains.
   Interchange with native Build 42.22 saves (version 251) remains unverified.
 * **Multiplayer.** The workspace includes a Rust RakNet transport, packet types
   and account storage. Multiplayer gameplay remains unfinished.
-* **Platforms.** The client ran on Apple Silicon and rendered the installed
-  menu through Rosetta in an Intel macOS build. Windows and Linux x64 clients
-  linked locally. Both still need an installed-game run on their native OS.
+* **Platforms.** The Apple Silicon client and the Intel macOS client running
+  through Rosetta both created, saved and reloaded a world in separate
+  processes. Windows and Linux x64 clients linked locally. Both still need
+  an installed-game run on their native OS.
 * **Game version.** The parity target is Build 42.21. Installed-session and
   video results here used Build 42.22.
 
@@ -105,7 +106,8 @@ cargo run -p pz-client -- --load-game MODE/NAME         # skip the menu, load a 
 cargo run -p pz-client -- --new-game NAME --headless-frames 120   # no window
 ```
 
-`--game-mode`, `--map`, `--spawn X,Y,Z` and `--seed` shape a new game;
+`--game-mode`, `--map`, `--spawn X,Y,Z` and `--seed` shape a new game.
+Use `--headless-frames N --png OUT` to capture the last rendered frame.
 `--help` lists every option. Saves and settings go to `~/Zomboid-rs` (or
 `--cache-dir DIR`); the original game's `~/Zomboid` is never written.
 
@@ -114,10 +116,10 @@ cargo run -p pz-client -- --new-game NAME --headless-frames 120   # no window
 Grouped from [docs/STATUS.md](docs/STATUS.md#what-remains). The order is a
 suggested dependency order, not a schedule:
 
-1. Bind the Lua API methods the shipped client Lua reaches next, until an
-   in-game single-player session runs without stopping.
-2. Finish boot: mods, perks and body locations before Lua loads, scripts in
-   the windowed boot.
+1. Extend single-player interaction coverage beyond the tested inventory,
+   movement and timed-action paths. Bind missing methods used by the shipped Lua.
+2. Finish boot-time setup for the character simulation, world sounds and HUD
+   hosts.
 3. Connect the ported world systems to the frame loop: pathfinding,
    vehicles, fire, animals, ragdolls, square mutations.
 4. Full game save and load.
