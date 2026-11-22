@@ -541,7 +541,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         }
     }
     lua_check(reloaded.lua.as_mut().unwrap(), "getCore():quit()");
-    run_frames(&mut reloaded, 1);
+    assert!(run_frames(&mut reloaded, 1), "returning to the menu ended the client");
     assert_eq!(reloaded.current_state(), Some("zombie.gameStates.MainScreenState"), "quit did not return to the main menu");
     assert!(reloaded.world.is_none(), "menu return retained the old world");
     mannequin::check_saved(&save_dir, &reloaded_chunks);
@@ -550,7 +550,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     assert_eq!(old_globals.get_str("rustSessionOldMenuCount").as_num(), Some(0.0), "old menu callback ran after reset");
     assert!(matches!(reloaded.launch.start, Start::MainMenu), "startup game settings leaked into future menu loads");
     lua_check(reloaded.lua.as_mut().unwrap(), "getCore():quit()");
-    run_frames(&mut reloaded, 1);
+    assert!(!run_frames(&mut reloaded, 1), "desktop exit left the client running");
     assert!(reloaded.error.is_none(), "menu quit failed: {:?}", reloaded.error);
     assert!(reloaded.world.is_none(), "native close retained the reloaded world");
     assert_eq!(reloaded.current_state(), None);

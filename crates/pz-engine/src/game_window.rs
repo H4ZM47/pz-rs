@@ -683,8 +683,22 @@ fn apply_window_requests(w: &Window, requests: Vec<pz_input::WindowRequest>) {
 /// Boot headless, run `frames` frames and return the last frame as RGBA
 /// pixels (width, height, data).
 pub fn render_headless(launch: Launch, frames: u32) -> crate::failure::EngineResult<(u32, u32, Vec<u8>)> {
-    let (w, h, px) = headless(launch, frames, true)?;
-    Ok((w, h, px.unwrap_or_default()))
+    let _retirement_boundary = HostRetirementBoundary;
+    let mut app = headless_app(launch)?;
+    let (w, h) = app.screen_size();
+    app.gpu = Some(pz_gpu::Gpu::new_headless(w as u32, h as u32).map_err(|e| e.to_string())?);
+    app.boot()?;
+    run_headless_lua(&mut app)?;
+    let running = run_frames(&mut app, frames);
+    if let Some(error) = app.error.take() {
+        return Err(error);
+    }
+    let pixels = app.gpu.as_ref().ok_or_else(|| "missing offscreen GPU".to_owned())
+        .and_then(|gpu| gpu.try_read_pixels().map_err(|e| format!("offscreen readback: {e}")));
+    let shutdown = if running { close_headless(&mut app) } else { Ok(()) };
+    let pixels = pixels?;
+    shutdown?;
+    Ok((w as u32, h as u32, pixels))
 }
 
 /// Boot headless without a GPU and run `frames` frames (logic and the
@@ -694,12 +708,14 @@ pub fn run_headless(launch: Launch, frames: u32) -> crate::failure::EngineResult
     let mut app = headless_app(launch)?;
     app.boot()?;
     run_headless_lua(&mut app)?;
-    run_frames(&mut app, frames);
+    let running = run_frames(&mut app, frames);
     if let Some(error) = app.error.take() {
         return Err(error);
     }
     let state = app.current_state();
-    close_headless(&mut app)?;
+    if running {
+        close_headless(&mut app)?;
+    }
     Ok(state)
 }
 
@@ -753,12 +769,13 @@ fn run_headless_source(lua: &mut LuaManager, source: &str) -> crate::failure::En
     Ok(())
 }
 
-fn run_frames(app: &mut App, frames: u32) {
+/// Returns true if the frame limit was reached with the session still open.
+fn run_frames(app: &mut App, frames: u32) -> bool {
     let script = headless_input_script();
     let trace = std::env::var("PZ_HEADLESS_TRACE").ok().and_then(|n| n.parse::<u32>().ok());
     for frame in 0..frames {
         if app.error.is_some() {
-            break;
+            return false;
         }
         for &(at, key, status) in &script {
             if at == frame {
@@ -767,12 +784,13 @@ fn run_frames(app: &mut App, frames: u32) {
         }
         app.last_frame = Instant::now() - Duration::from_millis(33);
         if !app.advance_frame() {
-            break;
+            return false;
         }
         if trace.is_some_and(|n| n > 0 && frame % n == 0) {
             trace_frame(app, frame);
         }
     }
+    true
 }
 
 /// Development harness: `PZ_HEADLESS_INPUT=<file>` feeds key events to the
@@ -824,24 +842,6 @@ fn trace_frame(app: &App, frame: u32) {
         pz_lua_api::bind_climate::is_game_paused(),
         player.unwrap_or_else(|| "no player".into())
     );
-}
-
-fn headless(launch: Launch, frames: u32, gpu: bool) -> crate::failure::EngineResult<(u32, u32, Option<Vec<u8>>)> {
-    let _retirement_boundary = HostRetirementBoundary;
-    let mut app = headless_app(launch)?;
-    let (w, h) = app.screen_size();
-    if gpu {
-        app.gpu = Some(pz_gpu::Gpu::new_headless(w as u32, h as u32).map_err(|e| e.to_string())?);
-    }
-    app.boot()?;
-    run_headless_lua(&mut app)?;
-    run_frames(&mut app, frames);
-    if let Some(error) = app.error.take() {
-        return Err(error);
-    }
-    let px = app.gpu.as_ref().map(|g| g.read_pixels());
-    close_headless(&mut app)?;
-    Ok((w as u32, h as u32, px))
 }
 
 #[cfg(test)]

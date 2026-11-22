@@ -18,7 +18,17 @@
 mod install;
 mod main_screen;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), png::EncodingError> {
+    let file = std::fs::File::create(path)?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(rgba)?;
+    writer.finish()
+}
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -105,11 +115,10 @@ fn main() {
         let cache = cache_dir.clone();
         match pz_engine::game_window::render_headless(Launch { game_dir: dir, cache_dir: cache, start }, frames) {
             Ok((w, h, px)) => {
-                let f = std::fs::File::create(&out).expect("png");
-                let mut e = png::Encoder::new(std::io::BufWriter::new(f), w, h);
-                e.set_color(png::ColorType::Rgba);
-                e.set_depth(png::BitDepth::Eight);
-                e.write_header().unwrap().write_image_data(&px).unwrap();
+                if let Err(error) = write_png(&out, w, h, &px) {
+                    eprintln!("could not write {}: {error}", out.display());
+                    std::process::exit(1);
+                }
                 println!("wrote {} ({w}x{h})", out.display());
             }
             Err(e) => {
