@@ -2054,9 +2054,14 @@ registered):
       `MapFiles.Reset` from `WorldMap.Reset` (IngameState.exit and
       Core.ResetLua) is exposed as `host::reset_current_map_files` but not
       called yet.
-- [ ] Move `WorldMapImages.startFrame/endFrame` from each UI map draw to the
-      global SpriteRenderer frame boundary. Restore native file-thread queue
-      scheduling and shared per-frame loading budget across multiple maps.
+- [x] Move `WorldMapImages.startFrame/endFrame` from each UI map draw to the
+      global SpriteRenderer frame boundary: `App::frame` brackets
+      `states.render` with `worldmap::start_frame/end_frame`, so every map in
+      a frame shares each pyramid's required tiles and five-tile budget.
+- [ ] Restore native file-thread queue scheduling
+      (`WorldMapImages.checkLoadingQueue` in `GameWindow.logic`, async
+      `FileTask_LoadImagePyramidTexture`); tiles still decode synchronously
+      in `checkQueue`.
 - [ ] Native request-counter reset ties depend on Java HashMap values order;
       the current Rust map order does not establish that tie behavior. The
       actual Core debug threshold is latched on first production image use;
