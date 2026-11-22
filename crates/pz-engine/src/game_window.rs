@@ -153,7 +153,7 @@ impl App {
             drain_retired_host_owners();
             return;
         };
-        if in_game {
+        if in_game && !self.core.borrow().process_exit_requested() {
             if let Some(world) = self.world.as_mut() {
                 if let Err(error) = world.save_on_window_close(lua) {
                     crate::failure::record_first(&mut self.error, (format!("PlayerDB save host failure: {error}")).into());
@@ -292,6 +292,24 @@ impl App {
     fn screen_size(&self) -> (i32, i32) {
         let c = self.core.borrow();
         (c.get_screen_width().max(1), c.get_screen_height().max(1))
+    }
+
+    fn desktop_exit_requested(&self) -> bool {
+        let core = self.core.borrow();
+        core.close_requested || core.process_exit_requested()
+    }
+
+    /// Both event loops service Lua exit requests at a frame boundary. A
+    /// startup script can request a close before the first frame is drawn.
+    fn advance_frame(&mut self) -> bool {
+        if !self.desktop_exit_requested() {
+            self.frame();
+        }
+        if self.desktop_exit_requested() {
+            self.close();
+            return false;
+        }
+        self.error.is_none()
     }
 
     fn frame(&mut self) {
@@ -585,8 +603,7 @@ impl ApplicationHandler for App {
                     .set_screen_size(size.width.max(1) as i32, size.height.max(1) as i32);
             }
             WindowEvent::RedrawRequested => {
-                self.frame();
-                if self.error.is_some() {
+                if !self.advance_frame() {
                     el.exit();
                     return;
                 }
@@ -732,7 +749,9 @@ fn run_frames(app: &mut App, frames: u32) {
             }
         }
         app.last_frame = Instant::now() - Duration::from_millis(33);
-        app.frame();
+        if !app.advance_frame() {
+            break;
+        }
         if trace.is_some_and(|n| n > 0 && frame % n == 0) {
             trace_frame(app, frame);
         }

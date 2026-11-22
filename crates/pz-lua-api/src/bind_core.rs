@@ -967,7 +967,12 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     });
     get!("isDoingTextEntry", is_doing_text_entry);
     void!("updateKeyboard", update_keyboard);
-    void!("quit", quit);
+    def(b, cx, "quit", |cx, _| {
+        let mut core = cx.core_mut();
+        core.player_exists = crate::bind_players::player_instance().is_some();
+        core.quit();
+        Ok(Ret::Void)
+    });
     void!("exitToMenu", exit_to_menu);
     void!("quitToDesktop", quit_to_desktop);
     def(b, cx, "supportRes", |cx, c| {

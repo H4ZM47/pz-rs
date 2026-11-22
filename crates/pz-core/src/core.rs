@@ -1555,6 +1555,11 @@ impl Core {
         std::mem::take(&mut self.pending_requests)
     }
 
+    /// Core.quit() selected the no-player process exit path.
+    pub fn process_exit_requested(&self) -> bool {
+        self.pending_requests.contains(&CoreRequest::Exit)
+    }
+
     /// Render-context VSync calls, in request order. The other requests
     /// stay queued for their respective consumers.
     pub fn take_vsync_requests(&mut self) -> Vec<bool> {

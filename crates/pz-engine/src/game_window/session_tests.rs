@@ -439,7 +439,8 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     let expected_world_chunks = mannequin::check_live(true);
     let expected_mannequins = mannequin::saved_state();
     assert!(app.error.is_none(), "session failed before native close: {:?}", app.error);
-    app.close();
+    lua_check(app.lua.as_mut().unwrap(), "getCore():quitToDesktop()");
+    run_frames(&mut app, 1);
     assert!(app.error.is_none(), "native close failed: {:?}", app.error);
     assert!(app.world.is_none(), "native close retained the gameplay world");
     assert_eq!(app.current_state(), None);
@@ -539,7 +540,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
             std::fs::rename(&path, first_save.join(format!("{wx}_{wy}.bin"))).unwrap();
         }
     }
-    reloaded.core.borrow_mut().exiting = true;
+    lua_check(reloaded.lua.as_mut().unwrap(), "getCore():quit()");
     run_frames(&mut reloaded, 1);
     assert_eq!(reloaded.current_state(), Some("zombie.gameStates.MainScreenState"), "quit did not return to the main menu");
     assert!(reloaded.world.is_none(), "menu return retained the old world");
@@ -548,7 +549,9 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     assert!(reloaded.lua.as_ref().unwrap().thread.globals().get_str("rustSessionOldEnvironment").is_nil(), "menu retained old Lua globals");
     assert_eq!(old_globals.get_str("rustSessionOldMenuCount").as_num(), Some(0.0), "old menu callback ran after reset");
     assert!(matches!(reloaded.launch.start, Start::MainMenu), "startup game settings leaked into future menu loads");
-    reloaded.close();
+    lua_check(reloaded.lua.as_mut().unwrap(), "getCore():quit()");
+    run_frames(&mut reloaded, 1);
+    assert!(reloaded.error.is_none(), "menu quit failed: {:?}", reloaded.error);
     assert!(reloaded.world.is_none(), "native close retained the reloaded world");
     assert_eq!(reloaded.current_state(), None);
     assert!(bind_players::player(0).is_none(), "native close retained the reloaded player");
