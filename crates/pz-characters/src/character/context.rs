@@ -249,10 +249,10 @@ pub enum SimEvent {
     CharacterSplatBloodFloorBig { chr: i32 },
     /// `chr.playBloodSplatterSound()`.
     BloodSplatterSound { chr: i32 },
-    /// `new IsoZombieGiblets(A, cell, x, y, z, velX, velY)`: the giblet's
-    /// own draws are made (`vel` includes them; `invisible` is its
-    /// `Rand.Next(3) != 0`).
-    Giblet { x: f32, y: f32, z: f32, vel_x: f32, vel_y: f32, invisible: bool },
+    /// `new IsoZombieGiblets(type, cell, x, y, z, velX, velY)` (`eye`:
+    /// `GibletType.Eye`, else `A`): the giblet's own draws are made (`vel`
+    /// includes them; `invisible` is its `Rand.Next(3) != 0`).
+    Giblet { x: f32, y: f32, z: f32, vel_x: f32, vel_y: f32, invisible: bool, eye: bool },
     /// `EffectsManager.startMuzzleFlash(chr, 1)`.
     MuzzleFlash { chr: i32 },
     /// `IsoBulletTracerEffects.addEffect(chr, range[, end, square])`: the

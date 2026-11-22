@@ -1094,9 +1094,10 @@ impl IsoWorld {
                 }
                 // `IsoZombie.onKilled`: `OnZombieDead`, then `DoDeath` ->
                 // `OnDeath` -> `OnCharacterDeath`, each with the killed
-                // character. The event does not name it (a player's swing
-                // raises it with the player as `chr`), and a zombie has no
-                // Lua object. Vanilla only listens in the tutorial; with
+                // character (the rest of `DoDeath` is the character's, after
+                // this event). The event does not name it in `chr` (a
+                // player's swing raises it with the player as `chr`), and a
+                // zombie has no Lua object. Vanilla only listens in the tutorial; with
                 // no listener the events do nothing.
                 SimEvent::Killed { victim, .. } => {
                     // `IsoZombie.onKilled`: `DoZombieInventory()` first.

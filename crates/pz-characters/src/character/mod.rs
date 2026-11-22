@@ -43,6 +43,7 @@ pub mod collide;
 pub mod collision;
 pub mod combat;
 pub mod corpse;
+pub mod death;
 pub mod context;
 pub mod eat;
 pub mod fall;
