@@ -185,6 +185,10 @@ pub(super) fn check_live(new_world: bool) -> Vec<(i32, i32)> {
                     );
                     for item in &inventory.borrow().items {
                         let item = item.borrow();
+                        let pz_inventory::item_texture::ItemTextures::Live(textures) = &item.textures else {
+                            panic!("mannequin clothing retained archive texture data after activation");
+                        };
+                        assert!(textures.script_item.is_some(), "clothing lost its script item");
                         assert!(
                             item.is_initialised,
                             "factory result missed genuine initialiseItem"
