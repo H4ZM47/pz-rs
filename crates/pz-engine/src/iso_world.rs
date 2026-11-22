@@ -599,7 +599,8 @@ impl IsoWorld {
         }
         // TODO(port): `ObjectRenderEffects.init`,
         // `WorldConverter.instance.convert` (and its `worldVersionError`).
-        // TODO(port): `SandboxOptions.handleOldZombiesFile2` (old `zombies.ini`).
+        // `SandboxOptions.handleOldZombiesFile2()`.
+        self.handle_old_zombies_file2(&sb);
         // `GameTime.init()` then `GameTime.load()`.
         {
             let gt = pz_lua_api::bind_climate::shared_game_time();
@@ -931,7 +932,10 @@ impl IsoWorld {
             Ok(bytes) => match s.load_bin(&bytes) {
                 Ok(preset) => {
                     self.preset = preset;
-                    // TODO(port): `handleOldZombiesFile1`.
+                    // `handleOldZombiesFile1()` (never on a server): an old
+                    // `zombies.ini` holds `ZombieConfig.` options without
+                    // the table prefix.
+                    s.load_server_zombies_file(&self.file_in_save("zombies.ini"));
                     // `applySettings()`.
                     let mut g = gt.borrow_mut();
                     g.start_year = s.first_year() + opt_int(&s, "StartYear") - 1;
@@ -983,7 +987,32 @@ impl IsoWorld {
             5 => 1.2,
             _ => 1.0,
         };
-        // TODO(port): `VirtualZombieManager.maxRealZombies` from `Zombies`.
+        // `VirtualZombieManager.maxRealZombies`: the `Zombies` switch is
+        // overwritten with 1 straight after, the field's initial value.
+    }
+
+    /// `SandboxOptions.handleOldZombiesFile2()` (never on a server): after
+    /// `handleOldZombiesFile1` folded an old `zombies.ini` into the options,
+    /// the file is deleted and `map_sand.bin` rewritten
+    /// (`saveCurrentGameBinFile`). Failures are logged, not fatal.
+    fn handle_old_zombies_file2(&mut self, sb: &Rc<RefCell<pz_sandbox::SandboxOptions>>) {
+        let file = self.file_in_save("zombies.ini");
+        if !file.exists() {
+            return;
+        }
+        println!("deleting {}", file.display());
+        if let Err(e) = std::fs::remove_file(&file) {
+            self.log_error(format!("SandboxOptions.handleOldZombiesFile2: {e}"));
+            return;
+        }
+        let world_version = pz_classfile::Jar::open(self.jar())
+            .ok()
+            .and_then(|j| pz_sandbox::save_bin::world_version(&j).ok())
+            .unwrap_or(WORLD_VERSION);
+        let bytes = sb.borrow().save_bin(world_version, &self.preset);
+        if let Err(e) = std::fs::write(self.file_in_save("map_sand.bin"), bytes) {
+            self.log_error(format!("SandboxOptions.saveCurrentGameBinFile: {e}"));
+        }
     }
 
     /// `ErosionGlobals.Boot(spriteManager)`: `new ErosionMain` (whose
