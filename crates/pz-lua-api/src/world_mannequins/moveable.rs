@@ -96,7 +96,7 @@ pub(crate) fn create_moveable(
         .map_err(|_| LuaError::runtime("mannequin sprite manager is borrowed"))?;
     let mut writer = Writer::new();
     writer.i32(WORLD_VERSION);
-    let result = crate::bind_items::with_factory_env(|items| {
+    let result = crate::bind_items::with_factory_env(|items, _| {
         let ctx = SaveCtx {
             sprites: &sprites,
             tables: &source.tables,

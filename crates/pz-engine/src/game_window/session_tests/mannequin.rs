@@ -6,12 +6,23 @@ use std::path::Path;
 /// their bytes through the world's ordinary object loader.
 pub(super) fn check_moveable_items(lua: &mut pz_lua_api::LuaManager, world: &crate::iso_world::IsoWorld) {
     use pz_world::save::{object_io, NoSaveHooks, SaveCtx, WORLD_VERSION};
-    for (item_type, name, skin) in [
-        ("Base.Mov_Scarecrow", "MannequinScarecrow02", "Male_Scarecrow"),
-        ("Base.Mov_SkeletonDisplay", "MannequinSkeleton01", "Skeleton_Mannequin"),
+    let mut stock_weight = None;
+    for (item_type, name, skin, costume) in [
+        ("Base.Mov_Scarecrow", "MannequinScarecrow02", "Male_Scarecrow", false),
+        ("Base.Mov_SkeletonDisplay", "MannequinSkeleton01", "Skeleton_Mannequin", false),
+        ("Base.Mov_Scarecrow", "MannequinScarecrow02", "Male_Scarecrow", true),
     ] {
+        let scripts = pz_lua_api::bind_registry::shared_script_manager();
+        let script = scripts.get::<pz_scripts::objects::models::MannequinScript>(pz_scripts::ScriptType::Mannequin, name).unwrap();
+        let original_outfit = script.borrow().outfit().unwrap().to_owned();
+        if costume {
+            // A mod may override either of these mannequin scripts. Exercise
+            // the nonempty contents, item weights and worn-index path.
+            script.borrow_mut().set_outfit("CostumeScarecrow");
+        }
         // The create callback may consult the sprite manager itself.
         super::lua_check(lua, &format!("rustSessionMoveable = assert(instanceItem('{item_type}'))"));
+        if costume { script.borrow_mut().set_outfit(&original_outfit); }
         let item = pz_lua_api::bind_items::item_arg_value(&lua.thread.globals().get_str("rustSessionMoveable")).unwrap();
         let item = item.borrow();
         let data = item.byte_data.as_deref().expect("item creation must produce a mannequin payload");
@@ -30,8 +41,15 @@ pub(super) fn check_moveable_items(lua: &mut pz_lua_api::LuaManager, world: &cra
         assert_eq!(m.mannequin_script_name.as_deref(), Some(name));
         assert_eq!(m.pose.as_deref(), Some("pose01"));
         assert_eq!(m.human_visual.skin_texture_name.as_deref(), Some(skin));
-        assert!(m.container.as_ref().unwrap().items.is_empty());
-        assert!(m.worn_items.is_empty());
+        let contents = &m.container.as_ref().unwrap().items;
+        if costume {
+            assert!(!contents.is_empty() && !m.worn_items.is_empty());
+            assert!(m.worn_items.iter().all(|(_, index)| (0..contents.len()).contains(&(*index as usize))));
+            assert!(item.get_actual_weight() > stock_weight.unwrap());
+        } else {
+            assert!(contents.is_empty() && m.worn_items.is_empty());
+            if item_type == "Base.Mov_Scarecrow" { stock_weight = Some(item.get_actual_weight()); }
+        }
         eprintln!("verified {item_type}: script={name} pose=pose01 skin={skin} bytes={}", data.len());
     }
     super::lua_check(lua, "rustSessionMoveable = nil");

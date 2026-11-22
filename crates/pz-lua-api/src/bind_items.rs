@@ -315,15 +315,16 @@ impl ItemEnv for CreateEnv<'_> {
 
 /// The installed item factory environment, including the entity component
 /// codec, for serializing items that have just been created by a script.
-pub(crate) fn with_factory_env<R>(f: impl FnOnce(&dyn ItemEnv) -> R) -> R {
+pub(crate) fn with_factory_env<R>(f: impl FnOnce(&dyn ItemEnv, &pz_scripts::ScriptManager) -> R) -> R {
     let lua = item_env();
     let sm = crate::bind_registry::shared_script_manager();
-    f(&CreateEnv {
+    let factory = CreateEnv {
         lua: Some(lua.as_ref()),
         ctx: lua.context(),
         sm: &sm,
         codec: lua.entity().map(|ctx| pz_inventory::component::EntityCodec { ctx }),
-    })
+    };
+    f(&factory, &sm)
 }
 
 /// The script item's `getDisplayName()` (translated at load, the full
@@ -385,24 +386,9 @@ pub fn try_create_item_host(
     item_type: &str,
     use_delta: f32,
 ) -> pz_entity::runtime_load::HostResult<Option<ItemRef>> {
-    let e = env();
-    let sm = crate::bind_registry::shared_script_manager();
-    let ce = CreateEnv {
-        lua: Some(e.as_ref()),
-        ctx: e.context(),
-        sm: &sm,
-        codec: e
-            .entity()
-            .map(|ctx| pz_inventory::component::EntityCodec { ctx }),
-    };
-    pz_inventory::factory::create_item_by_type_ref(
-        &ce,
-        &sm,
-        item_type,
-        use_delta,
-        true,
-        &translated_name,
-    )
+    with_factory_env(|env, scripts| {
+        pz_inventory::factory::create_item_by_type_ref(env, scripts, item_type, use_delta, true, &translated_name)
+    })
     .map_err(|failure| failure.into_error_and_retire())
 }
 
