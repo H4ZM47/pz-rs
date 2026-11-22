@@ -741,7 +741,9 @@ impl WorldRender {
                 models.render_character(chr, &cv)
             };
             for n in 0..MAX_PLAYERS {
-                if let Some(player) = pz_lua_api::bind_players::player(n) {
+                // A player whose corpse was made is off the world: its
+                // corpse draws instead.
+                if let Some(player) = pz_lua_api::bind_players::player(n).filter(|p| !p.borrow().vars.died_body) {
                     if let Some(mut object) = draw(&player.borrow()) {
                         object.local_player = n == v.player;
                         objects.players.push(object);

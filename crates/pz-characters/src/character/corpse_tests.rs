@@ -96,3 +96,35 @@ fn failed_corpse_leaves_the_zombie_its_items() {
     assert!(result.unwrap_err().to_string().contains("dropHeldItems"));
     assert_keeps_its_items(&z);
 }
+
+#[test]
+fn player_corpse_copies_the_descriptor_with_a_zombie_voice() {
+    let (sm, mut chars) = body_fixture();
+    let mut p: GameCharacter<()> = GameCharacter::new(&sm, CharacterKind::Player);
+    (p.vars.x, p.vars.y, p.vars.z) = (3.5, 4.5, 0.0);
+    let mut desc = crate::survivor::SurvivorDesc::new(&mut chars, &sm).unwrap();
+    desc.forename = Some("Kate".into());
+    desc.voice_prefix = Some("VoiceFemale".into());
+    p.descriptor = Some(std::rc::Rc::new(std::cell::RefCell::new(desc)));
+    give_item(&sm, &mut p, ItemClass::Normal, "Apple", 3, |_| {}, |_| {});
+    p.kill_by(None, &mut StateCx::new(&sm, &chars, &Recorder::default(), &mut NullWorld));
+    let mut placed = None;
+
+    assert!(p.become_dead_body(2.0, |b| {
+        placed = Some(b);
+        true
+    }).unwrap());
+
+    let body = placed.unwrap();
+    assert!(!body.was_zombie);
+    let desc = body.desc.as_ref().unwrap();
+    assert_eq!(desc.forename, "Kate");
+    assert_eq!(desc.voice_prefix, "FemaleZombie");
+    // The player's own descriptor keeps its voice.
+    assert_eq!(p.descriptor.as_ref().unwrap().borrow().voice_prefix.as_deref(), Some("VoiceFemale"));
+    let container = body.container.as_ref().unwrap();
+    assert!(container.explored);
+    assert_eq!(container.items.iter().map(|i| i.id()).collect::<Vec<_>>(), vec![3]);
+    assert!(p.items.inventory.borrow().items.is_empty());
+    assert!(p.vars.died_body);
+}

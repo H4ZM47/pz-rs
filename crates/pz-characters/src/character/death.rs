@@ -19,22 +19,25 @@ pub struct Killer {
     pub primary_weapon: Option<WeaponStats>,
     /// `getAttackingWeapon()` (`useHandWeapon`) is a `LONG_BLADE`.
     pub attacking_long_blade: bool,
+    /// `getUseHandWeapon()`.
+    pub use_hand_weapon: Option<WeaponStats>,
 }
 
 impl Killer {
     /// A killer that cannot be read.
     pub fn unknown(id: i32) -> Killer {
-        Killer { id, player: false, primary_weapon: None, attacking_long_blade: false }
+        Killer { id, player: false, primary_weapon: None, attacking_long_blade: false, use_hand_weapon: None }
     }
 
     pub fn of<I: 'static>(sm: &ScriptManager, c: &GameCharacter<I>) -> Killer {
         let stats = |item: Option<pz_inventory::shared::ItemRef>| item.and_then(|i| WeaponStats::of(sm, &i.borrow()));
+        let use_hand_weapon = stats(c.vars.use_hand_weapon.and_then(|id| c.items.item(id)));
         Killer {
             id: c.id,
             player: c.is_player(),
             primary_weapon: stats(c.items.primary_hand_item()),
-            attacking_long_blade: stats(c.vars.use_hand_weapon.and_then(|id| c.items.item(id)))
-                .is_some_and(|w| w.is_of_category(sm, "LONG_BLADE")),
+            attacking_long_blade: use_hand_weapon.as_ref().is_some_and(|w| w.is_of_category(sm, "LONG_BLADE")),
+            use_hand_weapon,
         }
     }
 }
@@ -62,6 +65,18 @@ impl<I: 'static> GameCharacter<I> {
             (Some(_), Some(w)) => Some(w.clone()),
             (Some(k), None) => k.primary_weapon.clone().or_else(own),
         };
+        self.do_death(weapon.as_ref(), killer, gory, cx.ctx);
+    }
+
+    /// `IsoPlayer.onKilled(killer, weapon, isGory)`: `DoDeath` with the
+    /// killer's `useHandWeapon` (the weapon argument is not used). Its
+    /// `OnDeath()` is [`GameCharacter::player_on_death`].
+    pub(crate) fn player_on_killed(&mut self, killer: Option<&Killer>, gory: bool, cx: &mut StateCx<'_, I>) {
+        let weapon = killer.and_then(|k| k.use_hand_weapon.clone());
+        self.player_on_death(cx);
+        if cx.has_host_error() {
+            return;
+        }
         self.do_death(weapon.as_ref(), killer, gory, cx.ctx);
     }
 
