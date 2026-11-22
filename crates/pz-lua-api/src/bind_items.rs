@@ -880,6 +880,12 @@ fn register_inventory_item(thread: &mut Thread) {
             Ok(c.push(opt_str(model.as_deref())))
         });
     }
+    // `getAmmoType()`: the script's `ammoType`, which `InstanceItem` sets.
+    // `setAmmoType` is not bound, so the template's value is the item's.
+    get!(b, "getAmmoType", |i| crate::bind_registry::key_value(
+        crate::bind_registry::AMMO_TYPE_CLASS,
+        i.template.ammo_type.as_ref()
+    ));
     get!(b, "getFullType", |i| Value::from(i.get_full_type()));
     get!(b, "getCategory", |i| Value::from(i.get_category()));
     b.method("getItemType", |c| {
@@ -2030,6 +2036,23 @@ mod tests {
     }
 
     #[test]
+    fn ammo_type_from_lua() {
+        let mut thread = item_thread();
+        let ammo = Rc::new(pz_scripts::registry::RegistryKey {
+            location: pz_scripts::registry::ResourceLocation::of("base:bullets_9mm").unwrap(),
+            name: "BULLETS_9MM".into(),
+            item_key: Some("Base.Bullets9mm".into()),
+        });
+        let gun = make(ItemClass::Weapon, "Pistol", |t| t.ammo_type = Some(ammo.clone()));
+        let bat = make(ItemClass::Weapon, "Bat", |_| {});
+        thread.globals().set_str("gun", item_value(&gun));
+        thread.globals().set_str("bat", item_value(&bat));
+        let r = run(&mut thread, "return gun:getAmmoType(), bat:getAmmoType(), gun:getAmmoType() == gun:getAmmoType()");
+        let key = crate::bind_registry::key_value(crate::bind_registry::AMMO_TYPE_CLASS, Some(&ammo));
+        assert!(matches!((&r[0], &key), (Value::Object(a), Value::Object(b)) if Rc::ptr_eq(a, b)));
+        assert!(r[1].is_nil() && r[2].truthy());
+    }
+
     fn world_static_model_from_lua() {
         let mut thread = item_thread();
         let gun = make(ItemClass::Weapon, "Pistol", |t| t.world_static_model = Some("PistolGround".into()));
