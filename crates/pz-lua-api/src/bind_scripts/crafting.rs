@@ -1,7 +1,8 @@
 //! `CraftRecipe` (a script, or embedded in an entity's
 //! `CraftRecipeComponentScript`) with its `InputScript`/`OutputScript` lines,
 //! `CraftRecipe.RequiredSkill` and `CraftRecipe.XpAward`, and the crafting
-//! enums they return.
+//! enums they return. Also `CraftRecipeManager.hasPlayerRequiredSkill`,
+//! which the recipe list draws each required skill with.
 //!
 //! Not exposed yet: members taking characters, players or inventory items
 //! (`canUseItem`, `canOutputItem`, `OnTestItem`, `hasRecipeAtHand`,
@@ -10,7 +11,7 @@
 //! `getHighestRelevantSkill*`, `*BenefitFromRecipeAtHand`,
 //! `generateDebugText`, `getFavouriteModDataString`, `getTime(character)`,
 //! the input item tests, `isFluidMatch`, `isEnergyMatch`; TODO(inventory,
-//! IsoGameCharacter)), perks (`getPerk`, `involvesSkill`,
+//! IsoGameCharacter)), perks (`involvesSkill`,
 //! `getHighestPerkRequirement`; TODO(PerkFactory)), `getIconTexture`
 //! (TODO(Texture)), fluids and energies (`getPossibleInputFluids`,
 //! `getFluid`, ...; TODO(Fluid, Energy)), `getOverlayMapper`,
@@ -263,6 +264,8 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
 
     let b = expose_class(thread, REQUIRED_SKILL_CLASS, None);
     get(&b, "getLevel", |s: &RequiredSkill| s.level());
+    get(&b, "getPerk", |s: &RequiredSkill| required_perk(s));
+    register_required_skill_check(thread);
     let b = expose_class(thread, XP_AWARD_CLASS, None);
     get(&b, "getAmount", |x: &XpAward| x.amount());
 
@@ -324,6 +327,40 @@ fn frozen_food(sm: &ScriptManager, i: &InputScript) -> bool {
             .and_then(|it| it.try_borrow().ok().map(|it| it.is_item_type(sm, "FOOD") && !it.cant_be_frozen))
             .unwrap_or(false)
     })
+}
+
+pub const CRAFT_RECIPE_MANAGER_CLASS: &str = "zombie.entity.components.crafting.recipe.CraftRecipeManager";
+
+/// `RequiredSkill.getPerk()`: the `PerkFactory.Perk` the skill names.
+fn required_perk(s: &RequiredSkill) -> Value {
+    let chars = crate::bind_characters::shared_characters();
+    let perk = chars.borrow().perks.from_string(s.perk());
+    crate::bind_skills::perk_value(perk.as_ref())
+}
+
+/// `CraftRecipeManager.hasPlayerRequiredSkill(skill, chr)`: false for a
+/// null argument, else `chr.getPerkLevel(skill.getPerk()) >=
+/// skill.getLevel()`.
+fn register_required_skill_check(thread: &mut Thread) {
+    let b = expose_class(thread, CRAFT_RECIPE_MANAGER_CLASS, None);
+    b.static_fn("hasPlayerRequiredSkill", |c| {
+        let chr = c.arg(1);
+        let Some(skill) = handle_arg(c, 0)? else { return Ok(c.push(false)) };
+        if chr.is_nil() {
+            return Ok(c.push(false));
+        }
+        let (perk, level) = skill.read(|s: &RequiredSkill| (required_perk(s), s.level()))?;
+        let f = c.thread.table_get(&chr, &Value::str("getPerkLevel"))?;
+        if f.is_nil() {
+            return Err(pz_kahlua::LuaError::runtime(format!(
+                "{}.getPerkLevel is not bound",
+                pz_kahlua::stdlib::java_class_name(&chr)
+            )));
+        }
+        let have = c.thread.call1(&f, &[chr.clone(), perk])?;
+        let have = pz_kahlua::exec::raw_tonumber(&have).unwrap_or(0.0) as i32;
+        Ok(c.push(have >= level))
+    });
 }
 
 fn register_input(thread: &mut Thread, sm: &Rc<ScriptManager>) {
