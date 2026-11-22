@@ -467,7 +467,7 @@ impl WorldRegionToMetaGrid {
             cell.buildings.remove(i);
         }
         cell.building_by_meta_id.remove(&meta_id);
-        cell.iso_buildings.borrow_mut().remove(&bid);
+        cell.remove_runtime_building(bid, b);
         for (_, id, _) in rooms {
             run.ctx.world.iso_room_removed(id);
         }

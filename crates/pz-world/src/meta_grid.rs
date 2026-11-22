@@ -152,6 +152,12 @@ impl IsoMetaChunk {
     }
 }
 
+#[derive(Debug, Default)]
+struct RuntimeBuildingRooms {
+    created: std::collections::HashSet<RoomIdx>,
+    rooms: Vec<RoomIdx>,
+}
+
 /// `IsoMetaCell` (map-data fields).
 #[derive(Debug)]
 pub struct IsoMetaCell {
@@ -178,6 +184,7 @@ pub struct IsoMetaCell {
     /// Keys of `isoBuildings`: buildings whose runtime `IsoBuilding` has been
     /// created (by [`IsoMetaGrid::get_room_by_id`]).
     pub iso_buildings: std::cell::RefCell<std::collections::HashSet<i64>>,
+    runtime_rooms: std::cell::RefCell<HashMap<BuildingIdx, RuntimeBuildingRooms>>,
 }
 
 impl IsoMetaCell {
@@ -199,8 +206,14 @@ impl IsoMetaCell {
             animal_zones_generated: Default::default(),
             room_tones: Vec::new(),
             iso_buildings: Default::default(),
+            runtime_rooms: Default::default(),
         }
     }
+    pub(crate) fn remove_runtime_building(&mut self, id: i64, building: BuildingIdx) {
+        self.iso_buildings.get_mut().remove(&id);
+        self.runtime_rooms.get_mut().remove(&building);
+    }
+
     pub fn get_x(&self) -> i32 {
         self.wx
     }
@@ -566,23 +579,47 @@ impl IsoMetaGrid {
         Ok(None)
     }
 
-    /// `getRoomByID(id)`: the room, creating its runtime `IsoRoom` /
-    /// `IsoBuilding` on first use. A new `IsoBuilding` draws its
-    /// `scoreUpdate` from `Rand`; that draw is the only state kept here (the
-    /// runtime room and building objects are not ported). A room without a
-    /// building would also get a new `BuildingDef` (another draw); map data
-    /// has none, and that case is not ported.
-    pub fn get_room_by_id(&self, id: i64, rand: &mut dyn GameRand) -> Option<&RoomDef> {
+    /// Materialize a mapped room and its building. CreateFrom visits the
+    /// building's indoor definitions in order. An emptyoutside room can
+    /// join an already-created building when it is subsequently requested.
+    pub fn runtime_room_index(&self, id: i64, mut draw: impl FnMut(i32) -> i32) -> Option<RoomIdx> {
         let cell = self.get_cell_data(room_id::get_cell_x(id), room_id::get_cell_y(id))?;
-        let room = &self.room_defs[cell.rooms.get(&id)?.0 as usize];
-        if let Some(b) = room.building {
-            let bid = self.building_defs[b.0 as usize].id;
-            if cell.iso_buildings.borrow_mut().insert(bid) {
-                // `new IsoBuilding()`: `scoreUpdate = -120 + Rand.Next(120)`.
-                rand.next(120);
+        let &room = cell.rooms.get(&id)?;
+        let Some(building) = self.room_defs[room.0 as usize].building else {
+            return Some(room);
+        };
+        let def = &self.building_defs[building.0 as usize];
+        let mut runtime = cell.runtime_rooms.borrow_mut();
+        let state = runtime.entry(building).or_default();
+        if !state.created.insert(room) {
+            return Some(room);
+        }
+        if cell.iso_buildings.borrow_mut().insert(def.id) {
+            draw(120);
+            for &member in &def.rooms {
+                let member_id = self.room_defs[member.0 as usize].id;
+                if self.get_room_def_by_id(member_id).is_some() && !state.rooms.contains(&member) {
+                    state.created.insert(member);
+                    state.rooms.push(member);
+                }
             }
+        } else {
+            state.rooms.push(room);
         }
         Some(room)
+    }
+
+    pub fn get_room_by_id(&self, id: i64, rand: &mut dyn GameRand) -> Option<&RoomDef> {
+        let index = self.runtime_room_index(id, |n| rand.next(n))?;
+        Some(&self.room_defs[index.0 as usize])
+    }
+
+    /// `IsoBuilding.rooms` in construction order, including later additions.
+    pub fn with_runtime_building_rooms<R>(&self, building: BuildingIdx, f: impl FnOnce(&[RoomIdx]) -> R) -> Option<R> {
+        let id = self.building_defs.get(building.0 as usize)?.id;
+        let cell = self.get_cell_data(building_id::get_cell_x(id), building_id::get_cell_y(id))?;
+        let runtime = cell.runtime_rooms.borrow();
+        Some(f(&runtime.get(&building)?.rooms))
     }
 
     pub fn get_room_def_by_id(&self, id: i64) -> Option<&RoomDef> {

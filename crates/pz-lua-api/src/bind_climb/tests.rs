@@ -134,6 +134,11 @@ fn get_object_index_is_the_position_in_the_square() {
 fn square_get_room_is_one_object_per_room() {
     let mut f = Fixture::new();
     with_world(|world| {
+        let meta = world.meta_grid.as_mut().unwrap();
+        let mut meta_cell = pz_world::IsoMetaCell::new(0, 0);
+        meta.room_defs.push(pz_world::RoomDef::new(7, "test room".into()));
+        meta_cell.rooms.insert(7, pz_world::RoomIdx(0));
+        meta.set_cell(0, 0, Some(meta_cell));
         let cell = world.cell.as_mut().unwrap();
         cell.get_grid_square_mut(1, 1, 0).unwrap().borrow_mut().room_id = 7;
         cell.get_grid_square_mut(1, 2, 0).unwrap().borrow_mut().room_id = 7;

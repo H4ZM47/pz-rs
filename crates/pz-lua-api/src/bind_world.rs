@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 mod cell_drag;
+mod runtime_rooms;
 pub mod lua_world;
 mod reachability;
 mod player_vehicles;
@@ -162,7 +163,8 @@ enum Key {
     MetaChunk(i32, i32),
     Room(u32),
     /// The runtime `IsoRoom` of a room id (what `IsoGridSquare.getRoom` returns).
-    IsoRoom(i64),
+    IsoRoom(RoomIdx),
+    IsoBuilding(BuildingIdx),
     Building(u32),
     /// Room, index in `objects`.
     MetaObject(u32, u32),
@@ -215,6 +217,7 @@ impl Key {
                 | Key::MetaChunk(..)
                 | Key::Room(_)
                 | Key::IsoRoom(_)
+                | Key::IsoBuilding(_)
                 | Key::Building(_)
                 | Key::MetaObject(..)
                 | Key::RoomRect(..)
@@ -237,6 +240,7 @@ impl Key {
             Key::MetaChunk(..) => "zombie.iso.IsoMetaChunk",
             Key::Room(_) => "zombie.iso.RoomDef",
             Key::IsoRoom(_) => "zombie.iso.areas.IsoRoom",
+            Key::IsoBuilding(_) => "zombie.iso.areas.IsoBuilding",
             Key::Building(_) => "zombie.iso.BuildingDef",
             Key::MetaObject(..) => "zombie.iso.MetaObject",
             Key::RoomRect(..) => RECT_CLASS,
@@ -519,6 +523,7 @@ fn register_world(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::even
     player_vehicles::register(thread);
     register_array_list(thread);
     register_room_def(thread);
+    runtime_rooms::register(thread);
     register_room_rect(thread);
     register_meta_object(thread);
     register_building_def(thread);
@@ -2014,12 +2019,9 @@ fn register_grid_square(thread: &mut Thread) {
         let (x, y, z) = self_square(c)?;
         Ok(square_room_id(x, y, z)?.to_string().into())
     });
-    // `getRoom()`: the room of the square, `nil` outside. Rooms of the same id
-    // are one Lua object, so `==` compares them as Java does.
     get(&b, "getRoom", |c| {
         let (x, y, z) = self_square(c)?;
-        let id = square_room_id(x, y, z)?;
-        Ok(if id == -1 { Value::Nil } else { obj(Key::IsoRoom(id)) })
+        Ok(opt(runtime_rooms::square_room(x, y, z)?.map(Key::IsoRoom)))
     });
     get(&b, "getRoomDef", |c| {
         let (x, y, z) = self_square(c)?;
@@ -2331,6 +2333,34 @@ mod tests {
             check(grid:isValidChunk(32, 32) and not grid:isValidChunk(0, 0))
             "#,
         );
+    }
+
+    #[test]
+    fn indoor_loot_resolves_the_runtime_building_and_its_named_rooms() {
+        let _dir = load_world("runtime-rooms");
+        let mut t = thread();
+        run(&mut t, r#"
+            local cell = IsoWorld.instance:getCell()
+            local sq = cell:getGridSquare(259, 260, 0)
+            local room, building = sq:getRoom(), sq:getBuilding()
+            check(room:getName() == "kitchen" and building == room:getBuilding())
+            check(room:getRoomDef() == sq:getRoomDef() and building:getDef() == sq:getBuildingDef())
+            check(building:getRandomRoom("kitchen") == room)
+            local bedroom = building:getRandomRoom("bedroom")
+            check(bedroom:getBuilding() == building and bedroom:getName() == "bedroom")
+            check(building:getRandomRoom("BEDROOM") == nil and building:getRandomRoom("absent") == nil)
+            check(building:getRandomRoom():getBuilding() == building)
+            local outside = cell:getGridSquare(260, 260, 0)
+            check(outside:getRoom() == nil and outside:getBuilding() == nil)
+            savedRoom, savedBuilding = room, building
+        "#);
+        with_world(|world| {
+            world.cell.as_mut().unwrap().get_grid_square_mut(259, 260, 0)
+                .unwrap().borrow_mut().room_id = 12345;
+        });
+        run(&mut t, "local sq = getCell():getGridSquare(259,260,0) check(sq:getRoom() == nil and sq:getBuilding() == nil)");
+        set_meta_grid(None);
+        run(&mut t, "check(not pcall(function() return savedRoom:getName() end)) check(not pcall(function() return savedBuilding:getDef() end))");
     }
 
     #[test]
