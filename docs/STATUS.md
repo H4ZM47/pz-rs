@@ -43,7 +43,9 @@ Build 42.22 assets. It created a fresh world, exercised keyboard movement,
 animation and a timed action, saved on window close, and reloaded the world
 in a fresh engine. It checked player position, nested inventory and mod data,
 global systems, every expected chunk, and the pose, skin, worn membership and
-item visuals of three mannequins. Returning to the menu and closing also passed.
+item visuals of three mannequins. The first tests reached the main menu while
+logging a failed chunk rewrite. The regression now puts the first-close files
+aside and checks that quitting to menu recreates every resident chunk.
 This run used the port's version 249 save format. Native Build 42.22 writes
 version 251. Native-save interchange and installed Windows/Linux sessions
 still need separate tests.
