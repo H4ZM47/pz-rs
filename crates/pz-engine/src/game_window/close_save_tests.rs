@@ -99,6 +99,7 @@ impl Fixture {
             error: None,
             retired_models: Vec::new(),
             last_frame: Instant::now(),
+            frame_pacer: FramePacer::new(Instant::now()),
             gamepads: None,
             audio: None,
             ui_models: None,

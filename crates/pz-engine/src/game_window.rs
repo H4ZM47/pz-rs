@@ -1,6 +1,9 @@
 //! `zombie.GameWindow`: window, event loop and the per-frame
 //! logic/render sequence, rendering through `pz-gpu`.
 
+mod frame_pacer;
+use frame_pacer::FramePacer;
+
 use crate::game_loading::LoadingQueueState;
 use crate::game_state::{state, GameStateMachine, StateCx};
 use crate::iso_world::{IsoWorld, NewGameSetup};
@@ -89,6 +92,7 @@ struct App {
     error: Option<crate::failure::EngineError>,
     retired_models: Vec<crate::world_models::WorldModels>,
     last_frame: Instant,
+    frame_pacer: FramePacer,
     /// `Controllers` backend (gilrs); `None` when unavailable.
     gamepads: Option<pz_input::gamepads::Gamepads>,
     /// The audio device stream (windowed runs only).
@@ -129,6 +133,7 @@ pub fn run(launch: Launch) -> crate::failure::EngineResult<()> {
         error: None,
         retired_models: Vec::new(),
         last_frame: Instant::now(),
+        frame_pacer: FramePacer::new(Instant::now()),
         gamepads: None,
         audio: None,
         ui_models: None,
@@ -292,6 +297,28 @@ impl App {
     fn screen_size(&self) -> (i32, i32) {
         let c = self.core.borrow();
         (c.get_screen_width().max(1), c.get_screen_height().max(1))
+    }
+
+    fn schedule_window_frame(&mut self, el: &ActiveEventLoop, redraw: bool) {
+        let wake = self.frame_pacer.step(Instant::now(), &self.core.borrow().performance, redraw);
+        match wake {
+            Err(error) => {
+                crate::failure::record_first(&mut self.error, error.into());
+                el.exit();
+            }
+            Ok(Some(deadline)) => el.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            Ok(None) if redraw => {
+                if !self.advance_frame() {
+                    el.exit();
+                }
+            }
+            Ok(None) => {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+                el.set_control_flow(ControlFlow::Wait);
+            }
+        }
     }
 
     fn desktop_exit_requested(&self) -> bool {
@@ -577,6 +604,8 @@ impl ApplicationHandler for App {
         if let Err(e) = self.boot() {
             crate::failure::record_first(&mut self.error, e);
             el.exit();
+        } else {
+            self.frame_pacer = FramePacer::new(Instant::now());
         }
     }
 
@@ -603,28 +632,15 @@ impl ApplicationHandler for App {
                     .set_screen_size(size.width.max(1) as i32, size.height.max(1) as i32);
             }
             WindowEvent::RedrawRequested => {
-                if !self.advance_frame() {
-                    el.exit();
-                    return;
-                }
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
+                self.schedule_window_frame(el, true);
             }
             _ => {}
         }
     }
 
-    fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
-        if let Some(w) = &self.window {
-            w.request_redraw();
-        }
-        // PerformanceSettings.lockFPS pacing.
-        let fps = 60.0;
-        let target = Duration::from_secs_f64(1.0 / fps);
-        let elapsed = self.last_frame.elapsed();
-        if elapsed < target {
-            std::thread::sleep(target - elapsed);
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        if self.window.is_some() && !el.exiting() {
+            self.schedule_window_frame(el, false);
         }
     }
 }
@@ -710,6 +726,7 @@ fn headless_app(launch: Launch) -> crate::failure::EngineResult<App> {
         error: None,
         retired_models: Vec::new(),
         last_frame: Instant::now(),
+        frame_pacer: FramePacer::new(Instant::now()),
         gamepads: None,
         audio: None,
         ui_models: None,
