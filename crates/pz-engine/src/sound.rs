@@ -7,9 +7,6 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-/// The banks `FMODManager.init` loads, in order (`media/sound/banks/Desktop`).
-const BANKS: [&str; 4] = ["ZomboidSound.strings", "ZomboidSound", "ZomboidSoundMP", "ZomboidMusic"];
-
 /// The same backend construction used by install, without starting a device.
 /// Resolve each load against the live GameFs, including subsequent mod overrides.
 fn backend_with_game_fs(
@@ -29,9 +26,11 @@ pub fn install(game_dir: &Path, cache_dir: &Path, fs: Rc<RefCell<pz_fs::GameFs>>
     }
     let setups = pz_audio::vorbis_setup::SetupHeaders::from_game_dir(game_dir).map_err(|e| format!("vorbis setup headers: {e}"))?;
     let mut studio = pz_audio::studio::Studio::new(setups);
-    let banks = game_dir.join("media").join("sound").join("banks").join("Desktop");
-    for b in BANKS {
-        studio.load_bank(&banks.join(format!("{b}.bank"))).map_err(|e| format!("bank {b}: {e}"))?;
+    for path in pz_audio::startup_bank_paths(game_dir) {
+        // A single bank failure does not disable the other native banks.
+        if let Err(error) = studio.load_bank(&path) {
+            eprintln!("sound bank {}: {error}", path.display());
+        }
     }
     let studio = Arc::new(Mutex::new(studio));
     let output = pz_audio::output::Output::start(studio.clone())?;

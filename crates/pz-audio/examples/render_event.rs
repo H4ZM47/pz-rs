@@ -4,23 +4,17 @@
 
 use pz_audio::studio::{Studio, SAMPLE_RATE};
 use pz_audio::vorbis_setup::SetupHeaders;
-use pz_audio::BankFile;
 use std::io::Write;
 use std::path::PathBuf;
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let game = PathBuf::from(&a[0]);
-    let banks = game.join("media/sound/banks/Desktop");
-    let strings = BankFile::open(&banks.join("ZomboidSound.strings.bank"))
-        .unwrap()
-        .strings()
-        .unwrap();
     let mut s = Studio::new(SetupHeaders::from_game_dir(&game).unwrap());
-    for b in ["ZomboidSound", "ZomboidMusic", "ZomboidSoundMP"] {
-        s.load_bank(&banks.join(format!("{b}.bank"))).unwrap();
+    for path in pz_audio::startup_bank_paths(&game) {
+        s.load_bank(&path).unwrap();
     }
-    let ev = strings.lookup(&a[1]).expect("unknown event");
+    let ev = s.event_by_path(&a[1]).expect("unknown event");
     let id = s.create_instance(ev).unwrap();
     if let Some(p) = a.get(4) {
         let v: Vec<f32> = p.split(',').map(|x| x.parse().unwrap()).collect();
