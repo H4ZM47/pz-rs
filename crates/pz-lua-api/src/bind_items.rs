@@ -22,6 +22,7 @@
 //! objects whose `tostring` is the id). `getVisual`, `getClothingItem`
 //! and `canBeEquipped` live in [`crate::bind_item_visual`].
 
+mod context_menu;
 mod native_item_code_on_create;
 mod reading;
 pub(crate) mod row_read_flags;
@@ -292,6 +293,9 @@ impl ItemEnv for CreateEnv<'_> {
     }
     fn world_sprite(&self, name: &str) -> Option<pz_inventory::env::WorldSpriteInfo> {
         self.lua?.world_sprite(name)
+    }
+    fn get_text(&self, key: &str) -> String {
+        crate::bind_text::translate(key)
     }
     fn script_actual_weight(&self, name: &str) -> Option<f32> {
         let s = self
@@ -1772,6 +1776,7 @@ pub fn register(thread: &mut Thread) {
     register_weapon_part(thread);
     reading::register(thread);
     row_read_flags::register(thread);
+    context_menu::register(thread);
     for c in [
         "zombie.inventory.types.ComboItem",
         "zombie.inventory.types.AnimalInventoryItem",

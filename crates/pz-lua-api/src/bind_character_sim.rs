@@ -93,6 +93,8 @@ mod timed_actions_tests;
 mod floor_bridge_tests;
 #[cfg(test)]
 mod class_identity_tests;
+#[cfg(test)]
+mod hand_item_tests;
 
 pub const ISO_GAME_CHARACTER_CLASS: &str = "zombie.characters.IsoGameCharacter";
 pub const ISO_PLAYER_CLASS: &str = "zombie.characters.IsoPlayer";
@@ -798,6 +800,27 @@ fn register_inventory(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let id = opt_item_id(c, 1)?;
         let v = id.is_some() && chr_of(c)?.borrow().items.secondary_hand_item == id;
         Ok(c.push(v))
+    });
+    // `isHandItem`: in either hand; `isItemInBothHands`: in both.
+    for (name, both) in [("isHandItem", false), ("isItemInBothHands", true)] {
+        b.method(name, move |c| {
+            let id = opt_item_id(c, 1)?;
+            let chr = chr_of(c)?;
+            let chr = chr.borrow();
+            let (primary, secondary) = (
+                id.is_some() && chr.items.primary_hand_item == id,
+                id.is_some() && chr.items.secondary_hand_item == id,
+            );
+            let v = if both { primary && secondary } else { primary || secondary };
+            Ok(c.push(v))
+        });
+    }
+    // `getAttachedItems().contains(item)`: characters hold no
+    // `AttachedItems` yet, so no item is attached.
+    b.method("isAttachedItem", |c| {
+        opt_item_id(c, 1)?;
+        chr_of(c)?;
+        Ok(c.push(false))
     });
     let s = sm.clone();
     b.method("removeFromHands", move |c| {

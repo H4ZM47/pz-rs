@@ -348,6 +348,7 @@ pub fn script_items(dictionary: WorldDictionary, inputs: &RegistryInputs<'_>) ->
     }
     items.textures_loaded = true;
     items.rand = std::cell::RefCell::new(Some(Box::new(StandardFactoryRng)));
+    items.get_text = Some(Box::new(pz_lua_api::bind_text::translate));
     items.assets = pz_lua_api::bind_items::item_env()
         .context()
         .assets()

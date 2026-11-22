@@ -298,6 +298,11 @@ pub struct WeaponData {
     pub fire_mode: Option<String>,
     pub cyclic_rate_multiplier: f32,
     pub explosion_timer: i32,
+    /// `fireModePossibilities` (the script's list), `canBePlaced` and
+    /// `sensorRange`: set from the script at creation, not saved.
+    pub fire_mode_possibilities: Option<Rc<Vec<String>>>,
+    pub can_be_placed: bool,
+    pub sensor_range: i32,
     pub max_angle: f32,
     pub blood_level: f32,
     pub contains_clip: bool,
@@ -480,6 +485,14 @@ pub struct InventoryItem {
     pub key_id: i32,
     pub remote_control_id: i32,
     pub remote_range: i32,
+    /// `canBeRemote`, `remoteController` and `requiresEquippedBothHands`:
+    /// set from the script at creation (`Item.InstanceItem`), not saved.
+    pub can_be_remote: bool,
+    pub remote_controller: bool,
+    pub requires_equipped_both_hands: bool,
+    /// `customMenuOption`: the translated `customContextMenu` text that
+    /// `Item.InstanceItem` sets (null without one), not saved.
+    pub custom_menu_option: Option<String>,
     pub color_red: f32,
     pub color_green: f32,
     pub color_blue: f32,
@@ -640,6 +653,10 @@ impl InventoryItem {
             key_id: -1,
             remote_control_id: -1,
             remote_range: 0,
+            can_be_remote: t.can_be_remote,
+            remote_controller: t.remote_controller,
+            requires_equipped_both_hands: t.requires_equipped_both_hands,
+            custom_menu_option: None,
             color_red: 1.0,
             color_green: 1.0,
             color_blue: 1.0,
@@ -1986,7 +2003,10 @@ impl WeaponData {
             } else {
                 0.0
             },
-            explosion_timer: 0,
+            explosion_timer: t.explosion_timer,
+            fire_mode_possibilities: t.fire_mode_possibilities.clone(),
+            can_be_placed: t.can_be_placed,
+            sensor_range: t.sensor_range,
             max_angle: 1.0,
             blood_level: 0.0,
             contains_clip: false,
