@@ -28,7 +28,7 @@ mod models;
 mod recipes;
 mod vehicles;
 
-pub(crate) use crafting::icon_texture as recipe_icon_texture;
+pub(crate) use crafting::icon_texture_value as recipe_icon_texture;
 
 use crate::bind_java_util::{list_value, JavaList};
 use crate::bind_registry::{java_error, key_arg, key_value};

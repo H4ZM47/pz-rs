@@ -33,7 +33,7 @@ use pz_scripts::objects::entity::components::crafting::{
 use pz_scripts::objects::entity::components::resources::ResourceType;
 use pz_scripts::objects::entity::ComponentType;
 use pz_scripts::objects::items::Item;
-use pz_scripts::{ScriptManager, ScriptRef};
+use pz_scripts::ScriptManager;
 use std::rc::Rc;
 
 pub const INPUT_SCRIPT_CLASS: &str = "zombie.scripting.entity.components.crafting.InputScript";
@@ -90,30 +90,10 @@ fn io_value(recipe: &ScriptHandle, i: usize) -> LuaResult<Value> {
     })
 }
 
-/// `getIconTexture`: the `iconTexture` that `OnScriptsLoaded` looks up from
-/// `iconName`, else what `OnPostWorldDictionaryInit` takes: the normal texture
-/// of the first possible item of the first item output, then of the first
-/// item input.
-pub(crate) fn icon_texture(r: &CraftRecipe) -> LuaResult<Value> {
-    if let Some(name) = r.icon_name() {
-        let texture = pz_render::try_get_texture_ref(name).map_err(crate::bind_render::texture_error)?;
-        if texture.is_some() {
-            return Ok(crate::bind_render::texture_value_ref(texture.as_ref()));
-        }
-    }
-    let first = |items: &[ScriptRef]| {
-        let item = items.first()?.downcast::<Item>()?;
-        let texture = item.borrow().normal_texture_slot().cloned();
-        texture
-    };
-    let output = r
-        .outputs()
-        .filter(|o| o.resource_type() == ResourceType::Item)
-        .find_map(|o| first(r.output_mapper_for(o)?.result_items()));
-    let texture = output.or_else(|| {
-        r.inputs().filter(|i| i.resource_type() == ResourceType::Item).find_map(|i| first(i.possible_input_items()))
-    });
-    Ok(crate::bind_render::texture_value_ref(texture.as_ref()))
+/// `getIconTexture` as a Lua value: [`icon_texture`].
+pub(crate) fn icon_texture_value(r: &CraftRecipe) -> LuaResult<Value> {
+    let t = icon_texture(r).map_err(crate::bind_render::texture_error)?;
+    Ok(crate::bind_render::texture_value_ref(t.as_ref()))
 }
 
 /// The perks whose highest level `getHighestRelevantSkillLevel(chr,
@@ -230,11 +210,7 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     get(&b, "getTranslationName", |r: &CraftRecipe| r.translation_name().map(str::to_string));
     set(&b, "overrideTranslationName", |r: &mut CraftRecipe, v: Option<String>| r.override_translation_name(v));
     get(&b, "getIconName", |r: &CraftRecipe| r.icon_name().map(str::to_string));
-    method(&b, "getIconTexture", |_, h| {
-        let t = h.read(|r: &CraftRecipe| icon_texture(r))?.map_err(crate::bind_render::texture_error)?;
-        Ok(crate::bind_render::texture_value_ref(t.as_ref()))
-    });
-    method(&b, "getIconTexture", |_, h| h.read(icon_texture)?);
+    method(&b, "getIconTexture", |_, h| h.read(icon_texture_value)?);
     get(&b, "getModID", |r: &CraftRecipe| r.mod_id().map(str::to_string));
     get(&b, "getModName", |r: &CraftRecipe| if r.is_vanilla() { "Project Zomboid" } else { "<unknown_mod>" });
     get(&b, "isVanilla", |r: &CraftRecipe| r.is_vanilla());
