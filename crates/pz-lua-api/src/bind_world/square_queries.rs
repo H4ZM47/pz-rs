@@ -87,6 +87,11 @@ fn moving_object_value(id: i32) -> LuaResult<Value> {
     )))
 }
 
+/// `square.haveRoof` of the loaded square.
+pub fn square_have_roof(x: i32, y: i32, z: i32) -> LuaResult<bool> {
+    with_square(x, y, z, |square| Ok(square.have_roof))
+}
+
 /// `square.isOutside()`: the cached exterior flag of the loaded square.
 pub fn square_is_outside(x: i32, y: i32, z: i32) -> LuaResult<bool> {
     let sprites = crate::bind_sprites::manager()?;

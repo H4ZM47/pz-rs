@@ -4,7 +4,6 @@
 //! movement/context flags and `CharacterInputComponentEntity`'s input
 //! component setters.
 
-use std::rc::Rc;
 use super::{chr_of, float_arg, float_value, CharacterKind, CharacterObject, LuaGameCharacterRef, CONTEXT};
 use crate::expose::{bool_arg, int_arg, ClassBuilder, JavaEnum};
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
@@ -146,28 +145,7 @@ pub(super) fn register_globals(thread: &mut Thread) {
         }
         Ok(c.push(living > 0 && living == asleep))
     });
-    // `getSleepingEvent()`: `SleepingEvent.instance`.
-    let event = crate::expose::expose_class(thread, SLEEPING_EVENT, Some("java.lang.Object"));
-    event.method("setPlayerFallAsleep", |_| {
-        Err(crate::bind_world_object::unsupported(
-            "SleepingEvent.setPlayerFallAsleep: SleepingEventData, the nightmares, the delay to sleep and the zombie intruders",
-        ))
-    });
-    crate::expose::global(thread, "getSleepingEvent", |c| Ok(c.push(Value::Object(Rc::new(SleepingEvent)))));
-}
-
-const SLEEPING_EVENT: &str = "zombie.ai.sadisticAIDirector.SleepingEvent";
-
-/// `SleepingEvent.instance`.
-struct SleepingEvent;
-
-impl pz_kahlua::value::LuaObject for SleepingEvent {
-    fn class_name(&self) -> &str {
-        SLEEPING_EVENT
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
+    super::sleeping::register_globals(thread);
 }
 
 /// The methods on `IsoGameCharacter` (and so every character class).

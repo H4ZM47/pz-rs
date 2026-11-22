@@ -483,11 +483,12 @@ fn passing_time_counts_the_hours_a_living_player_survives() {
     )));
     crate::bind_players::set_player(0, Some(chr.clone()));
     crate::bind_players::set_num_players(1);
-    super::players_time_passed(0.25);
+    let mut t = Thread::new(TableRef::new());
+    super::players_time_passed(&mut t, 0.25);
     assert_eq!(chr.borrow().hours_survived, 0.25);
     assert_eq!(chr.borrow().asleep_time, 0.0);
     chr.borrow_mut().asleep = true;
-    super::players_time_passed(0.5);
+    super::players_time_passed(&mut t, 0.5);
     assert_eq!((chr.borrow().hours_survived, chr.borrow().asleep_time), (0.75, 0.5));
     crate::bind_players::set_player(0, None);
 }

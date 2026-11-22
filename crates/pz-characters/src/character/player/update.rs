@@ -1407,7 +1407,7 @@ impl<I: 'static> GameCharacter<I> {
             self.calculate_stats(sm, chars, ctx)?;
         }
         if self.asleep {
-            // TODO(sleep): IsoPlayer.processWakingUp.
+            self.process_waking_up(chars, ctx)?;
         }
         self.update_idle_square_time(ctx);
         if !self.asleep {

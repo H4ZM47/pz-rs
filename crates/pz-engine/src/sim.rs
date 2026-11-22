@@ -128,6 +128,15 @@ impl SimContext for PlayerSim<'_> {
     fn world_age_hours(&self) -> f64 {
         self.0.game_time.borrow().world_age_hours()
     }
+    fn time_of_day(&self) -> f32 {
+        self.0.game_time.borrow().time_of_day
+    }
+    fn last_time_of_day(&self) -> f32 {
+        self.0.game_time.borrow().last_time_of_day
+    }
+    fn num_players(&self) -> i32 {
+        pz_lua_api::bind_players::num_players()
+    }
     fn climate(&self) -> Option<Ref<'_, ClimateManager>> {
         self.0.climate()
     }
