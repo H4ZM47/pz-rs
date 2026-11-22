@@ -392,11 +392,7 @@ pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>, events: EventManag
         Ok(c.push(r as f64))
     });
 
-    global(thread, "triggerEvent", move |c| {
-        let name = str_or_null(c, 0);
-        events.trigger(c.thread, &name, &[]);
-        Ok(0)
-    });
+    register_trigger_event(thread, events);
 
     // Files under <cache>/Lua.
     let fs2 = fs.clone();
@@ -908,6 +904,17 @@ fn register_pz_math(thread: &mut Thread) {
 
 // ---- zombie.Lua.LuaEventManager -----------------------------------------------------------
 
+/// `triggerEvent(name[, a[, b[, c[, d]]]])`: the overloads take up to four
+/// params and pass them to `LuaEventManager.triggerEvent`.
+fn register_trigger_event(thread: &mut Thread, events: EventManager) {
+    global(thread, "triggerEvent", move |c| {
+        let name = str_or_null(c, 0);
+        let params: Vec<Value> = (1..c.nargs().min(5)).map(|i| c.arg(i)).collect();
+        events.trigger(c.thread, &name, &params);
+        Ok(0)
+    });
+}
+
 fn register_lua_event_manager(thread: &mut Thread, events: EventManager) {
     let m = expose_class(thread, "zombie.Lua.LuaEventManager", None);
     m.static_fn("AddEvent", move |c| {
@@ -1011,6 +1018,27 @@ fn open_in_browser(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trigger_event_passes_up_to_four_params() {
+        let env = TableRef::new();
+        let mut t = Thread::new(env.clone());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        let events = EventManager::register(&env, "Events", &["OnFill"]);
+        register_trigger_event(&mut t, events);
+        let code = r#"
+            local function assert(v) if not v then error("assertion failed") end end
+            got = {}
+            Events.OnFill.Add(function(...) got = { n = select('#', ...), ... } end)
+            triggerEvent("OnFill", 0, "context", { 1 }, true, "fifth")
+            assert(got.n == 4 and got[1] == 0 and got[2] == "context")
+            assert(got[3][1] == 1 and got[4] == true)
+            triggerEvent("OnFill")
+            assert(got.n == 0)
+        "#;
+        let f = pz_kahlua::stdlib::load_string(code, None, env).unwrap();
+        t.pcall(&f, &[]).map_err(|(m, _)| format!("{m:?}")).unwrap();
+    }
 
     #[test]
     fn zomb_rand_ranges() {
