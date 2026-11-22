@@ -538,33 +538,66 @@ pub trait StateWorld<I> {
     fn vehicle_useable_part_near(&self, _chr: i32) -> bool {
         false
     }
-    /// `doContextNSWE(dir)`: the action the square edge offers (sheet
-    /// rope, door/window/frame, hutch, butcher hook, animal, furniture,
-    /// curtain, grappled throws, fence, wall), in the original's order;
-    /// at most the first that applies.
-    fn context_actions_nswe(
-        &mut self,
-        _q: &crate::character::player::context::ContextQuery,
-        _dir: IsoDirections,
-    ) -> Vec<crate::character::player::ContextualAction> {
-        Vec::new()
+    /// `current.has(IsoFlagType.climbSheetN/S/W/E)` for `dir`: the square
+    /// the player stands on has a sheet rope on that side.
+    fn context_sheet_rope_side(&self, _q: &crate::character::player::context::ContextQuery, _dir: IsoDirections) -> bool {
+        false
     }
-    /// `doContextCorners(dir)` for a diagonal facing.
-    fn context_actions_corners(
-        &mut self,
+    /// `getContextDoorOrWindowOrWindowFrame(dir)`: the door, window or
+    /// window frame the interact key finds towards `dir` (an open door of
+    /// the square first, then the closed one, then the neighbour's).
+    fn context_door_or_window_object(
+        &self,
         _q: &crate::character::player::context::ContextQuery,
         _dir: IsoDirections,
-    ) -> Vec<crate::character::player::ContextualAction> {
-        Vec::new()
-    }
-    /// `getContextDoorOrWindowOrWindowFrame(dir)` then
-    /// `doContextDoorOrWindowOrWindowFrame` (the square behind).
-    fn context_door_or_window(
-        &mut self,
-        _q: &crate::character::player::context::ContextQuery,
-        _dir: IsoDirections,
-    ) -> Option<crate::character::player::ContextualAction> {
+    ) -> Option<pz_pathfind::mover::ObjectRef> {
         None
+    }
+    /// `doContextDoorOrWindowOrWindowFrame(dir, obj)`: the actions the
+    /// object offers (none when only a branch the original leaves empty
+    /// applies). A branch of the original that is not ported fails with
+    /// [`RuntimeHostError::Unsupported`].
+    fn context_do_door_or_window(
+        &mut self,
+        _q: &crate::character::player::context::ContextQuery,
+        _dir: IsoDirections,
+        _obj: pz_pathfind::mover::ObjectRef,
+    ) -> HostResult<Vec<crate::character::player::ContextualAction>> {
+        Err(RuntimeHostError::Unsupported { operation: "IsoPlayer.doContextDoorOrWindowOrWindowFrame", kind: None })
+    }
+    /// `doContextHutch`, `doContextButcherHook`, `doContextAnimalInteraction`
+    /// or `doContextRestOnFurniture` for `dir`.
+    fn context_special(
+        &self,
+        _q: &crate::character::player::context::ContextQuery,
+        _dir: IsoDirections,
+        _which: crate::character::player::context::ContextSpecial,
+    ) -> HostResult<Option<crate::character::player::ContextualAction>> {
+        Ok(None)
+    }
+    /// The fence `doContextHopOverFence(dir)` hops: the square that has the
+    /// `HoppableN/W` flag for `dir` (the player's for N and W, the
+    /// neighbour's for S and E) and its hoppable object.
+    fn context_hoppable(
+        &self,
+        _q: &crate::character::player::context::ContextQuery,
+        _dir: IsoDirections,
+    ) -> Option<((i32, i32, i32), Option<i64>)> {
+        None
+    }
+    /// `IsoPlayer.isSafeToClimbOver(dir)`.
+    fn context_safe_to_climb_over(&self, _q: &crate::character::player::context::ContextQuery, _dir: IsoDirections) -> bool {
+        false
+    }
+    /// `performContextualAction` of `ToggleDoor`: `IsoDoor.ToggleDoor(chr)`
+    /// or `IsoThumpable.ToggleDoor(chr)` on the action's object.
+    fn context_toggle_door(
+        &mut self,
+        _chr: i32,
+        _action: &crate::character::player::ContextualAction,
+        _actor: &crate::character::player::context::DoorActor<'_>,
+    ) -> HostResult<()> {
+        Err(RuntimeHostError::Unsupported { operation: "IsoDoor.ToggleDoor", kind: None })
     }
 
     // ---- stairs, slopes and walls (`IsoMovingObject.postupdate`) ----
