@@ -1291,13 +1291,24 @@ impl InventoryItem {
         Ok(())
     }
 
+    /// The subclass `load` of an actual item. `Err(None)`: a `HandWeapon`
+    /// with weapon parts, whose nested actual loads are not ported.
     pub(crate) fn load_kind_native(
         &mut self,
         r: &mut Reader<'_>,
         wv: i32,
         env: &dyn ItemEnv,
-    ) -> SaveResult<()> {
-        self.load_kind(r, wv, env)
+    ) -> Result<(), Option<SaveError>> {
+        let template = self.template.clone();
+        if let ItemKind::Weapon(w) = &mut self.kind {
+            let mut parts = false;
+            let result = w.load(r, env, &template, &mut |_, _| {
+                parts = true;
+                Err(SaveError("HandWeapon.load: weapon parts".into()))
+            });
+            return result.map_err(|e| (!parts).then_some(e));
+        }
+        self.load_kind(r, wv, env).map_err(Some)
     }
 
     pub(crate) fn load_kind_and_sync(
@@ -1375,7 +1386,16 @@ impl InventoryItem {
                 c.load(r, env)?;
                 *a = AlarmData::load(r, wv)?;
             }
-            ItemKind::Weapon(w) => w.load(r, wv, env, &template)?,
+            ItemKind::Weapon(w) => w.load(r, env, &template, &mut |r, reg| {
+                // `InventoryItemFactory.CreateItem(reg)`, a byte, then
+                // `load`; a null item makes the original throw.
+                let Some(mut part) = crate::env::create_item(env, reg) else {
+                    return Err(SaveError(format!("weapon part {reg} cannot be created")));
+                };
+                r.i8()?;
+                part.load(r, wv, env)?;
+                Ok(part)
+            })?,
             ItemKind::Literature(l) => l.load(r, wv)?,
             ItemKind::AlarmClock(a) => *a = AlarmData::load(r, wv)?,
             ItemKind::Key { .. } => {
@@ -2126,12 +2146,14 @@ impl WeaponData {
         Ok(())
     }
 
+    /// `HandWeapon.load` after `InventoryItem.load`; `load_part` creates
+    /// and loads one weapon part from its registry id.
     fn load(
         &mut self,
         r: &mut Reader<'_>,
-        wv: i32,
         env: &dyn ItemEnv,
         t: &ItemTemplate,
+        load_part: &mut dyn FnMut(&mut Reader<'_>, i16) -> SaveResult<InventoryItem>,
     ) -> SaveResult<()> {
         self.max_range = 1.0;
         self.min_range_ranged = 0.0;
@@ -2188,13 +2210,7 @@ impl WeaponData {
             let n = r.i8()?;
             for _ in 0..n.max(0) {
                 let reg = r.i16()?;
-                let Some(mut part) = crate::env::create_item(env, reg) else {
-                    // InventoryItemFactory.CreateItem returned null: the
-                    // original throws and the whole item is dropped.
-                    return Err(SaveError(format!("weapon part {reg} cannot be created")));
-                };
-                r.i8()?;
-                part.load(r, wv, env)?;
+                let part = load_part(r, reg)?;
                 if part.template.class == ItemClass::WeaponPart {
                     self.attachments.push(part);
                 }
