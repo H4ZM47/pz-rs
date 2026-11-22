@@ -582,6 +582,8 @@ impl IsoMetaGrid {
     /// Materialize a mapped room and its building. CreateFrom visits the
     /// building's indoor definitions in order. An emptyoutside room can
     /// join an already-created building when it is subsequently requested.
+    /// Definitions without a building still need the native orphan-building
+    /// allocation when the streamer acquires mutable access to the meta grid.
     pub fn runtime_room_index(&self, id: i64, mut draw: impl FnMut(i32) -> i32) -> Option<RoomIdx> {
         let cell = self.get_cell_data(room_id::get_cell_x(id), room_id::get_cell_y(id))?;
         let &room = cell.rooms.get(&id)?;
@@ -591,21 +593,23 @@ impl IsoMetaGrid {
         let def = &self.building_defs[building.0 as usize];
         let mut runtime = cell.runtime_rooms.borrow_mut();
         let state = runtime.entry(building).or_default();
-        if !state.created.insert(room) {
+        if state.created.contains(&room) {
             return Some(room);
         }
         if cell.iso_buildings.borrow_mut().insert(def.id) {
             draw(120);
             for &member in &def.rooms {
                 let member_id = self.room_defs[member.0 as usize].id;
-                if self.get_room_def_by_id(member_id).is_some() && !state.rooms.contains(&member) {
-                    state.created.insert(member);
+                let Some(member) = self.get_cell_data(room_id::get_cell_x(member_id), room_id::get_cell_y(member_id))
+                    .and_then(|cell| cell.rooms.get(&member_id)).copied() else { continue };
+                if state.created.insert(member) {
                     state.rooms.push(member);
                 }
             }
         } else {
             state.rooms.push(room);
         }
+        state.created.insert(room);
         Some(room)
     }
 
@@ -1729,6 +1733,37 @@ mod building_api_tests {
         g.get_chunk_data(wx, wy)
             .map(|c| c.rooms().to_vec())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn runtime_building_rooms_follow_create_from_and_later_exterior_lookups() {
+        for exterior_first in [true, false] {
+            let mut g = grid();
+            let b = g.add_building(0, 0, BuildingDef::new(&mut Zero),
+                vec![room("office", 0, &[(1, 1, 2, 2)]), room("office", 0, &[(3, 1, 2, 2)])],
+                vec![room("emptyoutside", 0, &[(5, 1, 1, 1)])],
+            ).unwrap();
+            let (first, second, exterior) = (RoomIdx(0), RoomIdx(1), RoomIdx(2));
+            // The basement helper registers indoor IDs. A lot header also
+            // registers exterior definitions, which this map fixture needs.
+            let exterior_id = room_id::make_id(0, 0, 2);
+            g.room_defs[exterior.0 as usize].id = exterior_id;
+            g.get_cell_data_mut(0, 0).unwrap().rooms.insert(exterior_id, exterior);
+            let ids: Vec<_> = g.room_defs.iter().map(|r| r.id).collect();
+            let mut draws = Vec::new();
+            for index in [if exterior_first { exterior } else { second }, first, exterior, second] {
+                let result = g.runtime_room_index(ids[index.0 as usize], |bound| {
+                    draws.push(bound);
+                    0
+                });
+                assert_eq!(result, Some(index));
+            }
+            assert_eq!(draws, vec![120]);
+            let members = g.with_runtime_building_rooms(b, |rooms| rooms.to_vec()).unwrap();
+            let mut expected = vec![first, second];
+            if !exterior_first { expected.push(exterior); }
+            assert_eq!(members, expected);
+        }
     }
 
     #[test]
