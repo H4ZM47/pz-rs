@@ -50,6 +50,7 @@ pub mod bind_mods;
 pub mod bind_nutrition;
 pub mod bind_players;
 pub mod bind_popman;
+pub mod bind_recipe_manager;
 pub mod bind_registry;
 pub mod bind_render;
 pub mod bind_sandbox;
@@ -236,6 +237,11 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
     bind_character_sim::register_shared(&mut mgr.thread);
+    bind_recipe_manager::register(
+        &mut mgr.thread,
+        bind_registry::shared_script_manager(),
+        bind_characters::shared_characters(),
+    );
     timed_actions::register(&mut mgr.thread);
     bind_body::register_shared(&mut mgr.thread);
     bind_nutrition::register_shared(&mut mgr.thread);
