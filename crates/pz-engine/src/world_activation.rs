@@ -183,9 +183,14 @@ impl IsoWorld {
                         ChunkActivationStep::SquareReady { square, x, y, z } => {
                             let (wx, wy) = (cursor.wx, cursor.wy);
                             let result = self.with_stream(|_, cell, ctx| {
-                                // Production erosion is not installed yet. Keep the
-                                // exact per-square seam for its real hook and the
-                                // subsequent MapObjects/Lua observer adapter.
+                                // `ErosionMain.LoadGridsquare`. TODO(port): the
+                                // MapObjects/Lua observer adapter after it.
+                                let hook: Option<
+                                    &mut dyn pz_world::save::chunk_file::ChunkLoadHook,
+                                > = match &mut ctx.chunk_hook {
+                                    Some(h) => Some(&mut **h),
+                                    None => None,
+                                };
                                 finish_square_erosion(
                                     cell,
                                     wx,
@@ -195,7 +200,7 @@ impl IsoWorld {
                                     z,
                                     &square,
                                     ctx.sprites,
-                                    None,
+                                    hook,
                                 )
                             });
                             result

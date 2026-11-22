@@ -331,6 +331,14 @@ pub fn register(thread: &mut Thread) {
     });
 }
 
+/// `ErosionMain.EveryTenMinutes()` from `GameTime.update`: `mainTimer` on
+/// the installed instance (nothing before the world loads it).
+pub fn every_ten_minutes() {
+    if let Some((main, hooks)) = instance() {
+        main_timer(&main, &hooks);
+    }
+}
+
 fn main_timer(main: &Rc<RefCell<ErosionMain>>, hooks: &ErosionLuaHooks) {
     let mut m = main.borrow_mut();
     let (d, mo, y) = hooks.game_date.as_ref().map_or((m.day, m.month, m.year), |f| f());

@@ -323,6 +323,7 @@ impl IsoWorld {
             streamer,
             world_gen,
             items,
+            erosion,
             ..
         } = self;
         // `GameTime.getWorldAgeHours()` as the item loads read it.
@@ -331,6 +332,7 @@ impl IsoWorld {
                 .borrow()
                 .world_age_hours();
         }
+        let dictionary = items.as_ref().map(|i| &i.dictionary);
         let items: &dyn pz_world::save::items::ItemRegistry = match items.as_ref() {
             Some(i) => i,
             None => &AllItems,
@@ -348,6 +350,24 @@ impl IsoWorld {
             // Lua call while the actual world and sprite manager are borrowed.
             let _collection_deferral = pz_kahlua::gc::defer_collection();
             let mut sprites = sprites.borrow_mut();
+            // `ErosionMain.LoadGridsquare` / `ChunkLoaded` from
+            // `IsoChunk.doLoadGridsquare`. A borrowed instance (a Lua call
+            // into erosion on the stack) skips erosion for this pass rather
+            // than aborting the stream.
+            let mut erosion_main = erosion.as_ref().and_then(|e| e.try_borrow_mut().ok());
+            // `Rand` is the one global generator; this is a second handle.
+            let mut erosion_rand = StandardRand;
+            let mut erosion_hook =
+                erosion_main
+                    .as_deref_mut()
+                    .map(|main| pz_erosion::erosion_main::ErosionChunkHook {
+                        main,
+                        hooks: &pz_world::square::NoSquareHooks,
+                        cell_objects: true,
+                        dictionary,
+                        rand: &mut erosion_rand,
+                        logs_per_size: Some(&object_tables.logs_per_size),
+                    });
             let (result, retired_objects, retired_chunks) = with_world(|w| {
                 let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else {
                     return (None, pz_world::RetiredWorldOwners::default(), Vec::new());
@@ -371,9 +391,11 @@ impl IsoWorld {
                     brand_new: world_gen
                         .as_mut()
                         .map(|h| h as &mut dyn pz_world::chunk::BrandNewHook),
-                    // TODO(port): `ErosionChunkHook` wrapped in
-                    // `ClearSoundsOnUnload` (erosion and world sounds on load).
-                    chunk_hook: None,
+                    // TODO(port): wrap it in `ClearSoundsOnUnload` (world
+                    // sounds of unloaded chunks).
+                    chunk_hook: erosion_hook
+                        .as_mut()
+                        .map(|h| h as &mut dyn pz_world::save::chunk_file::ChunkLoadHook),
                     no_save,
                     vehicles_db: vehicles.conn.as_mut(),
                     // TODO(port): the vehicle runtime's savers, meta and ids
