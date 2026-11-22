@@ -1393,6 +1393,10 @@ impl<I: 'static> GameCharacter<I> {
     /// Resume after the host's borrow-free timed-action callbacks.
     pub fn update_player_after_actions(&mut self, out: &mut PlayerUpdate, cx: &mut StateCx<'_, I>) -> ScriptResult {
         if cx.has_host_error() { return Ok(()); }
+        // The climbs that Lua asked for during the timed actions
+        // (`climbOverFence`, `climbThroughWindow`, `climbOverWall`).
+        self.run_path_requests(cx);
+        if cx.has_host_error() { return Ok(()); }
         let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
         let fps = ctx.thirty_fps_multiplier();
         if ctx.do_character_stats() {

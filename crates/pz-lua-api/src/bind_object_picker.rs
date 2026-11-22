@@ -198,3 +198,33 @@ mod tests {
         set_object_picker(None);
     }
 }
+
+/// The Lua object with `id` among the objects of the square `square`
+/// (`ObjectRef.id` is the object's `IsoObject.id`); `None` when the square
+/// or the object is gone.
+pub fn world_object_value_by_id(square: [i32; 3], id: u32) -> LuaResult<Option<Value>> {
+    let [x, y, z] = square;
+    let object = crate::bind_world::try_with_world_read(|w| {
+        let Some(cell) = w.cell.as_ref() else {
+            return Ok(None);
+        };
+        let Some(square) = cell.get_grid_square(x, y, z) else {
+            return Ok(None);
+        };
+        let square = square
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("contextual action square"))?;
+        Ok(square
+            .objects
+            .iter()
+            .map(|slot| slot.ref_handle())
+            .find(|object| object.try_borrow().is_ok_and(|object| object.id == id)))
+    })
+    .map_err(crate::bind_world_object::host_error)?;
+    let Some(object) = object else {
+        return Ok(None);
+    };
+    let value = crate::bind_world_object::object_value(&object)?;
+    crate::bind_world_object::remember_square(&value, square);
+    Ok(Some(value))
+}

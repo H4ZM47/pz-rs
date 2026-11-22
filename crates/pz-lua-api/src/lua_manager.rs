@@ -213,6 +213,13 @@ impl LuaManager {
         let ev = self.events.clone();
         ev.trigger(&mut self.thread, name, params)
     }
+
+    /// `LuaHookManager.TriggerHook(name, params...)`: the `Hook.<name>`
+    /// callbacks, as `Event.trigger` runs them.
+    pub fn trigger_hook(&mut self, name: &str, params: &[Value]) -> bool {
+        let hooks = self.hooks.clone();
+        hooks.trigger(&mut self.thread, name, params)
+    }
 }
 
 /// `RunLua(filename)`: compile and run once; later calls return the cached

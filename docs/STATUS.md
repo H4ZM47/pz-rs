@@ -116,6 +116,11 @@ section to search there for exact hook names and call order.
 - [ ] Tile overlays, broken/bent fences, key naming, story clutter,
       `MapObjects` callbacks.
 - [ ] Climbs, stairs, fences, windows, sheet ropes and player death.
+      Done: the interact key climbs a low fence and, held, an open window
+      (`Hook.ContextualAction` → `ISClimbOverFence`/`ISClimbThroughWindow` →
+      `ClimbOverFenceState`/`ClimbThroughWindowState`), and `IsoWindow.ToggleWindow`.
+      Open: stairs, sheet ropes, death, the open/close window action's
+      `faceThisObject`, `canClimbThrough` of thumpables and window frames.
 - [ ] Radio: one `ZomboidRadio` per world, devices, Lua binding.
 - [ ] Corpse rot, the live corpse registry, flies and reanimation.
 - [ ] Building regions updates.

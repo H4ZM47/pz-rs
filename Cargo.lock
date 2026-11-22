@@ -2096,6 +2096,7 @@ dependencies = [
  "pz-joml",
  "pz-kahlua",
  "pz-network",
+ "pz-pathfind",
  "pz-popman",
  "pz-radio",
  "pz-render",

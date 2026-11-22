@@ -1710,7 +1710,19 @@ registered):
       `context_toggle_door` (`pz-world-states::door`: the door the key
       chose is toggled by the world, which needs the player's current square
       and a key lookup, `DoorActor`; other chosen actions come back as
-      `PlayerEvent::ContextualAction` for the engine/Lua);
+      `PlayerEvent::ContextualAction` for the engine/Lua).
+      `world_update::fire_player_events` hands that event to
+      `pz_lua_api::contextual_action::perform`, which triggers
+      `Hook.ContextualAction` for `ClimbOverFence`, `ClimbThroughWindow`,
+      `OpenWindow`/`CloseWindow` and calls `climbOverWall` itself; the other
+      kinds fail with a message naming them. The Lua side queues the climb
+      (`climbOverFence`, `climbThroughWindow`, ... in
+      `bind_character_sim::climb`) and the player's update runs the queue with
+      the states world (`GameCharacter::run_path_requests`). A short E press
+      opens or closes a window, a held E (0.5 s) climbs through it; the open
+      and close action still needs `faceThisObject` (the queued
+      `FaceObject` request is not handled), and the climb check of
+      `IsoThumpable` and `IsoWindowFrame` is not bound to Lua yet;
       `SimContext::wet_ground_final_value`, `clothing_degradation`
       (#135).
 

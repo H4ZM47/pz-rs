@@ -321,22 +321,18 @@ pub(super) fn register(b: &ClassBuilder) {
         })?;
         Ok(next.into())
     });
-    // `getRoom()`: null when `roomId` is -1. IsoRoom has no Lua object.
-    let room = |b: &ClassBuilder, name: &'static str| {
-        get(b, name, move |c| {
-            let (x, y, z) = self_square(c)?;
-            let room_id = with_square(x, y, z, |square| Ok(square.room_id))?;
-            if room_id == -1 {
-                return Ok(Value::Nil);
-            }
-            Err(crate::bind_world_object::unsupported(format!(
-                "IsoGridSquare.{name}: IsoRoom has no Lua object"
-            )))
-        });
-    };
-    room(b, "getRoom");
     // `getBuilding()`: `getRoom().getBuilding()`, null without a room.
-    room(b, "getBuilding");
+    // `getRoom()` is `bind_world`'s: one `IsoRoom` object per room id.
+    get(b, "getBuilding", |c| {
+        let (x, y, z) = self_square(c)?;
+        let room_id = with_square(x, y, z, |square| Ok(square.room_id))?;
+        if room_id == -1 {
+            return Ok(Value::Nil);
+        }
+        Err(crate::bind_world_object::unsupported(
+            "IsoGridSquare.getBuilding: IsoRoom has no Lua object",
+        ))
+    });
     // `getDeadBody()`: the first IsoDeadBody of `staticMovingObjects`.
     get(b, "getDeadBody", |c| {
         let (x, y, z) = self_square(c)?;

@@ -764,6 +764,7 @@ fn register_inventory_item(thread: &mut Thread) {
         Ok(c.push(value))
     });
     crate::bind_world_object::register_classes(thread);
+    crate::bind_climb::register(thread);
     let b = expose_class(thread, INVENTORY_ITEM_CLASS, Some(GAME_ENTITY_CLASS));
     b.method("getWorldItem", |c| {
         let item = crate::bind_world_object::item_argument(&c.arg(0))?;

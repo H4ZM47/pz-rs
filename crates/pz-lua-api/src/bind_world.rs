@@ -30,6 +30,7 @@ mod cell_drag;
 pub mod lua_world;
 mod reachability;
 mod player_vehicles;
+mod square_walk;
 pub mod square_queries;
 pub mod power;
 
@@ -56,7 +57,7 @@ thread_local! {
 
 // A Lua call can unwind to an interpreter drain while this actual WORLD
 // cell is still borrowed by its Rust caller. Do not collect at that boundary.
-fn with_world_state_cell<R>(f: impl FnOnce(&RefCell<WorldState>) -> R) -> R {
+pub(crate) fn with_world_state_cell<R>(f: impl FnOnce(&RefCell<WorldState>) -> R) -> R {
     let _collection_deferral = pz_kahlua::gc::defer_collection();
     WORLD.with(f)
 }
@@ -160,6 +161,8 @@ enum Key {
     /// Absolute chunk coordinates.
     MetaChunk(i32, i32),
     Room(u32),
+    /// The runtime `IsoRoom` of a room id (what `IsoGridSquare.getRoom` returns).
+    IsoRoom(i64),
     Building(u32),
     /// Room, index in `objects`.
     MetaObject(u32, u32),
@@ -211,6 +214,7 @@ impl Key {
                 | Key::MetaCell(..)
                 | Key::MetaChunk(..)
                 | Key::Room(_)
+                | Key::IsoRoom(_)
                 | Key::Building(_)
                 | Key::MetaObject(..)
                 | Key::RoomRect(..)
@@ -232,6 +236,7 @@ impl Key {
             Key::MetaCell(..) => "zombie.iso.IsoMetaCell",
             Key::MetaChunk(..) => "zombie.iso.IsoMetaChunk",
             Key::Room(_) => "zombie.iso.RoomDef",
+            Key::IsoRoom(_) => "zombie.iso.areas.IsoRoom",
             Key::Building(_) => "zombie.iso.BuildingDef",
             Key::MetaObject(..) => "zombie.iso.MetaObject",
             Key::RoomRect(..) => RECT_CLASS,
@@ -1962,6 +1967,7 @@ fn square_building(x: i32, y: i32, z: i32) -> LuaResult<Option<usize>> {
 fn register_grid_square(thread: &mut Thread) {
     let b = expose_class(thread, "zombie.iso.IsoGridSquare", Some("java.lang.Object"));
     reachability::register(&b);
+    square_walk::register(&b);
     square_queries::register(&b);
     power::register(&b);
     static_get(&b, "getMatrixBit", |c| {
@@ -1996,6 +2002,13 @@ fn register_grid_square(thread: &mut Thread) {
     get(&b, "getRoomIDString", |c| {
         let (x, y, z) = self_square(c)?;
         Ok(square_room_id(x, y, z)?.to_string().into())
+    });
+    // `getRoom()`: the room of the square, `nil` outside. Rooms of the same id
+    // are one Lua object, so `==` compares them as Java does.
+    get(&b, "getRoom", |c| {
+        let (x, y, z) = self_square(c)?;
+        let id = square_room_id(x, y, z)?;
+        Ok(if id == -1 { Value::Nil } else { obj(Key::IsoRoom(id)) })
     });
     get(&b, "getRoomDef", |c| {
         let (x, y, z) = self_square(c)?;

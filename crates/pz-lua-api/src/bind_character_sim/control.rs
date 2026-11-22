@@ -49,7 +49,7 @@ fn npe() -> LuaError {
 
 /// An `IsoDirections` constant or its ordinal (`setDir(int)`:
 /// `IsoDirections.fromIndex(dir)`, `VALUES[index & 7]`).
-fn direction_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<IsoDirections> {
+pub(super) fn direction_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<IsoDirections> {
     match c.arg(i) {
         Value::Object(o) => o
             .as_any()
@@ -274,6 +274,10 @@ pub(super) fn register_player(b: &ClassBuilder) {
         let v = bool_arg(c, 1);
         chr_of(c)?.borrow_mut().vars.block_movement = v;
         Ok(0)
+    });
+    b.method("isBlockMovement", |c| {
+        let v = chr_of(c)?.borrow().vars.block_movement;
+        Ok(c.push(v))
     });
     b.method("isIgnoreContextKey", |c| {
         let v = chr_of(c)?.borrow().player.ignore_context_key;
