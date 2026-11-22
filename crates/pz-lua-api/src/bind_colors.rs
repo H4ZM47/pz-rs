@@ -372,12 +372,140 @@ fn register_table_fns(b: &crate::expose::ClassBuilder, prefix: &str, cb: bool) {
     });
 }
 
+// ---- ItemGenerationConstants colour lists ----------------------------------------------------
+
+const ITEM_GENERATION_CLASS: &str = "zombie/inventory/ItemGenerationConstants";
+const WEIGHTED_LIST_CLASS: &str = "zombie/util/list/WeightedList";
+
+/// One `WeightedList<Color>` of `ItemGenerationConstants`: the entries in
+/// `add` order with their chances, and the running total.
+#[derive(Default)]
+pub struct WeightedColors {
+    entries: Vec<(Rc<Color>, i32)>,
+    total: i64,
+}
+
+impl WeightedColors {
+    /// `WeightedList.getRandom()`: one `Rand.Next(totalChance)` draw (the
+    /// long overload narrows to int), then the first entry whose running
+    /// sum exceeds the roll.
+    pub fn get_random(&self) -> LuaResult<Rc<Color>> {
+        let roll = i64::from(pz_core::random::next(self.total as i32));
+        let mut sum = 0i64;
+        for (color, weight) in &self.entries {
+            sum += i64::from(*weight);
+            if roll < sum {
+                return Ok(color.clone());
+            }
+        }
+        Err(LuaError::Runtime {
+            message: "Weighted list was empty.".into(),
+            class: "java.lang.RuntimeException",
+        })
+    }
+}
+
+/// Reads every `WeightedList` colour field of `ItemGenerationConstants.<clinit>`
+/// (`COLOR_LIPSTICK`, ...): each `new WeightedList()` store starts a list,
+/// each `add(Colors.<field>, chance)` on it appends, resolving the colour to
+/// the shared `Colors` field object.
+fn load_item_generation_colors(jar: &Jar, colors: &Colors) -> Result<HashMap<String, WeightedColors>, String> {
+    use pz_classfile::Effect;
+    let cf = pz_classfile::load_class(jar, ITEM_GENERATION_CLASS).map_err(|e| format!("{e:?}"))?;
+    let effects = pz_classfile::method_effects(&cf, "<clinit>").map_err(|e| format!("{e:?}"))?;
+    let mut lists: HashMap<String, WeightedColors> = HashMap::new();
+    for effect in effects {
+        match effect {
+            Effect::PutStatic(init) if init.class == ITEM_GENERATION_CLASS => {
+                if matches!(&init.value, JValue::New { class, .. } if class == WEIGHTED_LIST_CLASS) {
+                    lists.insert(init.field, WeightedColors::default());
+                }
+            }
+            Effect::Call(JValue::Call { class, name, args, .. }) if class == WEIGHTED_LIST_CLASS && name == "add" => {
+                let [JValue::Static { class: owner, name: list }, JValue::Static { class: color_class, name: field }, JValue::Int(chance)] =
+                    args.as_slice()
+                else {
+                    continue;
+                };
+                if owner != ITEM_GENERATION_CLASS || color_class != COLORS_CLASS {
+                    continue;
+                }
+                let Some(entry) = lists.get_mut(list) else { continue };
+                let color = colors
+                    .fields
+                    .iter()
+                    .find(|(f, _)| f == field)
+                    .map(|(_, c)| c.clone())
+                    .ok_or_else(|| format!("ItemGenerationConstants.{list}: no Colors.{field}"))?;
+                let chance = i32::try_from(*chance).map_err(|_| format!("ItemGenerationConstants.{list}: chance {chance}"))?;
+                entry.entries.push((color, chance));
+                entry.total += i64::from(chance);
+            }
+            _ => {}
+        }
+    }
+    lists.retain(|_, l| !l.entries.is_empty());
+    if lists.is_empty() {
+        return Err("ItemGenerationConstants.<clinit> has no Color lists".into());
+    }
+    Ok(lists)
+}
+
+thread_local! {
+    static ITEM_GENERATION_COLORS: RefCell<Option<HashMap<String, WeightedColors>>> = const { RefCell::new(None) };
+}
+
+/// `ItemGenerationConstants.<list>.getRandom()` for a `WeightedList<Color>`
+/// field. A list the install did not provide is a host capability error.
+pub(crate) fn item_generation_random_color(list: &str) -> LuaResult<Rc<Color>> {
+    ITEM_GENERATION_COLORS.with(|s| match s.borrow().as_ref().and_then(|m| m.get(list)) {
+        Some(l) => l.get_random(),
+        None => Err(LuaError::Runtime {
+            message: format!("ItemGenerationConstants.{list} not loaded from the installed jar"),
+            class: "pz.host.Unsupported",
+        }),
+    })
+}
+
+/// `Colors.GetRandomColor()` for Rust callers (`Color.random()`).
+pub(crate) fn random_color() -> LuaResult<Rc<Color>> {
+    with(|s| {
+        let t = table(s, false);
+        let i = pz_core::random::next_range(0, t.colors.len() as i32 - 1);
+        get_index(&t.colors, i)
+    })
+    .unwrap_or_else(|| {
+        Err(LuaError::Runtime { message: "Colors not loaded from the installed jar".into(), class: "pz.host.Unsupported" })
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn install_item_generation_colors_for_test(lists: Vec<(&str, Vec<(Rc<Color>, i32)>)>) {
+    let map = lists
+        .into_iter()
+        .map(|(n, entries)| {
+            let total = entries.iter().map(|(_, w)| i64::from(*w)).sum();
+            (n.to_string(), WeightedColors { entries, total })
+        })
+        .collect();
+    ITEM_GENERATION_COLORS.with(|s| *s.borrow_mut() = Some(map));
+}
+
 /// Exposes `Colors` over the tables read from `jar` (nothing is exposed
-/// without the jar).
+/// without the jar), and loads the `ItemGenerationConstants` colour lists
+/// that refer to its fields.
 pub fn register(thread: &mut Thread, jar: Option<&Jar>) {
     let Some(jar) = jar else { return };
     match Colors::load(jar) {
-        Ok(c) => register_with(thread, c),
+        Ok(c) => {
+            match load_item_generation_colors(jar, &c) {
+                Ok(lists) => ITEM_GENERATION_COLORS.with(|s| *s.borrow_mut() = Some(lists)),
+                Err(e) => pz_core::debug::with(|d| {
+                    d.log(pz_core::debug::DebugType::General, &format!("ItemGenerationConstants colours not loaded: {e}"));
+                }),
+            }
+            register_with(thread, c)
+        }
         Err(e) => pz_core::debug::with(|d| {
             d.log(pz_core::debug::DebugType::General, &format!("Colors not loaded: {e}"));
         }),
