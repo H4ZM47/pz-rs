@@ -278,6 +278,11 @@ impl WorldModels {
             .is_some()
     }
 
+    /// `isAddedToModelManager()`: the character has a model slot.
+    pub fn contains_character(&self, id: i32) -> bool {
+        self.characters.contains_key(&id)
+    }
+
     /// Retain all world residents, including offscreen and paused
     /// characters. Call after population removals, not after culling.
     pub fn retain_characters(&mut self, ids: impl IntoIterator<Item = i32>) {

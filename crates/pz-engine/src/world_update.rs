@@ -1399,6 +1399,13 @@ impl IsoWorld {
         for id in zombie_ids {
             ids.push(id);
             let Some(chr) = self.zombies.iter_mut().find(|z| z.id == id) else { continue };
+            // `ModelManager.Add`: the zombie dresses before its body model
+            // is built.
+            if !models.contains_character(chr.id) {
+                if let Err(e) = crate::zombie_dress::dress_zombie(&lua.thread, chr) {
+                    errors.push(format!("ModelManager.dressInRandomOutfit: {e}"));
+                }
+            }
             match models.update_character(chr, dt, days) {
                 Ok(events) if !events.is_empty() => {
                     if let Some(sprites) = self.sprites.as_ref() {

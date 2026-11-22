@@ -1186,7 +1186,7 @@ registered):
       `EnableSnowOnGround`) and `ErosionIceQueen::set_snow(ice_queen)`. The
       climate update's own snow effects collect in the same slot: apply
       `bind_climate::take_snow_effects()` after `update_game_time` each frame (#147).
-- [ ] Zombie dressing (`ModelManager.Add`/`Reset` call
+- [x] Zombie dressing (`ModelManager.Add`/`Reset` call
       `ModelManager.dressInRandomOutfit`): when a zombie gets its model,
       `GameCharacter::model_manager_dress_in_random_outfit(&mut
       ZombieDressCx { chars, dress (bind_appearance::with_dress_context),
@@ -1196,6 +1196,10 @@ registered):
       chance_of_attached_weapon (sandbox) }, settings (sandbox
       `ClothingDegradation`, `RemoveZombieLoot`, game mode, world age) })`;
       it fills `human_visual`, `zombie.item_visuals` and attached weapons (#147).
+      `zombie_dress::dress_zombie` does this in `update_models` for each
+      zombie without a model slot (`WorldModels::contains_character`).
+      `Reset` (a model rebuilt for a character that has one) is not wired;
+      the dressing flags make it a no-op for zombies that already dressed.
 - [x] `IngameState.enter`, world loaded: `WorldPopulation::start_game(&mut
       host, &frame)` (`MapCollisionData.startGame`).
 - [x] Quit: `WorldPopulation::save(&reals)` with the world save, then
