@@ -25,6 +25,7 @@ fn failed_chunk_input_keeps_current_and_later_notifications_for_retry() {
     let mut events = RenderChunkEvents {
         added: vec![(0, 0), (1, 0)],
         removed: vec![],
+        blood: vec![],
     };
     let guard = square.borrow_mut();
     assert!(matches!(

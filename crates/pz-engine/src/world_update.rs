@@ -17,7 +17,7 @@ use pz_characters::character::state::{StateCx, StateWorld};
 use pz_characters::character::zombie::population::RealZombies;
 use pz_characters::character::SimEvent;
 use pz_characters::survivor::SurvivorDescRef;
-use pz_inventory::floor_drop::HostResult;
+use pz_inventory::floor_drop::{HostResult, RuntimeHostError};
 use pz_kahlua::Value;
 use pz_lua_api::bind_character_sim::{character_value, LuaGameCharacter, LuaGameCharacterRef};
 use pz_lua_api::bind_characters::{shared_characters, LuaItem};
@@ -1116,11 +1116,79 @@ impl IsoWorld {
                 SimEvent::SleepingEventWakeUp { fast_wakeup } if chr.is_some() => {
                     pz_lua_api::bind_character_sim::sleeping_event_wake_up_ui(chr.unwrap(), fast_wakeup);
                 }
+                // `chr.splatBloodFloorBig()`: a big floor splat under the
+                // character, `Rand.Next(20)` drawn here (after the rest of
+                // the character's update, not in its order).
+                // TODO(port): characters other than zombies.
+                SimEvent::CharacterSplatBloodFloorBig { chr } => {
+                    let Some(z) = self.zombies.iter().find(|z| z.id == chr) else {
+                        continue;
+                    };
+                    let (x, y, zz) = (z.vars.x, z.vars.y, z.vars.z);
+                    let current = z.path.current_square;
+                    if let Err(e) = self.splat_blood_floor_big(current, x, y, zz) {
+                        self.log_update_error(format!("IsoGameCharacter.splatBloodFloorBig: {e:?}"));
+                    }
+                }
                 // TODO(port): the other `SimEvent`s (sounds, visuals, XP,
                 // game speed, the world's side of combat).
                 _ => {}
             }
         }
+    }
+
+    /// `splatBloodFloorBig()` for a character at `(x, y, z)` on square
+    /// `current`: `getCurrentSquare().getChunk().addBloodSplat(x, y, z,
+    /// Rand.Next(20))`, nothing without a square or chunk. A kept splat
+    /// goes to the renderer.
+    fn splat_blood_floor_big(
+        &mut self,
+        current: Option<(i32, i32, i32)>,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> HostResult<()> {
+        let Some((sx, sy, _)) = current else {
+            return Ok(());
+        };
+        let (wx, wy) = (sx.div_euclid(8), sy.div_euclid(8));
+        let Some(sprites) = self.sprites.clone() else {
+            return Err(RuntimeHostError::Unsupported {
+                operation: "actual splatBloodFloorBig sprite owner",
+                kind: None,
+            });
+        };
+        let world_age = {
+            let time = pz_lua_api::bind_climate::shared_game_time();
+            let time = time
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("addBloodSplat GameTime"))?;
+            time.world_age_hours()
+        };
+        let kept = pz_lua_api::bind_world::try_with_world(|w| {
+            let Some(chunk) = w.cell.as_mut().and_then(|c| c.chunks.get_mut(&(wx, wy))) else {
+                return Ok(None);
+            };
+            let kind = pz_core::random::next(20);
+            let sprites = sprites
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("addBloodSplat sprite manager"))?;
+            Ok(chunk
+                .add_blood_splat(x, y, z, kind, world_age, |sq| sq.treat_as_solid_floor(&sprites))
+                .map(|_| kind))
+        })?;
+        if let Some(kind) = kept {
+            self.render_chunks.blood.push(crate::iso_world::BloodSplatAdded {
+                wx,
+                wy,
+                x,
+                y,
+                z,
+                kind,
+                world_age: world_age as f32,
+            });
+        }
+        Ok(())
     }
 
     /// `IsoGameCharacter.die()` for the zombies that raised it: `becomeCorpse()`
