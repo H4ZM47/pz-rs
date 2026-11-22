@@ -23,6 +23,7 @@ pub mod devices;
 pub mod engine;
 pub mod env;
 pub mod geometry;
+pub mod interact;
 pub mod items;
 pub mod jmath;
 pub mod lua;
