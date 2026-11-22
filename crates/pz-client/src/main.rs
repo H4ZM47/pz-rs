@@ -37,7 +37,7 @@ fn usage_error(message: &str) -> ! {
 
 fn option_value(args: &mut impl Iterator<Item = String>, name: &str) -> String {
     args.next()
-        .filter(|value| !value.starts_with("--") && !value.is_empty())
+        .filter(|value| (name == "--seed" || !value.is_empty()) && !value.starts_with("--"))
         .unwrap_or_else(|| usage_error(&format!("{name} requires a value")))
 }
 
