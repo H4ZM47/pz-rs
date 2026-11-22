@@ -73,7 +73,10 @@ pub(crate) fn reset_session_handles() {
 
 /// Make `sm` the instance `register_all` binds.
 pub fn install_script_manager(sm: Rc<ScriptManager>) {
-    SHARED.with(|s| *s.borrow_mut() = Some(sm));
+    let previous = SHARED.with(|s| s.borrow_mut().replace(sm.clone()));
+    if !previous.as_ref().is_some_and(|old| Rc::ptr_eq(old, &sm)) {
+        crate::bind_xui::reset();
+    }
 }
 
 /// The shared ScriptManager (`ScriptManager.instance`), empty if none was

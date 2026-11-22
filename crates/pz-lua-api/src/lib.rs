@@ -210,7 +210,6 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_players::register(&mut mgr.thread);
     bind_search_mode::register(&mut mgr.thread);
     // Core: binds the shared instance (`bind_core::install_core` before init).
-    bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
     bind_core::register(
         &mut mgr.thread,
         Some(mgr.events.clone()),

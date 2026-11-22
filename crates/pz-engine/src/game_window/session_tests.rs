@@ -523,6 +523,8 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         local saved = getPlayer():getModData().rustSessionRegression
         assert(saved.revision == 7)
         assert(saved.nested.value == "retained nested mutation")
+        rustSessionOldSkin = XuiManager.GetDefaultSkin()
+        assert(rustSessionOldSkin ~= nil and not rustSessionOldSkin:isInvalidated())
         rustSessionOldEnvironment = true
         rustSessionOldMenuCount = 0
         Events.OnMainMenuEnter.Add(function() rustSessionOldMenuCount = rustSessionOldMenuCount + 1 end)
@@ -548,6 +550,14 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     assert!(!Rc::ptr_eq(&old_scripts, &pz_lua_api::bind_registry::shared_script_manager()), "menu retained the old script definitions");
     assert!(reloaded.lua.as_ref().unwrap().thread.globals().get_str("rustSessionOldEnvironment").is_nil(), "menu retained old Lua globals");
     assert_eq!(old_globals.get_str("rustSessionOldMenuCount").as_num(), Some(0.0), "old menu callback ran after reset");
+    let lua = reloaded.lua.as_mut().unwrap();
+    lua.thread.globals().set_str("rustPreviousSkin", old_globals.get_str("rustSessionOldSkin"));
+    lua_check(lua, r#"
+        assert(rustPreviousSkin:isInvalidated())
+        local skin = XuiManager.GetDefaultSkin()
+        assert(skin ~= nil and skin ~= rustPreviousSkin and not skin:isInvalidated())
+        rustPreviousSkin = nil
+    "#);
     assert!(matches!(reloaded.launch.start, Start::MainMenu), "startup game settings leaked into future menu loads");
     lua_check(reloaded.lua.as_mut().unwrap(), "getCore():quit()");
     assert!(!run_frames(&mut reloaded, 1), "desktop exit left the client running");
