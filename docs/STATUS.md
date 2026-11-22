@@ -96,7 +96,7 @@ Numbering follows [WORKSTREAMS.md](WORKSTREAMS.md).
 | 10 | Characters, animation, models | `pz-characters`, `pz-anim`, `pz-model`, `pz-character-model`, `pz-ragdoll`, `pz-animals`, `pz-vehicles`, `pz-pathfind`, `pz-popman` | **Libraries ported**, several checked bit-for-bit against the original in isolation (e.g. zombie chase, body damage). Players and zombies update in the loop; pathfinding runs its thread and main updates. Animal, ragdoll, vehicle and ballistics integration remains incomplete. |
 | 11 | Audio | `pz-audio`, `pz-sound`, `pz-world-sound`, `pz-radio` | **Decoding done** (FSB5/Vorbis from FMOD banks). Sound manager ticks per frame; positioned world sounds, fire sounds and radio are not wired. |
 | 12 | Saves | in `pz-world::save`, `pz-core`, `pz-sqlite`, `pz-inventory` (no separate `pz-save` crate) | **Partial.** Chunk files, `map_t.bin`, player load and quit-save exist. Saved worlds load sandbox settings and basement placements. Vehicle persistence, reanimated players and hot saves still have open work. |
-| 13 | Multiplayer | `pz-network` | **Not started.** The crate only holds the offline server list and account database; there is no RakNet protocol, `GameClient` or `GameServer`. |
+| 13 | Multiplayer | `pz-network` | Offline server and account data, packet types and RakNet transport code exist. The gameplay client and server remain unfinished. |
 
 ## What remains
 
@@ -190,9 +190,7 @@ section to search there for exact hook names and call order.
 ### 8. Multiplayer
 - [x] Packet type table (`PacketTypes`: wire ids, send settings, handling
       sides, anti-cheat lists) and role `Capability` in `pz-network`.
-- [ ] Everything else: RakNet transport, `GameClient`, `GameServer`, network
-      character states. Global-object command delivery exists for single
-      player only.
+- [ ] Integrate the RakNet transport into `GameClient` and `GameServer` and implement network character states. Global-object command delivery currently runs in single player.
 
 ### 9. Verification
 - [ ] Parity runs for subsystems only unit-tested so far (ragdolls, vehicles,

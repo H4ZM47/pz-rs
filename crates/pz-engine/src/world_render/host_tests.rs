@@ -122,10 +122,12 @@ fn view3d_frame_makes_no_corpse_atlas_entry() {
 #[test]
 fn surface_passes_read_current_lua_quality_settings() {
     use pz_lua_api::{bind_core, bind_performance};
+    use std::rc::Rc;
     let previous = bind_core::shared_core();
     let core = Rc::new(RefCell::new(pz_core::core::Core::new()));
     bind_core::install_core(core.clone());
     let mut thread = pz_kahlua::Thread::new(pz_kahlua::TableRef::new());
+    pz_kahlua::stdlib::install(&mut thread, None).unwrap();
     bind_performance::register(&mut thread, core.clone());
     let script = pz_kahlua::stdlib::load_string(
         "local p = getPerformance(); p:setWaterQuality(2); p:setPuddlesQuality(1)",
