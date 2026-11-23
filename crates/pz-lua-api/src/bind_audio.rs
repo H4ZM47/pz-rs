@@ -22,6 +22,8 @@
 
 pub use pz_characters::character::player::music::{MusicIntensityEvent, MusicIntensityEvents, INTENSITY_EVENT_CLASS, INTENSITY_EVENTS_CLASS};
 pub use pz_characters::character::player::music::{MusicThreatLevels, MusicThreatStatus, THREAT_STATUS_CLASS};
+mod environment;
+pub use environment::GameEmitterWorld;
 mod world;
 
 use crate::expose::{expose_class, num_arg, str_arg};

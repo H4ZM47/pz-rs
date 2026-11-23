@@ -47,6 +47,7 @@ pub fn install(game_dir: &Path, cache_dir: &Path, fs: Rc<RefCell<pz_fs::GameFs>>
         cache_dir: cache_dir.to_path_buf(),
     };
     let mut system = pz_sound::system::SoundSystem::new(Box::new(backend), env, count);
+    system.world = Box::new(pz_lua_api::bind_audio::GameEmitterWorld);
     system.rand_next = Box::new(pz_core::random::next);
     system.media_file_exists = Box::new(move |p| fs.borrow().absolute_path(p).is_some());
     pz_lua_api::bind_audio::install_sound_system(Rc::new(RefCell::new(system)));
