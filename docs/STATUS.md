@@ -10,7 +10,9 @@ this file, `ENGINE-WIRING.md` is the more current source.
 ## What the project replaces
 
 pz-rs replaces the **executable code** of Project Zomboid Build 42, not its
-content:
+content. The parity target is Build 42.22, the current Steam build (changed
+from 42.21 on 2026-11-23). Where this file names Build 42.21, the result was
+checked against that build and has not been re-checked against 42.22.
 
 | Replaced by Rust | Not replaced (read from your install at runtime) |
 | --- | --- |
@@ -45,9 +47,10 @@ global systems, every expected chunk, and the pose, skin, worn membership and
 item visuals of three mannequins. The first tests reached the main menu while
 logging a failed chunk rewrite. The regression now puts the first-close files
 aside and checks that quitting to menu recreates every resident chunk.
-This run used the port's version 249 save format. Native Build 42.22 writes
-version 251. Native-save interchange and installed Windows/Linux sessions
-still need separate tests.
+This run used the port's version 249 save format, which is Build 42.21's.
+Build 42.22, the parity target, writes version 251, so writing and reading
+version 251 is open work. Native-save interchange and installed Windows/Linux
+sessions still need separate tests.
 
 The installed engine regression also covers the transition from household
 mains water to a local reserve, a rooftop fixture switching between two

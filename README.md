@@ -73,8 +73,12 @@ checklist of what remains.
   through Rosetta both created, saved and reloaded a world in separate
   processes. Windows and Linux x64 clients linked locally. Both still need
   an installed-game run on their native OS.
-* **Game version.** The parity target is Build 42.21. Installed-session
-  results here used Build 42.22.
+* **Game version.** The parity target is Build 42.22, the current Steam
+  build. The port was started against Build 42.21 and parts of it still
+  follow that build: it reports game version 42.21.0, writes save version
+  249 where Build 42.22 writes 251, and its item-creation callbacks were
+  ported from 42.21 bytecode. Results above that name Build 42.21 have not
+  been re-checked against 42.22. Installed-session results used Build 42.22.
 
 ## How results are checked
 
