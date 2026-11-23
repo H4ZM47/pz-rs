@@ -270,7 +270,7 @@ impl Studio {
 
     /// `EventInstance::setParameterByID`.
     pub fn set_parameter_by_id(&mut self, id: InstanceId, pid: (u32, u32), value: f32) {
-        if !self.instances.contains_key(&id) { return; }
+        if !value.is_finite() || !self.instances.contains_key(&id) { return; }
         let Some(g) = self.parameter_by_id(pid) else { return };
         let Some(p) = self.find_parameter(&g).cloned() else { return };
         let v = value.clamp(p.minimum, p.maximum);
@@ -283,6 +283,7 @@ impl Studio {
 
     /// `Studio::System::setParameterByID`.
     pub fn set_global_parameter_by_id(&mut self, pid: (u32, u32), value: f32) {
+        if !value.is_finite() { return; }
         let Some(g) = self.parameter_by_id(pid) else { return };
         let Some(p) = self.find_parameter(&g).cloned() else { return };
         self.global_params.insert(g, value.clamp(p.minimum, p.maximum));
@@ -327,6 +328,7 @@ impl Studio {
 
     /// `EventInstance::setParameterByName` (case-insensitive).
     pub fn set_parameter_by_name(&mut self, id: InstanceId, name: &str, value: f32) -> bool {
+        if !value.is_finite() { return false; }
         let Some(i) = self.instances.get(&id) else { return false };
         let e = self.banks[i.bank].model.events[&i.event].clone();
         for sheet in &e.parameter_sheets {
@@ -356,6 +358,7 @@ impl Studio {
 
     /// `Studio::System::setParameterByName` for global parameters.
     pub fn set_global_parameter(&mut self, name: &str, value: f32) -> bool {
+        if !value.is_finite() { return false; }
         let found = self
             .banks
             .iter()
@@ -1055,6 +1058,30 @@ impl Studio {
 #[cfg(test)]
 mod lifetime_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires installed FMOD banks in PZ_GAME_DIR"]
+    fn nonfinite_camera_zoom_keeps_its_previous_global_value() {
+        let game = std::path::PathBuf::from(std::env::var_os("PZ_GAME_DIR").unwrap());
+        let mut studio = Studio::new(SetupHeaders::from_game_dir(&game).unwrap());
+        for bank in crate::startup_bank_paths(&game) { studio.load_bank(&bank).unwrap(); }
+        // Select an event actually using CameraZoom so both public instance
+        // setters and both system setters address the same bank parameter.
+        let (event, parameter) = studio.event_paths().iter().find_map(|path| {
+            let event = studio.event_by_path(path)?;
+            let zoom = studio.event_info(&event)?.parameters.into_iter().find(|p| p.name == "CameraZoom")?;
+            Some((event, zoom))
+        }).unwrap();
+        let id = studio.create_instance(event).unwrap();
+        studio.set_global_parameter_by_id(parameter.id, 0.375);
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(!studio.set_global_parameter("CameraZoom", invalid));
+            assert!(!studio.set_parameter_by_name(id, "CameraZoom", invalid));
+            studio.set_parameter_by_id(id, parameter.id, invalid);
+            studio.set_global_parameter_by_id(parameter.id, invalid);
+            assert_eq!(studio.global_params.get(&parameter.guid), Some(&0.375));
+        }
+    }
 
     #[test]
     #[ignore = "requires the installed Footsteps event and FSB samples"]
