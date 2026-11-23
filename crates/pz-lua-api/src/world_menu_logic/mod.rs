@@ -12,6 +12,7 @@
 mod entries;
 mod fetch;
 mod helpers;
+mod object_power;
 mod reads;
 mod sprite_grid;
 
@@ -25,6 +26,7 @@ const CLASS: &str = "zombie.iso.ISWorldObjectContextMenuLogic";
 pub(crate) fn register(thread: &mut Thread) {
     reads::register(thread);
     sprite_grid::register(thread);
+    object_power::register(thread);
     let class = expose_class(thread, CLASS, None);
     // fetch(fetch, object, player, doSquare)
     class.static_fn("fetch", |c| {

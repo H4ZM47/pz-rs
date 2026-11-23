@@ -537,6 +537,7 @@ impl GameState for IngameState {
             call_global(cx.lua, "SadisticMusicDirectorTick");
             // TODO(port): `ObjectAmbientEmitters.update`.
             self.number_ticks += 1;
+            pz_lua_api::bind_misc::set_ingame_tick(self.number_ticks);
         }
         // `GameWindow.save` that Lua (`save`) or `SleepingEvent.wakeUp`
         // asked for during this update.

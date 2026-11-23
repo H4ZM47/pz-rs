@@ -804,6 +804,8 @@ pub struct IsoObject {
     square: ObjectSquare,
     /// Native Sprite/texture work not represented by this data-profile object.
     pub pending_floor_visual_tail: Option<FloorVisualTail>,
+    /// IsoObject.checkObjectPowered caches the last result for one IngameState tick.
+    pub power_cache: std::cell::Cell<(Option<u64>, bool)>,
     /// `tile`: the map tile name the object was created from.
     pub tile: Option<String>,
     pub sx: f32,
@@ -860,6 +862,7 @@ impl Clone for IsoObject {
             kind: self.kind.clone(),
             sprite: self.sprite.clone(),
             square: ObjectSquare::default(),
+            power_cache: Default::default(),
             pending_floor_visual_tail: self.pending_floor_visual_tail.clone(),
             tile: self.tile.clone(),
             sx: self.sx.clone(),
@@ -943,6 +946,7 @@ impl IsoObject {
             kind,
             sprite: ObjectSprite::from_tile(sprite),
             square: ObjectSquare::default(),
+            power_cache: Default::default(),
             pending_floor_visual_tail: None,
             tile: None,
             sx: 0.0,

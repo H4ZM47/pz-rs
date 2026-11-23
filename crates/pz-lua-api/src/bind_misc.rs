@@ -661,6 +661,7 @@ pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>, events: EventManag
 
 thread_local! {
     /// `GameWindow.isIngameState()`.
+    static INGAME_TICK: Cell<u64> = const { Cell::new(0) };
     static INGAME_STATE: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -669,10 +670,19 @@ pub fn is_ingame_state() -> bool {
     INGAME_STATE.with(Cell::get)
 }
 
+pub(crate) fn ingame_tick() -> Option<u64> {
+    is_ingame_state().then(|| INGAME_TICK.with(Cell::get))
+}
+
+pub fn set_ingame_tick(tick: u64) {
+    INGAME_TICK.with(|current| current.set(tick));
+}
+
 /// Sets what `isIngameState()` answers: the engine calls it when
 /// `IngameState` becomes (or stops being) the current or a listed state.
 pub fn set_ingame_state(ingame: bool) {
     INGAME_STATE.with(|c| c.set(ingame));
+    INGAME_TICK.with(|c| c.set(0));
 }
 
 // ---- zombie.ui.UITransition ---------------------------------------------------------

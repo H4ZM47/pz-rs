@@ -477,6 +477,32 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
             end
         end
         assert(checkGrid(), "no multi-square furniture found near the player")
+        local function checkFridge()
+            for y = square:getY()-8, square:getY()+8 do
+                for x = square:getX()-8, square:getX()+8 do
+                    local sq = getCell():getGridSquare(x, y, square:getZ())
+                    local objects = sq and sq:getObjects()
+                    if objects then
+                        for i = 0, objects:size()-1 do
+                            local object = objects:get(i)
+                            local container = object:getContainerByEitherType("fridge", "freezer")
+                            if container and sq:getRoom() and not sq:isNoPower() then
+                                local shut = sb:getElecShutModifier()
+                                sb:set("ElecShutModifier", 365)
+                                assert(ItemContainer.isObjectPowered(object, false))
+                                assert(container:isPowered() and object:checkObjectPowered())
+                                sb:set("ElecShutModifier", -1)
+                                assert(not ItemContainer.isObjectPowered(object, false))
+                                assert(container:isPowered(), "object power must be stable during a game tick")
+                                sb:set("ElecShutModifier", shut)
+                                return true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        assert(checkFridge(), "no indoor fridge near player")
         assert(not square:isDerelict() or (square:isNoPower() and square:isNoWater()))
     "#);
     let room = app.lua.as_ref().unwrap().thread.globals().get_str("rustAmbientRoom").as_num().unwrap() as f32;
