@@ -2729,6 +2729,7 @@ pub(crate) mod tests {
         sm.builtin_tables.borrow_mut().body_parts = ["Torso_Upper", "MAX"].map(|field| {
             pz_scripts::registry::builtin::BodyPartDecl { field: field.into(), ..Default::default() }
         }).to_vec();
+        sm.builtin_tables.borrow_mut().metabolics.push(("Default".into(), 1.0));
         let mut body = pz_characters::character::BodyDamage::new(&sm, true);
         body.parts[0].bitten = true;
         player.borrow_mut().body_damage = body;
