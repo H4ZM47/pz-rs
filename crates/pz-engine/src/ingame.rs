@@ -492,6 +492,7 @@ impl GameState for IngameState {
         // TODO(port): the `ScreenFader` fade to black, rendering the world
         // until it ends; `RenderThread.setWaitForRenderState(false)`.
         if let Some(w) = cx.world.as_mut() {
+            w.reset_ragdolls();
             if let Some(models) = w.models.take() {
                 cx.retired_models.push(models);
             }

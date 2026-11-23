@@ -2019,6 +2019,7 @@ dependencies = [
  "pz-player-input",
  "pz-popman",
  "pz-radio",
+ "pz-ragdoll",
  "pz-render",
  "pz-sandbox",
  "pz-scripts",

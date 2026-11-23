@@ -135,6 +135,7 @@ mod animation_bridge_tests {
                 models: RefCell::new(Some(&mut models)),
                 animation_time_delta: 0.5,
                 floor_world: None,
+                bullet: None,
             };
             let mut world = StatesWorldAdapter::new(
                 &mut cell,
@@ -204,6 +205,7 @@ struct EngineStates<'a> {
     models: RefCell<Option<&'a mut WorldModels>>,
     animation_time_delta: f32,
     floor_world: Option<Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
+    bullet: Option<crate::world_vehicles::SharedBullet>,
 }
 
 impl StatesEngine for EngineStates<'_> {
@@ -407,6 +409,64 @@ impl StatesEngine for EngineStates<'_> {
             .as_deref()
             .is_some_and(|m| m.primary_hand_model_ready(chr))
     }
+    fn physics(&mut self) -> Option<&mut dyn pz_characters::character::firearm::PhysicsWorld> {
+        self.bullet
+            .as_mut()
+            .map(|b| b as &mut dyn pz_characters::character::firearm::PhysicsWorld)
+    }
+    fn muzzle_attachment(
+        &self,
+        chr: i32,
+    ) -> Option<pz_characters::character::firearm::MuzzleAttachment> {
+        let pos = local_players()
+            .iter()
+            .flatten()
+            .find_map(|p| {
+                let c = p.try_borrow().ok()?;
+                (c.id == chr).then_some([c.vars.x, c.vars.y, c.vars.z])
+            })
+            .unwrap_or([0.0; 3]);
+        self.models
+            .borrow()
+            .as_deref()
+            .and_then(|m| m.muzzle_attachment(chr, pos))
+    }
+    fn aim_reticle_iso(&self, chr: i32) -> (f32, f32) {
+        use pz_characters::character::player::PlayerInput;
+        let Some(sim) = self.sim else {
+            return (0.0, 0.0);
+        };
+        let input = sim.player_input();
+        local_players()
+            .iter()
+            .flatten()
+            .find_map(|p| {
+                let c = p.try_borrow().ok()?;
+                if c.id != chr {
+                    return None;
+                }
+                let p_idx = c.player.player_index;
+                let rx = c.aiming_reticle_x(input);
+                let ry = c.aiming_reticle_y(input);
+                Some(input.screen_to_iso(p_idx, rx, ry, c.vars.z))
+            })
+            .unwrap_or((0.0, 0.0))
+    }
+    fn ballistics_skeleton(
+        &self,
+        chr: i32,
+    ) -> Option<pz_characters::character::firearm::TargetSkeleton> {
+        self.models
+            .borrow()
+            .as_deref()
+            .and_then(|m| m.ballistics_skeleton(chr))
+    }
+    fn ragdoll_pelvis(&self, chr: i32) -> Option<[f32; 3]> {
+        self.models
+            .borrow()
+            .as_deref()
+            .and_then(|m| m.ragdoll_pelvis(chr))
+    }
 }
 
 /// The local players' current squares, for [`EngineStates::movers`].
@@ -557,6 +617,7 @@ fn with_states_characters_and_path<R>(
             models: RefCell::new(models),
             animation_time_delta,
             floor_world: floor_world.cloned(),
+            bullet: crate::world_vehicles::shared_bullet(),
         };
         let mut sprites = sprites.borrow_mut();
         let sounds = pz_lua_api::bind_zombie::shared_world_sounds();
@@ -981,6 +1042,7 @@ impl IsoWorld {
                             return Err(error.into());
                         }
                         let from = sim.events.borrow().len();
+                        z.update_ballistics_target(sim, &mut *w);
                         let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
                         let result = z.update_zombie(reg, action_groups, &mut cx);
                         let state = cx.state_result();
@@ -1255,6 +1317,23 @@ impl IsoWorld {
                     pz_lua_api::bind_audio::sound_system().borrow_mut().play_world_clip(&name,
                         [x as f32 + 0.5, y as f32 + 0.5, z as f32], true);
                 }
+                SimEvent::BulletHitSound { chr: target_id, sound, .. } => {
+                    let pos = self
+                        .zombies
+                        .iter()
+                        .find(|z| z.id == target_id)
+                        .map(|z| [z.vars.x, z.vars.y, z.vars.z])
+                        .or_else(|| {
+                            local_players().iter().flatten().find_map(|p| {
+                                let c = p.try_borrow().ok()?;
+                                (c.id == target_id).then_some([c.vars.x, c.vars.y, c.vars.z])
+                            })
+                        })
+                        .unwrap_or([0.0; 3]);
+                    pz_lua_api::bind_audio::sound_system()
+                        .borrow_mut()
+                        .play_world_clip(&sound, pos, true);
+                }
                 SimEvent::RoomAlarm(room) => {
                     if let Err(error) = pz_lua_api::bind_world::power::trigger_room_alarm(room) {
                         self.log_update_error(format!("AmbientStreamManager.doAlarm: {error}"));
@@ -1502,6 +1581,7 @@ impl IsoWorld {
             regions,
             render,
             zombies,
+            models,
             ..
         } = self;
         let (Some(sprites), Some(doors)) = (sprites.as_ref(), door_tables.as_ref()) else {
@@ -1551,8 +1631,28 @@ impl IsoWorld {
                         None => continue,
                     },
                 };
+                let ragdoll_bones = models
+                    .as_ref()
+                    .and_then(|m| m.corpse_ragdoll_bones(*id, z.vars.ragdoll_fall));
+                if let Some(mut bullet) = crate::world_vehicles::shared_bullet() {
+                    if let Some(mut target) = z.ballistics_target.take() {
+                        target.release(z.id, Some(&mut bullet));
+                    }
+                    if let Some(mut ctrl) = z.ballistics_controller.take() {
+                        ctrl.release(z.id, Some(&mut bullet));
+                        shared_characters()
+                            .borrow()
+                            .combat
+                            .borrow_mut()
+                            .controller_pool
+                            .push(*ctrl);
+                    }
+                }
                 let mut corpse = None;
-                let result = z.become_dead_body(death_time, |body| {
+                let result = z.become_dead_body(death_time, |mut body| {
+                    if body.ragdoll.is_none() {
+                        body.ragdoll = ragdoll_bones;
+                    }
                     // `chr.getCurrentSquare()`, else `getGridSquare(x, y, z)`.
                     let pos = (
                         body.base.x.floor() as i32,
@@ -1659,6 +1759,32 @@ impl IsoWorld {
                 let initial = models.action_movement_modifiers(&p.borrow());
                 let modifiers = initial
                     .map(|m| pz_lua_api::timed_actions::movement_modifiers(&mut lua.thread, &p, m));
+                if let (Some(sprites), Some(wr)) =
+                    (self.sprites.as_ref(), self.ragdolls.as_mut())
+                {
+                    let mut out = None;
+                    let ran = with_states_and_characters(
+                        sprites,
+                        &mut self.states_runtime,
+                        None,
+                        sim,
+                        self.floor_world.as_ref(),
+                        Some(&mut self.zombies),
+                        |w| {
+                            let chars = chars.borrow();
+                            let cx = StateCx::new(&sm, &chars, sim, w);
+                            out = Some(models.finish_character_update_with_ragdoll(
+                                &mut p.borrow_mut(),
+                                dt,
+                                modifiers,
+                                Some((wr, cx, sim.multiplier)),
+                            ));
+                        },
+                    );
+                    if ran.is_some() {
+                        return out.unwrap();
+                    }
+                }
                 models.finish_character_update(&mut p.borrow_mut(), dt, modifiers)
             });
             match events {
@@ -1732,7 +1858,44 @@ impl IsoWorld {
                     errors.push(format!("ModelManager.dressInRandomOutfit: {e}"));
                 }
             }
-            match models.update_character(chr, dt, days) {
+            let prepared = models.update_character_before_action_modifiers(chr, dt, days);
+            let update_res = prepared.and_then(|()| {
+                if let (Some(sprites), Some(wr)) =
+                    (self.sprites.as_ref(), self.ragdolls.as_mut())
+                {
+                    let mut out = None;
+                    let ran = with_states_and_characters(
+                        sprites,
+                        &mut self.states_runtime,
+                        None,
+                        sim,
+                        self.floor_world.as_ref(),
+                        Some(&mut self.zombies),
+                        |w| {
+                            let Some(mut z) = StateWorld::<LuaItem>::take_character(w, id) else {
+                                return;
+                            };
+                            let chars = chars.borrow();
+                            let cx = StateCx::new(&sm, &chars, sim, w);
+                            out = Some(models.finish_character_update_with_ragdoll(
+                                &mut z,
+                                dt,
+                                None,
+                                Some((wr, cx, sim.multiplier)),
+                            ));
+                            StateWorld::<LuaItem>::put_character(w, z);
+                        },
+                    );
+                    if let (Some(()), Some(res)) = (ran, out) {
+                        return res;
+                    }
+                }
+                let Some(chr) = self.zombies.iter_mut().find(|z| z.id == id) else {
+                    return Ok(Vec::new());
+                };
+                models.finish_character_update(chr, dt, None)
+            });
+            match update_res {
                 Ok(events) if !events.is_empty() => {
                     if let Some(sprites) = self.sprites.as_ref() {
                         let result = with_states_and_characters(
@@ -1781,7 +1944,7 @@ impl IsoWorld {
             return self.finish_state_host_fault(lua, None, sim, Vec::new(), error);
         }
         self.fire_sim_events(lua, None, sim);
-        models.retain_characters(ids);
+        models.retain_characters_with_ragdolls(ids, self.ragdolls.as_mut());
         self.models = Some(models);
         for e in errors {
             self.log_update_error(format!("ModelManager.update: {e}"));
@@ -1859,6 +2022,7 @@ impl IsoWorld {
                 models: RefCell::new(models.as_mut()),
                 animation_time_delta,
                 floor_world: floor_world.clone(),
+                bullet: crate::world_vehicles::shared_bullet(),
             };
             let mut adapter = StatesWorldAdapter::new(
                 cell,

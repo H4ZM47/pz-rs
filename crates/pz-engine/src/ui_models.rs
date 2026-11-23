@@ -292,6 +292,38 @@ impl Assets {
         Some(sd)
     }
 
+    /// Loads the `Skinned/MaleBody` skeleton and `Bob/Bob_TPose` clip used by
+    /// `RagdollBuilder::initialize`.
+    pub(crate) fn ragdoll_tpose(
+        &self,
+    ) -> Option<(pz_anim::skeleton::Skeleton, pz_anim::clip::AnimClip)> {
+        let (mesh_path, mesh_ty) =
+            resolve_model_file(&self.media, "Skinned/MaleBody", AssetKind::Mesh)?;
+        let scene = load_mesh(
+            &std::fs::read(mesh_path).ok()?,
+            mesh_ty.import_format()?,
+            &MeshParams::default(),
+        )
+        .ok()?;
+        let sd = scene.skeleton?;
+        let (anim_path, anim_ty) =
+            resolve_model_file(&self.media, "Bob/Bob_TPose", AssetKind::Animation)?;
+        let clips = load_animation(
+            &std::fs::read(anim_path).ok()?,
+            anim_ty.import_format()?,
+            Some(&sd),
+        )
+        .ok()?;
+        let clip = clips
+            .values()
+            .find(|c| c.name.eq_ignore_ascii_case("Bob_TPose"))
+            .or_else(|| clips.values().next())?;
+        Some((
+            pz_anim::skeleton::Skeleton::from_skinning_data(&sd),
+            pz_anim::clip::AnimClip::from_model(clip),
+        ))
+    }
+
     /// `OutfitManager.getClothingItem(name)` from
     /// `media/clothing/clothingItems/<name>.xml`.
     pub(crate) fn clothing_item(&mut self, name: &str) -> Option<Rc<ClothingItem>> {

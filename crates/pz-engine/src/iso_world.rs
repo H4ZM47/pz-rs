@@ -246,6 +246,8 @@ pub struct IsoWorld {
     pub models: Option<crate::world_models::WorldModels>,
     /// Bullet physics, runtime vehicles and vehicle rendering state.
     pub vehicles_runtime: Option<crate::world_vehicles::WorldVehicles>,
+    /// Bullet ragdoll scripts, builder and active simulation tracking.
+    pub ragdolls: Option<crate::world_ragdolls::WorldRagdolls>,
     /// Errors of steps that failed without stopping the load (the
     /// original's `ExceptionLogger.logException` calls).
     pub errors: Vec<String>,
@@ -370,6 +372,7 @@ impl IsoWorld {
             floor_session: None,
             models: None,
             vehicles_runtime: None,
+            ragdolls: None,
             errors: Vec::new(),
         }
     }
@@ -912,6 +915,7 @@ impl IsoWorld {
             &sb,
             (wx - chunk_grid_width / 2, wy - chunk_grid_width / 2, chunk_grid_width),
         );
+        self.init_ragdolls();
         self.with_stream(|s, cell, ctx| s.stage_initial_world(wx, wy, cell, ctx));
         // `ClimateManager.postCellLoadSetSnow()`.
         let snow = pz_lua_api::bind_climate::post_cell_load_set_snow(&mut lua.thread);
