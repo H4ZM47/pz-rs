@@ -272,6 +272,15 @@ pub(crate) fn drain_retired_world_objects() {
 }
 
 impl IsoWorld {
+    pub(crate) fn apply_snow_effects(&self, effects: pz_lua_api::bind_climate::SnowEffects) {
+        if let Some(target) = effects.target {
+            pz_lua_api::bind_world::set_snow_target(target);
+        }
+        if let (Some(snow), Some(erosion), Some(sprites)) = (effects.ice_queen, &self.erosion, &self.sprites) {
+            erosion.borrow_mut().ice_queen.set_snow(&sprites.borrow(), snow);
+        }
+    }
+
     /// `new IsoWorld()` for the save `<cache>/Saves/<Core.gameMode>/<Core.gameSaveWorld>`.
     pub fn new(game_dir: &Path, cache_dir: &Path, save_dir: PathBuf) -> Self {
         IsoWorld {
@@ -860,9 +869,7 @@ impl IsoWorld {
         self.hand_off_events();
         // `ClimateManager.postCellLoadSetSnow()`.
         let snow = pz_lua_api::bind_climate::post_cell_load_set_snow(&mut lua.thread);
-        // TODO(port): `IsoCell.setSnowTarget` and `ErosionIceQueen.setSnow`
-        // from the returned effects.
-        let _ = snow;
+        self.apply_snow_effects(snow);
         // TODO(port): `MapCollisionData.instance.start()` (the worker
         // thread starts in `startGame`); `MapItem.LoadWorldMap()`.
         // The streamer ran until idle and every chunk was handed off

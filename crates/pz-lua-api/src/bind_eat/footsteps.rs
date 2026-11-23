@@ -52,7 +52,7 @@ fn materials(chr: &LuaGameCharacterRef) -> LuaResult<(usize, u8)> {
             };
         }
     }
-    let primary = if above { 0 } else { material.unwrap_or_else(|| if square.has_stairs(&manager) { 7 } else { 2 }) };
+    let primary = if above { 0 } else if crate::bind_world::snow::square_is_snow(square.x, square.y, square.z)? { 6 } else { material.unwrap_or_else(|| if square.has_stairs(&manager) { 7 } else { 2 }) };
     Ok((primary, overlay))
 }
 

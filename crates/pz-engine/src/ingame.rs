@@ -94,9 +94,8 @@ impl IngameState {
         // `ClimateManager.update`. TODO(port): `allPlayersAsleep` (the
         // climate settings' `all_players_asleep`).
         pz_lua_api::bind_climate::update_game_time(&mut cx.lua.thread);
-        // TODO(port): apply `bind_climate::take_snow_effects()`
-        // (`IsoCell.setSnowTarget`, `ErosionIceQueen.setSnow`).
-        let _ = pz_lua_api::bind_climate::take_snow_effects();
+        let snow = pz_lua_api::bind_climate::take_snow_effects();
+        if let Some(w) = &cx.world { w.apply_snow_effects(snow); }
         let sim = FrameSim::capture();
         let (hearing, fire_spread) = match sandbox(cx.lua) {
             Some(sb) => {

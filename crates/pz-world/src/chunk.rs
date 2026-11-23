@@ -1158,6 +1158,8 @@ pub fn load_cell_binary_chunk(
 /// `IsoCell`: loaded chunks keyed by chunk coordinates.
 #[derive(Default)]
 pub struct IsoCell {
+    /// IsoCell.snowFracTarget, set by ClimateManager.
+    pub snow_target: i32,
     pub chunks: HashMap<(i32, i32), IsoChunk>,
     pub drag: crate::cell_drag::CellDrag,
     pub process_items: crate::process_items::ProcessItemQueues,

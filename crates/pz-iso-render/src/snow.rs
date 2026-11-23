@@ -87,6 +87,12 @@ impl Noise2D {
         self.layers.push(NoiseLayer { freq, amp, p });
     }
 
+    /// The full tile test used by SnowGrid.init and gridSquareIsSnow. The
+    /// second grid pass adds edge decorations and never adds a full tile.
+    pub fn full_snow_tile(&self, x: i32, y: i32, fraction: i32) -> bool {
+        self.layered_noise(x.rem_euclid(256) as f32 / 10.0, y.rem_euclid(256) as f32 / 10.0) <= fraction as f32 / 100.0
+    }
+
     /// The snow noise: `initSnowGrid`'s three layers.
     pub fn snow() -> Self {
         let mut n = Noise2D::default();
@@ -192,9 +198,7 @@ impl SnowGrid {
                         continue;
                     }
                 }
-                let nx = (world_x + x).rem_euclid(256);
-                let ny = (world_y + y).rem_euclid(256);
-                if noise.layered_noise(nx as f32 / 10.0, ny as f32 / 10.0) <= frac as f32 / 100.0 {
+                if noise.full_snow_tile(world_x + x, world_y + y, frac) {
                     g.grid[x as usize][y as usize][0] = Some((SQUARE.get_at(world_x + x, world_y + y, min_x), SQUARE.id));
                 }
             }

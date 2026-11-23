@@ -29,6 +29,8 @@ use std::rc::{Rc, Weak};
 mod cell_drag;
 mod runtime_rooms;
 pub mod lua_world;
+pub mod snow;
+pub use snow::set_snow_target;
 mod reachability;
 mod player_vehicles;
 mod square_walk;
@@ -1851,6 +1853,19 @@ fn register_iso_cell(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::e
     get(&b, "getMaxFloors", |c| {
         self_cell(c)?;
         Ok(32.into())
+    });
+    get(&b, "getSnowTarget", |c| {
+        self_cell(c)?;
+        Ok(Value::from(with_world(|w| w.cell.as_ref().map_or(0, |cell| cell.snow_target))))
+    });
+    get(&b, "setSnowTarget", |c| {
+        self_cell(c)?;
+        set_snow_target(int_arg(c, 1));
+        Ok(Value::Nil)
+    });
+    get(&b, "gridSquareIsSnow", |c| {
+        self_cell(c)?;
+        Ok(Value::Bool(snow::square_is_snow(int_arg(c, 1), int_arg(c, 2), int_arg(c, 3))?))
     });
     get(&b, "getGridSquare", |c| {
         self_cell(c)?;
