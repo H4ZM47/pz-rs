@@ -102,7 +102,7 @@ pub fn square_is_snow(x: i32, y: i32, z: i32) -> LuaResult<bool> {
             .try_borrow()
             .map_err(|_| RuntimeHostError::Borrowed("snow square"))?;
         let flags = &sprites.tables.flag;
-        if sq.room_id != -1
+        if w.square_in_room(&sq)?
             || !sq.has(flags.solidfloor)
             || !sq.has(flags.exterior)
             || water_valid(cell, &sq, &sprites, &flow)?

@@ -339,6 +339,8 @@ pub struct RenderSquare {
     /// `getPuddles()`, initialised (`IsoPuddlesGeometry.init`); `None`
     /// draws no puddles.
     pub puddles: Option<crate::puddles::PuddlesGeometry>,
+    /// Recalculated square exterior flag, including enclosure and roof overrides.
+    pub exterior: Option<bool>,
     /// Snapshot of the actual square's `hasFlies()`, changed by FliesSound.
     pub flies: bool,
 }
@@ -431,12 +433,16 @@ impl Default for SquareCutawayInfo {
 
 impl RenderSquare {
     pub fn new(x: i32, y: i32, z: i32) -> Self {
-        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, seam: SeamNeighbours::default(), cut: SquareCutawayInfo::default(), water: None, puddles: None, flies: false }
+        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, seam: SeamNeighbours::default(), cut: SquareCutawayInfo::default(), water: None, puddles: None, exterior: None, flies: false }
     }
 
     /// `getProperties().has(flag)`: any object's sprite has it.
     pub fn has(&self, f: impl Fn(&SpriteFlags) -> bool) -> bool {
         self.objects.iter().any(|o| o.sprite.as_ref().is_some_and(|s| f(&s.flags)))
+    }
+
+    pub fn is_exterior(&self) -> bool {
+        self.exterior.unwrap_or_else(|| self.has(|f| f.exterior))
     }
 
     /// `getWaterObject()`: the first object with a `water` sprite.

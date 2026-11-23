@@ -80,6 +80,27 @@ pub struct WorldState {
     pub weather_fx: Option<Rc<RefCell<pz_iso_render::weather_fx::IsoWeatherFx>>>,
 }
 
+impl WorldState {
+    pub(crate) fn square_in_room(&self, sq: &pz_world::IsoGridSquare) -> pz_entity::runtime_load::HostResult<bool> {
+        use pz_entity::runtime_load::RuntimeHostError;
+        if self.meta_grid
+            .as_ref()
+            .is_some_and(|m| sq.room_def(m).is_some())
+        {
+            return Ok(true);
+        }
+        let Some(regions) = &self.regions else {
+            return Ok(false);
+        };
+        let regions = regions
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("IsoRegions"))?;
+        Ok(sq
+            .get_iso_world_region(&regions)
+            .is_some_and(|id| regions.is_player_room(id)))
+    }
+}
+
 thread_local! {
     static WORLD: RefCell<WorldState> = RefCell::default();
     /// Generations of the meta grid and of the cell, for stale handles.

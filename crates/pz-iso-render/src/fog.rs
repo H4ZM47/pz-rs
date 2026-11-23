@@ -182,7 +182,7 @@ impl FogSquare {
     /// square's merged properties), in a room when it has one.
     pub fn of(sq: &RenderSquare) -> Self {
         FogSquare {
-            exterior: sq.objects.iter().any(|o| o.flags().exterior),
+            exterior: sq.is_exterior(),
             in_room: sq.cut.room.is_some(),
         }
     }

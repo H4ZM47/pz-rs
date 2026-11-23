@@ -265,7 +265,7 @@ fn puddles_are_drawn_per_frame_below_quality_two() {
 fn snow_covers_outdoor_floors_in_winter() {
     let Ok(mut gpu) = pz_gpu::Gpu::new_headless(W, H) else { return };
     let mut tm = TextureManager::new();
-    let world = puddle_world(&mut tm);
+    let mut world = puddle_world(&mut tm);
     let maps = Maps(depth_map(&mut tm));
     let mut map = HashMap::new();
     for i in 0..48 {
@@ -276,6 +276,16 @@ fn snow_covers_outdoor_floors_in_winter() {
     let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(surfaces(&world, &textures, SurfaceSettings::default(), winter, PuddlesState::default())));
     let p = draw(&mut gpu, &mut tm, &r, &world);
     assert_eq!(px(&p, 256, 160), [250, 250, 255, 255]);
+    // A roof clears the square flag even when its ground sprite is exterior.
+    for square in world.squares.values_mut() {
+        square.exterior = Some(false);
+    }
+    let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(surfaces(&world, &textures, SurfaceSettings::default(), winter, PuddlesState::default())));
+    let p = draw(&mut gpu, &mut tm, &r, &world);
+    assert_eq!(px(&p, 256, 160), [200, 100, 50, 255]);
+    for square in world.squares.values_mut() {
+        square.exterior = Some(true);
+    }
     // Autumn: no snow.
     let autumn = ClimateInputs { snow_target: 100, winter: false, ..Default::default() };
     let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(surfaces(&world, &textures, SurfaceSettings::default(), autumn, PuddlesState::default())));

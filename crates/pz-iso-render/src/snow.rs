@@ -347,7 +347,7 @@ pub fn render_snow(s: &Surfaces<'_>, tex: ChunkTexture, level: i32, floors: &[&R
     let (xoff, yoff) = tex.record_offset();
     let mut d = SnowDraw { s, out, z: 0.0 };
     for sq in floors {
-        if sq.cut.room.is_some() || !has(sq, |f| f.exterior) || !has(sq, |f| f.solidfloor) {
+        if sq.cut.room.is_some() || !sq.is_exterior() || !has(sq, |f| f.solidfloor) {
             continue;
         }
         let shore = if has(sq, |f| f.water) || water_valid(sq) {
@@ -459,10 +459,9 @@ fn render_snow_tile(s: &Surfaces<'_>, d: &mut SnowDraw<'_, '_>, grid: &SnowGrid,
         _ => return,
     }
     if let Some(t) = t1 {
-        let var = ((sq.x + sq.y) % t.len as i32) as usize;
-        d.tile(t.tiles[var], sx, sy, *cols, square);
+        d.tile(t.get_at(sq.x, sq.y, 0), sx, sy, *cols, square);
         if let Some(t2) = t2 {
-            d.tile(t2.tiles[var], sx, sy, *cols, false);
+            d.tile(t2.get_at(sq.x, sq.y, 0), sx, sy, *cols, false);
         }
     }
 }
@@ -472,7 +471,7 @@ pub fn square_is_snow(s: &Surfaces<'_>, sq: &RenderSquare) -> bool {
     if s.climate.snow_target <= 0 {
         return false;
     }
-    if !has(sq, |f| f.solidfloor) || has(sq, |f| f.water) || water_valid(sq) || !has(sq, |f| f.exterior) || sq.cut.room.is_some() {
+    if !has(sq, |f| f.solidfloor) || has(sq, |f| f.water) || water_valid(sq) || !sq.is_exterior() || sq.cut.room.is_some() {
         return false;
     }
     let (wx, wy) = (sq.x.div_euclid(8), sq.y.div_euclid(8));

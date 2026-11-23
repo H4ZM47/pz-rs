@@ -33,7 +33,7 @@ impl RenderWorld {
         let neighbours = WATER_NEIGHBOURS.map(|(dx, dy)| flag_at(sq.x + dx, sq.y + dy, sq.z));
         let init = WaterInit {
             water,
-            exterior: sq.has(|f| f.exterior),
+            exterior: sq.is_exterior(),
             shore_zone: flow.get_shore(sq.x, sq.y),
             floor_sprite: floor,
             neighbours,

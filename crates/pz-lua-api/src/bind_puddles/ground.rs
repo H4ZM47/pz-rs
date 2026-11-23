@@ -12,21 +12,7 @@ pub fn ground_level((x, y, z): (i32, i32, i32)) -> LuaResult<f32> {
         let sq = sq
             .try_borrow()
             .map_err(|_| RuntimeHostError::Borrowed("puddle square"))?;
-        if w.meta_grid
-            .as_ref()
-            .is_some_and(|m| sq.room_def(m).is_some())
-        {
-            return Ok(true);
-        }
-        let Some(regions) = &w.regions else {
-            return Ok(false);
-        };
-        let regions = regions
-            .try_borrow()
-            .map_err(|_| RuntimeHostError::Borrowed("IsoRegions"))?;
-        Ok(sq
-            .get_iso_world_region(&regions)
-            .is_some_and(|id| regions.is_player_room(id)))
+        w.square_in_room(&sq)
     })
     .map_err(host_error)?;
     if room {

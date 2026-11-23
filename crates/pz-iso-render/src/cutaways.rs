@@ -471,7 +471,7 @@ fn buildings_in_front_of_square(world: &dyn CutawayWorld, x: i32, y: i32, z: i32
 /// `IsoCell.IsBehindStuff`: whether anything above could hide the square
 /// (the old roof-hiding test; `hideFloors`).
 pub fn is_behind_stuff(world: &dyn CutawayWorld, sq: &RenderSquare) -> bool {
-    if !has(sq, |f| f.exterior) {
+    if !sq.is_exterior() {
         return true;
     }
     let mut z = 1;

@@ -83,3 +83,36 @@ pub(crate) fn save(
         _ => unreachable!("only screenshot requests are drained"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn crop_converts_gl_origin_and_zero_fills_offscreen_pixels() {
+        let root = std::env::temp_dir().join(format!("pz-frame-crop-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let frame: Vec<u8> = (0..24).collect();
+        let crop = CoreRequest::Screenshot {
+            x: -1,
+            y: 0,
+            width: 3,
+            height: 1,
+            read_buffer: 1028,
+        };
+        save(crop, (3, 2), &frame, &root, Some(&root)).unwrap();
+        let mut expected = vec![0; 4];
+        expected.extend_from_slice(&frame[12..20]);
+        assert_eq!(
+            std::fs::read(root.join(THUMB_FILE)).unwrap(),
+            stbi_write_png(&expected, 3, 1, 4, false)
+        );
+        let invalid = CoreRequest::FullScreenshot(Some("../escaped.png".into()));
+        assert_eq!(
+            save(invalid, (3, 2), &frame, &root, None)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidInput
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

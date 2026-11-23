@@ -563,3 +563,19 @@ fn render_context_receives_vsync_changes_without_consuming_other_core_requests()
     assert!(core.take_vsync_requests().is_empty());
     assert_eq!(core.take_requests(), [CoreRequest::Exit, CoreRequest::FullScreenshot(None)]);
 }
+
+#[test]
+fn frame_capture_only_drains_screenshots_in_call_order() {
+    let mut core = Core::new();
+    core.set_option_vsync(false);
+    core.take_full_screenshot(Some("winter.png")).unwrap();
+    core.pending_requests.push(CoreRequest::Exit);
+    core.take_screenshot_at(-1, 2, 3, 4, 1028);
+    assert!(core.screenshot_requested());
+    assert_eq!(core.take_screenshot_requests(), [
+        CoreRequest::FullScreenshot(Some("winter.png".into())),
+        CoreRequest::Screenshot { x: -1, y: 2, width: 3, height: 4, read_buffer: 1028 },
+    ]);
+    assert!(!core.screenshot_requested());
+    assert_eq!(core.take_requests(), [CoreRequest::VSync(false), CoreRequest::Exit]);
+}

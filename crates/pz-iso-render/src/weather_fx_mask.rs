@@ -53,7 +53,7 @@ pub trait FxMaskWorld {
     fn square(&self, x: i32, y: i32, z: i32) -> Option<&RenderSquare>;
     /// `gs.has(IsoFlagType.exterior)`.
     fn is_exterior(&self, sq: &RenderSquare) -> bool {
-        sq.has(|f| f.exterior)
+        sq.is_exterior()
     }
     /// `gs.getIsoWorldRegion()`, or `IsoRegions.getIsoWorldRegion(x, y,
     /// z)` where there is no square.

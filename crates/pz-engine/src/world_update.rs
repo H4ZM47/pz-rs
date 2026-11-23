@@ -737,7 +737,7 @@ impl IsoWorld {
                 Some(r) => (
                     square
                         .and_then(|at| r.world.squares.get(&at))
-                        .is_some_and(|sq| !sq.has(|f| f.exterior)),
+                        .is_some_and(|sq| !sq.is_exterior()),
                     r.fx_mask_to_draw[0],
                 ),
                 None => (false, false),
