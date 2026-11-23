@@ -71,7 +71,7 @@ fn with_square<R>(
     })
 }
 
-pub(crate) fn square_object_value(owner: &pz_world::IsoObjectRef, (x, y, z): (i32, i32, i32)) -> LuaResult<Value> {
+pub fn square_object_value(owner: &pz_world::IsoObjectRef, (x, y, z): (i32, i32, i32)) -> LuaResult<Value> {
     let value = crate::bind_world_object::object_value(owner)?;
     let square = crate::bind_world::square_value(x, y, z);
     crate::bind_world_object::adopt_square(&value, owner, &square)?;
@@ -237,6 +237,18 @@ fn have_blood(t: &mut Thread, x: i32, y: i32, z: i32) -> LuaResult<bool> {
 }
 
 pub(super) fn register(b: &ClassBuilder) {
+    for (method, zone_type) in [("getZombiesType", "ZombiesType"), ("getLootZone", "LootZone")] {
+        get(b, method, move |c| {
+            let (x, y, _) = self_square(c)?;
+            with_world_state_cell(|world| {
+                let world = world.try_borrow().map_err(|_| LuaError::runtime("IsoWorld is in use"))?;
+                let meta = world.meta_grid.as_ref().ok_or_else(|| LuaError::runtime("IsoMetaGrid is not loaded"))?;
+                Ok(meta.get_zones_at(x, y, 0).into_iter().map(|id| meta.zone(id)).find(|zone|
+                    if zone_type == "ZombiesType" { zone.zone_type.eq_ignore_ascii_case(zone_type) }
+                    else { zone.zone_type == zone_type }).map_or(Value::Nil, |zone| Value::str(&zone.name)))
+            })
+        });
+    }
     get(b, "isOutside", |c| {
         let (x, y, z) = self_square(c)?;
         Ok(square_is_outside(x, y, z)?.into())

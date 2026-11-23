@@ -125,6 +125,7 @@ pub fn set_meta_grid(grid: Option<IsoMetaGrid>) {
 
 /// Install (or clear) `IsoWorld.instance.currentCell`.
 pub fn set_cell(cell: Option<IsoCell>) {
+    crate::bind_map_objects::install_tile_placement(None);
     if cell.is_none() { power::set_hydro_power_on(false); }
     let retired = with_world_state_cell(|w| {
         let mut w = w.borrow_mut();
@@ -2059,6 +2060,10 @@ fn register_grid_square(thread: &mut Thread) {
     });
     reachability::register(&b);
     square_walk::register(&b);
+    get(&b, "addTileObject", |c| {
+        let pos = self_square(c)?;
+        crate::bind_map_objects::add_tile_object(c, pos)
+    });
     square_queries::register(&b);
     power::register(&b);
     for (method, local) in [("playSound", false), ("playSoundLocal", true)] {

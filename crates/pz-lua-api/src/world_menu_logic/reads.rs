@@ -138,19 +138,7 @@ pub(super) fn register(thread: &mut Thread) {
         let r = has_fluid(c, &this)?;
         Ok(c.push(r))
     });
-    object.method("getPipedFuelAmount", |c| {
-        let this = c.arg(0);
-        let r = piped_fuel_amount(&mut Cx { t: c.thread }, &this)?;
-        Ok(c.push(r))
-    });
-    object.method("setPipedFuelAmount", |c| {
-        let this = c.arg(0);
-        let units = crate::expose::int_arg(c, 1).max(0);
-        if piped_fuel_amount(&mut Cx { t: c.thread }, &this)? != units {
-            store_fuel(&this, units)?;
-        }
-        Ok(0)
-    });
+    super::fuel::register(&object);
 }
 
 fn receiver(this: &Value) -> LuaResult<&LuaWorldObject> {
@@ -190,48 +178,4 @@ fn has_fluid(c: &mut NativeCall<'_>, this: &Value) -> LuaResult<bool> {
         return Ok(false);
     }
     Ok(Cx { t: c.thread }.num(&square, "getPuddlesInGround", &[])? > 0.09)
-}
-
-/// `getPipedFuelAmount()`: the mod data's `fuelAmount`. A fuel pump
-/// (`fuelAmount` property) fills it on first use from the sandbox options.
-fn piped_fuel_amount(cx: &mut Cx<'_>, this: &Value) -> LuaResult<i32> {
-    let object = receiver(this)?;
-    let manager = crate::bind_sprites::manager()?;
-    let capacity = {
-        let body = object.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
-        let manager = manager.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
-        let sprite = body.sprite.try_read(&manager).map_err(crate::bind_world_object::host_error)?;
-        let Some(sprite) = sprite else { return Ok(0) };
-        sprite.properties.get(&manager.alias, "fuelAmount").map(str::to_owned)
-    };
-    let mut amount = -1.0;
-    if cx.is(this, "hasModData", &[])? {
-        if let Value::Table(data) = cx.call(this, "getModData", &[])? {
-            let stored = data.get_str("fuelAmount");
-            if !stored.is_nil() {
-                amount = stored.as_num().ok_or_else(|| crate::bind_java_util::class_cast(&stored, "java.lang.Double"))?;
-            }
-        }
-    }
-    let Some(_capacity) = capacity else { return Ok(amount as i32) };
-    if crate::bind_sandbox::current_bool("FuelStationGasInfinite") == Some(true) {
-        return Ok(1000);
-    }
-    if amount == -1.0 {
-        let square = object_square(object)?;
-        let generator = crate::bind_sandbox::current_bool("AllowExteriorGenerator") == Some(true)
-            && cx.is(&square, "haveElectricity", &[])?;
-        if generator || cx.is(this, "hasGridPower", &[])? {
-            return Err(unsupported("IsoObject.getPipedFuelAmount: first powered pump fill"));
-        }
-    }
-    Ok(amount as i32)
-}
-
-fn store_fuel(this: &Value, units: i32) -> LuaResult<()> {
-    let object = receiver(this)?;
-    let data = object.object.try_borrow_mut().map_err(|_| borrowed("IsoObject body"))?
-        .install_runtime_mod_data().map_err(|e| LuaError::runtime(e.0))?;
-    data.set_str("fuelAmount", Value::Num(f64::from(units)));
-    Ok(())
 }

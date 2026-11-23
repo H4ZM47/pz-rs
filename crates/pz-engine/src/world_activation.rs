@@ -210,7 +210,7 @@ impl IsoWorld {
                                 .and_then(|cell| cell.chunks.get(&(wx, wy)))
                                 .is_some_and(|chunk| chunk.add_zombies));
                             let sprites = self.sprites.as_ref().ok_or("MapObjects requires loaded sprites")?;
-                            let dictionary = self.items.as_ref().map(|items| &items.dictionary);
+                            let dictionary = self.items.as_ref().map(|items| &items.dictionary.sprite_names);
                             for first_load in [true, false] {
                                 if first_load && !new_objects { continue; }
                                 pz_lua_api::bind_map_objects::dispatch_square(

@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use pz_world::{IsoObjectRef, IsoSpriteManager, SquareRef};
-use pz_inventory::dictionary::WorldDictionary;
+use pz_world::square_mutation::SquarePos;
 
 type Registry = RefCell<HashMap<String, Rc<RefCell<Callback>>>>;
 
@@ -147,7 +147,7 @@ pub fn on_load_callbacks(sprite: &str) -> Vec<Value> {
 fn sprite_name(
     object: &IsoObjectRef,
     sprites: &IsoSpriteManager,
-    dictionary: Option<&WorldDictionary>,
+    saved_names: Option<&HashMap<i32, String>>,
 ) -> LuaResult<Option<String>> {
     use pz_world::objects::{ObjectSprite, SpriteName};
     let object = object.try_borrow().map_err(|_| LuaError::runtime("IsoObject is in use"))?;
@@ -161,8 +161,7 @@ fn sprite_name(
     };
     Ok(name.or_else(|| match &object.sprite_name {
         Some(SpriteName::Str(name)) => Some(name.clone()),
-        Some(SpriteName::Dict(id)) if *id >= 0 => dictionary.and_then(|d| d.sprite_name(*id))
-            .map(str::to_owned).or_else(|| sprites.by_id(*id).and_then(|s| s.name.clone())),
+        Some(SpriteName::Dict(id)) if *id >= 0 => saved_names.and_then(|names| names.get(id)).cloned().or_else(|| sprites.by_id(*id).and_then(|s| s.name.clone())),
         _ => None,
     }))
 }
@@ -173,7 +172,7 @@ pub fn dispatch_square(
     thread: &mut Thread,
     square: &SquareRef,
     sprites: &RefCell<IsoSpriteManager>,
-    dictionary: Option<&WorldDictionary>,
+    saved_names: Option<&HashMap<i32, String>>,
     new_objects: bool,
 ) -> LuaResult<()> {
     let registry = if new_objects { &ON_NEW } else { &ON_LOAD };
@@ -188,7 +187,7 @@ pub fn dispatch_square(
             return Ok(None);
         }
         let manager = sprites.try_borrow().map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
-        sprite_name(object, &manager, dictionary)
+        sprite_name(object, &manager, saved_names)
     };
     for object in objects {
         let Some(name) = current_name(&object)? else { continue };
@@ -205,6 +204,23 @@ pub fn dispatch_square(
         }
     }
     Ok(())
+}
+
+pub type TilePlacement = Rc<dyn Fn(&mut Thread, SquarePos, &str) -> LuaResult<Value>>;
+
+thread_local! {
+    static TILE_PLACEMENT: RefCell<Option<TilePlacement>> = RefCell::new(None);
+}
+
+pub fn install_tile_placement(place: Option<TilePlacement>) {
+    TILE_PLACEMENT.with(|host| host.replace(place));
+}
+
+pub(crate) fn add_tile_object(c: &mut NativeCall<'_>, pos: SquarePos) -> LuaResult<Value> {
+    let name = crate::expose::str_arg(c, 1).ok_or_else(|| LuaError::runtime("expected tile sprite name"))?;
+    let place = TILE_PLACEMENT.with(|host| host.borrow().clone())
+        .ok_or_else(|| LuaError::runtime("tile placement requires a loaded world"))?;
+    place(c.thread, pos, &name)
 }
 
 /// `MapObjects.Reset()`.

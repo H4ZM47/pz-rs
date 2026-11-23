@@ -283,6 +283,45 @@ fn verify_utilities_and_ambience(app: &mut super::App, streamer: bool) {
     assert_eq!(ambient.current_value("Temperature"), Some((temperature * 100.0) as i32 as f32 / 100.0));
 }
 
+fn verify_pump_supply(app: &mut super::App) {
+    let sprites = app.world.as_ref().unwrap().sprites.as_ref().unwrap().borrow();
+    let pump = sprites.sprites.iter().find_map(|s| {
+        let capacity: i32 = s.properties.get(&sprites.alias, "fuelAmount")?.parse().ok()?;
+        (capacity > 1).then(|| s.name.clone()).flatten()
+    }).expect("installed pump sprite");
+    drop(sprites);
+    let lua = app.lua.as_mut().unwrap();
+    lua.thread.globals().set_str("rustPumpSprite", pz_kahlua::Value::str(&pump));
+    lua_check(lua, r#"
+        local sq = getCell():getGridSquare(10689, 9377, 0)
+        local sb = getSandboxOptions()
+        local saved = {}
+        local function set(name, value)
+            if saved[name] == nil then saved[name] = sb:getOptionByName(name):getValue() end
+            sb:set(name, value)
+        end
+        set("AllowExteriorGenerator", false)
+        set("ElecShutModifier", -1)
+        set("FuelStationGasInfinite", false)
+        local added = sq:addTileObject(rustPumpSprite)
+        assert(added:getSquare() == sq and added:getObjectIndex() >= 0)
+        assert(added:getPipedFuelAmount() == -1)
+        set("FuelStationGasInfinite", true)
+        assert(added:getPipedFuelAmount() == 1000)
+        set("FuelStationGasInfinite", false)
+        set("FuelStationGasMin", 0.5)
+        set("FuelStationGasMax", 0.5)
+        set("FuelStationGasEmptyChance", 0)
+        set("ElecShutModifier", 365)
+        local capacity = tonumber(added:getProperty("fuelAmount"))
+        assert(added:getPipedFuelAmount() == math.floor(capacity * 0.5))
+        added:setPipedFuelAmount(137)
+        set("ElecShutModifier", -1)
+        assert(added:getPipedFuelAmount() == 137)
+        for key,value in pairs(saved) do sb:set(key, value) end
+    "#);
+}
+
 fn movement_diagnostics(app: &mut super::App, label: &str) {
     let input = pz_player_input::EnginePlayerInput::capture();
     let binding = app.core.borrow().get_key_binding("Forward");
@@ -553,6 +592,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         }
     }
     verify_utilities_and_ambience(&mut app, !streamer);
+    verify_pump_supply(&mut app);
     app.core.borrow_mut().set_option_streamer_mode(streamer);
     let late_start = late_start.expect("captured held-W frame 40");
     let held_end = {
@@ -667,6 +707,15 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     }
     assert_eq!(reloaded.current_state(), Some(INGAME), "saved session never entered gameplay; cache: {}", cache_dir.display());
     verify_tile_definitions(reloaded.lua.as_mut().unwrap());
+    lua_check(reloaded.lua.as_mut().unwrap(), r#"
+        local objects = getCell():getGridSquare(10689, 9377, 0):getObjects()
+        local found = false
+        for i = 0, objects:size()-1 do
+            local obj = objects:get(i)
+            if obj:getProperty("fuelAmount") and obj:getPipedFuelAmount() == 137 then found = true end
+        end
+        assert(found, "placed pump and its stored fuel must survive reload")
+    "#);
     let initial_chunks = mannequin::check_live(false);
     assert_eq!(mannequin::saved_state(), expected_mannequins, "mannequin outfit/identity/pose/skin changed across close and fresh reload");
     let loaded_player = bind_players::player(0).expect("saved session reconstructed local player 0");
