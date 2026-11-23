@@ -1076,6 +1076,26 @@ mod lifetime_tests {
             studio.release(id);
             studio.mix(&mut block);
         }
+        // The parent Footsteps event owns the spatializer. Reuse the same
+        // random sequence so both placements select the very same waveform.
+        let seed = studio.rng;
+        let mut energy = Vec::new();
+        for distance in [0.0, 64.0] {
+            studio.rng = seed;
+            let id = studio.create_instance(footsteps).unwrap();
+            for (name, value) in [("FootstepMaterial", 2.0), ("ShoeType", 3.0), ("CharacterMovementSpeed", 3.0)] {
+                studio.set_parameter_by_name(id, name, value);
+            }
+            studio.set_position(id, [0.0, 0.0, distance]);
+            studio.start(id);
+            let mut samples = vec![0.0; 24000 * 2];
+            studio.mix(&mut samples);
+            energy.push(samples.iter().map(|s| s * s).sum::<f32>());
+            studio.stop(id, true);
+            studio.release(id);
+        }
+        assert!(energy[0] > 0.0 && energy[1] < energy[0] * 0.01, "{energy:?}");
+
     }
 
     #[test]
