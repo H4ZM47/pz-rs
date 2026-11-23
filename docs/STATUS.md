@@ -49,6 +49,16 @@ This run used the port's version 249 save format. Native Build 42.22 writes
 version 251. Native-save interchange and installed Windows/Linux sessions
 still need separate tests.
 
+The installed engine regression also covers the transition from household
+mains water to a local reserve, a rooftop fixture switching between two
+collectors, and persistence of the collector's construction and material
+tables. It checks a placed pump's fuel after shutdown and restart. The
+installed hen-hutch definition creates six linked tiles in four squares.
+The test opens the front door and egg hatch, then checks the door sprites,
+the linked master, the two dirt values and the definition limits after restart.
+The installed hutch run passed all 100 engine checks at `556c2f9c`.
+Animal behavior inside the hutch and native save interchange remain open.
+
 Both the development and release builds on Apple Silicon exercised the ordinary
 windowed `--new-game` and `--load-game` paths in separate processes.
 Each ran twelve gameplay ticks, saved,
