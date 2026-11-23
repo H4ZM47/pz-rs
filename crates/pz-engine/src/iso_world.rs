@@ -884,6 +884,9 @@ impl IsoWorld {
             if let Some(items) = &self.items {
                 w.object_names = items.dictionary.object_names.clone();
                 w.sprite_names = Rc::new(items.dictionary.sprite_names.clone());
+                w.script_dictionary = Rc::new(crate::world_dictionary::runtime_dictionary(
+                    &items.dictionary, &pz_lua_api::bind_registry::shared_script_manager(),
+                ));
             }
             w.meta_tracker = Some(self.meta_tracker.clone());
             w.regions = self.regions.clone();

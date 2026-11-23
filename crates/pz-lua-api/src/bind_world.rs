@@ -73,6 +73,7 @@ pub struct WorldState {
     pub geometry: GeometryChanges,
     pub object_names: HashMap<i8, String>,
     pub sprite_names: Rc<HashMap<i32, String>>,
+    pub script_dictionary: Rc<pz_entity::ScriptDictionary>,
     pub hutches: Vec<pz_world::IsoObjectRef>,
     /// Region graph for player-built rooms, shared with the engine renderer.
     pub regions: Option<Rc<RefCell<pz_world::isoregion::IsoRegions>>>,
@@ -135,6 +136,7 @@ pub fn set_cell(cell: Option<IsoCell>) {
         w.meta_tracker = None;
         w.object_names.clear();
         w.sprite_names = Rc::default();
+        w.script_dictionary = Rc::default();
         w.regions = None;
         w.geometry = GeometryChanges::default();
         w.population_sounds.clear();

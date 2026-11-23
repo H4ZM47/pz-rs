@@ -8,6 +8,7 @@
 //! `IsoPlayer.load` take as their item environment.
 
 mod script_registers;
+pub(crate) use script_registers::runtime_dictionary;
 
 use std::path::Path;
 
@@ -348,7 +349,10 @@ pub fn script_items(dictionary: WorldDictionary, inputs: &RegistryInputs<'_>) ->
         &inputs.game_dir.join("projectzomboid.jar"),
         &sm,
     ) {
-        Ok(ctx) => items.components = Box::new(OwnedEntityCodec(ctx)),
+        Ok(mut ctx) => {
+            ctx.dictionary = Some(runtime_dictionary(&items.dictionary, &sm));
+            items.components = Box::new(OwnedEntityCodec(ctx));
+        }
         Err(e) => eprintln!("ERROR: item entity registries: {e}"),
     }
     items

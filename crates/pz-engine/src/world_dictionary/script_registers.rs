@@ -111,3 +111,49 @@ fn reconcile(register: &mut Register, scripts: &JHashMap<i64>) -> Result<(), Str
     register.entries = named.values().cloned().collect();
     Ok(())
 }
+
+/// The component stores getScriptVersion(), independent of the dictionary's
+/// SHA-256 version used to recognize changes to a saved registration.
+pub(crate) fn runtime_dictionary(
+    dictionary: &WorldDictionary,
+    sm: &ScriptManager,
+) -> pz_entity::ScriptDictionary {
+    let mut resolved = pz_entity::ScriptDictionary::default();
+    for register in &dictionary.script_registers {
+        let Some(kind) = pz_entity::ScriptRegister::from_name(&register.name) else {
+            continue;
+        };
+        let component_type = match kind {
+            pz_entity::ScriptRegister::SpriteConfigs => ComponentType::SpriteConfig,
+            pz_entity::ScriptRegister::SpriteOverlayConfigs => ComponentType::SpriteOverlayConfig,
+            pz_entity::ScriptRegister::ContextMenuConfigs => ComponentType::ContextMenuConfig,
+        };
+        let script_version = |entity: &GameEntityScript| {
+            entity
+                .component_scripts()
+                .iter()
+                .find(|s| s.component_type() == component_type)
+                .map(|s| s.component().base.script_version())
+        };
+        for entry in &register.entries {
+            let version = sm
+                .get::<GameEntityScript>(ScriptType::Entity, &entry.name)
+                .and_then(|entity| script_version(&entity.borrow()))
+                .or_else(|| {
+                    sm.get::<pz_scripts::objects::items::Item>(ScriptType::Item, &entry.name)
+                        .and_then(|item| script_version(&item.borrow().entity))
+                });
+            if let Some(script_version) = version {
+                resolved.insert(
+                    kind,
+                    entry.registry_id,
+                    pz_entity::context::DictScript {
+                        name: entry.name.clone(),
+                        script_version,
+                    },
+                );
+            }
+        }
+    }
+    resolved
+}
