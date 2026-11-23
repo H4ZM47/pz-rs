@@ -2096,17 +2096,22 @@ fn register_grid_square(thread: &mut Thread) {
     get(&b, "getCenterY", |c| {
         Ok(Value::Num((self_square(c)?.1 as f32 + 0.5) as f64))
     });
-    get(&b, "isInARoom", |c| {
-        let (x, y, z) = self_square(c)?;
-        let inside = try_with_world_read(|w| {
-            use pz_entity::runtime_load::RuntimeHostError;
-            let owner = w.cell.as_ref().and_then(|cell| cell.get_grid_square(x, y, z))
-                .ok_or(RuntimeHostError::InvalidHostState("IsoGridSquare is no longer loaded"))?;
-            let sq = owner.try_borrow().map_err(|_| RuntimeHostError::Borrowed("IsoGridSquare"))?;
-            w.square_in_room(&sq)
-        }).map_err(crate::bind_world_object::host_error)?;
-        Ok(inside.into())
-    });
+    for method in ["isInARoom", "getRoomSize"] {
+        get(&b, method, move |c| {
+            let (x, y, z) = self_square(c)?;
+            try_with_world_read(|w| {
+                use pz_entity::runtime_load::RuntimeHostError;
+                let cell = w.cell.as_ref().ok_or(RuntimeHostError::InvalidHostState("no current cell"))?;
+                let owner = cell.get_grid_square(x, y, z)
+                    .ok_or(RuntimeHostError::InvalidHostState("IsoGridSquare is no longer loaded"))?;
+                let sq = owner.try_borrow().map_err(|_| RuntimeHostError::Borrowed("IsoGridSquare"))?;
+                if method == "isInARoom" { return Ok(w.square_in_room(&sq)?.into()); }
+                let regions = w.regions.as_ref().map(|r| r.try_borrow()).transpose()
+                    .map_err(|_| RuntimeHostError::Borrowed("IsoRegions"))?;
+                Ok(sq.room_size(cell, w.meta_grid.as_ref(), regions.as_deref())?.into())
+            }).map_err(crate::bind_world_object::host_error)
+        });
+    }
     get(&b, "getRoomID", |c| {
         let (x, y, z) = self_square(c)?;
         Ok(long(square_room_id(x, y, z)?))
@@ -2477,6 +2482,7 @@ mod tests {
             local e = sq:getE()
             check(e:getX() == 260 and e:getW() == sq and e:getRoomDef() == nil and e:getRoomID() == -1)
             check(sq:isInARoom() and not e:isInARoom())
+            check(sq:getRoomSize() == 1 and e:getRoomSize() == -1)
             check(sq:getN() == nil and sq:getSquareAbove():getZ() == 1 and sq:getSquareBelow() == nil)
             check(e:isEastOf(sq) and sq:isWestOf(e) and not sq:isDiagonalTo(e))
             check(sq:isInsideRectangle(259, 260, 1, 1) and sq:getCenterX() == 259.5)

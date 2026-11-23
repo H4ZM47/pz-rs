@@ -815,6 +815,7 @@ impl IsoWorld {
                         action_groups,
                         models,
                         floor_world,
+                        regions,
                         zombies,
                         ..
                     } = self;
@@ -830,7 +831,7 @@ impl IsoWorld {
                         Some(zombies),
                         |w| {
                             if first_phase {
-                                fill_square_environment(&mut chr, w.cell);
+                                fill_square_environment(&mut chr, w.cell, w.meta, regions.as_ref())?;
                             }
                             pz_lua_api::bind_states::with_state_registry(|reg| {
                                 let chars = chars.borrow();
@@ -843,7 +844,7 @@ impl IsoWorld {
                                     &mut u,
                                     &mut cx,
                                 );
-                                (cx.state_result(), step)
+                                cx.state_result().map(|()| step)
                             })
                         },
                     )
@@ -851,7 +852,7 @@ impl IsoWorld {
                 first_phase = false;
                 died |= died_since(sim, from);
                 match r {
-                    Some((Ok(()), Ok(step))) => {
+                    Some(Ok(Ok(step))) => {
                         // Prior events retain their relative order before the
                         // inline stop. No character/world/registry borrow is live.
                         fire_player_events(lua, &p, std::mem::take(&mut u.events));
@@ -896,7 +897,7 @@ impl IsoWorld {
                             pz_characters::character::player::PlayerUpdateStep::Done => break,
                         }
                     }
-                    Some((Err(error), _)) => {
+                    Some(Err(error)) => {
                         return self.finish_state_host_fault(
                             lua,
                             Some(&p),
@@ -905,7 +906,7 @@ impl IsoWorld {
                             error,
                         )
                     }
-                    Some((Ok(()), Err(e))) => {
+                    Some(Ok(Err(e))) => {
                         self.log_update_error(format!("IsoPlayer.update: {e}"));
                         break;
                     }
@@ -940,6 +941,7 @@ impl IsoWorld {
             models,
             floor_world,
             pathfind,
+            regions,
             ..
         } = self;
         let mut dying = Vec::new();
@@ -958,7 +960,10 @@ impl IsoWorld {
                     for &id in &zombie_ids {
                         let Some(mut z) = StateWorld::<LuaItem>::take_character(w, id) else { continue };
                         z.preupdate_zombie();
-                        fill_square_environment(&mut z, w.cell);
+                        if let Err(error) = fill_square_environment(&mut z, w.cell, w.meta, regions.as_ref()) {
+                            StateWorld::<LuaItem>::put_character(w, z);
+                            return Err(error.into());
+                        }
                         let from = sim.events.borrow().len();
                         let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
                         let result = z.update_zombie(reg, action_groups, &mut cx);
@@ -2138,11 +2143,21 @@ impl IsoWorld {
 
 /// The parts of the character's `CharacterEnvironment` the world answers
 /// from `getCurrentSquare()`, refreshed before its update. TODO(port): the
-/// room size, building toxicity, can-see, heat sources and the vehicle.
-fn fill_square_environment(chr: &mut LuaGameCharacter, cell: &IsoCell) {
+/// building toxicity, can-see, heat sources and the vehicle.
+fn fill_square_environment(
+    chr: &mut LuaGameCharacter, cell: &IsoCell, meta: &IsoMetaGrid,
+    regions: Option<&Rc<RefCell<pz_world::isoregion::IsoRegions>>>,
+) -> HostResult<()> {
     let cur = chr.path.current_square;
     let sq_owner = cur.and_then(|(x, y, z)| cell.get_grid_square(x, y, z));
-    let sq = sq_owner.as_ref().map(|s| s.borrow());
+    let sq = sq_owner.as_ref().map(|s| s.try_borrow()).transpose()
+        .map_err(|_| RuntimeHostError::Borrowed("character square"))?;
+    let regions = regions.map(|r| r.try_borrow()).transpose().map_err(|_| RuntimeHostError::Borrowed("IsoRegions"))?;
+    let inside = sq.as_ref().is_some_and(|s| s.room_def(meta).is_some() ||
+        regions.as_deref().and_then(|r| s.player_room_size(r)).is_some());
+    let size = if chr.is_player() && inside {
+        sq.as_ref().unwrap().room_size(cell, Some(meta), regions.as_deref())?
+    } else { -1 };
     let stress = cur.map_or(0.0, |(x, y, z)| {
         pz_lua_api::bind_zombie::shared_world_sounds()
             .borrow()
@@ -2151,7 +2166,8 @@ fn fill_square_environment(chr: &mut LuaGameCharacter, cell: &IsoCell) {
     let e = &mut chr.environment;
     e.has_current_square = sq.is_some();
     e.on_last_square = cur.is_some() && cur == chr.vars.last_square;
-    e.square_in_room = sq.as_ref().is_some_and(|s| s.room_id != -1);
+    e.square_in_room = inside;
+    e.room_size = size;
     e.square_have_roof = sq.as_ref().is_some_and(|s| s.have_roof);
     e.square_z = sq.as_ref().map_or(0, |s| s.z);
     e.square_has_chunk = sq.is_some();
@@ -2160,6 +2176,7 @@ fn fill_square_environment(chr: &mut LuaGameCharacter, cell: &IsoCell) {
         .filter(|s| s.room_id != -1)
         .map(|s| s.room_id as u64);
     e.stress_from_sounds = stress;
+    Ok(())
 }
 
 /// `PathfindNative.addChunkToWorld(chunk)`.

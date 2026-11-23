@@ -298,6 +298,28 @@ impl IsoGridSquare {
             .then(|| regions.world_region(r).square_size())
     }
 
+    /// Loaded square count from the room's current chunks, including rooms
+    /// which straddle the streaming boundary. Player rooms use the region graph.
+    pub fn room_size(
+        &self, cell: &IsoCell, meta: Option<&IsoMetaGrid>, regions: Option<&crate::isoregion::IsoRegions>,
+    ) -> pz_entity::runtime_load::HostResult<i32> {
+        let Some(room) = meta.and_then(|m| self.room_def(m)) else {
+            return Ok(regions.and_then(|r| self.player_room_size(r)).unwrap_or(-1));
+        };
+        let mut count = 0;
+        for (&(wx, wy), chunk) in &cell.chunks {
+            if !room.intersects(wx * 8, wy * 8, 8, 8) { continue; }
+            for y in 0..8 {
+                for x in 0..8 {
+                    let Some(owner) = chunk.get_grid_square(x, y, self.z) else { continue };
+                    let sq = owner.try_borrow().map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("room square"))?;
+                    if sq.room_id == self.room_id { count += 1; }
+                }
+            }
+        }
+        Ok(count)
+    }
+
     /// `getRoom().def`: the room this square's `roomID` names.
     pub fn room_def<'m>(&self, meta: &'m IsoMetaGrid) -> Option<&'m RoomDef> {
         if self.room_id == -1 {
