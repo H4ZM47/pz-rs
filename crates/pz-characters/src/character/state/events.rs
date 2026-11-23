@@ -48,12 +48,14 @@ impl<I: 'static> GameCharacter<I> {
         } else if is("Footstep") {
             let gait = param.unwrap_or("");
             if self.is_player() {
-                self.player.sound_movement_speed = match gait {
-                    "sneak_walk" => 0, "sneak_run" => 1, "strafe" => 2,
-                    "run" => 4, "sprint" => 5, _ => 3,
-                };
+                let volume = self.player_footstep_gait(gait);
+                let in_room = self.path.current_square.and_then(|sq| cx.world.square_room(sq)).is_some();
+                if let Err(error) = self.player_footstep(volume, in_room, cx.sm, cx.chars, cx.ctx) {
+                    cx.record_state_error(error.into());
+                }
+            } else {
+                cx.ctx.event(SimEvent::Footstep(gait.to_string()));
             }
-            cx.ctx.event(SimEvent::Footstep(gait.to_string()));
         } else if is("DamageWhileInTrees") {
             // TODO(world): damageWhileInTrees needs the clothing and holes.
         } else if is("TurnAround") || is("TurnAround_FlipSkeleton") {

@@ -235,6 +235,10 @@ pub enum SimEvent {
     },
     /// `DoFootstepSound(type)`.
     Footstep(String),
+    /// HumanFootstepsCombined on the player's dedicated footstep emitter.
+    PlayerFootstep,
+    /// A footstep alerts nearby zombies without a network send.
+    FootstepNoise(WorldSoundRequest),
     /// `IsoPlayer.playerVoiceSound(name)` with a name from data.
     PlayerVoiceSoundNamed(String),
     /// `Kill(killer)` from the `KilledByAttacker` animation event (the

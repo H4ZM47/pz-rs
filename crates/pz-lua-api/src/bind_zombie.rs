@@ -103,28 +103,36 @@ fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Val
         source, x, y, z, radius, volume, stress_humans: stress,
         zombie_ignore_dist: ignore, stress_mod,
     };
-    Ok(sound_value(emit_world_sound(c.thread, request, receiver, repeating)?))
+    let kind = if repeating { NoiseKind::Repeating } else { NoiseKind::Once };
+    Ok(sound_value(emit_world_sound(c.thread, request, receiver, kind)?))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NoiseKind {
+    Once,
+    Repeating,
+    LocalFootstep,
 }
 
 /// Fire the original callback with the live receiver before inserting into the
 /// sound list. The listener can safely raise a second sound or move the source.
 pub fn emit_world_sound(thread: &mut Thread, request: WorldSoundRequest<SoundSource>,
-    receiver: Value, repeating: bool) -> LuaResult<Option<SoundId>> {
+    receiver: Value, kind: NoiseKind) -> LuaResult<Option<SoundId>> {
     if request.radius <= 0 { return Ok(None); }
     crate::bind_character_sim::fire_event(thread, "OnWorldSound", &[request.x.into(), request.y.into(),
         request.z.into(), request.radius.into(), request.volume.into(), receiver]);
-    register_world_sound(request, repeating)
+    register_world_sound(request, kind)
 }
 
 /// Apply character noises from body damage, wake-up and Lua character actions.
 pub(crate) fn character_noise(thread: &mut Thread, actor: &crate::bind_character_sim::LuaGameCharacterRef,
     event: &pz_characters::character::SimEvent) -> LuaResult<bool> {
     use pz_characters::character::SimEvent;
-    if !matches!(event, SimEvent::InteractionNoise(_) | SimEvent::AddSound { .. }
+    if !matches!(event, SimEvent::InteractionNoise(_) | SimEvent::FootstepNoise(_) | SimEvent::AddSound { .. }
         | SimEvent::SneezeCoughSound { .. } | SimEvent::WorldSound { .. }) { return Ok(false); }
     let player = actor.try_borrow().map_err(|_| crate::bind_world_object::borrowed("character noise source"))?;
     let request = match *event {
-        SimEvent::InteractionNoise(request) if request.source == Some(player.id) => request,
+        SimEvent::InteractionNoise(request) | SimEvent::FootstepNoise(request) if request.source == Some(player.id) => request,
         SimEvent::AddSound { radius, volume } | SimEvent::SneezeCoughSound { radius, volume } =>
             player.world_sound_request(radius, volume, false),
         SimEvent::WorldSound { radius, volume } => {
@@ -135,23 +143,21 @@ pub(crate) fn character_noise(thread: &mut Thread, actor: &crate::bind_character
     };
     let source = player.sound_source();
     drop(player);
-    emit_world_sound(thread, request.with_source(Some(source)), crate::bind_character_sim::character_value(actor), false)?;
+    let kind = if matches!(event, SimEvent::FootstepNoise(_)) { NoiseKind::LocalFootstep } else { NoiseKind::Once };
+    emit_world_sound(thread, request.with_source(Some(source)), crate::bind_character_sim::character_value(actor), kind)?;
     Ok(true)
 }
 
 /// Register the noise after its Lua callbacks have finished. Embedders may
 /// supply their own sound world, otherwise the active cell and population own it.
-pub fn register_world_sound(request: WorldSoundRequest<SoundSource>, repeating: bool) -> LuaResult<Option<SoundId>> {
+pub fn register_world_sound(request: WorldSoundRequest<SoundSource>, kind: NoiseKind) -> LuaResult<Option<SoundId>> {
     let WorldSoundRequest { source, x, y, z, radius, volume, stress_humans: stress,
         zombie_ignore_dist: ignore, stress_mod } = request;
     let sounds = shared_world_sounds();
     let mut manager = sounds.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("WorldSoundManager"))?;
     let add = |manager: &mut WorldSoundManager, world: &mut dyn SoundWorld| {
-        if repeating {
-            manager.add_sound_repeating(world, source, x, y, z, radius, volume, stress, ignore, stress_mod)
-        } else {
-            manager.add_sound_stress(world, source, x, y, z, radius, volume, stress, ignore, stress_mod)
-        }
+        manager.add_sound_full(world, source, x, y, z, radius, volume, stress, ignore, stress_mod,
+            false, kind != NoiseKind::LocalFootstep, false, kind == NoiseKind::Repeating, false)
     };
     if let Some(world) = SOUND_WORLD.with(|w| w.borrow().clone()) {
         let mut world = world.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound host"))?;

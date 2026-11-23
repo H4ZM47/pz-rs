@@ -13,6 +13,7 @@ pub mod aiming;
 pub mod attack;
 pub mod context;
 pub mod control;
+mod footsteps;
 pub mod input;
 pub mod los;
 pub mod music;

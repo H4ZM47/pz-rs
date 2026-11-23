@@ -13,6 +13,7 @@
 use crate::iso_world::{IsoWorld, StandardRand};
 use crate::sim::FrameSim;
 use crate::world_models::WorldModels;
+use pz_lua_api::bind_zombie::NoiseKind;
 use pz_characters::character::state::{StateCx, StateWorld};
 use pz_characters::character::zombie::population::RealZombies;
 use pz_characters::character::SimEvent;
@@ -1166,7 +1167,7 @@ impl IsoWorld {
         }
     }
 
-    fn interaction_noise(&mut self, lua: &mut LuaManager, request: pz_world_states::WorldSoundRequest) {
+    fn interaction_noise(&mut self, lua: &mut LuaManager, request: pz_world_states::WorldSoundRequest, kind: NoiseKind) {
         let (source, receiver) = if let Some(id) = request.source {
             if let Some(player) = local_players().into_iter().flatten().find(|p| p.borrow().id == id) {
                 let source = player.borrow().sound_source();
@@ -1184,12 +1185,12 @@ impl IsoWorld {
 
         let request = request.with_source(source);
         let result = if let Some(receiver) = receiver {
-            pz_lua_api::bind_zombie::emit_world_sound(&mut lua.thread, request, receiver, false)
+            pz_lua_api::bind_zombie::emit_world_sound(&mut lua.thread, request, receiver, kind)
         } else {
             if lua.events.callbacks("OnWorldSound") > 0 {
                 self.log_update_error("unsupported: OnWorldSound for a zombie without Lua userdata".into());
             }
-            pz_lua_api::bind_zombie::register_world_sound(request, false)
+            pz_lua_api::bind_zombie::register_world_sound(request, kind)
         };
         if let Err(error) = result {
             self.log_update_error(format!("WorldSoundManager.addSound: {error}"));
@@ -1218,10 +1219,11 @@ impl IsoWorld {
                 SimEvent::AddSound { radius, volume } | SimEvent::SneezeCoughSound { radius, volume } => {
                     if let Some(actor) = chr {
                         let request = actor.borrow().world_sound_request(radius, volume, false);
-                        self.interaction_noise(lua, request);
+                        self.interaction_noise(lua, request, NoiseKind::Once);
                     }
                 }
-                SimEvent::InteractionNoise(request) => self.interaction_noise(lua, request),
+                SimEvent::FootstepNoise(request) => self.interaction_noise(lua, request, NoiseKind::LocalFootstep),
+                SimEvent::InteractionNoise(request) => self.interaction_noise(lua, request, NoiseKind::Once),
                 SimEvent::PositionedSound { name, square: (x, y, z) } => {
                     pz_lua_api::bind_audio::sound_system().borrow_mut().play_world_clip(&name,
                         [x as f32 + 0.5, y as f32 + 0.5, z as f32], true);
