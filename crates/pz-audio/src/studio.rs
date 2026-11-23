@@ -517,6 +517,7 @@ impl Studio {
         i.triggered.fill(false);
         i.dsps.clear();
         i.timeline_finished = false;
+        i.start_delay = 0;
         i.state = PlaybackState::Playing;
         i.started = false;
         i.position = 0;
@@ -558,6 +559,7 @@ impl Studio {
         gain: f32,
         track: Guid,
         depth: u32,
+        parent_delay_ms: f32,
         out: &mut Vec<Start>,
     ) {
         if depth > 8 {
@@ -576,7 +578,7 @@ impl Studio {
             _ => track,
         };
         let delay_ms =
-            inst.base.delay_min + (inst.base.delay_max - inst.base.delay_min) * self.random();
+            parent_delay_ms + inst.base.delay_min + (inst.base.delay_max - inst.base.delay_min) * self.random();
         match &inst.kind {
             InstrumentKind::Single { waveform } => {
                 if let Some(w) = self.banks[bank].model.waveforms.get(waveform) {
@@ -594,7 +596,7 @@ impl Studio {
                 let mut pick = self.random() * total;
                 for (g, w) in &playlist.entries {
                     if pick < *w {
-                        self.instrument_voices(g, gain, track, depth + 1, out);
+                        self.instrument_voices(g, gain, track, depth + 1, delay_ms, out);
                         break;
                     }
                     pick -= w;
@@ -609,9 +611,11 @@ impl Studio {
         }
     }
 
-    fn start_instrument(&mut self, inst: InstanceId, id: Guid, remaining: Option<usize>) {
+    /// Start a placement at its exact frame in the current device callback.
+    fn start_instrument(&mut self, inst: InstanceId, id: Guid, remaining: Option<usize>, block_offset: usize) {
         let mut v = Vec::new();
-        self.instrument_voices(&id, 1.0, Guid::NULL, 0, &mut v);
+        self.instrument_voices(&id, 1.0, Guid::NULL, 0, 0.0, &mut v);
+        let delay_frames = |ms: f32| block_offset.saturating_add((ms.max(0.0) * SAMPLE_RATE as f32 / 1000.0) as usize);
         for start in v {
             match start {
                 Start::Wave {
@@ -622,7 +626,7 @@ impl Studio {
                     track,
                 } => {
                     if let Some(pcm) = self.pcm(bank, subsound) {
-                        let delay = (delay_ms.max(0.0) * SAMPLE_RATE as f32 / 1000.0) as usize;
+                        let delay = delay_frames(delay_ms);
                         self.instances.get_mut(&inst).unwrap().voices.push(Voice {
                             pcm,
                             track,
@@ -651,7 +655,7 @@ impl Studio {
                     c.parent = Some(inst);
                     c.released = true;
                     c.gain = gain;
-                    c.start_delay = (delay_ms.max(0.0) * SAMPLE_RATE as f32 / 1000.0) as usize;
+                    c.start_delay = delay_frames(delay_ms);
                     c.state = PlaybackState::Playing;
                 }
             }
@@ -850,10 +854,13 @@ impl Studio {
             if instance.state != PlaybackState::Playing || instance.timeline_finished {
                 continue;
             }
-            if self.instances[&id].start_delay >= frames {
+            let leading_silence = instance.start_delay;
+            if leading_silence >= frames {
                 self.instances.get_mut(&id).unwrap().start_delay -= frames;
                 continue;
             }
+            let active_frames = frames - leading_silence;
+            self.instances.get_mut(&id).unwrap().start_delay = 0;
             let (bank, event) = {
                 let i = &self.instances[&id];
                 (i.bank, self.banks[i.bank].model.events[&i.event].clone())
@@ -862,7 +869,7 @@ impl Studio {
             if !self.instances[&id].started {
                 self.instances.get_mut(&id).unwrap().started = true;
                 for g in event.instruments.clone() {
-                    self.start_instrument(id, g, None);
+                    self.start_instrument(id, g, None, leading_silence);
                 }
             }
             // Timeline triggers within this block.
@@ -874,14 +881,10 @@ impl Studio {
             {
                 let pos = self.instances[&id].position;
                 for (k, p) in t.instruments.iter().chain(&t.instruments_2).enumerate() {
-                    if !self.instances[&id].triggered[k] && (p.start as u64) < pos + frames as u64 {
+                    if !self.instances[&id].triggered[k] && (p.start as u64) < pos + active_frames as u64 {
                         self.instances.get_mut(&id).unwrap().triggered[k] = true;
                         let offset = (p.start as u64).saturating_sub(pos) as usize;
-                        let before = self.instances[&id].voices.len();
-                        self.start_instrument(id, p.instrument, Some(p.length as usize));
-                        for v in &mut self.instances.get_mut(&id).unwrap().voices[before..] {
-                            v.delay += offset;
-                        }
+                        self.start_instrument(id, p.instrument, Some(p.length as usize), leading_silence + offset);
                     }
                 }
             }
@@ -923,7 +926,7 @@ impl Studio {
             }
             inst.voices
                 .retain(|v| v.pos < v.pcm.frames() && v.remaining != Some(0));
-            inst.position += frames as u64;
+            inst.position += active_frames as u64;
             let end = self.banks[bank]
                 .model
                 .timelines
@@ -994,6 +997,71 @@ mod lifetime_tests {
 
     #[test]
     #[ignore = "requires installed FMOD banks in PZ_GAME_DIR"]
+    fn nested_placement_starts_at_the_same_sample_across_callback_boundaries() {
+        use crate::bank::{Placement, Timeline};
+        let game = std::path::PathBuf::from(std::env::var_os("PZ_GAME_DIR").unwrap());
+        let mut studio = Studio::new(SetupHeaders::from_game_dir(&game).unwrap());
+        for bank in crate::startup_bank_paths(&game) {
+            studio.load_bank(&bank).unwrap();
+        }
+        let smash = studio.event_by_path("event:/Object/Window/Smash").unwrap();
+        let (bank, event) = studio.find_event(&smash).unwrap();
+        let mut parent = event.clone();
+        let parent_id = Guid([0xa1; 16]);
+        let timeline = Guid([0xa2; 16]);
+        let placement = Guid([0xa3; 16]);
+        parent.id = parent_id;
+        parent.timeline = timeline;
+        parent.instruments.clear();
+        let model = &mut studio.banks[bank].model;
+        let mut instrument = model.instruments.values().next().unwrap().clone();
+        instrument.id = placement;
+        instrument.kind = InstrumentKind::Event { event: smash, raw: Vec::new() };
+        instrument.base.volume_db = 0.0;
+        instrument.base.probability = 100.0;
+        instrument.base.delay_min = 0.5;
+        instrument.base.delay_max = 0.5;
+        assert!(model.instruments.insert(placement, instrument).is_none());
+        assert!(model.events.insert(parent_id, parent).is_none());
+        assert!(model.timelines.insert(timeline, Timeline {
+            id: timeline,
+            instruments: vec![Placement { instrument: placement, start: 77, length: 24000 }],
+            instruments_2: vec![], unknown_c: vec![], markers: vec![], unknown_e: vec![],
+        }).is_none());
+
+        // 13 frames before the parent, 77 to the placement and 24 of
+        // instrument delay put the child's first frame at sample frame 114.
+        for sizes in [[64, 64, 256], [114, 1, 269], [121, 128, 135]] {
+            let owner = studio.create_instance(parent_id).unwrap();
+            studio.start(owner);
+            studio.instances.get_mut(&owner).unwrap().start_delay = 13;
+            let mut elapsed: usize = 0;
+            for frames in sizes {
+                let mut out = vec![0.0; frames * 2];
+                studio.mix(&mut out);
+                let silent = (114usize.saturating_sub(elapsed)).min(frames);
+                assert!(out[..silent * 2].iter().all(|s| *s == 0.0));
+                elapsed += frames;
+                assert_eq!(studio.instances[&owner].position, (elapsed - 13) as u64);
+                if elapsed > 90 {
+                    let child = studio.instances.values().find(|i| i.parent == Some(owner)).unwrap();
+                    assert_eq!(child.position, elapsed.saturating_sub(114) as u64);
+                }
+            }
+            let mut samples = vec![0.0; 24000 * 2];
+            studio.mix(&mut samples);
+            assert!(samples.iter().all(|s| s.is_finite()));
+            assert!(samples.iter().any(|s| s.abs() > 0.001));
+            studio.stop(owner, true);
+            studio.release(owner);
+            studio.mix(&mut [0.0; 128]);
+            // Separate the mixer bus effect histories of the three playbacks.
+            studio.dsps.clear();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires installed FMOD banks in PZ_GAME_DIR"]
     fn released_instances_and_nested_events_end_with_their_owner() {
         let game = std::path::PathBuf::from(std::env::var_os("PZ_GAME_DIR").expect("PZ_GAME_DIR"));
         let mut studio = Studio::new(SetupHeaders::from_game_dir(&game).unwrap());
@@ -1008,9 +1076,9 @@ mod lifetime_tests {
         let mut block = [0.0; 128];
         let parent = studio.create_instance(smash).unwrap();
         studio.start(parent);
-        studio.start_instrument(parent, nested, None);
+        studio.start_instrument(parent, nested, None, 1024);
         let child = studio.instances.iter().find(|(_, i)| i.parent == Some(parent)).unwrap().0.to_owned();
-        studio.instances.get_mut(&child).unwrap().start_delay = 1024;
+        assert!(studio.instances[&child].start_delay >= 1024);
         studio.instances.get_mut(&parent).unwrap().timeline_finished = true;
         studio.release(parent);
         studio.mix(&mut block);
