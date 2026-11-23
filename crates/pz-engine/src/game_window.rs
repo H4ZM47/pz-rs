@@ -513,7 +513,23 @@ impl App {
                 clear: Some([0.0, 0.0, 0.0, 1.0]),
                 ..pz_gpu::FrameParams::ui(w as u32, h as u32)
             };
-            gpu.render_frame(&[(params, &dl)], &mut tm.borrow_mut());
+            let frame = [(params, &dl)];
+            if self.core.borrow().screenshot_requested() {
+                match gpu.render_frame_capture(&frame, &mut tm.borrow_mut()) {
+                    Ok(Some(pixels)) => {
+                        let save_dir = self.world.as_ref().map(|world| world.save_dir.as_path());
+                        for request in self.core.borrow_mut().take_screenshot_requests() {
+                            if let Err(error) = crate::screenshot::save(request, gpu.size(), &pixels, &self.launch.cache_dir, save_dir) {
+                                eprintln!("ERROR: saving screenshot: {error}");
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => eprintln!("ERROR: capturing screenshot: {error}"),
+                }
+            } else {
+                gpu.render_frame(&frame, &mut tm.borrow_mut());
+            }
             if record_gpu_fault(&mut self.error, gpu.error()) {
                 drop(collection_deferral);
                 drain_retired_host_owners();

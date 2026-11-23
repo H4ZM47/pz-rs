@@ -1560,6 +1560,14 @@ impl Core {
         self.pending_requests.contains(&CoreRequest::Exit)
     }
 
+    pub fn screenshot_requested(&self) -> bool {
+        self.pending_requests.iter().any(|r| matches!(r, CoreRequest::FullScreenshot(_) | CoreRequest::Screenshot { .. }))
+    }
+
+    pub fn take_screenshot_requests(&mut self) -> Vec<CoreRequest> {
+        self.pending_requests.extract_if(.., |r| matches!(r, CoreRequest::FullScreenshot(_) | CoreRequest::Screenshot { .. })).collect()
+    }
+
     /// Render-context VSync calls, in request order. The other requests
     /// stay queued for their respective consumers.
     pub fn take_vsync_requests(&mut self) -> Vec<bool> {

@@ -708,6 +708,47 @@ impl Gpu {
         }
     }
 
+    /// Draw the ordinary frame once and return its top-to-bottom RGBA pixels.
+    /// A temporarily unavailable window surface leaves the request pending.
+    pub fn render_frame_capture(&mut self, segments: &[(FrameParams, &DrawList)], textures: &mut TextureManager)
+        -> Result<Option<Vec<u8>>, GpuError> {
+        if let Some(error) = self.error() { return Err(error); }
+        let Target::Surface { surface, .. } = &self.target else {
+            self.render_frame(segments, textures);
+            return self.try_read_pixels().map(Some);
+        };
+        let frame = match surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            _ => return Ok(None),
+        };
+        // Surface textures only guarantee RENDER_ATTACHMENT. Use a readable
+        // target on capture frames, then present that very image to the user.
+        let drawn = headless_texture(&self.device, self.format, self.width, self.height);
+        let source = drawn.create_view(&Default::default());
+        self.draw(segments, textures, &source);
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        let target = frame.texture.create_view(&Default::default());
+        wgpu::util::TextureBlitter::new(&self.device, self.format).copy(&self.device, &mut encoder, &source, &target);
+        let conversion = match self.format {
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb |
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => None,
+            _ => {
+                let format = wgpu::TextureFormat::Rgba8Unorm;
+                let rgba = headless_texture(&self.device, format, self.width, self.height);
+                wgpu::util::TextureBlitter::new(&self.device, format)
+                    .copy(&self.device, &mut encoder, &source, &rgba.create_view(&Default::default()));
+                Some(rgba)
+            }
+        };
+        self.queue.submit([encoder.finish()]);
+        self.queue.present(frame);
+        let mut pixels = self.read_texture_pixels(conversion.as_ref().unwrap_or(&drawn))?;
+        if matches!(self.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+            for pixel in pixels.chunks_exact_mut(4) { pixel.swap(0, 2); }
+        }
+        Ok(Some(pixels))
+    }
+
     /// The headless target's pixels, RGBA, top row first. Panics with the
     /// device's error if it was lost or the read failed; see
     /// [`Gpu::try_read_pixels`].
@@ -722,6 +763,10 @@ impl Gpu {
             return Err(e);
         }
         let Target::Headless { texture } = &self.target else { return Ok(Vec::new()) };
+        self.read_texture_pixels(texture)
+    }
+
+    fn read_texture_pixels(&self, texture: &wgpu::Texture) -> Result<Vec<u8>, GpuError> {
         let (w, h) = (self.width, self.height);
         let row = (w * 4).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -2613,7 +2658,7 @@ fn headless_texture(device: &wgpu::Device, format: wgpu::TextureFormat, width: u
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     })
 }
