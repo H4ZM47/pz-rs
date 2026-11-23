@@ -664,6 +664,16 @@ pub fn set_game_speed(speed: i32) {
         }
     }
 }
+
+/// `MoodlesUI.getInstance().wiggle(type)` for local player `player_index`,
+/// nothing when that player has no `MoodlesUI`.
+pub fn wiggle_moodle(player_index: usize, moodle: &str) {
+    if let Some(e) = with_ui(|m| m.moodle_ui.get(player_index).cloned().flatten()) {
+        if let Some(ui) = e.ext::<MoodlesUI>() {
+            ui.wiggle(moodle);
+        }
+    }
+}
 #[cfg(test)]
 pub(crate) mod test_util {
     use pz_kahlua::{TableRef, Thread, Value};
