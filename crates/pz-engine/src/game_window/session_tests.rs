@@ -385,6 +385,7 @@ fn verify_authored_replacements(lua:&mut LuaManager,create:bool) {
             getSquare(10680,9377,0):addTileObject("location_farm_accesories_01_14")
             getSquare(10680,9376,0):addTileObject("appliances_misc_01_0")
             getSquare(10680,9375,0):addTileObject("camping_01_6")
+            getSquare(10680,9374,0):addTileObject("camping_01_20")
         "#);
     }
     lua_check(lua,r#"
@@ -398,6 +399,8 @@ fn verify_authored_replacements(lua:&mut LuaManager,create:bool) {
         assert(t and t:getMaxFeed() == FeedingTroughDef.simple.maxFeed, "original trough callback")
         local g=find(10680,9376,function(o) return instanceof(o,"IsoGenerator") end)
         assert(g and g:getModData().generatorFullType == "Base.Generator" and g:getCondition() == 100, "original generator callback")
+        local compost=find(10680,9374,function(o) return instanceof(o,"IsoCompost") end)
+        assert(compost and compost:getCompost() >= 10 and compost:getContainer():getType() == "composter","original composter callback")
         local fire=find(10680,9375,function(o) return o:getName() == "Campfire" end)
         assert(fire and fire:getSprite():getName() == "camping_01_6", "original campfire callback")
     "#);

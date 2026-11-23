@@ -9,7 +9,7 @@ use pz_world::objects::{IsoGenerator, ObjectSprite, SpriteName};
 use pz_world::square_mutation::SquarePos;
 use pz_world::{ObjectSlot, SquareRef};
 
-fn get_square(value: &Value) -> LuaResult<(SquarePos, SquareRef)> {
+pub(super) fn get_square(value: &Value) -> LuaResult<(SquarePos, SquareRef)> {
     let pos =
         square_coords(value).ok_or_else(|| LuaError::runtime("expected loaded IsoGridSquare"))?;
     let square = try_with_world_read(|w| {
@@ -22,7 +22,7 @@ fn get_square(value: &Value) -> LuaResult<(SquarePos, SquareRef)> {
     Ok((pos, square))
 }
 
-fn named_sprite(name: &str) -> LuaResult<ObjectSprite> {
+pub(super) fn named_sprite(name: &str) -> LuaResult<ObjectSprite> {
     let manager = crate::bind_sprites::manager()?;
     let mut m = manager
         .try_borrow_mut()
