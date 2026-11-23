@@ -14,7 +14,7 @@ use pz_fs::GameFs;
 use pz_iso_render::cache::ChunkCache;
 use pz_iso_render::chunk::dirty;
 use pz_iso_render::cutaways::{CutawayPlayer, Cutaways};
-use pz_iso_render::frame::{plan_chunks, world_frame_full, FrameSize};
+use pz_iso_render::frame::{plan_chunks, world_frame_for_player_with, FrameSize, PlayerView};
 use pz_iso_render::objects::FrameObjects;
 use pz_iso_render::outlines::OutlineHighlight;
 use pz_iso_render::weather::{SurfaceSettings, SurfaceTextures, Surfaces};
@@ -75,6 +75,9 @@ pub struct RenderView {
     /// The offscreen view (`IsoCamera.getOffscreenWidth/Height(player)`).
     pub width: u32,
     pub height: u32,
+    /// Split-screen quarter/half placement inside the shared offscreen buffer
+    /// (`None` for single player).
+    pub split_view: Option<PlayerView>,
     /// `Core.getZoom(player)`.
     pub zoom: f32,
     /// `RenderSettings` over `ClimateManager`.
@@ -992,9 +995,10 @@ impl WorldRender {
             let Ok(mut fx) = fx.try_borrow_mut() else { return };
             render_weather_fx(&mut fx, mask, &fx_chars, &fx_sprites, &fx_view, &fx_frame, out);
         };
-        let cmds = world_frame_full(
+        let cmds = world_frame_for_player_with(
             &r,
             size,
+            v.split_view,
             &chunks,
             &objects,
             self.drop_shadow.clone(),

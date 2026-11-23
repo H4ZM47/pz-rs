@@ -8,6 +8,7 @@ use crate::iso_world::{opt_bool, opt_f64, opt_int, sandbox};
 use crate::sim::FrameSim;
 use crate::world_render::RenderView;
 use pz_characters::character::player::PlayerRenderInputs;
+use pz_iso_render::frame::PlayerView;
 use pz_kahlua::Value;
 use pz_lua_api::LuaManager;
 use pz_render::{DrawList, Rgba, ScreenParams, ScreenTimer};
@@ -55,6 +56,60 @@ fn call_global(lua: &mut LuaManager, name: &str) {
     }
     if let Err((e, tr)) = lua.thread.pcall(&f, &[]) {
         eprintln!("{name}: {e:?}\n{tr}");
+    }
+}
+
+/// Per-frame split-screen slot geometry (`MultiTextureFBO2.render` and
+/// `IsoCamera.getScreenLeft/Top/Width/Height`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SplitLayout {
+    pub num_players: u32,
+    pub highest_active: Option<usize>,
+    pub screen: (u32, u32),
+}
+
+impl SplitLayout {
+    pub(crate) fn compute(
+        active: [bool; MAX_PLAYERS],
+        num_players_hint: usize,
+        screen_w: u32,
+        screen_h: u32,
+    ) -> Self {
+        let highest_active = active.iter().rposition(|&a| a);
+        let num_players = num_players_hint
+            .max(highest_active.map_or(1, |h| h + 1))
+            .clamp(1, MAX_PLAYERS) as u32;
+        Self {
+            num_players,
+            highest_active,
+            screen: (screen_w.max(1), screen_h.max(1)),
+        }
+    }
+
+    /// `PlayerView` for slot `n` when in split screen (`num_players > 1`);
+    /// `None` for single player.
+    pub(crate) fn player_view(&self, n: usize) -> Option<PlayerView> {
+        (self.num_players > 1).then_some(PlayerView {
+            player: n as u32,
+            num_players: self.num_players,
+            screen: self.screen,
+        })
+    }
+
+    /// `IsoCamera.getScreenLeft/Top/Width/Height(n)` for slot `n`.
+    pub(crate) fn screen_rect(&self, n: usize) -> [u32; 4] {
+        PlayerView {
+            player: n as u32,
+            num_players: self.num_players,
+            screen: self.screen,
+        }
+        .screen_rect()
+    }
+
+    /// `MultiTextureFBO2.render`: empty slots up to the highest active player
+    /// index are covered with a black rectangle.
+    pub(crate) fn is_empty_slot_to_fill(&self, n: usize, active: bool) -> bool {
+        !active && self.highest_active.is_some_and(|highest| n <= highest)
     }
 }
 
@@ -164,11 +219,20 @@ impl IngameState {
         &mut self,
         lua: &mut LuaManager,
         n: usize,
+        screen_rect: [u32; 4],
+        zoom: f32,
     ) -> (ClimateSettings, ScreenParams) {
         let night_darkness = sandbox(lua).map_or(3, |sb| opt_int(&sb.borrow(), "NightDarkness"));
-        let last_stand = pz_lua_api::bind_core::shared_core()
-            .borrow()
-            .is_last_stand();
+        let (last_stand, tile_scale, core_off_w, core_off_h) = {
+            let c = pz_lua_api::bind_core::shared_core();
+            let c = c.borrow();
+            (
+                c.is_last_stand(),
+                c.tile_scale,
+                c.get_offscreen_width(n as i32),
+                c.get_offscreen_height(n as i32),
+            )
+        };
         let gt = pz_lua_api::bind_climate::shared_game_time();
         let g = gt.borrow();
         // TODO(port): `SceneShaderStore.weatherShader` (the screen pass
@@ -200,16 +264,42 @@ impl IngameState {
         players[n].night_vision_goggles = self.render_inputs[n].night_vision_goggles;
         let settings = ClimateSettings { climate, players };
         let params = settings.screen_params(n, ScreenParams::default());
-        let params =
+        let mut params =
             pz_lua_api::bind_search_mode::apply_screen_inputs(params, n, &self.render_inputs[n]);
+        let [left, top, view_w, view_h] = screen_rect;
+        params.offscreen_left = left as f32;
+        params.offscreen_top = top as f32;
+        params.offscreen_width = if core_off_w > 0 {
+            core_off_w as f32
+        } else {
+            view_w as f32 * zoom
+        };
+        params.offscreen_height = if core_off_h > 0 {
+            core_off_h as f32
+        } else {
+            view_h as f32 * zoom
+        };
+        params.zoom = zoom;
+        params.tile_width = if tile_scale == 2 { 64.0 } else { 32.0 };
         let lock_fps = pz_lua_api::bind_climate::climate_settings().lock_fps;
         (settings, self.screen_timer.apply(params, lock_fps))
     }
 
     /// `renderframe(nPlayer)`.
-    fn renderframe(&mut self, cx: &mut StateCx<'_>, n: usize, out: &mut DrawList) {
+    fn renderframe(
+        &mut self,
+        cx: &mut StateCx<'_>,
+        n: usize,
+        layout: &SplitLayout,
+        out: &mut DrawList,
+    ) {
         let Some(p) = player(n) else { return };
-        let (climate, screen) = self.render_settings(cx.lua, n);
+        let screen_rect = layout.screen_rect(n);
+        let [_, _, view_w, view_h] = screen_rect;
+        let zoom = pz_lua_api::bind_core::shared_core()
+            .borrow()
+            .get_zoom(n as i32);
+        let (climate, screen) = self.render_settings(cx.lua, n, screen_rect, zoom);
         pz_lua_api::hud::update_progress_bar(n);
         let Some(w) = cx.world.as_mut() else { return };
         // TODO(port): skip the world while the player is asleep and the
@@ -229,10 +319,6 @@ impl IngameState {
         else {
             return;
         };
-        let zoom = pz_lua_api::bind_core::shared_core()
-            .borrow()
-            .get_zoom(n as i32);
-        // TODO(port): split screen (`IsoCamera.getScreenWidth/Height`).
         let mut view = RenderView {
             player: n,
             x,
@@ -240,8 +326,9 @@ impl IngameState {
             z,
             dir,
             chunk_map,
-            width: cx.screen_w.max(1) as u32,
-            height: cx.screen_h.max(1) as u32,
+            width: view_w.max(1),
+            height: view_h.max(1),
+            split_view: layout.player_view(n),
             zoom,
             climate,
             screen,
@@ -565,15 +652,40 @@ impl GameState for IngameState {
             cx.screen_h,
             Rgba(0.0, 0.0, 0.0, 1.0),
         );
+        let active: [bool; MAX_PLAYERS] = std::array::from_fn(|n| player(n).is_some());
+        let core_players = pz_lua_api::bind_core::shared_core()
+            .borrow()
+            .num_players
+            .max(1) as usize;
+        let num_players_hint = (pz_lua_api::bind_players::num_players().max(1) as usize).max(core_players);
+        let layout = SplitLayout::compute(
+            active,
+            num_players_hint,
+            cx.screen_w.max(1) as u32,
+            cx.screen_h.max(1) as u32,
+        );
         for n in 0..MAX_PLAYERS {
             let Some(p) = player(n) else {
+                // `MultiTextureFBO2.render`: fill empty slots up to the highest
+                // active player index with black.
+                if layout.is_empty_slot_to_fill(n, false) {
+                    let [sx, sy, sw, sh] = layout.screen_rect(n);
+                    out.renderi(
+                        None,
+                        sx as i32,
+                        sy as i32,
+                        sw as i32,
+                        sh as i32,
+                        Rgba(0.0, 0.0, 0.0, 1.0),
+                    );
+                }
                 // TODO(port): `SpriteRenderer.prePopulating` for slot 0.
                 continue;
             };
             // `IsoPlayer.setInstance`, `IsoCamera.setCameraCharacter`,
             // `Core.StartFrame(n, clear)`, `IsoCamera.frameState.set(n)`.
             pz_lua_api::bind_players::set_player_instance(Some(p));
-            self.renderframe(cx, n, out);
+            self.renderframe(cx, n, &layout, out);
             if cx.error.is_some() {
                 return;
             }
@@ -593,3 +705,40 @@ impl GameState for IngameState {
 
 #[cfg(test)]
 mod process_items_tests;
+
+#[cfg(test)]
+mod split_screen_tests {
+    use super::*;
+
+    #[test]
+    fn split_layout_computes_single_dual_and_quad_rects_and_empty_slot_fills() {
+        // Single player: full screen, `player_view` is None, no empty fills.
+        let single = SplitLayout::compute([true, false, false, false], 1, 1920, 1080);
+        assert_eq!(single.num_players, 1);
+        assert_eq!(single.player_view(0), None);
+        assert_eq!(single.screen_rect(0), [0, 0, 1920, 1080]);
+        assert!(!single.is_empty_slot_to_fill(1, false));
+
+        // Two players: left/right halves.
+        let dual = SplitLayout::compute([true, true, false, false], 2, 1920, 1080);
+        assert_eq!(dual.num_players, 2);
+        assert_eq!(dual.screen_rect(0), [0, 0, 960, 1080]);
+        assert_eq!(dual.screen_rect(1), [960, 0, 960, 1080]);
+        assert_eq!(
+            dual.player_view(1),
+            Some(PlayerView { player: 1, num_players: 2, screen: (1920, 1080) })
+        );
+
+        // Players 0 and 2 active (slot 1 empty): 3-player quarter layout, slot 1
+        // filled black, slot 3 beyond highest active so not filled.
+        let sparse = SplitLayout::compute([true, false, true, false], 2, 1920, 1080);
+        assert_eq!(sparse.num_players, 3);
+        assert_eq!(sparse.highest_active, Some(2));
+        assert_eq!(sparse.screen_rect(0), [0, 0, 960, 540]);
+        assert_eq!(sparse.screen_rect(1), [960, 0, 960, 540]);
+        assert_eq!(sparse.screen_rect(2), [0, 540, 960, 540]);
+        assert!(sparse.is_empty_slot_to_fill(1, false));
+        assert!(!sparse.is_empty_slot_to_fill(0, true));
+        assert!(!sparse.is_empty_slot_to_fill(3, false));
+    }
+}
