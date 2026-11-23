@@ -459,13 +459,18 @@ impl App {
             .borrow_mut()
             .with(|m, ctx| {
                 m.set_music_inputs(crate::sound::music_inputs(&self.core.borrow()));
-                m.update_with_ambient_context(toggle_music, ctx, |ctx, count| {
+                let markers = m.update_with_ambient_context(toggle_music, ctx, |ctx, count| {
                     if !game_paused {
                         if let Some(world) = &mut self.world {
                             world.ambient_parameters.update(ctx, count, self.core.borrow().get_option_streamer_mode());
                         }
                     }
                 });
+                if let Some(world) = &self.world {
+                    for (id, name, _) in markers {
+                        world.ambient_parameters.timeline_marker(id, &name);
+                    }
+                }
             });
         if let Some(world) = self.world.as_mut() { world.update_house_alarms(lua); }
         pz_ui::with_ui(|m| m.mouse.end_frame());

@@ -3,6 +3,7 @@
 //! audio device.
 
 pub(crate) mod ambient;
+mod grid_power;
 pub(crate) mod house_alarms;
 
 use std::cell::RefCell;

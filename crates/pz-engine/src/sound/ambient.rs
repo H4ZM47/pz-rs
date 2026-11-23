@@ -42,6 +42,7 @@ pub(crate) struct AmbientParameters {
     nearby_zones: Vec<ZoneId>,
     ambiance: Option<FmodSoundEmitter>,
     channel: i64,
+    power: super::grid_power::GridPower,
     params: FmodParameterList,
 }
 
@@ -92,6 +93,15 @@ impl AmbientParameters {
         if gate.flatten().is_none() {
             return;
         }
+        if let Some(exists) = pz_lua_api::bind_sandbox::with_current(|sb| {
+            let time = bind_climate::shared_game_time();
+            let age = time
+                .borrow()
+                .world_age_days_since_begin(sb.time_since_apo());
+            sb.does_power_grid_exist(age as f32, 0)
+        }) {
+            self.power.update(exists, x, y, parameter_count, ctx);
+        }
         let room_size = bind_world::with_world(|w| {
             let Some((x, y, z)) = square else { return 0 };
             let Some(owner) = w.cell.as_ref().and_then(|c| c.get_grid_square(x, y, z)) else {
@@ -136,7 +146,7 @@ impl AmbientParameters {
 
     fn update_ambiance(&mut self, ctx: &mut Ctx, count: usize, listener: Option<(f32, f32)>) {
         let Some((x, y)) = listener.filter(|_| !ctx.sounds.env.sound_disabled) else {
-            self.stop(ctx);
+            self.stop_ambiance(ctx);
             return;
         };
         let emitter = self
@@ -150,7 +160,16 @@ impl AmbientParameters {
         emitter.tick(ctx);
     }
 
+    pub(crate) fn timeline_marker(&self, id: i64, name: &str) {
+        self.power.marker(id, name);
+    }
+
     pub(crate) fn stop(&mut self, ctx: &mut Ctx) {
+        self.power.stop(ctx);
+        self.stop_ambiance(ctx);
+    }
+
+    fn stop_ambiance(&mut self, ctx: &mut Ctx) {
         if let Some(mut emitter) = self.ambiance.take() {
             emitter.stop_all(ctx);
         }
