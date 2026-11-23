@@ -30,10 +30,21 @@ pub(super) fn check(app: &mut App) {
             end
         end
         assert(rustSessionWindow, "no intact unlocked map window near the test spawn")
+        local obj = rustSessionWindow
+        local sq = getCell():getGridSquare(rustWindowX, rustWindowY, z)
+        local opposite = getCell():getGridSquare(rustWindowX - (obj:getNorth() and 0 or 1),
+            rustWindowY - (obj:getNorth() and 1 or 0), z)
+        rustAlarmRoom = sq:getRoomDef() or opposite:getRoomDef()
+        rustAlarmBuilding = rustAlarmRoom:getBuilding()
+        rustAlarmBuilding:setAlarmed(true)
+        rustAlarmBuilding:setAllExplored(false)
         rustWindowEvents = {}
         rustObserveWindow = function()
             if rustSessionWindow:getObjectIndex() ~= -1 then
                 table.insert(rustWindowEvents, rustSessionWindow:IsOpen())
+                if rustSessionWindow:IsOpen() then
+                    rustAlarmCallback = not rustAlarmBuilding:isAlarmed() and rustAlarmBuilding:isAllExplored()
+                end
             end
         end
         Events.OnContainerUpdate.Add(rustObserveWindow)
@@ -101,11 +112,16 @@ pub(super) fn check(app: &mut App) {
             "assert(getPlayer():getMusicIntensityEvents():findEventById('{id}'):getIntensity() == 10)"
         ));
         if open {
+            lua_check(app.lua.as_mut().unwrap(), "assert(rustAlarmCallback, 'window callback preceded building alarm')");
+            assert_eq!(app.world.as_ref().unwrap().meta_tracker.borrow().alarms.len(), 1, "powered room should start one house alarm");
             climb(app, x, y);
         }
     }
     lua_check(app.lua.as_mut().unwrap(), "Events.OnContainerUpdate.Remove(rustObserveWindow)");
+    lua_check(app.lua.as_mut().unwrap(), "rustAlarmBuilding:setAlarmed(true)");
     smash(app);
+    lua_check(app.lua.as_mut().unwrap(), "assert(not rustAlarmBuilding:isAlarmed())");
+    assert_eq!(app.world.as_ref().unwrap().meta_tracker.borrow().alarms.len(), 2);
 }
 
 /// Start the native state directly so the queue cannot cancel on its behalf.

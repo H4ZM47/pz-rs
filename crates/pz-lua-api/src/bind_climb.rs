@@ -145,12 +145,8 @@ fn toggle_window(c: &mut NativeCall<'_>) -> LuaResult<()> {
             .map_err(crate::bind_world_object::host_error)?;
         let alarm = if changed && (!actor.as_ref().is_some_and(|a| a.zombie) ||
             crate::bind_sandbox::current_bool("ZombieLore.TriggerHouseAlarm").unwrap_or(false)) {
-            let body = world.object.try_borrow().map_err(|_| borrowed("toggled window"))?;
-            match &body.kind {
-                pz_world::objects::ObjectKind::Window(pane) if pane.open =>
-                    pz_world::world_state::window_alarm_room(cell, meta, (x,y,z), pane.north).map_err(crate::bind_world_object::host_error)?,
-                _ => None,
-            }
+            pz_world::world_state::opened_window_alarm(cell, meta, (x, y, z), &world.object)
+                .map_err(crate::bind_world_object::host_error)?
         } else { None };
         Ok((changed, alarm))
     })?;

@@ -589,11 +589,16 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
             std::fs::rename(&path, first_save.join(format!("{wx}_{wy}.bin"))).unwrap();
         }
     }
+    let active_alarms = reloaded.world.as_ref().unwrap().meta_tracker.borrow().alarms.clone();
+    assert_eq!(active_alarms.len(), 2);
     lua_check(reloaded.lua.as_mut().unwrap(), "getCore():quit()");
     assert!(run_frames(&mut reloaded, 1), "returning to the menu ended the client");
     assert_eq!(reloaded.current_state(), Some("zombie.gameStates.MainScreenState"), "quit did not return to the main menu");
     assert!(reloaded.world.is_none(), "menu return retained the old world");
     mannequin::check_saved(&save_dir, &reloaded_chunks);
+    let mut saved_meta = pz_core::save_trackers::MetaTracker::default();
+    saved_meta.load_file(&save_dir, false, true).unwrap();
+    assert_eq!(saved_meta.alarms, active_alarms, "quit must persist the active alarms");
     let mut db = PlayerDb::new(false, &save_dir.to_string_lossy());
     let saved = db.load_player(sql_id).expect("quit after climbing saved the player");
     assert_eq!((saved.x, saved.y, saved.z), after_climb);

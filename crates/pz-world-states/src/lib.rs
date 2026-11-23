@@ -434,13 +434,8 @@ pub trait StatesEngine {
         if let Some(object) = object {
             if pz_world::world_state::toggle_window(cell, meta, sprites, (window.x, window.y, window.z),
                 &object, Some((actor.x, actor.y)))? {
-                let opened = {
-                    let body = object.try_borrow().map_err(|_| pz_inventory::floor_drop::RuntimeHostError::Borrowed("toggled window"))?;
-                    matches!(&body.kind, pz_world::objects::ObjectKind::Window(w) if w.open)
-                };
-                if opened && (!actor.zombie || self.zombie_triggers_house_alarm()) {
-                    let north = pz_world::world_state::barricade_able_north(&object.borrow()).unwrap();
-                    if let Some((room, building)) = pz_world::world_state::window_alarm_room(cell, meta, (window.x, window.y, window.z), north)? {
+                if !actor.zombie || self.zombie_triggers_house_alarm() {
+                    if let Some((room, building)) = pz_world::world_state::opened_window_alarm(cell, meta, (window.x, window.y, window.z), &object)? {
                         self.do_room_alarm(room, building);
                     }
                 }

@@ -67,6 +67,16 @@ pub fn toggle_window(
     Ok(true)
 }
 
+/// Resolve an alarm only when a toggle actually opened its receiver.
+pub fn opened_window_alarm(cell: &IsoCell, meta: &IsoMetaGrid, pos: (i32, i32, i32), object: &IsoObjectRef)
+    -> pz_entity::runtime_load::HostResult<Option<(i64, crate::BuildingIdx)>> {
+    let body = object.try_borrow().map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("toggled window"))?;
+    match &body.kind {
+        ObjectKind::Window(w) if w.open => window_alarm_room(cell, meta, pos, w.north),
+        _ => Ok(None),
+    }
+}
+
 /// Indoor room for a regular window alarm. The room on the window's own
 /// square takes precedence over the room on its opposite edge.
 pub fn window_alarm_room(cell: &IsoCell, meta: &IsoMetaGrid, (x, y, z): (i32, i32, i32), north: bool)
