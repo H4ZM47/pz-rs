@@ -1961,12 +1961,14 @@ registered):
       mask, weapon blood, fluid); on `postUpdateEquippedTextures` (blood or
       fluid changed) call `inst.refresh_texture_init(held.texture_init())`
       on the hand models; build `HeldItem`s `with_fluid(ctx)` (#94).
-- [ ] Placed items: `world_item::item_params_with_fluid` with
-      `item.get_fluid_container(ctx)` (else the world item's) for the
-      `_Fluid` model and the fluid overlay; draw the atlas jobs with
-      `WorldItemAtlas::render_with(out, |p| world_item::atlas_smart_texture(..))`
-      and hand the returned textures to `Combiner::release` after
-      `render_frame` (#94).
+- [x] Placed items: `WorldModels::render_world_item` uses
+      `world_item::try_item_params_with_fluid` with `item.get_fluid_container(ctx)`
+      (falling back to the `IsoWorldInventoryObject`'s `FluidContainer` component)
+      for the `_Fluid` model and fluid overlay; `WorldModels::prepare` flushes
+      queued jobs with `WorldItemAtlas::render_with` + `world_item::atlas_smart_texture`
+      and retires returned textures through `Combiner::release` on the next
+      `prepare`/`dispose`; `WorldRender::render_world_items` draws into
+      `FrameObjects.items` with `item_sprite_draw` as the 2D fallback (#94).
 - [ ] Object outlines: per highlighted non-character object
       (`IsoObject.isOutlineHighlight(player)`, colour from
       `getOutlineHighlightCol`, alpha times `Core.blinkAlpha` when

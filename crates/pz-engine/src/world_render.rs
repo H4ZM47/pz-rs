@@ -634,6 +634,97 @@ impl WorldRender {
         }
     }
 
+    /// `IsoWorldInventoryObject.render`: draws placed 3D items through
+    /// `WorldItemAtlas` (with `item_params_with_fluid` and `atlas_smart_texture`)
+    /// and 2D sprite fallback into `objects.items`, prepending any pending
+    /// atlas build commands into `jobs`.
+    fn render_world_items(
+        &mut self,
+        view: &WorldView<'_>,
+        v: &RenderView,
+        cam: &Camera,
+        models: &mut WorldModels,
+        objects: &mut FrameObjects,
+        jobs: &mut Vec<DrawCmd>,
+    ) {
+        models.take_world_item_jobs(jobs);
+        let p = v.player as i32;
+        let high_res = pz_lua_api::bind_core::shared_core()
+            .try_borrow()
+            .map_or(true, |c| c.get_option_high_res_placed_items());
+        let max_zoom_is_one = pz_iso_render::item_atlas::max_zoom_is_one(high_res, v.zoom);
+        let (x0, y0, n) = v.chunk_map;
+        for wx in x0..x0 + n {
+            for wy in y0..y0 + n {
+                let Some(chunk) = view.cell.chunks.get(&(wx, wy)) else {
+                    continue;
+                };
+                for sq_owner in chunk.squares() {
+                    let Ok(sq) = sq_owner.try_borrow() else {
+                        continue;
+                    };
+                    if sq.objects.is_empty() {
+                        continue;
+                    }
+                    let (sx, sy, sz) = (sq.x, sq.y, sq.z);
+                    let carpet = sq.properties.property_equals(
+                        &view.sprites.alias,
+                        "FootstepMaterial",
+                        "Carpet",
+                    );
+                    let vert_light = self.lighting.square_light(p, sx, sy, sz).map(|l| l.vert_light);
+                    for obj_slot in &sq.objects {
+                        let Ok(obj) = obj_slot.try_borrow() else {
+                            continue;
+                        };
+                        let pz_world::objects::ObjectKind::WorldInventory(floor_obj) = &obj.kind
+                        else {
+                            continue;
+                        };
+                        let wio = floor_obj.borrow();
+                        let Some(item_ref) = wio.item.item_slot() else {
+                            continue;
+                        };
+                        let wx_pos = sx as f32 + wio.xoff;
+                        let wy_pos = sy as f32 + wio.yoff;
+                        let wz_pos = sz as f32 + wio.zoff;
+                        let rgb = vert_light
+                            .as_ref()
+                            .map(|vl| {
+                                let c = pz_iso_render::models::interpolate_light(
+                                    vl,
+                                    wio.xoff.clamp(0.0, 1.0),
+                                    wio.yoff.clamp(0.0, 1.0),
+                                );
+                                [c.r, c.g, c.b]
+                            })
+                            .unwrap_or([v.climate.climate.ambient; 3]);
+                        let at = pz_iso_render::item_atlas::ItemPlacement {
+                            x: wx_pos,
+                            y: wy_pos,
+                            z: wz_pos,
+                            carpet,
+                            rgb,
+                            alpha: 1.0,
+                        };
+                        match models.render_world_item(
+                            item_ref,
+                            &obj.components,
+                            &at,
+                            cam,
+                            max_zoom_is_one,
+                        ) {
+                            Ok(draws) => objects.items.extend(draws),
+                            Err(e) => {
+                                eprintln!("ERROR: IsoWorldInventoryObject.render: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// One player's world frame (`FBORenderCell.renderInternal` and what
     /// `IsoWorld.render` draws around it), appended to `out`.
     fn render_player(
@@ -839,6 +930,7 @@ impl WorldRender {
             // entries ready.
             if cam3.is_none() {
                 self.render_corpses(view, v, &cam, models, &mut objects, &mut corpse_jobs);
+                self.render_world_items(view, v, &cam, models, &mut objects, &mut corpse_jobs);
             }
         }
         // Port extension: the 3D view (pz-world3d) replaces the isometric
