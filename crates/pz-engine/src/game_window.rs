@@ -516,7 +516,7 @@ impl App {
             let frame = [(params, &dl)];
             if self.core.borrow().screenshot_requested() {
                 match gpu.render_frame_capture(&frame, &mut tm.borrow_mut()) {
-                    Ok(Some(pixels)) => {
+                    Ok(pixels) => {
                         let save_dir = self.world.as_ref().map(|world| world.save_dir.as_path());
                         for request in self.core.borrow_mut().take_screenshot_requests() {
                             if let Err(error) = crate::screenshot::save(request, gpu.size(), &pixels, &self.launch.cache_dir, save_dir) {
@@ -524,7 +524,6 @@ impl App {
                             }
                         }
                     }
-                    Ok(None) => {}
                     Err(error) => eprintln!("ERROR: capturing screenshot: {error}"),
                 }
             } else {

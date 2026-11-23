@@ -709,17 +709,23 @@ impl Gpu {
     }
 
     /// Draw the ordinary frame once and return its top-to-bottom RGBA pixels.
-    /// A temporarily unavailable window surface leaves the request pending.
+    /// Capture the world when the window is occluded as well.
     pub fn render_frame_capture(&mut self, segments: &[(FrameParams, &DrawList)], textures: &mut TextureManager)
-        -> Result<Option<Vec<u8>>, GpuError> {
+        -> Result<Vec<u8>, GpuError> {
         if let Some(error) = self.error() { return Err(error); }
-        let Target::Surface { surface, .. } = &self.target else {
+        let Target::Surface { surface, config } = &self.target else {
             self.render_frame(segments, textures);
-            return self.try_read_pixels().map(Some);
+            return self.try_read_pixels();
         };
         let frame = match surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            _ => return Ok(None),
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
+            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => None,
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                surface.configure(&self.device, config);
+                None
+            }
+            wgpu::CurrentSurfaceTexture::Lost => return Err(GpuError::Surface("window surface lost".into())),
+            wgpu::CurrentSurfaceTexture::Validation => return Err(GpuError::Surface("window surface validation failed".into())),
         };
         // Surface textures only guarantee RENDER_ATTACHMENT. Use a readable
         // target on capture frames, then present that very image to the user.
@@ -727,8 +733,10 @@ impl Gpu {
         let source = drawn.create_view(&Default::default());
         self.draw(segments, textures, &source);
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        let target = frame.texture.create_view(&Default::default());
-        wgpu::util::TextureBlitter::new(&self.device, self.format).copy(&self.device, &mut encoder, &source, &target);
+        if let Some(surface) = &frame {
+            let target = surface.texture.create_view(&Default::default());
+            wgpu::util::TextureBlitter::new(&self.device, self.format).copy(&self.device, &mut encoder, &source, &target);
+        }
         let conversion = match self.format {
             wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb |
             wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => None,
@@ -741,12 +749,12 @@ impl Gpu {
             }
         };
         self.queue.submit([encoder.finish()]);
-        self.queue.present(frame);
+        if let Some(surface) = frame { self.queue.present(surface); }
         let mut pixels = self.read_texture_pixels(conversion.as_ref().unwrap_or(&drawn))?;
         if matches!(self.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
             for pixel in pixels.chunks_exact_mut(4) { pixel.swap(0, 2); }
         }
-        Ok(Some(pixels))
+        Ok(pixels)
     }
 
     /// The headless target's pixels, RGBA, top row first. Panics with the
