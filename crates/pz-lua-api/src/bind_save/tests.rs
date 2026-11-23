@@ -549,6 +549,11 @@ fn save_info_null_mode_projects_java_null_without_mutating_core() {
     std::fs::create_dir_all(env.saves.join("null/w1")).unwrap();
     let core = shared_core();
     core.borrow_mut().set_game_mode_ref(None).unwrap();
-    run(&mut env.mgr, "assert(getSaveInfo('w1').saveDir == 'null/w1')");
+    // `saveDir` joins mode and name with the platform's `File.separator`.
+    let sep = if std::path::MAIN_SEPARATOR == '\\' { "\\\\" } else { "/" };
+    run(
+        &mut env.mgr,
+        &format!("assert(getSaveInfo('w1').saveDir == 'null{sep}w1')"),
+    );
     assert!(core.borrow().get_game_mode_ref().is_none());
 }
