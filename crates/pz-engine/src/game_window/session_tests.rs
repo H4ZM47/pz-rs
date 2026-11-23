@@ -149,6 +149,107 @@ fn close_survival_guide(lua: &mut LuaManager) {
     "#);
 }
 
+fn verify_utilities_and_ambience(app: &mut super::App, streamer: bool) {
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        local clock, sb = getGameTime(), getSandboxOptions()
+        local original = sb:getTimeSinceApo()
+        sb:set("TimeSinceApo", 3)
+        local age = 60 + clock:getWorldAgeHours() / 24
+        assert(math.abs(clock:getWorldAgeDaysSinceBegin() - age) < 0.000001)
+        assert(math.abs(getWorld():getWorldAgeDays() - age) < 0.00001)
+        assert(sb:doesPowerGridExist() == (age <= sb:getElecShutModifier()))
+        assert(sb:doesPowerGridExist(70) == (age <= sb:getElecShutModifier() + 70))
+        local world = getWorld()
+        local originalPower = world:isHydroPowerOn()
+        world:setHydroPowerOn(not originalPower)
+        assert(world:isHydroPowerOn() ~= originalPower)
+        world:setHydroPowerOn(originalPower)
+        sb:set("TimeSinceApo", original)
+        rustAmbientPower = originalPower and 1 or 0
+        rustAmbientWater = clock:getWorldAgeDaysSinceBegin() < sb:getWaterShutModifier() and 1 or 0
+        local square = getPlayer():getCurrentSquare()
+        local room = square:getRoomDef()
+        rustAmbientRoom = room and room:getArea() or math.max(0, square:getRoomSize())
+        assert(square:hasGridPower() == (not square:isNoPower() and sb:doesPowerGridExist()))
+        assert(square:hasGridPower(-999) == false)
+        assert(square:getFloor():hasGridPower() == square:hasGridPower())
+        assert(type(square:isNoWater()) == "boolean")
+        local floor = square:getFloor()
+        local parts = ArrayList.new()
+        parts:add(floor)
+        assert(floor:getSpriteGridObjects(parts) == parts and parts:isEmpty())
+        assert(floor:getSpriteGridObjectsIncludingSelf(parts) == parts and parts:get(0) == floor)
+        local function findObject(check)
+            for y = square:getY()-8, square:getY()+8 do
+                for x = square:getX()-8, square:getX()+8 do
+                    local sq = getCell():getGridSquare(x, y, square:getZ())
+                    local objects = sq and sq:getObjects()
+                    if objects then
+                        for i = 0, objects:size()-1 do
+                            if check(objects:get(i), sq) then return true end
+                        end
+                    end
+                end
+            end
+        end
+        local others = ArrayList.new()
+        assert(findObject(function(object)
+            object:getSpriteGridObjectsExcludingSelf(others)
+            if others:isEmpty() then return end
+            object:getSpriteGridObjects(parts, true)
+            assert(parts:size() == others:size()+1)
+            local index = 0
+            for j = 0, parts:size()-1 do
+                local part = parts:get(j)
+                assert(part:getSquare() ~= nil)
+                if part ~= object then
+                    assert(others:get(index) == part)
+                    index = index + 1
+                end
+            end
+            assert(index == others:size())
+            return true
+        end), "no multi-square furniture found near the player")
+        assert(findObject(function(object, sq)
+            local container = object:getContainerByEitherType("fridge", "freezer")
+            if not container or not sq:getRoom() or sq:isNoPower() then return end
+            local shut = sb:getElecShutModifier()
+            sb:set("ElecShutModifier", 365)
+            assert(ItemContainer.isObjectPowered(object, false))
+            assert(container:isPowered() and object:checkObjectPowered())
+            sb:set("ElecShutModifier", -1)
+            assert(not ItemContainer.isObjectPowered(object, false))
+            assert(container:isPowered(), "object power must be stable during a game tick")
+            sb:set("ElecShutModifier", shut)
+            return true
+        end), "no indoor fridge near player")
+        assert(not square:isDerelict() or (square:isNoPower() and square:isNoWater()))
+    "#);
+    let room = app.lua.as_ref().unwrap().thread.globals().get_str("rustAmbientRoom").as_num().unwrap() as f32;
+    let ambient = &app.world.as_ref().unwrap().ambient_parameters;
+    for (parameter, global) in [("Water", "rustAmbientWater"), ("Electricity", "rustAmbientPower")] {
+        let expected = app.lua.as_ref().unwrap().thread.globals().get_str(global).as_num().unwrap() as f32;
+        assert_eq!(ambient.current_value(parameter), Some(expected));
+    }
+    assert_eq!(ambient.current_value("RoomSize"), Some(room));
+    let scripts = pz_lua_api::bind_registry::shared_script_manager();
+    let player = bind_players::player(0).unwrap();
+    let actor = player.borrow();
+    assert_eq!(ambient.current_value("HardOfHearing"), Some(f32::from(actor.has_trait(&scripts, "HARD_OF_HEARING").unwrap())));
+    assert_eq!(ambient.current_value("MoodlePanic"), Some(actor.moodles.moodle_level_of(&scripts, "PANIC").unwrap() as f32 / 4.));
+    let zoom = {
+        let core = app.core.borrow();
+        let min = core.offscreen_buffer.get_min_zoom();
+        (core.get_zoom(actor.player.player_index) - min) / (core.offscreen_buffer.get_max_zoom() - min)
+    };
+    assert_eq!(ambient.current_value("CameraZoom").unwrap().to_bits(), zoom.to_bits());
+    drop(actor);
+    assert_eq!(ambient.current_value("CharacterElevation"), Some(player.borrow().vars.z));
+    assert_eq!(ambient.current_value("StreamerMode"), Some(f32::from(streamer)));
+    let temperature = pz_lua_api::bind_climate::shared_game_time().borrow().climate.get_temperature();
+    assert_eq!(ambient.current_value("Temperature"), Some((temperature * 100.0) as i32 as f32 / 100.0));
+}
+
 fn movement_diagnostics(app: &mut super::App, label: &str) {
     let input = pz_player_input::EnginePlayerInput::capture();
     let binding = app.core.borrow().get_key_binding("Forward");
@@ -417,116 +518,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
             }
         }
     }
-    lua_check(app.lua.as_mut().unwrap(), r#"
-        local clock, sb = getGameTime(), getSandboxOptions()
-        local original = sb:getTimeSinceApo()
-        sb:set("TimeSinceApo", 3)
-        local age = 60 + clock:getWorldAgeHours() / 24
-        assert(math.abs(clock:getWorldAgeDaysSinceBegin() - age) < 0.000001)
-        assert(math.abs(getWorld():getWorldAgeDays() - age) < 0.00001)
-        assert(sb:doesPowerGridExist() == (age <= sb:getElecShutModifier()))
-        assert(sb:doesPowerGridExist(70) == (age <= sb:getElecShutModifier() + 70))
-        local world = getWorld()
-        local originalPower = world:isHydroPowerOn()
-        world:setHydroPowerOn(not originalPower)
-        assert(world:isHydroPowerOn() ~= originalPower)
-        world:setHydroPowerOn(originalPower)
-        sb:set("TimeSinceApo", original)
-        rustAmbientPower = originalPower and 1 or 0
-        rustAmbientWater = clock:getWorldAgeDaysSinceBegin() < sb:getWaterShutModifier() and 1 or 0
-        local square = getPlayer():getCurrentSquare()
-        local room = square:getRoomDef()
-        rustAmbientRoom = room and room:getArea() or math.max(0, square:getRoomSize())
-        assert(square:hasGridPower() == (not square:isNoPower() and sb:doesPowerGridExist()))
-        assert(square:hasGridPower(-999) == false)
-        assert(square:getFloor():hasGridPower() == square:hasGridPower())
-        assert(type(square:isNoWater()) == "boolean")
-        local floor = square:getFloor()
-        local parts = ArrayList.new()
-        parts:add(floor)
-        assert(floor:getSpriteGridObjects(parts) == parts and parts:isEmpty())
-        assert(floor:getSpriteGridObjectsIncludingSelf(parts) == parts and parts:get(0) == floor)
-        local function checkGrid()
-            local others = ArrayList.new()
-            for y = square:getY()-6, square:getY()+6 do
-                for x = square:getX()-6, square:getX()+6 do
-                    local sq = getCell():getGridSquare(x, y, square:getZ())
-                    local objects = sq and sq:getObjects()
-                    if objects then
-                        for i = 0, objects:size()-1 do
-                            local object = objects:get(i)
-                            object:getSpriteGridObjectsExcludingSelf(others)
-                            if others:size() > 0 then
-                                object:getSpriteGridObjects(parts, true)
-                                assert(parts:size() == others:size()+1)
-                                local index = 0
-                                for j = 0, parts:size()-1 do
-                                    local part = parts:get(j)
-                                    assert(part:getSquare() ~= nil)
-                                    if part ~= object then
-                                        assert(others:get(index) == part)
-                                        index = index + 1
-                                    end
-                                end
-                                assert(index == others:size())
-                                return true
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        assert(checkGrid(), "no multi-square furniture found near the player")
-        local function checkFridge()
-            for y = square:getY()-8, square:getY()+8 do
-                for x = square:getX()-8, square:getX()+8 do
-                    local sq = getCell():getGridSquare(x, y, square:getZ())
-                    local objects = sq and sq:getObjects()
-                    if objects then
-                        for i = 0, objects:size()-1 do
-                            local object = objects:get(i)
-                            local container = object:getContainerByEitherType("fridge", "freezer")
-                            if container and sq:getRoom() and not sq:isNoPower() then
-                                local shut = sb:getElecShutModifier()
-                                sb:set("ElecShutModifier", 365)
-                                assert(ItemContainer.isObjectPowered(object, false))
-                                assert(container:isPowered() and object:checkObjectPowered())
-                                sb:set("ElecShutModifier", -1)
-                                assert(not ItemContainer.isObjectPowered(object, false))
-                                assert(container:isPowered(), "object power must be stable during a game tick")
-                                sb:set("ElecShutModifier", shut)
-                                return true
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        assert(checkFridge(), "no indoor fridge near player")
-        assert(not square:isDerelict() or (square:isNoPower() and square:isNoWater()))
-    "#);
-    let room = app.lua.as_ref().unwrap().thread.globals().get_str("rustAmbientRoom").as_num().unwrap() as f32;
-    let ambient = &app.world.as_ref().unwrap().ambient_parameters;
-    for (parameter, global) in [("Water", "rustAmbientWater"), ("Electricity", "rustAmbientPower")] {
-        let expected = app.lua.as_ref().unwrap().thread.globals().get_str(global).as_num().unwrap() as f32;
-        assert_eq!(ambient.current_value(parameter), Some(expected));
-    }
-    assert_eq!(ambient.current_value("RoomSize"), Some(room));
-    let scripts = pz_lua_api::bind_registry::shared_script_manager();
-    let actor = player.borrow();
-    assert_eq!(ambient.current_value("HardOfHearing"), Some(f32::from(actor.has_trait(&scripts, "HARD_OF_HEARING").unwrap())));
-    assert_eq!(ambient.current_value("MoodlePanic"), Some(actor.moodles.moodle_level_of(&scripts, "PANIC").unwrap() as f32 / 4.));
-    let zoom = {
-        let core = app.core.borrow();
-        let min = core.offscreen_buffer.get_min_zoom();
-        (core.get_zoom(actor.player.player_index) - min) / (core.offscreen_buffer.get_max_zoom() - min)
-    };
-    assert_eq!(ambient.current_value("CameraZoom").unwrap().to_bits(), zoom.to_bits());
-    drop(actor);
-    assert_eq!(ambient.current_value("CharacterElevation"), Some(player.borrow().vars.z));
-    assert_eq!(ambient.current_value("StreamerMode"), Some(f32::from(!streamer)));
-    let temperature = pz_lua_api::bind_climate::shared_game_time().borrow().climate.get_temperature();
-    assert_eq!(ambient.current_value("Temperature"), Some((temperature * 100.0) as i32 as f32 / 100.0));
+    verify_utilities_and_ambience(&mut app, !streamer);
     app.core.borrow_mut().set_option_streamer_mode(streamer);
     let late_start = late_start.expect("captured held-W frame 40");
     let held_end = {

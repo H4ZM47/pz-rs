@@ -439,9 +439,9 @@ pub enum CoreRequest {
     },
     /// Apply `setVSyncEnabled` on the render thread.
     VSync(bool),
-    /// `TakeFullScreenshot(filename)`. TODO(render).
+    /// Save the next rendered frame to the cache screenshot directory.
     FullScreenshot(Option<String>),
-    /// `TakeScreenshot(...)` of the current save's thumbnail. TODO(render).
+    /// Write a crop of the rendered frame to the current save thumbnail.
     Screenshot {
         x: i32,
         y: i32,
@@ -1899,7 +1899,7 @@ impl Core {
         self.take_screenshot_at(x, y, w, h, read_buffer);
     }
 
-    /// `TakeScreenshot(x, y, width, height, readBuffer)`. TODO(render).
+    /// Queue a thumbnail capture using bottom-left framebuffer coordinates.
     pub fn take_screenshot_at(
         &mut self,
         x: i32,
