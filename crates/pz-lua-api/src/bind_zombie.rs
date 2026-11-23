@@ -11,6 +11,7 @@
 use crate::bind_character_sim::{chr_of, with_ctx, CharacterObject, ISO_GAME_CHARACTER_CLASS, ISO_ZOMBIE_CLASS};
 use crate::bind_states::with_state_cx;
 use crate::expose::{bool_arg, expose_class, global, int_arg, num_arg, str_arg};
+use pz_characters::character::context::WorldSoundRequest;
 use pz_audio::world_sound::{NoWorld, SoundId, SoundSource, SoundWorld, WorldSoundManager};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaResult, NativeCall, Thread, Value};
@@ -102,6 +103,18 @@ fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Val
     // chunks and population. The callback may add another sound.
     crate::bind_character_sim::fire_event(c.thread, "OnWorldSound",
         &[x.into(), y.into(), z.into(), radius.into(), volume.into(), receiver]);
+    let request = WorldSoundRequest {
+        source, x, y, z, radius, volume, stress_humans: stress,
+        zombie_ignore_dist: ignore, stress_mod,
+    };
+    Ok(sound_value(register_world_sound(request, repeating)?))
+}
+
+/// Register the noise after its Lua callbacks have finished. Embedders may
+/// supply their own sound world, otherwise the active cell and population own it.
+pub fn register_world_sound(request: WorldSoundRequest<SoundSource>, repeating: bool) -> LuaResult<Option<SoundId>> {
+    let WorldSoundRequest { source, x, y, z, radius, volume, stress_humans: stress,
+        zombie_ignore_dist: ignore, stress_mod } = request;
     let sounds = shared_world_sounds();
     let mut manager = sounds.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("WorldSoundManager"))?;
     let add = |manager: &mut WorldSoundManager, world: &mut dyn SoundWorld| {
@@ -113,9 +126,9 @@ fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Val
     };
     if let Some(world) = SOUND_WORLD.with(|w| w.borrow().clone()) {
         let mut world = world.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound host"))?;
-        return Ok(sound_value(add(&mut manager, &mut *world)));
+        return Ok(add(&mut manager, &mut *world));
     }
-    let id = crate::bind_world::with_world_state_cell(|w| -> LuaResult<_> {
+    crate::bind_world::with_world_state_cell(|w| -> LuaResult<_> {
         let mut state = w.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound cell"))?;
         if let Some(cell) = state.cell.as_ref() {
             let hearing = crate::bind_sandbox::current_double("ZombieLore.Hearing").unwrap_or(2.0) as i32;
@@ -130,8 +143,7 @@ fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Val
         } else {
             Ok(add(&mut manager, &mut NoWorld))
         }
-    })?;
-    Ok(sound_value(id))
+    })
 }
 
 macro_rules! zfield {

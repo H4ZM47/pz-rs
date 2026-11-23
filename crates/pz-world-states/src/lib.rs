@@ -184,21 +184,7 @@ impl StatesRuntime {
     }
 }
 
-/// `WorldSoundManager.instance.addSound(source, x, y, z, radius, volume,
-/// stressHumans, zombieIgnoreDist, stressMod)`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WorldSoundRequest {
-    /// The thumper's id, or `None` for `null`.
-    pub source: Option<i32>,
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
-    pub radius: i32,
-    pub volume: i32,
-    pub stress_humans: bool,
-    pub zombie_ignore_dist: f32,
-    pub stress_mod: f32,
-}
+pub use pz_characters::character::context::WorldSoundRequest;
 
 /// What the states' world code needs from outside `pz-world`. Every
 /// method has the answer of an engine with nothing in it; the provider is

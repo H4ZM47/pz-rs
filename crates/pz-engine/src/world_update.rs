@@ -225,6 +225,12 @@ impl StatesEngine for EngineStates<'_> {
         pz_lua_api::bind_sandbox::current_bool("ZombieLore.TriggerHouseAlarm").unwrap_or(false)
     }
 
+    fn add_world_sound(&mut self, request: pz_world_states::WorldSoundRequest) {
+        if let Some(sim) = self.sim {
+            pz_characters::character::SimContext::event(sim, SimEvent::InteractionNoise(request));
+        }
+    }
+
     fn play_world_sound(&mut self, name: &str, square: (i32, i32, i32)) {
         if let Some(sim) = self.sim {
             pz_characters::character::SimContext::event(sim, SimEvent::PositionedSound { name: name.into(), square });
@@ -1158,6 +1164,33 @@ impl IsoWorld {
         }
     }
 
+    fn interaction_noise(&mut self, lua: &mut LuaManager, request: pz_world_states::WorldSoundRequest) {
+        let (source, receiver) = if let Some(id) = request.source {
+            if let Some(player) = local_players().into_iter().flatten().find(|p| p.borrow().id == id) {
+                let source = player.borrow().sound_source();
+                (Some(source), Some(character_value(&player)))
+            } else if let Some(zombie) = self.zombies.iter().find(|z| z.id == id) {
+                // Real zombies currently have no persistent Lua userdata.
+                (Some(zombie.sound_source()), None)
+            } else {
+                self.log_update_error(format!("WorldSoundManager.addSound: missing character {id}"));
+                return;
+            }
+        } else {
+            (None, Some(Value::Nil))
+        };
+
+        if let Some(receiver) = receiver {
+            lua.trigger_event("OnWorldSound", &[request.x.into(), request.y.into(), request.z.into(),
+                request.radius.into(), request.volume.into(), receiver]);
+        } else if lua.events.callbacks("OnWorldSound") > 0 {
+            self.log_update_error("unsupported: OnWorldSound for a zombie without Lua userdata".into());
+        }
+        if let Err(error) = pz_lua_api::bind_zombie::register_world_sound(request.with_source(source), false) {
+            self.log_update_error(format!("WorldSoundManager.addSound: {error}"));
+        }
+    }
+
     /// The simulation's side effects for Lua (`LuaEventManager.triggerEvent`
     /// from inside the character code), with `chr` as the character.
     fn fire_sim_events(
@@ -1177,6 +1210,7 @@ impl IsoWorld {
                             .trigger(Some(id), &p.player.music_intensity_events);
                     }
                 }
+                SimEvent::InteractionNoise(request) => self.interaction_noise(lua, request),
                 SimEvent::PositionedSound { name, square: (x, y, z) } => {
                     pz_lua_api::bind_audio::sound_system().borrow_mut().play_world_clip(&name,
                         [x as f32 + 0.5, y as f32 + 0.5, z as f32], true);

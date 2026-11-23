@@ -286,6 +286,14 @@ fn smash(app: &mut App) {
                 rustWindowHitCount = rustWindowHitCount + 1
             end
         end
+        rustImpactNoise, rustSmashNoise = 0, 0
+        rustObserveWindowNoise = function(x, y, z, radius, volume, source)
+            if x == rustWindowX and y == rustWindowY and z == rustSessionWindow:getZ() and volume == 20 then
+                if radius == 20 and source == getPlayer() then rustImpactNoise = rustImpactNoise + 1 end
+                if radius == 10 and source == nil then rustSmashNoise = rustSmashNoise + 1 end
+            end
+        end
+        Events.OnWorldSound.Add(rustObserveWindowNoise)
         Events.OnWeaponHitThumpable.Add(rustObserveWindowHit)
         ISTimedActionQueue.add(ISSmashWindow:new(getPlayer(), rustSessionWindow))
     "#);
@@ -300,6 +308,11 @@ fn smash(app: &mut App) {
             drop(p);
             lua_check(app.lua.as_mut().unwrap(), "assert(rustSessionWindow:isSmashed() and rustSessionWindow:canClimbThrough(nil))");
             lua_check(app.lua.as_mut().unwrap(), "Events.OnWeaponHitThumpable.Remove(rustObserveWindowHit); assert(rustWindowHitCount == 1)");
+            lua_check(app.lua.as_mut().unwrap(), r#"
+                Events.OnWorldSound.Remove(rustObserveWindowNoise)
+                assert(rustImpactNoise == 1 and rustSmashNoise == 1,
+                    "incorrect impact/smash sound counts " .. rustImpactNoise .. "/" .. rustSmashNoise)
+            "#);
             eprintln!("installed smash window returned to idle at frame {frame}");
             return;
         }

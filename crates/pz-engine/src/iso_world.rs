@@ -424,6 +424,10 @@ impl IsoWorld {
                     return (None, pz_world::RetiredWorldOwners::default(), Vec::new());
                 };
                 let mut object_hooks = NoHooks;
+                let sounds = pz_lua_api::bind_zombie::shared_world_sounds();
+                let mut sounds = sounds.borrow_mut();
+                let mut chunk_hook = pz_world_sound::ClearSoundsOnUnload::new(&mut sounds,
+                    erosion_hook.as_mut().map(|h| h as &mut dyn pz_world::save::chunk_file::ChunkLoadHook));
                 let mut ctx = StreamCtx {
                     save_dir,
                     meta,
@@ -442,11 +446,7 @@ impl IsoWorld {
                     brand_new: world_gen
                         .as_mut()
                         .map(|h| h as &mut dyn pz_world::chunk::BrandNewHook),
-                    // TODO(port): wrap it in `ClearSoundsOnUnload` (world
-                    // sounds of unloaded chunks).
-                    chunk_hook: erosion_hook
-                        .as_mut()
-                        .map(|h| h as &mut dyn pz_world::save::chunk_file::ChunkLoadHook),
+                    chunk_hook: Some(&mut chunk_hook),
                     no_save,
                     vehicles_db: vehicles.conn.as_mut(),
                     // TODO(port): the vehicle runtime's savers, meta and ids
