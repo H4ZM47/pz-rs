@@ -382,6 +382,8 @@ impl App {
         if let Some(w) = self.window.as_ref() {
             apply_window_requests(w, pz_lua_api::bind_input::take_window_requests());
         }
+        // WorldMapImages.checkLoadingQueue() (after UIManager.resize).
+        pz_lua_api::worldmap::check_loading_queue();
         // Lua's `forceChangeState` sets `states.forceNext` at once; the
         // machine reads it in its next update.
         if let Some(forced) = pz_lua_api::bind_game_window::take_forced_state() {

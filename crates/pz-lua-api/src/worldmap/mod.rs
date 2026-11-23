@@ -131,6 +131,13 @@ pub fn start_frame() {
     pz_worldmap::pyramid::start_frame();
 }
 
+/// `WorldMapImages.checkLoadingQueue()`, once a frame in `GameWindow.logic`
+/// (after `UIManager.resize`): hands queued pyramid tiles to the file
+/// thread and cancels the loads the last frame dropped.
+pub fn check_loading_queue() {
+    pz_worldmap::pyramid::check_loading_queue();
+}
+
 /// `WorldMapImages.endFrame()`, after that frame: cancels the tile loads no
 /// map drew this frame.
 pub fn end_frame() {
