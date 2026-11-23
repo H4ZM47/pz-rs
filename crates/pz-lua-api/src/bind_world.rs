@@ -71,6 +71,8 @@ pub struct WorldState {
     pub meta_grid: Option<IsoMetaGrid>,
     pub cell: Option<IsoCell>,
     pub geometry: GeometryChanges,
+    pub object_names: HashMap<i8, String>,
+    pub sprite_names: Rc<HashMap<i32, String>>,
     /// Region graph for player-built rooms, shared with the engine renderer.
     pub regions: Option<Rc<RefCell<pz_world::isoregion::IsoRegions>>>,
     pub population_sounds: Vec<(pz_audio::world_sound::WorldSound, f32)>,
@@ -130,6 +132,8 @@ pub fn set_cell(cell: Option<IsoCell>) {
     let retired = with_world_state_cell(|w| {
         let mut w = w.borrow_mut();
         w.meta_tracker = None;
+        w.object_names.clear();
+        w.sprite_names = Rc::default();
         w.regions = None;
         w.geometry = GeometryChanges::default();
         w.population_sounds.clear();

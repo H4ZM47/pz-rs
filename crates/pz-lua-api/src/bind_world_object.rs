@@ -21,6 +21,15 @@ const GAME_ENTITY: &str = "zombie.entity.GameEntity";
 const ISO_BARBECUE: &str = "zombie.iso.objects.IsoBarbecue";
 const ISO_FIREPLACE: &str = "zombie.iso.objects.IsoFireplace";
 
+pub(crate) fn resolve_sprite_name(
+    name: &pz_world::objects::SpriteName,
+    sprites: &pz_world::IsoSpriteManager,
+) -> LuaResult<Option<String>> {
+    crate::bind_world::try_with_world_read(|world| {
+        Ok(name.resolve(Some(&world.sprite_names), sprites).map(str::to_owned))
+    }).map_err(host_error)
+}
+
 pub struct LuaWorldObject {
     pub(crate) object: IsoObjectRef,
     class: &'static str,
@@ -382,17 +391,16 @@ pub(crate) fn register_classes(thread: &mut Thread) {
         Ok(c.push(value))
     });
     sprite_edit::register(&object);
-    // getOverlaySprite(): `overlaySprite`. STUB: a `WorldDictionary` name
-    // id is not resolved.
     object.method("getOverlaySprite", |c| {
         let object = receiver_object(c)?;
-        let name = match &object.try_borrow().map_err(|_| borrowed("IsoObject body"))?.overlay_sprite {
-            Some(pz_world::objects::OverlaySprite { name: pz_world::objects::SpriteName::Str(n), .. }) => n.clone(),
-            Some(_) => return Err(unsupported("IsoObject.getOverlaySprite: dictionary sprite name")),
-            None => return Ok(c.push(Value::Nil)),
-        };
-        let sprites = crate::bind_sprites::manager()?;
-        let idx = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?.named_map.get(name.as_str()).copied();
+        let overlay = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?.overlay_sprite.clone();
+        let Some(overlay) = overlay else { return Ok(c.push(Value::Nil)); };
+        let manager = crate::bind_sprites::manager()?;
+        let mut manager = manager.try_borrow_mut().map_err(|_| borrowed("IsoSpriteManager"))?;
+        let name = resolve_sprite_name(&overlay.name, &manager)?;
+        let idx = name.filter(|name| !name.is_empty()).map(|name| {
+            manager.named_map.get(&name).copied().unwrap_or_else(|| manager.add_sprite_named(&name))
+        });
         Ok(c.push(crate::bind_sprites::sprite_value(idx, false)))
     });
     object.method("setName", |c| {
@@ -401,7 +409,7 @@ pub(crate) fn register_classes(thread: &mut Thread) {
         object.try_borrow_mut().map_err(|_| borrowed("IsoObject body"))?.name = name;
         Ok(0)
     });
-    // getName(): `name`. STUB: a `WorldDictionary` name id is not resolved.
+    // Saved objects may store the original name by its WorldDictionary id.
     object.method("getName", |c| {
         let object = receiver_object(c)?;
         let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
@@ -409,8 +417,11 @@ pub(crate) fn register_classes(thread: &mut Thread) {
             None => return Ok(c.push(Value::Nil)),
             Some(ObjectName::Grass) => "Grass",
             Some(ObjectName::Str(name)) => name.as_str(),
-            Some(ObjectName::Dict(_)) => {
-                return Err(unsupported("IsoObject.getName: WorldDictionary names are not resolved"))
+            Some(ObjectName::Dict(id)) => {
+                let value = crate::bind_world::try_with_world_read(|world| {
+                    Ok(world.object_names.get(id).map_or(Value::Nil, |name| Value::str(name)))
+                }).map_err(host_error)?;
+                return Ok(c.push(value));
             }
         };
         Ok(c.push(Value::str(name)))

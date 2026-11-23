@@ -769,6 +769,22 @@ pub enum SpriteName {
     Str(String),
 }
 
+impl SpriteName {
+    /// WorldDictionary.getSpriteNameFromID checks the saved override before the tile manager.
+    pub fn resolve<'a>(
+        &'a self,
+        dictionary: Option<&'a std::collections::HashMap<i32, String>>,
+        sprites: &'a crate::IsoSpriteManager,
+    ) -> Option<&'a str> {
+        match self {
+            Self::Str(name) => Some(name),
+            Self::Dict(id) if *id >= 0 => dictionary.and_then(|d| d.get(id)).map(String::as_str)
+                .or_else(|| sprites.by_id(*id)?.name.as_deref()),
+            Self::Dict(_) => None,
+        }
+    }
+}
+
 /// `IsoWallBloodSplat`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WallBloodSplat {

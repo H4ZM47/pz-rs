@@ -149,7 +149,7 @@ fn sprite_name(
     sprites: &IsoSpriteManager,
     saved_names: Option<&HashMap<i32, String>>,
 ) -> LuaResult<Option<String>> {
-    use pz_world::objects::{ObjectSprite, SpriteName};
+    use pz_world::objects::ObjectSprite;
     let object = object.try_borrow().map_err(|_| LuaError::runtime("IsoObject is in use"))?;
     if matches!(object.kind, pz_world::ObjectKind::WorldInventory(_)) || object.sprite.is_none() {
         return Ok(None);
@@ -159,11 +159,7 @@ fn sprite_name(
         sprite => sprite.try_read(sprites).map_err(crate::bind_world_object::host_error)?
             .and_then(|s| s.name.clone()),
     };
-    Ok(name.or_else(|| match &object.sprite_name {
-        Some(SpriteName::Str(name)) => Some(name.clone()),
-        Some(SpriteName::Dict(id)) if *id >= 0 => saved_names.and_then(|names| names.get(id)).cloned().or_else(|| sprites.by_id(*id).and_then(|s| s.name.clone())),
-        _ => None,
-    }))
+    Ok(name.or_else(|| object.sprite_name.as_ref()?.resolve(saved_names, sprites).map(str::to_owned)))
 }
 
 /// Iterate the initial object list. A callback can remove or rename its

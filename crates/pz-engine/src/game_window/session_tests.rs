@@ -307,6 +307,15 @@ fn verify_pump_supply(app: &mut super::App) {
         set("AllowExteriorGenerator", false)
         set("ElecShutModifier", -1)
         set("FuelStationGasInfinite", false)
+        local tile = 'fencing_01_1'
+        local sign = sq:addTileObject(tile)
+        local shared = sign:getSprite()
+        sign:setName('runtime-sprite-fixture')
+        sign:setSprite(tile)
+        local runtime = sign:getSprite()
+        assert(shared ~= runtime and runtime == sign:getSprite())
+        assert(sign:getSpriteName() == tile and sign:getType() == IsoObjectType.MAX)
+        assert(sign:getTileName() == sign:getName())
         local added = sq:addTileObject(rustPumpSprite)
         assert(added:getSquare() == sq and added:getObjectIndex() >= 0)
         assert(added:getPipedFuelAmount() == -1)
@@ -713,11 +722,18 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     verify_tile_definitions(reloaded.lua.as_mut().unwrap());
     lua_check(reloaded.lua.as_mut().unwrap(), r#"
         local objects = getCell():getGridSquare(10689, 9377, 0):getObjects()
-        local found = false
+        local found, foundSprite = false, false
         for i = 0, objects:size()-1 do
             local obj = objects:get(i)
+            if obj:getName() == 'runtime-sprite-fixture' then
+                assert(obj:getSpriteName() == 'fencing_01_1' and obj:getType() == IsoObjectType.MAX)
+                assert(obj:getSprite() and obj:getSprite() ~= IsoSpriteManager.instance:getSprite('fencing_01_1'))
+                assert(obj:getTileName() == 'runtime-sprite-fixture')
+                foundSprite = true
+            end
             if obj:getProperty("fuelAmount") and obj:getPipedFuelAmount() == 137 then found = true end
         end
+        assert(foundSprite, "single-texture map object must survive reload")
         assert(found, "placed pump and its stored fuel must survive reload")
     "#);
     let initial_chunks = mannequin::check_live(false);

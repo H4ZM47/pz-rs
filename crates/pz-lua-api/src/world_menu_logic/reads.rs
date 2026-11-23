@@ -6,10 +6,9 @@ use std::rc::Rc;
 
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
-use pz_world::objects::ObjectSprite;
 
 use super::Cx;
-use crate::bind_world_object::{borrowed, object_from_value, object_square, unsupported, LuaWorldObject, ISO_OBJECT};
+use crate::bind_world_object::{borrowed, object_from_value, object_square, LuaWorldObject, ISO_OBJECT};
 use crate::expose::expose_class;
 
 const SPRITE_INSTANCE: &str = "zombie.iso.sprite.IsoSpriteInstance";
@@ -113,24 +112,14 @@ pub(super) fn register(thread: &mut Thread) {
         let this = c.arg(0);
         let object = receiver(&this)?;
         let body = object.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
-        if body.sprite_name.is_none() {
-            if let ObjectSprite::Tile(sprite) = body.sprite {
-                let m = crate::bind_sprites::manager()?;
-                let m = m.try_borrow().map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
-                if let Some(name) = &m.sprites[sprite].name {
-                    return Ok(c.push(Value::str(name)));
-                }
-            } else if !matches!(body.sprite, ObjectSprite::None) {
-                return Err(unsupported("IsoObject.getSpriteName: the sprite has no Lua object"));
-            }
-        }
-        let r = match &body.sprite_name {
-            None => Value::Nil,
-            Some(pz_world::objects::SpriteName::Str(name)) => Value::str(name),
-            Some(pz_world::objects::SpriteName::Dict(_)) => {
-                return Err(unsupported("IsoObject.getSpriteName: a spriteName from the save dictionary"))
-            }
+        let manager = crate::bind_sprites::manager()?;
+        let manager = manager.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
+        let name = match &body.sprite_name {
+            Some(name) => crate::bind_world_object::resolve_sprite_name(name, &manager)?,
+            None => body.sprite.try_read(&manager).map_err(crate::bind_world_object::host_error)?
+                .and_then(|sprite| sprite.name.clone()),
         };
+        let r = name.as_deref().map_or(Value::Nil, Value::str);
         Ok(c.push(r))
     });
     object.method("hasFluid", |c| {

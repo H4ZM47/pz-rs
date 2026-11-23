@@ -859,6 +859,10 @@ impl IsoWorld {
             .set_deferred_world_activation(true);
         set_cell(Some(IsoCell::default()));
         with_world(|w| {
+            if let Some(items) = &self.items {
+                w.object_names = items.dictionary.object_names.clone();
+                w.sprite_names = Rc::new(items.dictionary.sprite_names.clone());
+            }
             w.meta_tracker = Some(self.meta_tracker.clone());
             w.regions = self.regions.clone();
             w.geometry.pathfind = self.pathfind.as_ref().map(|path| path.service().square_changes());

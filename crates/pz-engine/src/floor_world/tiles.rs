@@ -48,7 +48,7 @@ impl IsoWorld {
     pub(super) fn install_tile_placement(&self, service: &Rc<RefCell<LiveFloorWorld>>) {
         let service = Rc::downgrade(service);
         // WorldDictionary's persisted sprite-name overrides are loaded at world entry.
-        let saved_names = self.items.as_ref().map(|i| i.dictionary.sprite_names.clone());
+        let saved_names = pz_lua_api::bind_world::with_world(|world| world.sprite_names.clone());
         bind_map_objects::install_tile_placement(Some(Rc::new(move |thread, pos, name| {
             let service = service.upgrade().ok_or_else(|| pz_kahlua::LuaError::runtime("tile world has closed"))?;
             let ((object, square), sprites) = {
@@ -58,7 +58,7 @@ impl IsoWorld {
                 (result, sprites)
             };
             for new_objects in [true, false] {
-                bind_map_objects::dispatch_square(thread, &square, &sprites, saved_names.as_ref(), new_objects)?;
+                bind_map_objects::dispatch_square(thread, &square, &sprites, Some(&saved_names), new_objects)?;
             }
             square_object_value(&object, pos)
         })));

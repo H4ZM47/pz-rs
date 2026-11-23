@@ -30,6 +30,40 @@ impl SquareMutationHooks for Calls {
     }
 }
 
+/// The byte reader records an unresolved base sprite until the active manager
+/// and its texture source are available. IsoObject.load creates a fresh sprite
+/// in this case, even when the stored name does not resolve to a texture.
+fn restore_map_sprite(
+    object: &IsoObjectRef,
+    manager: &pz_world::sprite::runtime::SpriteManagerRef,
+    saved_names: Option<&std::collections::HashMap<i32, String>>,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_world::sprite::runtime::{create_runtime_sprite, load_single_texture, ObjectSprite};
+    use pz_world::save::object_io::UNREGISTERED_SPRITE_ID;
+    let (tables, name) = {
+        let body = object.borrow();
+        if !matches!(body.kind, pz_world::ObjectKind::Object)
+            || !matches!(body.sprite, ObjectSprite::ArchiveUnmanaged(UNREGISTERED_SPRITE_ID))
+        {
+            return Ok(());
+        }
+        let sprites = manager.borrow();
+        let name = body.sprite_name.as_ref().and_then(|name| name.resolve(saved_names, &sprites));
+        (sprites.tables.clone(), name.map(str::to_owned))
+    };
+    let mut retired = pz_entity::RetiredComponents::new();
+    let result = (|| {
+        let sprite = create_runtime_sprite(manager, &tables, &mut retired)?;
+        object.borrow_mut().sprite = ObjectSprite::Native(sprite.clone());
+        if let Some(name) = name {
+            load_single_texture(&sprite, &name, &mut retired)?;
+        }
+        Ok(())
+    })();
+    pz_inventory::component_host::retire_components(retired);
+    result
+}
+
 impl IsoWorld {
     /// Drain prepared chunks before subsequent world observers. No arbitrary
     /// callback is invoked inside with_stream or the WORLD/sprite guards.
@@ -62,6 +96,8 @@ impl IsoWorld {
                             ) else {
                                 return Err("object activation requires sprites, regions and native door tables".into());
                             };
+                            restore_map_sprite(&object, sprites, self.items.as_ref().map(|items| &items.dictionary.sprite_names))
+                                .map_err(|e| format!("restoring object sprite at {pos:?}: {e:?}"))?;
                             {
                                 let mut regions = regions.borrow_mut();
                                 let mut sprites = sprites.borrow_mut();
