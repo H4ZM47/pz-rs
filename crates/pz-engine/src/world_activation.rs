@@ -180,6 +180,24 @@ impl IsoWorld {
                                     _ => {}
                                 }
                             }
+                            // doLoadGridsquare initializes a pump immediately after addToWorld.
+                            let pump = {
+                                let sprites = sprites.borrow();
+                                let body = object.borrow();
+                                match &body.sprite {
+                                    pz_world::objects::ObjectSprite::ArchiveUnmanaged(id) =>
+                                        sprites.by_id(*id).is_some_and(|s| s.properties.has_name(&sprites.alias, "fuelAmount")),
+                                    sprite => sprite.try_read(&sprites).map_err(|e| format!("{e:?}"))?
+                                        .is_some_and(|s| s.properties.has_name(&sprites.alias, "fuelAmount")),
+                                }
+                            };
+                            if pump {
+                                let value = pz_lua_api::bind_world::square_queries::square_object_value(&object, pos)
+                                    .map_err(|e| e.to_string())?;
+                                let getter = lua.thread.table_get(&value, &pz_kahlua::Value::str("getPipedFuelAmount"))
+                                    .map_err(|e| e.to_string())?;
+                                lua.thread.call1(&getter, &[value]).map_err(|e| e.to_string())?;
+                            }
                         }
                         ChunkActivationStep::SquareReady { square, x, y, z } => {
                             let (wx, wy) = (cursor.wx, cursor.wy);
