@@ -1,5 +1,7 @@
 //! Pieces of `GameWindow.init` shared by every client mode.
 
+mod debug_catalog;
+
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -126,6 +128,7 @@ pub fn load_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>) -> Result<
     pz_lua_api::bind_render::install_texture_capture(fs.clone());
     let jar=pz_classfile::Jar::open(game_dir.join("projectzomboid.jar"))
         .map_err(|error|format!("native item key registry jar: {error}"))?;
+    debug_catalog::install(&jar, fs.borrow().cache_dir())?;
     let native_keys=pz_scripts::native_item_keys::native_item_key_statics(&jar)
         .map_err(|error|format!("native item key statics: {error}"))?;
     let modes = install_game_mode_class(&jar, &mut pz_lua_api::bind_core::shared_core().borrow_mut())?;
