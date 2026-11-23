@@ -332,6 +332,7 @@ impl UIWorldMap {
                     fill: s.color,
                     files: &*h.map_files,
                     debug: core_debug(),
+                    visited: None,
                 };
                 pz_worldmap::draw::Drawer::new(&s.renderer, &inp).render()
             })

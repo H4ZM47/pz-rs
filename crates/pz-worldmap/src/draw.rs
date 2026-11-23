@@ -117,6 +117,7 @@ mod native_boundary_tests {
             fill: [1.0; 4],
             files: &NoMapFiles,
             debug: false,
+            visited: None,
         };
         let mut drawer = Drawer::new(&renderer, &inputs);
         drawer.paint_areas_outside_bounds(0, 0, i32::MAX, i32::MAX, 1.0);
@@ -125,6 +126,50 @@ mod native_boundary_tests {
         assert_eq!(run.verts[0].x, i32::MIN as f32);
         assert_eq!(run.verts[2].x, i32::MIN as f32);
         assert_eq!(run.verts[4].y, i32::MIN as f32);
+    }
+
+    #[test]
+    fn visited_hides_unvisited_cells_and_draws_the_fog_over_them() {
+        use crate::visited::{MetaBounds, WorldMapVisited};
+        let mut map = WorldMap::new();
+        map.set_bounds_in_squares(0, 0, 511, 511);
+        let mut renderer = WorldMapRenderer::new();
+        renderer.set_map(0, 0, 128, 128);
+        renderer.reset_view(&map);
+        renderer.set_boolean("Isometric", false);
+        renderer.set_boolean("ImagePyramid", false);
+        renderer.set_boolean("Features", false);
+        renderer.update_view(&map, 1_000, 12.0);
+        let style = WorldMapStyle::new();
+        let (mut v, err) = WorldMapVisited::new(MetaBounds { min_x: 0, min_y: 0, max_x: 1, max_y: 1 });
+        assert!(err.is_none());
+        // A player at (100, 100) reveals units around cell (0, 0) only.
+        v.update(&[Some((100.0, 100.0))]);
+        let fog = |visited: Option<&WorldMapVisited>| {
+            let inputs = DrawInputs {
+                map: &map,
+                style: &style,
+                fill: [1.0; 4],
+                files: &NoMapFiles,
+                debug: false,
+                visited,
+            };
+            let drawer = Drawer::new(&renderer, &inputs);
+            let shown = (drawer.cell_visible(0, 0), drawer.cell_visible(1, 1));
+            let frame = Drawer::new(&renderer, &inputs).render();
+            let unvisited = frame
+                .vbo
+                .runs
+                .iter()
+                .flat_map(|r| r.verts.iter())
+                .filter(|vx| vx.color == v.color)
+                .count();
+            (shown, unvisited)
+        };
+        assert_eq!(fog(None), ((true, true), 0));
+        let (shown, unvisited) = fog(Some(&v));
+        assert_eq!(shown, (true, false));
+        assert!(unvisited > 0, "unvisited units are covered");
     }
 
     #[test]
@@ -179,6 +224,7 @@ mod native_boundary_tests {
             fill: [1.0; 4],
             files: &NoMapFiles,
             debug: false,
+            visited: None,
         };
         let frame = Drawer::new(&renderer, &inputs).render();
         assert!(frame.aborted.is_none());
@@ -208,6 +254,9 @@ pub struct DrawInputs<'a> {
     pub files: &'a dyn MapFilesInfo,
     /// `Core.debug`.
     pub debug: bool,
+    /// `renderer.visited` (`WorldMapVisited.getInstance()` in game, null on
+    /// the main menu): hides unvisited cells and draws the fog of war.
+    pub visited: Option<&'a crate::visited::WorldMapVisited>,
 }
 
 struct RenderLayer {
@@ -414,8 +463,17 @@ impl<'a> Drawer<'a> {
             self.render_visible_cells();
         }
         self.vbo.set_polygon_mode(PolygonMode::Fill);
-        // TODO(worldmap visited): the fog of war; TODO(characters): player
-        // models.
+        if let Some(v) = self.inp.visited {
+            // The unit overlay's origin: the visited bounds' first cell.
+            let rx = self.render_origin_x - (min_x - v.get_min_x() * 256) as f32 * ws;
+            let ry = self.render_origin_y - (min_y - v.get_min_y() * 256) as f32 * ws;
+            let (cx0, cy0, cx1, cy1) = (min_x / 256, min_y / 256, max_x / 256, max_y / 256);
+            v.render(&mut self.vbo, rx, ry, cx0, cy0, cx1, cy1, ws);
+            if self.opt("UnvisitedGrid") {
+                v.render_grid(&mut self.vbo, rx, ry, cx0, cy0, cx1, cy1, ws, self.zoom_f);
+            }
+        }
+        // TODO(characters): player models.
         if self.opt("CellGrid") {
             self.render_cell_grid(min_x / 256, min_y / 256, max_x / 256, max_y / 256, 256);
         }
@@ -427,6 +485,11 @@ impl<'a> Drawer<'a> {
             self.render_world_bounds();
         }
         Ok(())
+    }
+
+    /// `renderer.visited == null || renderer.visited.isCellVisible(x, y)`.
+    fn cell_visible(&self, cell_x: i32, cell_y: i32) -> bool {
+        self.inp.visited.is_none_or(|v| v.is_cell_visible(cell_x, cell_y))
     }
 
     /// `triangleArea` (Heron).
@@ -549,7 +612,9 @@ impl<'a> Drawer<'a> {
         let dirs = self.files.map_directory_names();
         for i in (0..self.rasterize_xy.len().saturating_sub(1)).step_by(2) {
             let (cx, cy) = (self.rasterize_xy[i], self.rasterize_xy[i + 1]);
-            // TODO(worldmap visited): skip cells the visited overlay hides.
+            if !self.cell_visible(cx, cy) {
+                continue;
+            }
             let mut features: Vec<(Rc<WorldMapCell>, usize)> = Vec::new();
             for d in &self.map().data {
                 if !d.is_ready() {
@@ -646,6 +711,9 @@ impl<'a> Drawer<'a> {
     fn render_non_cell_features(&mut self) {
         for i in (0..self.rasterize_xy.len().saturating_sub(1)).step_by(2) {
             let (cx, cy) = (self.rasterize_xy[i], self.rasterize_xy[i + 1]);
+            if !self.cell_visible(cx, cy) {
+                continue;
+            }
             self.set_render_cell(cx, cy);
             for layer in self.layers.clone() {
                 let l = layer.borrow();
