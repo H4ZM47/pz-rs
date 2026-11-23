@@ -2609,6 +2609,7 @@ impl IsoWorld {
         // Invalidate the installed provider before teardown can run actions;
         // retained old service handles fail their distinct session token.
         let retired_floor = pz_lua_api::bind_character_sim::reset_floor_world();
+        pz_lua_api::bind_tile_overlays::install_overlay_invalidator(None);
         let old_engine_floor = self.floor_world.take();
         self.floor_session = None;
         let mut retired = pz_entity::RetiredComponents::new();

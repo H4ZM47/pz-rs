@@ -412,6 +412,11 @@ impl GameState for IngameState {
         }
         // TODO(port): `IsoMarkers.instance.reset()`.
         pz_lua_api::bind_search_mode::reset();
+        pz_lua_api::bind_tile_overlays::shared_tile_overlays().borrow_mut().reset();
+        pz_lua_api::bind_tile_overlays::shared_container_overlays().borrow_mut().reset();
+        pz_lua_api::bind_broken_fences::shared_broken_fences().borrow_mut().reset();
+        pz_lua_api::bind_map_objects::reset();
+        pz_lua_api::bind_world::lua_world::shared_water_flow().borrow_mut().reset();
         // TODO(port): `ZomboidRadio.Reset`, `IsoWaveSignal.Reset`,
         // `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,

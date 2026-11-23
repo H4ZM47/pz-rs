@@ -866,10 +866,10 @@ all installed assets, render paths or foreign platforms.
       (`ItemPickerJava.updateOverlaySprite`) for each named object whose
       container is not empty; `set_overlay_sprite` sets `overlay_sprite`,
       and `render_world` gives it to the renderer as `RenderObject.overlay`.
-- [ ] The rest of the overlay lifecycle: Lua `ItemPicker.updateOverlaySprite`
-      after a transfer (still a no-op), `invalidateRenderChunkLevel` for a
-      change after load, `fixTableTopOverlays(square)` after moving objects;
-      both `Reset()` on world unload.
+- [ ] The rest of the overlay lifecycle: `fixTableTopOverlays(square)` after
+      moving objects (wired: Lua `ItemPicker.updateOverlaySprite`,
+      `invalidateRenderChunkLevel` on `set_overlay_sprite`, and both
+      `Reset()` calls in `IngameState::exit`).
 - [ ] `BrokenFences.destroyFence(obj, dir)` (thumping, vehicles): the engine's
       `StatesEngine::destroy_fence` / `is_breakable_fence` /
       `broken_fence_items` read `bind_broken_fences::shared_broken_fences()`
@@ -881,15 +881,15 @@ all installed assets, render paths or foreign platforms.
       `pz_inventory::key_namer::KeySquare` over the square.
 - [ ] Story clutter: `RandomizedWorldBase.get*ClutterItem()` reads
       `bind_randomized_world::clutter(field)`.
-- [ ] `MapObjects.newGridSquare` / `loadGridSquare` on brand-new / loaded
-      squares: call `bind_map_objects::on_new_callbacks(sprite)` /
-      `on_load_callbacks(sprite)` with each object (needs an `IsoObject`
-      Lua binding); `MapObjects.Reset` on world unload (#224).
+- [x] `MapObjects.newGridSquare` / `loadGridSquare` on brand-new / loaded
+      squares: `bind_map_objects::dispatch_square` wired in
+      `world_activation.rs` + `floor_world/tiles.rs`; `MapObjects.Reset` wired
+      in `IngameState::exit` (#224).
 - [ ] Fence bending (`pz-world-states`) reads its `BentFences` from
       `bind_bent_fences::shared_bent_fences()` (#224).
-- [ ] Water rendering reads `IsoWaterFlow` from
-      `lua_world::shared_water_flow()`; `IsoWaterFlow.Reset` on world
-      unload (#224).
+- [x] Water rendering reads `IsoWaterFlow` from
+      `lua_world::shared_water_flow()` (`world_render.rs`);
+      `IsoWaterFlow.Reset` wired in `IngameState::exit` (#224).
 - [ ] Animal definitions: `pz_animals::AnimalDefinitionTables::load(&env)`
       over `LuaManager.env` once shared Lua is loaded, as `IsoWorld.init`
       calls `AnimalDefinitions.getAnimalDefs()` (which loads the genome
@@ -1462,9 +1462,11 @@ registered):
       `running_sound()` loops on the object's emitter.
 - [ ] Hutch burning (#FIRE-REST): `FireHooks::hutch_release_contents`
       runs `releaseAllAnimals` + `dropAllEggs` of the hutch object.
-- [ ] Fire fighting (#FIRE-REST): the put-out action uses
-      `fire::fighting::{get_square_to_extinguish, get_extinguisher}` with
-      an `ExtinguisherItem` view of the inventory items.
+- [x] Fire fighting (#FIRE-REST): `world_menu_logic/fetch.rs` resolves
+      `fetch.extinguisher` / `fetch.firetile` through
+      `fire::fighting::get_extinguisher` with an `ExtinguisherItem` view over
+      the player's hands and inventory (`doExtinguishFireMenu` remains
+      separate in `entries.rs`).
 - [x] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
 - [ ] Zombie vehicle checks (`isVehicleBetween`, `DistToSquared(vehicle)`)
       read `IsoChunk.vehicles.loaded()` (#88/#91); once the vehicle runtime

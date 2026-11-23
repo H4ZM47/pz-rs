@@ -893,6 +893,24 @@ impl IsoWorld {
             w.geometry.pathfind = self.pathfind.as_ref().map(|path| path.service().square_changes());
         });
         self.install_floor_world()?;
+        let render_weak = Rc::downgrade(&self.render);
+        pz_lua_api::bind_tile_overlays::install_overlay_invalidator(Some(Rc::new(
+            move |x, y, z| {
+                if let Some(render) = render_weak.upgrade() {
+                    if let Ok(mut guard) = render.try_borrow_mut() {
+                        if let Some(r) = guard.as_mut() {
+                            let size = pz_world::chunk::CHUNK_WIDTH;
+                            r.invalidate_floor_chunk(
+                                x.div_euclid(size),
+                                y.div_euclid(size),
+                                z,
+                                pz_iso_render::chunk::dirty::OBJECT_MODIFY,
+                            );
+                        }
+                    }
+                }
+            },
+        )));
         let (wx, wy) = (self.world_x, self.world_y);
         self.with_stream(|s, cell, ctx| s.stage_initial_world(wx, wy, cell, ctx));
         // `ClimateManager.postCellLoadSetSnow()`.

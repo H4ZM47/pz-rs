@@ -152,33 +152,68 @@ pub fn update_container_overlay_sprite(
 /// `IsoObject.setOverlaySprite(name)` (colour -1, the overlay colour
 /// cleared): a null or blank name removes the overlay; the same name with
 /// no colour is left alone; otherwise the named sprite (created under that
-/// name when missing) becomes the overlay.
-/// TODO(port): `invalidateRenderChunkLevel` for a change after load.
+/// name when missing) becomes the overlay, then notifies the installed
+/// chunk invalidator (if any) when attached to a square.
 pub fn set_overlay_sprite(object: &pz_world::IsoObjectRef, name: Option<&str>) -> LuaResult<()> {
     let busy = |what: &str| LuaError::runtime(format!("setOverlaySprite: {what} is in use"));
     let name = name.filter(|n| !n.trim().is_empty());
-    let mut body = object.try_borrow_mut().map_err(|_| busy("IsoObject"))?;
-    let Some(name) = name else {
-        body.overlay_sprite = None;
-        return Ok(());
-    };
-    if let Some(ov) = &body.overlay_sprite {
-        if ov.color.is_none() && matches!(&ov.name, pz_world::objects::SpriteName::Str(n) if n == name) {
-            return Ok(());
+    let square_pos = {
+        let mut body = object.try_borrow_mut().map_err(|_| busy("IsoObject"))?;
+        let sq_pos = body
+            .square_slot()
+            .and_then(|sq| sq.try_borrow().ok().map(|s| (s.x, s.y, s.z)));
+        if let Some(name) = name {
+            if let Some(ov) = &body.overlay_sprite {
+                if ov.color.is_none()
+                    && matches!(&ov.name, pz_world::objects::SpriteName::Str(n) if n == name)
+                {
+                    return Ok(());
+                }
+            }
+            let sprites = crate::bind_sprites::manager()?;
+            let mut manager = sprites
+                .try_borrow_mut()
+                .map_err(|_| busy("IsoSpriteManager"))?;
+            let idx = match manager.named_map.get(name) {
+                Some(&idx) => idx,
+                None => manager.add_sprite_named(name),
+            };
+            manager.sprites[idx].name = Some(name.to_string());
+            body.overlay_sprite = Some(pz_world::objects::OverlaySprite {
+                name: pz_world::objects::SpriteName::Str(name.to_string()),
+                color: None,
+            });
+            sq_pos
+        } else {
+            if body.overlay_sprite.take().is_none() {
+                return Ok(());
+            }
+            sq_pos
         }
-    }
-    let sprites = crate::bind_sprites::manager()?;
-    let mut manager = sprites.try_borrow_mut().map_err(|_| busy("IsoSpriteManager"))?;
-    let idx = match manager.named_map.get(name) {
-        Some(&idx) => idx,
-        None => manager.add_sprite_named(name),
     };
-    manager.sprites[idx].name = Some(name.to_string());
-    body.overlay_sprite = Some(pz_world::objects::OverlaySprite {
-        name: pz_world::objects::SpriteName::Str(name.to_string()),
-        color: None,
-    });
+    if let Some((x, y, z)) = square_pos {
+        notify_overlay_changed(x, y, z);
+    }
     Ok(())
+}
+
+/// Callback installed by the engine so `setOverlaySprite` after load calls
+/// `invalidateRenderChunkLevel` on the object's chunk/level.
+pub type OverlayInvalidator = Rc<dyn Fn(i32, i32, i32)>;
+
+thread_local! {
+    static OVERLAY_INVALIDATOR: RefCell<Option<OverlayInvalidator>> = const { RefCell::new(None) };
+}
+
+pub fn install_overlay_invalidator(hook: Option<OverlayInvalidator>) {
+    OVERLAY_INVALIDATOR.with(|slot| *slot.borrow_mut() = hook);
+}
+
+fn notify_overlay_changed(x: i32, y: i32, z: i32) {
+    let hook = OVERLAY_INVALIDATOR.with(|slot| slot.borrow().clone());
+    if let Some(hook) = hook {
+        hook(x, y, z);
+    }
 }
 
 /// `TileOverlays.instance`.

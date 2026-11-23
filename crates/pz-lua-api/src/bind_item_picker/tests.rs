@@ -327,14 +327,35 @@ fn load_gridsquare_sets_container_overlays_by_item_count() {
     assert_eq!(overlay(2), None);
     // A sprite with container overlays gets no tile overlay.
     assert!(objects[0].borrow().attached_anim_sprite.is_none());
-    // Seven items: the "many items" sprite.
+    // Seven items: the "many items" sprite, via Lua `ItemPickerJava.updateOverlaySprite`
+    // and notifying the installed chunk-level invalidator.
     let o = objects[0].clone();
+    let sq_ref = crate::bind_world::with_world(|w| {
+        w.cell
+            .as_ref()
+            .and_then(|c| c.get_grid_square(1, 1, 0))
+            .map(|s| s.clone())
+    })
+    .unwrap();
+    let mut retired = pz_entity::RetiredComponents::new();
+    o.borrow_mut().replace_square(Some(&sq_ref), &mut retired);
+    drop(retired);
     let main = o.borrow().runtime_containers.as_ref().unwrap().main.clone().unwrap();
     let item = main.borrow().items[0].clone();
     main.borrow_mut().items.extend(std::iter::repeat_n(item, 6));
-    let sq = pz_world::tile_overlays::OverlaySquare { x: 1, y: 1, z: 0, room: None };
-    crate::bind_tile_overlays::update_container_overlay_sprite(&o, sq).unwrap();
+    let invalidated = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let log = invalidated.clone();
+    crate::bind_tile_overlays::install_overlay_invalidator(Some(std::rc::Rc::new(
+        move |x, y, z| log.borrow_mut().push((x, y, z)),
+    )));
+    let o_val = crate::bind_world_object::object_value(&o).unwrap();
+    t.globals().set_str("_testOverlayObj", o_val);
+    run(&mut t, "ItemPickerJava.updateOverlaySprite(_testOverlayObj)").unwrap();
+    crate::bind_tile_overlays::install_overlay_invalidator(None);
     assert_eq!(overlay(0), Some(pz_world::objects::SpriteName::Str("shelf_many".into())));
+    assert_eq!(*invalidated.borrow(), vec![(1, 1, 0)]);
+    let _ = o.borrow_mut().take_square_for_gc();
+    drop(sq_ref);
 
     drop((main, o, objects));
     crate::bind_world::set_cell(old_cell);
