@@ -362,7 +362,9 @@ fn verify_feeding_trough(lua: &mut LuaManager, create: bool) {
             local upper = getSquare(10685,9378,0)
             local child = IsoFeedingTrough.new(upper,name,sq)
             upper:AddSpecialObject(child)
-            assert(child:getMasterTrough() == t and not child:getContainer() and not child:getFluidContainer())
+            assert(child:getMasterTrough() == t, "linked trough master identity")
+            assert(not child:getContainer(), "linked trough has a feed inventory")
+            assert(not child:getFluidContainer(), "placed linked trough has a water component")
             assert(child:getLinkedX() == sq:getX() and child:getLinkedY() == sq:getY())
             local events = 0
             local changed = function() events = events + 1 end
