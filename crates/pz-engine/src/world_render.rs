@@ -87,6 +87,7 @@ pub struct RenderView {
 /// The render side of the world: the tile depth tables, the render
 /// squares and their lighting, each player's chunk textures and cutaways.
 pub struct WorldRender {
+    drawn_door_hits: Vec<pz_pathfind::mover::ObjectRef>,
     depth: TileDepthTextureManager,
     assignments: TileDepthTextureAssignmentManager,
     geometry: TileGeometryManager,
@@ -176,6 +177,7 @@ impl WorldRender {
         .filter_map(|p| tm.shared_texture_flags(fs, p, 3))
         .collect();
         WorldRender {
+            drawn_door_hits: Vec::new(),
             depth,
             assignments,
             geometry,
@@ -336,6 +338,31 @@ impl WorldRender {
                 }
             }
         }
+    }
+
+    fn update_door_hits(&mut self, runtime: &pz_world_states::StatesRuntime, cell: &pz_world::IsoCell) -> HostResult<()> {
+        let active = runtime.visible_door_hits(cell)?;
+        let previous = std::mem::take(&mut self.drawn_door_hits);
+        for &pos in &previous {
+            if !active.iter().any(|(p, _)| *p == pos) { self.set_door_offsets(pos, None); }
+        }
+        for (pos, corners) in active {
+            self.set_door_offsets(pos, Some(corners));
+            self.drawn_door_hits.push(pos);
+        }
+        Ok(())
+    }
+
+    fn set_door_offsets(&mut self, pos: pz_pathfind::mover::ObjectRef, offsets: Option<[[f32; 2]; 4]>) {
+        let Some(object) = self.world.squares.get_mut(&(pos.x, pos.y, pos.z))
+            .and_then(|sq| sq.objects.iter_mut().find(|o| o.id == pos.id)) else { return };
+        if object.render_effect.as_deref() == offsets.as_ref() { return; }
+        match (&mut object.render_effect, offsets) {
+            (Some(old), Some(new)) => **old = new,
+            (slot, new) => *slot = new.map(Box::new),
+        }
+        self.invalidate_floor_chunk(pos.x.div_euclid(8), pos.y.div_euclid(8), pos.z,
+            pz_iso_render::chunk::dirty::OBJECT_MODIFY);
     }
 
     /// The same actual chunk cache invalidation used by RenderInvalidation,
@@ -973,6 +1000,7 @@ impl IsoWorld {
         let IsoWorld {
             render,
             render_chunks,
+            states_runtime,
             sprites,
             game_dir,
             regions,
@@ -1044,6 +1072,7 @@ impl IsoWorld {
                     invalidation.object_geometry_changed(pos);
                 }
                 r.apply_pending(&wv, regions, fs, &mut textures)?;
+                r.update_door_hits(states_runtime, cell)?;
                 r.init_fx_sprites(&wv, fs, &mut textures);
             }
             // Character resources may lazily load hair or equipped-item

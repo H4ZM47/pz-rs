@@ -206,6 +206,10 @@ struct EngineStates<'a> {
 }
 
 impl StatesEngine for EngineStates<'_> {
+    fn door_sprite_effects_enabled(&self) -> bool {
+        pz_lua_api::bind_core::shared_core().borrow().get_option_do_door_sprite_effects()
+    }
+
     fn geometry_changed(&mut self, cell: &IsoCell, meta: &pz_world::IsoMetaGrid,
         sprites: &IsoSpriteManager, pos: (i32, i32, i32)) {
         if let Some(geometry) = self.geometry {
@@ -1117,8 +1121,10 @@ impl IsoWorld {
     /// `updateThread()`.
     fn update_thread(&mut self, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
         // TODO(port): `updateBuildings` (`IsoBuilding.update`),
-        // `ObjectRenderEffects.updateStatic`, `AddCoopPlayer`,
+        // `AddCoopPlayer`,
         // `IsoPlayer.UpdateRemovedEmitters`.
+        let multiplier = sim.game_time.borrow().get_multiplier(&pz_lua_api::bind_climate::LuaClimateContext::new());
+        self.states_runtime.update_door_hits(multiplier, &mut self.rand);
         self.update_dbs(sim)?;
         // TODO(port): `AnimalZones.updateVirtualAnimals`,
         // `AnimalTracksDefinitions.loadTracksDefinitions`.

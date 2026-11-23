@@ -1346,6 +1346,8 @@ impl StatesWorldAdapter<'_> {
         if destroyed {
             self.force_awake_at(r);
             self.remove_object(r, false);
+        } else {
+            self.hit_door_effect(r);
         }
         self.sound(Some(t.id), r, 20, 20, 15.0);
     }

@@ -198,9 +198,9 @@ impl StatesWorldAdapter<'_> {
             };
             self.engine.play_sound(t.id, sound2, None);
             self.remove_object(r, false);
+        } else {
+            self.hit_door_effect(r);
         }
-        // Not destroyed: `setRenderEffect(Hit_Door, true)`, TODO(render
-        // effects): it depends on `Core.optionDoDoorSpriteEffects`.
     }
 
     /// The sheet-rope view of a square.

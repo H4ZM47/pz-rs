@@ -254,6 +254,8 @@ pub struct RenderObject {
     /// calling `setHighlighted`, e.g. context menus, build and fishing
     /// UIs). Drawn by [`crate::highlight`].
     pub highlight: Option<ObjectHighlight>,
+    /// ObjectRenderEffects corner offsets as fractions of the drawn texture size.
+    pub render_effect: Option<Box<[[f32; 2]; 4]>>,
 }
 
 /// An object's highlight for the viewing player.
@@ -296,6 +298,7 @@ impl RenderObject {
             fire: None,
             hearth: None,
             highlight: None,
+            render_effect: None,
         }
     }
 

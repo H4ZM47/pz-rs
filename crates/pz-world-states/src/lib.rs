@@ -33,6 +33,7 @@ mod climb;
 mod collide;
 mod context;
 mod door;
+mod door_hits;
 mod floor;
 pub mod population;
 mod query;
@@ -166,6 +167,7 @@ impl Default for ThumpSettings {
 /// world and hand it to every adapter.
 #[derive(Clone, Debug, Default)]
 pub struct StatesRuntime {
+    door_hits: Vec<door_hits::DoorHit>,
     /// `partialThumpDmg` by object.
     pub partial_thump_dmg: HashMap<ObjectRef, f32>,
     /// `IsoObject.damage` of plain objects (100 when absent).
@@ -516,6 +518,8 @@ pub trait StatesEngine {
     /// .addSquare` when the listener is within 20; no draws).
     fn do_tree_noises(&mut self, _chr: i32, _sq: (i32, i32, i32)) {}
     /// `getRenderEffectMaster().objectRenderEffects != null`.
+    fn door_sprite_effects_enabled(&self) -> bool { true }
+
     fn has_render_effect(&self, _obj: ObjectRef) -> bool {
         false
     }

@@ -2357,6 +2357,7 @@ dependencies = [
  "pz-anim",
  "pz-characters",
  "pz-classfile",
+ "pz-core",
  "pz-entity",
  "pz-fs",
  "pz-inventory",
