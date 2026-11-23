@@ -17,10 +17,9 @@
 //! mutable fields). The classes' statics (`init`, `Reset`, `Parse`,
 //! `parse`) are not exposed.
 //!
-//! `IsoWorld.getWorldAgeDays()` comes from the shared `GameTime` with
-//! `getTimeSinceApo()` taken as 1. TODO(SandboxOptions).
+//! Style availability uses the current world age, including the sandbox starting month.
 
-use crate::bind_climate::shared_game_time;
+use crate::bind_climate::world_age_days_since_begin;
 use crate::bind_java_util::{list_value, JavaList};
 use crate::bind_text::translate;
 use crate::expose::{bool_arg, expose_class, global, str_arg, with_this};
@@ -191,7 +190,7 @@ pub fn hair_outfit_definitions_from_lua(globals: &TableRef) -> HairOutfitDefinit
 }
 
 fn world_age_days() -> f32 {
-    shared_game_time().borrow().world_age_days_since_begin(1) as f32
+    world_age_days_since_begin() as f32
 }
 
 /// `SurvivorDesc.HairCommonColors` as the RGB the population reads.

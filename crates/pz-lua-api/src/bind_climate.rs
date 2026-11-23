@@ -470,6 +470,12 @@ pub fn init_climate_manager(thread: &mut Thread, bounds: Option<(i32, i32, i32, 
     true
 }
 
+/// Shared clock and sandbox offset used by GameTime and IsoWorld age queries.
+pub fn world_age_days_since_begin() -> f64 {
+    let months = crate::bind_sandbox::with_current(pz_sandbox::SandboxOptions::time_since_apo).unwrap_or(1);
+    shared_game_time().borrow().world_age_days_since_begin(months)
+}
+
 /// `GameTime.getInstance().getTimeDelta()` of the shared instance.
 pub fn game_time_delta() -> f32 {
     shared_game_time().borrow().get_time_delta(&LuaClimateContext::new())
@@ -810,8 +816,7 @@ fn register_game_time(thread: &mut Thread) {
     getter!(b, "getMinutes", |g| g.minutes());
     getter!(b, "getWorldAgeHours", |g| g.world_age_hours());
     b.method("getWorldAgeDaysSinceBegin", |c| {
-        // TODO(SandboxOptions): `getTimeSinceApo()` (1 in a new game).
-        let v = with_gt(c, |g, _| g.world_age_days_since_begin(1))?;
+        let v = world_age_days_since_begin();
         Ok(c.push(v))
     });
     b.method("getMinutesStamp", |c| {

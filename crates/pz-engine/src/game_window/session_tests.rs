@@ -418,6 +418,13 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         }
     }
     lua_check(app.lua.as_mut().unwrap(), r#"
+        local clock, sb = getGameTime(), getSandboxOptions()
+        local original = sb:getTimeSinceApo()
+        sb:set("TimeSinceApo", 3)
+        local age = 60 + clock:getWorldAgeHours() / 24
+        assert(math.abs(clock:getWorldAgeDaysSinceBegin() - age) < 0.000001)
+        assert(math.abs(getWorld():getWorldAgeDays() - age) < 0.00001)
+        sb:set("TimeSinceApo", original)
         local square = getPlayer():getCurrentSquare()
         local room = square:getRoomDef()
         rustAmbientRoom = room and room:getArea() or math.max(0, square:getRoomSize())

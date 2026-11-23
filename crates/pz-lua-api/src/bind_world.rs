@@ -2211,6 +2211,10 @@ fn self_world(c: &NativeCall<'_>) -> LuaResult<()> {
 fn register_iso_world(thread: &mut Thread) {
     let b = expose_class(thread, "zombie.iso.IsoWorld", Some("java.lang.Object"));
     b.field("instance", obj(Key::World));
+    get(&b, "getWorldAgeDays", |c| {
+        self_world(c)?;
+        Ok(Value::Num(crate::bind_climate::world_age_days_since_begin() as f32 as f64))
+    });
     get(&b, "getCell", |c| {
         self_world(c)?;
         Ok(current_cell())

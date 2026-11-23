@@ -629,8 +629,9 @@ impl IsoWorld {
         pz_lua_api::bind_item_picker::parse(&lua.thread, sb.clone());
         self.hydro_power_on = {
             let gt = pz_lua_api::bind_climate::shared_game_time();
-            let days = gt.borrow().world_age_hours() as f32 / 24.0;
-            sb.borrow().does_power_grid_exist(days, 0)
+            let options = sb.borrow();
+            let days = gt.borrow().world_age_days_since_begin(options.time_since_apo()) as f32;
+            options.does_power_grid_exist(days, 0)
         };
         // TODO(port): `ZomboidGlobals.toLua()`, `survivorDescriptors.clear()`.
         // `LoadTileDefinitions*` (property strings, custom values, lookup
