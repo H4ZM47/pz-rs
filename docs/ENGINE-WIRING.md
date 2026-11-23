@@ -2153,10 +2153,10 @@ registered):
       world's actual MapFiles. The default host is `CurrentMapFiles`
       (`MapFiles.getCurrentMapFiles()`): the meta grid's `IsoLot.MapFiles`
       when non-empty, else the standalone list loaded from `Core.gameMap`'s
-      lot directories and reloaded when the map changes. Remaining:
-      `MapFiles.Reset` from `WorldMap.Reset` (IngameState.exit and
-      Core.ResetLua) is exposed as `host::reset_current_map_files` but not
-      called yet.
+      lot directories and reloaded when the map changes. `IngameState.exit`
+      calls `worldmap::reset` (`WorldMap.Reset`: `MapFiles.Reset` and
+      `WorldMapVisited.Reset`); the `Core.ResetLua` site waits on ResetLua
+      itself.
 - [x] Move `WorldMapImages.startFrame/endFrame` from each UI map draw to the
       global SpriteRenderer frame boundary: `App::frame` brackets
       `states.render` with `worldmap::start_frame/end_frame`, so every map in

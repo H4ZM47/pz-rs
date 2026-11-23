@@ -430,3 +430,34 @@ fn visited_instance_needs_meta_grid_then_loads_updates_and_saves() {
     crate::bind_world::set_meta_grid(None);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn world_map_reset_drops_the_map_files_cache_and_the_visited_instance() {
+    let root = std::env::temp_dir().join(format!("pz-worldmap-reset-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("media/maps/A")).unwrap();
+    std::fs::write(root.join("media/maps/A/0_0.lotheader"), b"").unwrap();
+    let mut fs = pz_fs::GameFs::new(&root);
+    fs.set_cache_dir(root.join("cache"));
+    install_fs(Rc::new(std::cell::RefCell::new(fs)));
+    let core = crate::bind_core::shared_core();
+    core.borrow_mut().game_map = "A;".into();
+    core.borrow_mut().set_no_save(true);
+    crate::bind_world::set_meta_grid(None);
+    host::reset_current_map_files();
+    assert_eq!(host::with_current_map_files(|m| m.len()), 1);
+    crate::bind_world::set_meta_grid(Some(pz_world::IsoMetaGrid::with_bounds(0, 0, 1, 1)));
+    visited::with_instance(|v| v.update(&[Some((100.0, 100.0))])).unwrap();
+    assert!(visited::has_instance());
+    // The A directory disappears; only a reset makes the cache reread it.
+    std::fs::remove_dir_all(root.join("media/maps/A")).unwrap();
+    assert_eq!(host::with_current_map_files(|m| m.len()), 1);
+    reset();
+    assert!(!visited::has_instance());
+    assert_eq!(host::with_current_map_files(|m| m.len()), 0);
+    crate::bind_world::set_meta_grid(None);
+    host::reset_current_map_files();
+    core.borrow_mut().game_map = "DEFAULT".into();
+    core.borrow_mut().set_no_save(false);
+    let _ = std::fs::remove_dir_all(&root);
+}

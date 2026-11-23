@@ -440,6 +440,9 @@ impl GameState for IngameState {
         drop(retired_emitters);
         pz_lua_api::item_sound::reset();
         pz_lua_api::bind_eat::reset_emitters();
+        // `WorldMap.Reset()`: the map-files cache and the visited instance
+        // do not carry into the next world.
+        pz_lua_api::worldmap::reset();
         // `BaseSoundManager.stop`, before the new menu environment starts.
         pz_lua_api::bind_audio::sound_system()
             .borrow_mut()
