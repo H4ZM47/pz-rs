@@ -5,6 +5,14 @@ use pz_characters::character::states::ids;
 use pz_lua_api::bind_players;
 
 pub(super) fn check(app: &mut App) {
+    // A zombie bite legitimately interrupts the stock timed action. Keep this
+    // player out of combat while exercising window transitions, then restore it.
+    let previous_debug = app.core.borrow().debug;
+    app.core.borrow_mut().debug = true;
+    let player = bind_players::player(0).unwrap();
+    let sim = crate::sim::FrameSim::capture();
+    let previous_invisible = player.borrow().cheats.is_set(&sim, "INVISIBLE");
+    player.borrow_mut().cheats.set(&sim, "INVISIBLE", true);
     let lua = app.lua.as_mut().unwrap();
     lua_check(lua, r#"
         require "TimedActions/ISOpenCloseWindow"
@@ -59,7 +67,6 @@ pub(super) fn check(app: &mut App) {
     let globals = lua.thread.globals();
     let (x, y) = (globals.get_str("rustWindowX").as_num().unwrap() as i32,
                   globals.get_str("rustWindowY").as_num().unwrap() as i32);
-    let player = bind_players::player(0).unwrap();
     {
         let mut p = player.borrow_mut();
         p.set_x(x as f32 + 0.5);
@@ -160,6 +167,8 @@ pub(super) fn check(app: &mut App) {
     "#);
     lua_check(app.lua.as_mut().unwrap(), "assert(not rustAlarmBuilding:isAlarmed())");
     assert_eq!(app.world.as_ref().unwrap().meta_tracker.borrow().alarms.len(), 2);
+    player.borrow_mut().cheats.set(&sim, "INVISIBLE", previous_invisible);
+    app.core.borrow_mut().debug = previous_debug;
 }
 
 /// Direct Lua, the ambient update and expiry all use the live save owner.

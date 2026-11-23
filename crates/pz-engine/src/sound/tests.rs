@@ -197,6 +197,7 @@ fn installed_window_smash_renders_and_releases_world_audio() {
     let mut block = [0.0; 2048];
     let mut peak = 0.0_f32;
     for _ in 0..24 {
+        block.fill(0.0);
         studio.lock().unwrap().mix(&mut block);
         assert!(block.iter().all(|sample| sample.is_finite()));
         peak = block.iter().fold(peak, |peak, sample| peak.max(sample.abs()));
@@ -204,6 +205,7 @@ fn installed_window_smash_renders_and_releases_world_audio() {
     assert!(peak > 0.001, "SmashWindow PCM peak {peak}");
     system.with_world_emitters(|pool, ctx| drop(pool.stop_and_reset(ctx)));
     assert!(emitter.borrow().is_empty());
+    block.fill(0.0);
     studio.lock().unwrap().mix(&mut block);
     assert!(block.iter().all(|sample| *sample == 0.0), "audio persisted after world exit");
 }
