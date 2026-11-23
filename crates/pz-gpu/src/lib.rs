@@ -324,6 +324,8 @@ pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     target: Target,
+    /// Readable window target shared by screenshot frames and unavailable drawables.
+    window_buffer: Option<wgpu::Texture>,
     format: wgpu::TextureFormat,
     width: u32,
     height: u32,
@@ -582,6 +584,7 @@ impl Gpu {
             device,
             queue,
             target,
+            window_buffer: None,
             format,
             width,
             height,
@@ -629,6 +632,9 @@ impl Gpu {
     /// Back-buffer size changed (physical pixels).
     pub fn resize(&mut self, width: u32, height: u32) {
         let (width, height) = (width.max(1), height.max(1));
+        if (width, height) != (self.width, self.height) {
+            self.window_buffer = None;
+        }
         self.width = width;
         self.height = height;
         match &mut self.target {
@@ -691,16 +697,19 @@ impl Gpu {
         if self.lost() {
             return;
         }
-        let (frame, view) = match &self.target {
-            Target::Surface { surface, .. } => {
-                let st = match surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-                    _ => return,
-                };
-                let view = st.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                (Some(st), view)
+        let frame = match self.acquire_window_frame() {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.faults.record(error);
+                return;
             }
-            Target::Headless { texture } => (None, texture.create_view(&wgpu::TextureViewDescriptor::default())),
+        };
+        let view = match (&self.target, &frame) {
+            (_, Some(frame)) => frame.texture.create_view(&Default::default()),
+            (Target::Headless { texture }, _) => texture.create_view(&Default::default()),
+            // Chunk updates, corpse jobs and sky targets outlive the current
+            // frame. Their CPU owners have already marked these draws complete.
+            (Target::Surface { .. }, None) => self.window_buffer().create_view(&Default::default()),
         };
         self.draw(segments, textures, &view);
         if let Some(st) = frame {
@@ -708,28 +717,36 @@ impl Gpu {
         }
     }
 
+    fn acquire_window_frame(&self) -> Result<Option<wgpu::SurfaceTexture>, GpuError> {
+        let Target::Surface { surface, config } = &self.target else { return Ok(None) };
+        match surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(Some(frame)),
+            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => Ok(None),
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                surface.configure(&self.device, config);
+                Ok(None)
+            }
+            wgpu::CurrentSurfaceTexture::Lost => Err(GpuError::Surface("window surface lost".into())),
+            wgpu::CurrentSurfaceTexture::Validation => Err(GpuError::Surface("window surface validation failed".into())),
+        }
+    }
+
+    fn window_buffer(&mut self) -> &wgpu::Texture {
+        self.window_buffer.get_or_insert_with(|| headless_texture(&self.device, self.format, self.width, self.height))
+    }
+
     /// Draw the ordinary frame once and return its top-to-bottom RGBA pixels.
-    /// Capture the world when the window is occluded as well.
     pub fn render_frame_capture(&mut self, segments: &[(FrameParams, &DrawList)], textures: &mut TextureManager)
         -> Result<Vec<u8>, GpuError> {
         if let Some(error) = self.error() { return Err(error); }
-        let Target::Surface { surface, config } = &self.target else {
+        if matches!(self.target, Target::Headless { .. }) {
             self.render_frame(segments, textures);
             return self.try_read_pixels();
-        };
-        let frame = match surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
-            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => None,
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                surface.configure(&self.device, config);
-                None
-            }
-            wgpu::CurrentSurfaceTexture::Lost => return Err(GpuError::Surface("window surface lost".into())),
-            wgpu::CurrentSurfaceTexture::Validation => return Err(GpuError::Surface("window surface validation failed".into())),
-        };
-        // Surface textures only guarantee RENDER_ATTACHMENT. Use a readable
-        // target on capture frames, then present that very image to the user.
-        let drawn = headless_texture(&self.device, self.format, self.width, self.height);
+        }
+        let frame = self.acquire_window_frame()?;
+        // Surface textures only guarantee RENDER_ATTACHMENT. Present the same
+        // readable image that is returned to the screenshot caller.
+        let drawn = self.window_buffer().clone();
         let source = drawn.create_view(&Default::default());
         self.draw(segments, textures, &source);
         let mut encoder = self.device.create_command_encoder(&Default::default());
