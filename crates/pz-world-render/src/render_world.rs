@@ -50,6 +50,8 @@ pub struct RenderWorld {
     /// [`crate::PendingRender::apply`] (via [`RenderWorld::init_puddles`])
     /// before the frame draws.
     pub puddles_recalc: BTreeSet<(i32, i32, i32)>,
+    pub(crate) water_chunks: BTreeSet<(i32, i32)>,
+    pub(crate) water_settings: Option<(u64, bool)>,
     /// The loaded chunks' `floorBloodSplats` and `floorBloodSplatsFade`
     /// (the chunk file's splats when the chunk was built, then
     /// [`RenderWorld::add_blood_splat`]).
@@ -387,6 +389,7 @@ impl RenderWorld {
         tex: &mut dyn SpriteTextures,
     ) -> HostResult<Vec<(i32, i32, i32)>> {
         self.remove_chunk(wx, wy);
+        self.water_changed(wx, wy);
         let Some(ch) = w.cell.chunks.get(&(wx, wy)) else {
             return Ok(Vec::new());
         };
@@ -444,6 +447,7 @@ impl RenderWorld {
         if let Some(ch) = w.cell.chunks.get(&(wx, wy)) {
             self.chunks.insert((wx, wy), (ch.min_level, ch.max_level));
         }
+        self.water_changed(wx, wy);
         let Some(sq_owner) = w.cell.get_grid_square(x, y, z) else {
             self.squares.remove(&(x, y, z));
             return Ok(());
@@ -541,6 +545,7 @@ impl RenderWorld {
         if self.chunks.remove(&(wx, wy)).is_none() {
             return;
         }
+        self.water_changed(wx, wy);
         self.blood.remove(&(wx, wy));
         self.squares
             .retain(|&(x, y, _), _| (x.div_euclid(8), y.div_euclid(8)) != (wx, wy));

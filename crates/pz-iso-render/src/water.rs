@@ -37,6 +37,9 @@ pub struct WaterGeometry {
     pub s_water: bool,
 }
 
+/// Neighbours read by IsoWaterGeometry.init, in corner-mask order.
+pub const WATER_NEIGHBOURS: [(i32, i32); 8] = [(-1,0),(-1,-1),(0,-1),(-1,1),(0,1),(1,1),(1,0),(1,-1)];
+
 /// What `IsoWaterGeometry.init` reads from a square and its neighbours.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WaterInit<'a> {

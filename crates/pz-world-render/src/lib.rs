@@ -69,3 +69,5 @@ pub use weather_mask::{master_region, WorldFxMask};
 
 /// Typed actual world/render boundary; absence stays distinct from host faults.
 pub use pz_entity::runtime_load::{HostResult, RuntimeHostError};
+
+mod water;

@@ -315,6 +315,7 @@ impl RenderSquareHooks for RenderInvalidation<'_> {
 
     fn clear_water(&mut self, square: pz_world::SquareRef) {
         let sq = square.borrow();
+        self.render.water_changed(sq.x.div_euclid(8), sq.y.div_euclid(8));
         if let Some(rs) = self.render.squares.get_mut(&(sq.x, sq.y, sq.z)) {
             rs.water = None;
         }

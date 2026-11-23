@@ -55,6 +55,7 @@ struct Node {
 pub struct IsoWaterFlow {
     nodes: Vec<Node>,
     root: Option<usize>,
+    revision: u64,
     pub zones: Vec<WaterZone>,
 }
 
@@ -145,6 +146,7 @@ impl IsoWaterFlow {
     /// `addFlow(x, y, flow, speed)`: `flow` in degrees, turned into the
     /// shader's angle.
     pub fn add_flow(&mut self, x: f32, y: f32, flow: f32, speed: f32) {
+        self.revision = self.revision.wrapping_add(1);
         let mut degrees = (360 - flow as i32 - 45) % 360;
         if degrees < 0 {
             degrees += 360;
@@ -179,6 +181,7 @@ impl IsoWaterFlow {
 
     /// `addZone(x1, y1, x2, y2, shore, waterGround)`.
     pub fn add_zone(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, shore: f32, water_ground: f32) {
+        self.revision = self.revision.wrapping_add(1);
         self.zones.push(WaterZone { x1, y1, x2, y2, shore, water_ground });
     }
 
@@ -194,8 +197,10 @@ impl IsoWaterFlow {
 
     /// `Reset()`.
     pub fn reset(&mut self) {
-        *self = IsoWaterFlow::default();
+        *self = Self { revision: self.revision.wrapping_add(1), ..Self::default() };
     }
+
+    pub fn revision(&self) -> u64 { self.revision }
 
     /// `WaterFlowLookup.nearestMultiple`: up to `max` points by distance,
     /// nearest first.

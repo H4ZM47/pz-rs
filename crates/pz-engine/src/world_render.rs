@@ -190,6 +190,7 @@ impl WorldRender {
                 pz_iso_render::blood::FLOOR_BLOOD_TYPES
                     .iter()
                     .map(|&name| name.to_owned())
+                    .chain(std::iter::once("media/textures/river_bottom.png".to_owned()))
                     .chain((0..48).map(|index| format!("e_newsnow_ground_1_{index}")))
                     .filter_map(|name| tm.shared_texture(fs, &name).map(|tex| (name, tex)))
                     .collect(),
@@ -426,6 +427,12 @@ impl WorldRender {
                 perf_puddles,
             },
         )?;
+        let flow = pz_lua_api::bind_world::lua_world::shared_water_flow();
+        let flow = flow.try_borrow().map_err(|_| RuntimeHostError::Borrowed("IsoWaterFlow"))?;
+        let shader = pz_lua_api::bind_core::shared_core().borrow().performance.water_quality != 2;
+        for (wx, wy) in self.world.refresh_water(&flow, shader) {
+            for cache in &mut self.caches { cache.invalidate_chunk(wx, wy, dirty::REDRAW); }
+        }
         Ok(())
     }
 

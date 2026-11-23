@@ -18,15 +18,14 @@ pub fn winter() -> bool {
         crate::bind_climate::shared_game_time().borrow().climate.get_season().is_some_and(|s| s.is_season(5))
 }
 
-// W, NW, N, SW, S, SE, E, NE in IsoWaterGeometry.init order.
-const NEIGHBOURS: [(i32,i32);8] = [(-1,0),(-1,-1),(0,-1),(-1,1),(0,1),(1,1),(1,0),(1,-1)];
+use pz_iso_render::water::WATER_NEIGHBOURS;
 
 fn water_valid(cell: &IsoCell, sq: &IsoGridSquare, sprites: &IsoSpriteManager, flow: &IsoWaterFlow) -> HostResult<bool> {
     let flag = sprites.tables.flag.water;
     if sq.has(flag) { return Ok(true); }
     if flow.get_shore(sq.x, sq.y) != 1 { return Ok(false); }
     let mut adjacent = [None;8];
-    for (slot,(dx,dy)) in adjacent.iter_mut().zip(NEIGHBOURS) {
+    for (slot,(dx,dy)) in adjacent.iter_mut().zip(WATER_NEIGHBOURS) {
         let Some(other) = cell.get_grid_square(sq.x + dx, sq.y + dy, sq.z) else { return Ok(false) };
         *slot = Some(other.try_borrow().map_err(|_| RuntimeHostError::Borrowed("water neighbour"))?.has(flag));
     }
@@ -57,7 +56,7 @@ pub fn square_is_snow(x: i32, y: i32, z: i32) -> LuaResult<bool> {
             return Ok(false);
         }
         if z == 0 {
-            for (dx, dy) in NEIGHBOURS {
+            for (dx, dy) in WATER_NEIGHBOURS {
                 if let Some(n) = cell.get_grid_square(x + dx, y + dy, z) {
                     let n = n.try_borrow().map_err(|_| RuntimeHostError::Borrowed("snow neighbour"))?;
                     if water_valid(cell, &n, &sprites, &flow)? { return Ok(false); }
