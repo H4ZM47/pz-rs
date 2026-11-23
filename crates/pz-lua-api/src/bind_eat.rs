@@ -7,10 +7,8 @@
 //! the food's `OnEat` function and uses the food up (or scales its values by
 //! what is left), as the original does after `JustAteFood`.
 //!
-//! The emitter is a pooled world emitter per character, moved to the
-//! character's square when it plays. Nothing ticks character emitters every
-//! frame yet, so each call here ticks the emitter itself; a voice therefore
-//! starts when the sound is played and its state is read on the next call.
+//! Character sounds retain their own emitter, which follows the character
+//! on the world's emitter clock and stops when the owner leaves the world.
 
 use crate::bind_character_sim::{character_value, chr_of, with_ctx, LuaGameCharacterRef, ISO_GAME_CHARACTER_CLASS};
 use crate::bind_characters::shared_characters;
@@ -38,28 +36,59 @@ impl LuaObject for CharacterEmitterObject {
     }
 }
 
-thread_local! {
-    /// The pooled emitter of each character that asked for one.
-    static EMITTERS: RefCell<Vec<(Weak<RefCell<pz_characters::character::GameCharacter<crate::bind_characters::LuaItem>>>, EmitterRef)>> =
-        const { RefCell::new(Vec::new()) };
+struct CharacterAudio {
+    owner: Weak<RefCell<crate::bind_character_sim::LuaGameCharacter>>,
+    emitter: EmitterRef,
+    handle: Weak<CharacterEmitterObject>,
 }
 
-/// The character's emitter, taken from the world pool on first use.
-fn emitter_of(chr: &LuaGameCharacterRef) -> EmitterRef {
+thread_local! {
+    static EMITTERS: RefCell<Vec<CharacterAudio>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The extra emitter of CharacterSoundEmitter, independent of the world pool.
+fn with_audio<R>(chr: &LuaGameCharacterRef, f: impl FnOnce(&mut CharacterAudio) -> R) -> R {
     EMITTERS.with(|all| {
         let mut all = all.borrow_mut();
-        all.retain(|(c, _)| c.strong_count() > 0);
-        if let Some((_, e)) = all.iter().find(|(c, _)| std::ptr::eq(c.as_ptr(), Rc::as_ptr(chr))) {
-            return e.clone();
+        if let Some(entry) = all.iter_mut().find(|a| std::ptr::eq(a.owner.as_ptr(), Rc::as_ptr(chr))) {
+            return f(entry);
         }
-        let e = crate::bind_audio::sound_system().borrow_mut().with_world_emitters(|pool, _| {
-            let e = pool.get_free();
-            pool.take_ownership(&e);
-            e
-        });
-        all.push((Rc::downgrade(chr), e.clone()));
-        e
+        let emitter = crate::bind_audio::sound_system().borrow().world_emitters.new_emitter();
+        emitter.borrow_mut().emitter_type = pz_sound::emitter::EmitterType::Extra;
+        let actor = chr.borrow();
+        emitter.borrow_mut().parent = if actor.is_player() { pz_sound::emitter::ParentObject::Player { local: actor.in_players } }
+            else { pz_sound::emitter::ParentObject::MovingObject };
+        all.push(CharacterAudio { owner: Rc::downgrade(chr), emitter, handle: Weak::new() });
+        f(all.last_mut().unwrap())
     })
+}
+
+pub fn update_emitters(due: bool) {
+    EMITTERS.with(|all| {
+        crate::bind_audio::sound_system().borrow_mut().with_world_emitters(|_, ctx| {
+            all.borrow_mut().retain(|a| {
+                let mut emitter = a.emitter.borrow_mut();
+                let Some(owner) = a.owner.upgrade() else {
+                    emitter.stop_all(ctx);
+                    return false;
+                };
+                if !emitter.is_empty() && (due || emitter.has_sounds_to_start()) {
+                    let actor = owner.borrow();
+                    emitter.set_pos(actor.vars.x, actor.vars.y, actor.vars.z);
+                    drop(actor);
+                    emitter.tick(ctx);
+                }
+                true
+            });
+        });
+    });
+}
+
+pub fn reset_emitters() {
+    let retired = EMITTERS.with(|all| all.take());
+    crate::bind_audio::sound_system().borrow_mut().with_world_emitters(|_, ctx| {
+        for entry in &retired { entry.emitter.borrow_mut().stop_all(ctx); }
+    });
 }
 
 fn emitter_chr(c: &NativeCall<'_>) -> LuaResult<LuaGameCharacterRef> {
@@ -71,7 +100,7 @@ fn with_emitter<R>(
     chr: &LuaGameCharacterRef,
     f: impl FnOnce(&mut pz_sound::emitter::FmodSoundEmitter, &mut pz_sound::emitter::Ctx) -> R,
 ) -> R {
-    let emitter = emitter_of(chr);
+    let emitter = with_audio(chr, |a| a.emitter.clone());
     crate::bind_audio::sound_system().borrow_mut().with_world_emitters(|_, ctx| {
         let mut e = emitter.borrow_mut();
         let r = f(&mut e, ctx);
@@ -81,9 +110,13 @@ fn with_emitter<R>(
 }
 
 /// `getEmitter().playSound(name)`: a handle, 0 when the sound is unknown.
-fn play(chr: &LuaGameCharacterRef, name: &str) -> i64 {
+pub fn play(chr: &LuaGameCharacterRef, name: &str) -> i64 {
     let (x, y, z) = {
         let c = chr.borrow();
+        if c.is_ghost_mode(&*crate::bind_character_sim::current_sim_context())
+            && !pz_core::debug::debug_options().borrow().get_boolean("Character.Debug.PlaySoundWhenInvisible") {
+            return 0;
+        }
         (c.vars.x, c.vars.y, c.vars.z)
     };
     with_emitter(chr, |e, ctx| {
@@ -102,7 +135,12 @@ pub fn register_shared(thread: &mut Thread) {
     let b = expose_class(thread, ISO_GAME_CHARACTER_CLASS, None);
     b.method("getEmitter", |c| {
         let chr = chr_of(c)?;
-        let o: Rc<dyn LuaObject> = Rc::new(CharacterEmitterObject(chr));
+        let o: Rc<dyn LuaObject> = with_audio(&chr, |audio| {
+            if let Some(handle) = audio.handle.upgrade() { return handle; }
+            let handle = Rc::new(CharacterEmitterObject(chr.clone()));
+            audio.handle = Rc::downgrade(&handle);
+            handle
+        });
         Ok(c.push(Value::Object(o)))
     });
     b.method("playSound", |c| {

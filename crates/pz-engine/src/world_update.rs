@@ -637,9 +637,9 @@ impl IsoWorld {
         // `HutchManager.updateAll`, `ImprovedFog.update`,
         // `helicopter.update`,
         // `metaGrid.getCurrentCellData().checkTriggers()`.
-        pz_lua_api::bind_audio::sound_system().borrow_mut().with_world_emitters(|pool, ctx| {
-            pool.update(pz_lua_api::player_db::current_time_millis(), ctx);
-        });
+        let emitter_update = pz_lua_api::bind_audio::sound_system().borrow_mut()
+            .with_world_emitters(|pool, ctx| pool.update(pz_lua_api::player_db::current_time_millis(), ctx));
+        pz_lua_api::bind_eat::update_emitters(emitter_update);
         // TODO(port): `WorldSoundManager.instance.initFrame()`,
         // `ZombieGroupManager.preupdate`, `OnceEvery.update`,
         // `CollisionManager.initUpdate`.
@@ -1175,6 +1175,9 @@ impl IsoWorld {
                         pz_lua_api::bind_audio::intensity_config().borrow()
                             .trigger(Some(id), &p.player.music_intensity_events);
                     }
+                }
+                SimEvent::PlaySound(name) | SimEvent::EmitterPlaySound(name) if chr.is_some() => {
+                    pz_lua_api::bind_eat::play(chr.unwrap(), &name);
                 }
                 SimEvent::PositionedSound { name, square: (x, y, z) } => {
                     pz_lua_api::bind_audio::sound_system().borrow_mut().play_world_clip(&name,

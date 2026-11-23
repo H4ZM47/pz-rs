@@ -24,12 +24,16 @@ impl WorldEmitters {
         }
     }
 
+    pub fn new_emitter(&self) -> EmitterRef {
+        Rc::new(RefCell::new(FmodSoundEmitter::new(self.parameter_count)))
+    }
+
     /// `getFreeEmitter()`: return an emitter under world ownership.
     pub fn get_free(&mut self) -> EmitterRef {
         let emitter = self
             .free
             .pop_front()
-            .unwrap_or_else(|| Rc::new(RefCell::new(FmodSoundEmitter::new(self.parameter_count))));
+            .unwrap_or_else(|| self.new_emitter());
         emitter.borrow_mut().set_play_remote_events(false);
         self.current.push(emitter.clone());
         emitter
@@ -63,7 +67,7 @@ impl WorldEmitters {
 
     /// `IsoWorld.updateInternal` starts newly queued sounds immediately
     /// and advances ongoing ones every 30 ms. Empty emitters are reusable.
-    pub fn update(&mut self, now_ms: i64, ctx: &mut crate::emitter::Ctx) {
+    pub fn update(&mut self, now_ms: i64, ctx: &mut crate::emitter::Ctx) -> bool {
         let due = now_ms.saturating_sub(self.last_update_ms) >= 30;
         if due { self.last_update_ms = now_ms; }
         self.current.retain(|owner| {
@@ -74,6 +78,7 @@ impl WorldEmitters {
             self.free.push_front(owner.clone());
             false
         });
+        due
     }
 
     pub fn current(&self) -> &[EmitterRef] {

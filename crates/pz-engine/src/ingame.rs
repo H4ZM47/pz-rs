@@ -440,6 +440,7 @@ impl GameState for IngameState {
             .with_world_emitters(|pool, ctx| pool.stop_and_reset(ctx));
         drop(retired_emitters);
         pz_lua_api::item_sound::reset();
+        pz_lua_api::bind_eat::reset_emitters();
         // `BaseSoundManager.stop`, before the new menu environment starts.
         pz_lua_api::bind_audio::sound_system()
             .borrow_mut()
