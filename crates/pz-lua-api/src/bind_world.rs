@@ -71,6 +71,8 @@ pub struct WorldState {
     pub meta_grid: Option<IsoMetaGrid>,
     pub cell: Option<IsoCell>,
     pub geometry: GeometryChanges,
+    /// Region graph for player-built rooms, shared with the engine renderer.
+    pub regions: Option<Rc<RefCell<pz_world::isoregion::IsoRegions>>>,
     pub population_sounds: Vec<(pz_audio::world_sound::WorldSound, f32)>,
     pub meta_tracker: Option<Rc<RefCell<pz_core::save_trackers::MetaTracker>>>,
     /// `currentCell.weatherFx`, initialized by `initWeatherFx` and retired
@@ -105,6 +107,7 @@ pub fn set_cell(cell: Option<IsoCell>) {
     let retired = with_world_state_cell(|w| {
         let mut w = w.borrow_mut();
         w.meta_tracker = None;
+        w.regions = None;
         w.geometry = GeometryChanges::default();
         w.population_sounds.clear();
         let weather = w.weather_fx.take();
@@ -2028,6 +2031,10 @@ fn square_building(x: i32, y: i32, z: i32) -> LuaResult<Option<usize>> {
 
 fn register_grid_square(thread: &mut Thread) {
     let b = expose_class(thread, "zombie.iso.IsoGridSquare", Some("java.lang.Object"));
+    get(&b, "getPuddlesInGround", |c| {
+        let pos = self_square(c)?;
+        Ok(Value::from(f64::from(crate::bind_puddles::ground_level(pos)?)))
+    });
     reachability::register(&b);
     square_walk::register(&b);
     square_queries::register(&b);

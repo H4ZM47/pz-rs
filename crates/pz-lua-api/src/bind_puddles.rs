@@ -3,6 +3,9 @@
 //! the loaded cell. Climate effects advance after the climate's Lua events,
 //! independently of whether the host has a GPU.
 
+mod ground;
+pub use ground::ground_level;
+
 use crate::expose::{bool_arg, expose_class, global, int_arg, num_arg, with_this};
 use pz_core::weather::ClimateContext;
 use pz_iso_render::weather::{ClimateInputs, PuddlesFloat, PuddlesState, WaterState};

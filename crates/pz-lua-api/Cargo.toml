@@ -39,6 +39,7 @@ pz-entity.workspace = true
 pz-worldgen.workspace = true
 pz-worldmap.workspace = true
 pz-iso-render = { path = "../pz-iso-render" }
+pz-world-render = { path = "../pz-world-render" }
 pz-world-states = { path = "../pz-world-states" }
 
 [dev-dependencies]

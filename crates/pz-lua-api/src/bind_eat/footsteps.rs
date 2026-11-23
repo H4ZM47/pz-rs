@@ -97,6 +97,14 @@ fn materials(chr: &LuaGameCharacterRef) -> LuaResult<(usize, u8)> {
     } else {
         material.unwrap_or_else(|| if square.has_stairs(&manager) { 7 } else { 2 })
     };
+    let pos = (square.x, square.y, square.z);
+    drop(square);
+    drop(manager);
+    if overlay == 0 {
+        let puddles = crate::bind_puddles::ground_level(pos)?;
+        if puddles > 0.5 { overlay = 3; }
+        else if puddles > 0.1 { overlay = 2; }
+    }
     Ok((primary, overlay))
 }
 

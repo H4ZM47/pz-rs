@@ -860,6 +860,7 @@ impl IsoWorld {
         set_cell(Some(IsoCell::default()));
         with_world(|w| {
             w.meta_tracker = Some(self.meta_tracker.clone());
+            w.regions = self.regions.clone();
             w.geometry.pathfind = self.pathfind.as_ref().map(|path| path.service().square_changes());
         });
         self.install_floor_world()?;

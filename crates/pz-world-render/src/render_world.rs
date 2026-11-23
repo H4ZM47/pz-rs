@@ -251,6 +251,43 @@ pub fn puddle_square(
     })
 }
 
+/// The same loaded-square corner masks used by drawing and ground interaction.
+pub fn puddle_geometry(w: &WorldView<'_>, regions: &IsoRegions, sq: &IsoGridSquare, perf_puddles: i32)
+    -> HostResult<PuddlesGeometry> {
+    let (x, y, z) = (sq.x, sq.y, sq.z);
+    let input = puddle_square(w, regions, &sq)?;
+    // The pure geometry callback is infallible. Record the first host
+    // fault and reject the whole uncommitted geometry after it returns.
+    // No false-absence geometry is published and no later body is read.
+    let fault = std::cell::RefCell::new(None);
+    let at = |dx: i32, dy: i32| {
+        if fault.borrow().is_some() {
+            return None;
+        }
+        let Some(n) = w.cell.get_grid_square(x + dx, y + dy, z) else {
+            return None;
+        };
+        let value = (|| {
+            let n = n
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("puddle neighbour square"))?;
+            puddle_square(w, regions, &n)
+        })();
+        match value {
+            Ok(value) => Some(value),
+            Err(error) => {
+                *fault.borrow_mut() = Some(error);
+                None
+            }
+        }
+    };
+    let geometry = PuddlesGeometry::init(&input, perf_puddles, at);
+    if let Some(error) = fault.into_inner() {
+        return Err(error);
+    }
+    Ok(geometry)
+}
+
 /// `getWallType()`: 1 north wall, 4 west wall (5 for `WallNW`), 8 the east
 /// neighbour has a west wall, 2 the south neighbour has a north wall.
 pub fn wall_type(w: &WorldView<'_>, sq: &IsoGridSquare) -> HostResult<i32> {
@@ -506,37 +543,7 @@ impl RenderWorld {
         let sq = sq
             .try_borrow()
             .map_err(|_| RuntimeHostError::Borrowed("puddle square"))?;
-        let input = puddle_square(w, regions, &sq)?;
-        // The pure geometry callback is infallible. Record the first host
-        // fault and reject the whole uncommitted geometry after it returns.
-        // No false-absence geometry is published and no later body is read.
-        let fault = std::cell::RefCell::new(None);
-        let at = |dx: i32, dy: i32| {
-            if fault.borrow().is_some() {
-                return None;
-            }
-            let Some(n) = w.cell.get_grid_square(x + dx, y + dy, z) else {
-                return None;
-            };
-            let value = (|| {
-                let n = n
-                    .try_borrow()
-                    .map_err(|_| RuntimeHostError::Borrowed("puddle neighbour square"))?;
-                puddle_square(w, regions, &n)
-            })();
-            match value {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    *fault.borrow_mut() = Some(error);
-                    None
-                }
-            }
-        };
-        let geometry = PuddlesGeometry::init(&input, perf_puddles, at);
-        if let Some(error) = fault.into_inner() {
-            return Err(error);
-        }
-        rs.puddles = Some(geometry);
+        rs.puddles = Some(puddle_geometry(w, regions, &sq, perf_puddles)?);
         Ok(())
     }
 

@@ -181,43 +181,7 @@ fn has_fluid(c: &mut NativeCall<'_>, this: &Value) -> LuaResult<bool> {
     if !solid_floor {
         return Ok(false);
     }
-    Ok(puddles_in_ground(&mut Cx { t: c.thread }, &square)? > 0.09)
-}
-
-/// `IsoGridSquare.getPuddlesInGround()` as far as it answers without
-/// puddles: -1 in a room, else `IsoPuddlesCompute.computePuddle`, which
-/// gives -0.1 without shaders, with puddles off, above the ground with
-/// puddles on, or while `IsoPuddles.getPuddlesSize()` is 0. The cache of
-/// the original only keeps the last computed level.
-fn puddles_in_ground(cx: &mut Cx<'_>, square: &Value) -> LuaResult<f32> {
-    let puddles_size = crate::bind_puddles::shared_puddles()
-        .try_borrow()
-        .map_err(|_| LuaError::runtime("IsoPuddles is in use"))?
-        .state
-        .puddles_size
-        .get();
-    if puddles_size <= 0.0 {
-        // Both the room answer (-1) and every early answer of
-        // computePuddle (-0.1) are below any threshold the callers use;
-        // with no puddles computePuddle answers -0.1 too.
-        return Ok(-0.1);
-    }
-    if !cx.call(square, "getRoom", &[])?.is_nil() {
-        return Ok(-1.0);
-    }
-    let core = cx.global("getCore", &[])?;
-    if !cx.is(&core, "getUseShaders", &[])? {
-        return Ok(-0.1);
-    }
-    if cx.num(&core, "getPerfPuddlesOnLoad", &[])? == 3.0 || cx.num(&core, "getPerfPuddles", &[])? == 3.0 {
-        return Ok(-0.1);
-    }
-    if cx.num(&core, "getPerfPuddles", &[])? > 0.0 && cx.num(square, "getZ", &[])? > 0.0 {
-        return Ok(-0.1);
-    }
-    Err(unsupported(
-        "IsoGridSquare.getPuddlesInGround: IsoGridSquare.getIsoWorldRegion and IsoPuddlesCompute.computePuddle",
-    ))
+    Ok(Cx { t: c.thread }.num(&square, "getPuddlesInGround", &[])? > 0.09)
 }
 
 /// `getPipedFuelAmount()`: the mod data's `fuelAmount`. A fuel pump
