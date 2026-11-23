@@ -1079,7 +1079,7 @@ mod tests {
 
     impl pz_sound::backend::AudioBackend for VoiceBackend {
         fn event_description(&mut self, path: &str) -> Option<Rc<pz_sound::backend::EventDescription>> {
-            (path == "event:/VoiceMaleShoutHey").then(|| {
+            matches!(path, "event:/VoiceMaleShoutHey" | "event:/TraversalFixture").then(|| {
                 Rc::new(pz_sound::backend::EventDescription {
                     address: 1,
                     path: path.into(),
@@ -1088,20 +1088,28 @@ mod tests {
                     is_oneshot: true,
                     has_sustain_points: false,
                     max_distance: 20.0,
-                    parameters: vec![self.parameter_description("CharacterVoicePitch").unwrap()],
+                    parameters: if path == "event:/TraversalFixture" {
+                        ["TripObstacleType", "CharacterMovementSpeed"].map(|p| self.parameter_description(p).unwrap()).to_vec()
+                    } else { vec![self.parameter_description("CharacterVoicePitch").unwrap()] },
                 })
             })
         }
         fn parameter_description(&mut self, name: &str) -> Option<pz_sound::backend::ParameterDescription> {
-            (name == "CharacterVoicePitch").then(|| pz_sound::backend::ParameterDescription {
+            let (id, index) = match name {
+                "CharacterVoicePitch" => ((7, 9), 0),
+                "TripObstacleType" => ((11, 12), 1),
+                "CharacterMovementSpeed" => ((13, 14), 2),
+                _ => return None,
+            };
+            Some(pz_sound::backend::ParameterDescription {
                 name: name.into(),
-                id: (7, 9),
+                id,
                 minimum: 0.0,
                 maximum: 2.0,
                 default: 1.0,
                 kind: 0,
                 flags: 0,
-                global_index: 0,
+                global_index: index,
             })
         }
         fn create_event_instance(&mut self, _desc: &pz_sound::backend::EventDescription) -> i64 {
@@ -1122,6 +1130,11 @@ mod tests {
         fn instance_release(&mut self, inst: i64) { self.0.borrow_mut().push(format!("release {inst}")); }
         fn instance_playback_state(&mut self, _inst: i64) -> pz_sound::backend::PlaybackState {
             pz_sound::backend::PlaybackState::Playing
+        }
+        fn instance_set_3d_position(&mut self, inst: i64, x: f32, y: f32, z: f32) {
+            if x != 0.0 || y != 0.0 || z != 0.0 {
+                self.0.borrow_mut().push(format!("pos {inst} {x} {y} {z}"));
+            }
         }
         fn listener_3d(&mut self, _i: i32, _p: [f32; 3], _v: [f32; 3], _f: [f32; 3], _u: [f32; 3]) {}
         fn load_sound(&mut self, _path: &str, _looped: bool) -> u64 {
@@ -1210,6 +1223,42 @@ mod tests {
         drop(system.borrow_mut().with_world_emitters(|pool, ctx| pool.stop_and_reset(ctx)));
         assert_eq!(strs(&run(&mut t, "return queued:isPlaying()").unwrap()), ["false"]);
         assert_eq!(log.borrow().iter().filter(|s| *s == "release 42").count(), 2);
+        install_sound_system(previous);
+    }
+
+    #[test]
+    fn traversal_audio_uses_character_identity_parameters_and_live_position() {
+        use crate::{bind_eat, bind_players};
+        use pz_characters::character::SimEvent;
+        let (mut thread, character, _) = crate::bind_character_sim::tests::setup_with(pz_scripts::ScriptManager::new());
+        let previous = sound_system();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        install_sound_system(Rc::new(RefCell::new(pz_sound::system::SoundSystem::new(
+            Box::new(VoiceBackend(log.clone())), Default::default(), 3,
+        ))));
+        bind_eat::register_shared(&mut thread);
+        assert_eq!(strs(&run(&mut thread, "return player:getEmitter() == player:getEmitter()").unwrap()), ["true"]);
+        let original = bind_players::player(0);
+        bind_players::set_player(0, Some(character.clone()));
+        {
+            let mut p = character.borrow_mut();
+            p.vars.x = 10.0;
+            p.vars.y = 20.0;
+            p.player.sound_movement_speed = 4;
+        }
+        assert!(!HearingPlayers::capture().in_range(13.0, 24.0, 5.0));
+        assert!(HearingPlayers::capture().in_range(13.0, 24.0, 6.0));
+        bind_eat::apply_audio_event(&character, &SimEvent::ObstacleSound {
+            name: "TraversalFixture".into(), parameter: "TripObstacleType", value: 9.0, movement_speed: true,
+        });
+        character.borrow_mut().vars.z = 2.0;
+        bind_eat::update_emitters(true);
+        bind_eat::reset_emitters();
+        let calls = log.borrow();
+        for expected in ["param 42 (11, 12) 9", "param 42 (13, 14) 4", "start 42", "pos 42 10 20 6", "stop 42", "release 42"] {
+            assert!(calls.iter().any(|s| s == expected), "missing {expected} in {calls:?}");
+        }
+        bind_players::set_player(0, original);
         install_sound_system(previous);
     }
 
