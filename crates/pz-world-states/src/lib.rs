@@ -376,6 +376,11 @@ pub trait StatesEngine {
     /// render invalidation) after the adapter changed a square's objects.
     fn square_changed(&mut self, _sq: (i32, i32, i32)) {}
 
+    fn geometry_changed(&mut self, _cell: &IsoCell, _meta: &IsoMetaGrid,
+        _sprites: &IsoSpriteManager, pos: (i32, i32, i32)) {
+        self.square_changed(pos);
+    }
+
     // ---- audio (pz-audio) ----
 
     /// `WorldSoundManager.instance.addSound(...)`.
@@ -439,7 +444,7 @@ pub trait StatesEngine {
                         self.do_room_alarm(room, building);
                     }
                 }
-                self.square_changed((window.x, window.y, window.z));
+                self.geometry_changed(cell, meta, sprites, (window.x, window.y, window.z));
                 self.on_window_toggled(actor.id, &object);
             }
         }

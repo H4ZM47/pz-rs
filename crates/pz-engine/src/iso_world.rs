@@ -849,7 +849,10 @@ impl IsoWorld {
             .unwrap()
             .set_deferred_world_activation(true);
         set_cell(Some(IsoCell::default()));
-        with_world(|w| w.meta_tracker = Some(self.meta_tracker.clone()));
+        with_world(|w| {
+            w.meta_tracker = Some(self.meta_tracker.clone());
+            w.square_changes = self.pathfind.as_ref().map(|path| path.service().square_changes());
+        });
         self.install_floor_world()?;
         let (wx, wy) = (self.world_x, self.world_y);
         self.with_stream(|s, cell, ctx| s.load_world(wx, wy, cell, ctx));

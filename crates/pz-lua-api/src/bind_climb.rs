@@ -123,7 +123,6 @@ fn can_climb_through(c: &NativeCall<'_>) -> LuaResult<bool> {
 
 /// Toggle the pane unless it is permanently locked, smashed or barricaded
 /// on the supplied actor's side. Dispatch after releasing world and sprite borrows.
-/// TODO(port): pathfinder invalidation.
 fn toggle_window(c: &mut NativeCall<'_>) -> LuaResult<()> {
     let this = c.arg(0);
     let world = crate::bind_world_object::object_from_value(&this)
@@ -148,6 +147,11 @@ fn toggle_window(c: &mut NativeCall<'_>) -> LuaResult<()> {
             pz_world::world_state::opened_window_alarm(cell, meta, (x, y, z), &world.object)
                 .map_err(crate::bind_world_object::host_error)?
         } else { None };
+        if changed {
+            if let Some(queue) = &state.square_changes {
+                queue.notify(&sprites, meta, cell, &pz_world::ObjectHooks::new(cell, &sprites), (x, y, z));
+            }
+        }
         Ok((changed, alarm))
     })?;
     drop(sprites);

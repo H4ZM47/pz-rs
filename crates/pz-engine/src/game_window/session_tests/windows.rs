@@ -70,7 +70,7 @@ pub(super) fn check(app: &mut App) {
     }
     super::queue::wait_for_idle(app);
     cancel_open_with_movement(app);
-    check_direct_alarm(app);
+    check_direct_alarm(app, x, y);
     for (state, open) in [(ids::OPEN_WINDOW, true), (ids::CLOSE_WINDOW, false)] {
         let lua = app.lua.as_mut().unwrap();
         lua_check(lua, r#"
@@ -133,7 +133,7 @@ pub(super) fn check(app: &mut App) {
 }
 
 /// Direct Lua, the ambient update and expiry all use the live save owner.
-fn check_direct_alarm(app: &mut App) {
+fn check_direct_alarm(app: &mut App, x: i32, y: i32) {
     lua_check(app.lua.as_mut().unwrap(), r#"
         rustAlarmSoundCount = 0
         rustListenToAlarm = function(x,y,z,radius,volume,source)
@@ -162,11 +162,33 @@ fn check_direct_alarm(app: &mut App) {
     lua_check(app.lua.as_mut().unwrap(), r#"
         assert(rustAlarmSoundCount == 3 and rustAlarmSameSource)
         Events.OnWorldSound.Remove(rustListenToAlarm)
+        -- Reverse the close from inside the event, before the path worker runs.
+        local reopened = false
+        local function reopen()
+            if not reopened and not rustSessionWindow:IsOpen() then
+                reopened = true
+                rustSessionWindow:ToggleWindow(getPlayer())
+            end
+        end
+        Events.OnContainerUpdate.Add(reopen)
+        rustSessionWindow:ToggleWindow(getPlayer())
+        Events.OnContainerUpdate.Remove(reopen)
+        assert(reopened and rustSessionWindow:IsOpen())
         rustSessionWindow:ToggleWindow(getPlayer())
         assert(not rustSessionWindow:IsOpen() and not rustAlarmBuilding:isAlarmed())
         rustAlarmCallback = nil
         rustAlarmBuilding:setAlarmed(true)
     "#);
+    let path = app.world.as_ref().unwrap().pathfind.as_ref().unwrap().service();
+    let load_id = path.chunk_load_id(x.div_euclid(8), y.div_euclid(8)).unwrap();
+    let snapshots: Vec<_> = path.queued_square_tasks().iter()
+        .filter(|t| (t.update.x, t.update.y, t.update.z) == (x, y, 32))
+        .map(|t| {
+            use pz_pathfind::square_bits::bits::{WINDOW_N_UNBLOCKED, WINDOW_W_UNBLOCKED};
+            assert_eq!(t.load_id, load_id);
+            t.update.bits & (WINDOW_N_UNBLOCKED | WINDOW_W_UNBLOCKED) != 0
+        }).collect();
+    assert!(snapshots.ends_with(&[false, true, false]), "reentrant window path snapshots {snapshots:?}");
 }
 
 /// Start the native state directly so the queue cannot cancel on its behalf.

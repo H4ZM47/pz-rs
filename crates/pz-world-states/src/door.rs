@@ -172,7 +172,7 @@ impl StatesWorldAdapter<'_> {
         self.engine.play_sound(chr, &format!("{prefix}{sound}"), Some(r));
         let p = (r.x, r.y, r.z);
         self.cell.recalc_all_with_neighbours(p.0, p.1, p.2, self.meta, self.sprites);
-        self.engine.square_changed(p);
+        self.engine.geometry_changed(self.cell, self.meta, self.sprites, p);
         self.engine.on_container_update();
         Ok(())
     }

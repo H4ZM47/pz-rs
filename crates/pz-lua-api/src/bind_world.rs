@@ -43,6 +43,7 @@ mod collection_deferral_tests;
 pub struct WorldState {
     pub meta_grid: Option<IsoMetaGrid>,
     pub cell: Option<IsoCell>,
+    pub square_changes: Option<pz_pathfind::service::SquareChanges>,
     pub meta_tracker: Option<Rc<RefCell<pz_core::save_trackers::MetaTracker>>>,
     /// `currentCell.weatherFx`, initialized by `initWeatherFx` and retired
     /// with the cell. The simulation exists independently of GPU drawing.
@@ -76,6 +77,7 @@ pub fn set_cell(cell: Option<IsoCell>) {
     let retired = with_world_state_cell(|w| {
         let mut w = w.borrow_mut();
         w.meta_tracker = None;
+        w.square_changes = None;
         let weather = w.weather_fx.take();
         let cell = std::mem::replace(&mut w.cell, cell);
         (weather, cell)

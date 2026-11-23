@@ -45,6 +45,7 @@
 //!   `PolygonalMap2`, which is not ported) and rendering are left out.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use pz_world::chunk::{IsoChunk, IsoGridSquare};
 use pz_world::{GetSquare, IsoDirections};
@@ -215,12 +216,53 @@ impl RequestQueue {
     }
 }
 
+/// The square-update input of one running pathfinder. Chunk streaming and
+/// geometry producers share the same load IDs and ordered queue.
+#[derive(Clone, Default)]
+pub struct SquareChanges(Arc<Mutex<SquareChangeState>>);
+
+#[derive(Default)]
+struct SquareChangeState {
+    loaded_chunks: HashMap<(i32, i32), i16>,
+    tasks: VecDeque<SquareTask>,
+}
+
+impl SquareChanges {
+    /// `PathfindNative.squareChanged(square)`: when the square's chunk was
+    /// added, queue a `SquareUpdateTask` for each of its 8 neighbours
+    /// (`IsoDirections` order) and then for the square.
+    pub fn square_changed<G: GetSquare>(&self, square: &IsoGridSquare, bits: &SquareBits<'_, G>) {
+        let chunk = (square.x.div_euclid(8), square.y.div_euclid(8));
+        let mut state = self.0.lock().unwrap();
+        if !state.loaded_chunks.contains_key(&chunk) {
+            return;
+        }
+        for dir in IsoDirections::ALL {
+            if let Some(sq2) = square.get_adjacent_square(dir, bits.squares) {
+                state.queue_square_update(&sq2.borrow(), bits);
+            }
+        }
+        state.queue_square_update(square, bits);
+    }
+}
+
+impl SquareChangeState {
+    fn queue_square_update<G: GetSquare>(&mut self, sq: &IsoGridSquare, bits: &SquareBits<'_, G>) {
+        let chunk = (sq.x.div_euclid(8), sq.y.div_euclid(8));
+        let load_id = self.loaded_chunks.get(&chunk).copied().unwrap_or(-1);
+        self.tasks.push_back(SquareTask {
+            load_id,
+            update: bits.square_update(sq),
+        });
+    }
+}
+
 /// `PathfindNative` plus `PathfindNativeThread`, single-threaded (see the
 /// module doc).
 pub struct PathfindService {
     world: World,
     chunk_tasks: VecDeque<ChunkTask>,
-    square_tasks: VecDeque<SquareTask>,
+    square_changes: SquareChanges,
     vehicle_tasks: VecDeque<VehicleTask>,
     /// `requestTaskQueue`: `PathRequestTask`s (request, queue number).
     request_tasks: VecDeque<(RequestId, u8)>,
@@ -232,9 +274,6 @@ pub struct PathfindService {
     /// `PathfindNative.vehicleState`: the last `polyPlusRadius` sent, by
     /// `vehicleId`.
     vehicle_state: HashMap<i16, VehiclePoly>,
-    /// Chunks added with `addChunkToWorld` (`loadedBits & 2`) and their
-    /// load ids.
-    loaded_chunks: HashMap<(i32, i32), i16>,
     path_buffer: Vec<u8>,
 }
 
@@ -245,7 +284,7 @@ impl PathfindService {
         PathfindService {
             world: World::new(min_x, min_y, width, height, is_server),
             chunk_tasks: VecDeque::new(),
-            square_tasks: VecDeque::new(),
+            square_changes: SquareChanges::default(),
             vehicle_tasks: VecDeque::new(),
             request_tasks: VecDeque::new(),
             requests: RequestQueue::default(),
@@ -254,7 +293,6 @@ impl PathfindService {
             live: HashMap::new(),
             next_request: 0,
             vehicle_state: HashMap::new(),
-            loaded_chunks: HashMap::new(),
             path_buffer: Vec::new(),
         }
     }
@@ -275,7 +313,7 @@ impl PathfindService {
     /// request) and the vehicle states.
     pub fn stop(&mut self) {
         self.chunk_tasks.clear();
-        self.square_tasks.clear();
+        self.square_changes.0.lock().unwrap().tasks.clear();
         self.vehicle_tasks.clear();
         self.request_tasks.clear();
         self.requests = RequestQueue::default();
@@ -309,54 +347,60 @@ impl PathfindService {
             wy,
             buffer,
         });
-        self.loaded_chunks.insert((wx, wy), load_id);
+        self.square_changes
+            .0
+            .lock()
+            .unwrap()
+            .loaded_chunks
+            .insert((wx, wy), load_id);
     }
 
     /// `PathfindNative.removeChunkFromWorld(chunk)`.
     pub fn remove_chunk_from_world(&mut self, wx: i32, wy: i32) {
         self.chunk_tasks.push_back(ChunkTask::Remove { wx, wy });
-        self.loaded_chunks.remove(&(wx, wy));
+        self.square_changes
+            .0
+            .lock()
+            .unwrap()
+            .loaded_chunks
+            .remove(&(wx, wy));
     }
 
     /// The load id the chunk at `(wx, wy)` was added with, while it is
     /// known to the pathfinder.
     pub fn chunk_load_id(&self, wx: i32, wy: i32) -> Option<i16> {
-        self.loaded_chunks.get(&(wx, wy)).copied()
+        self.square_changes
+            .0
+            .lock()
+            .unwrap()
+            .loaded_chunks
+            .get(&(wx, wy))
+            .copied()
     }
 
     /// Whether `addChunkToWorld` was called for the chunk at `(wx, wy)`
     /// since it was last removed (`chunk.loadedBits & 2`).
     pub fn is_chunk_added(&self, wx: i32, wy: i32) -> bool {
-        self.loaded_chunks.contains_key(&(wx, wy))
+        self.square_changes
+            .0
+            .lock()
+            .unwrap()
+            .loaded_chunks
+            .contains_key(&(wx, wy))
     }
 
-    /// `PathfindNative.squareChanged(square)`: when the square's chunk was
-    /// added, queue a `SquareUpdateTask` for each of its 8 neighbours
-    /// (`IsoDirections` order) and then for the square.
+    /// Producer for live geometry changes while a mover is using the path host.
+    pub fn square_changes(&self) -> SquareChanges {
+        self.square_changes.clone()
+    }
+
+    /// Queue the neighbours and square with the geometry observed at this call.
     pub fn square_changed<G: GetSquare>(
         &mut self,
         square: &IsoGridSquare,
         bits: &SquareBits<'_, G>,
     ) {
-        let chunk = (square.x.div_euclid(8), square.y.div_euclid(8));
-        if !self.loaded_chunks.contains_key(&chunk) {
-            return;
-        }
-        for dir in IsoDirections::ALL {
-            if let Some(sq2) = square.get_adjacent_square(dir, bits.squares) {
-                self.queue_square_update(&sq2.borrow(), bits);
-            }
-        }
-        self.queue_square_update(square, bits);
-    }
-
-    fn queue_square_update<G: GetSquare>(&mut self, sq: &IsoGridSquare, bits: &SquareBits<'_, G>) {
-        let chunk = (sq.x.div_euclid(8), sq.y.div_euclid(8));
-        let load_id = self.loaded_chunks.get(&chunk).copied().unwrap_or(-1);
-        self.square_tasks.push_back(SquareTask {
-            load_id,
-            update: bits.square_update(sq),
-        });
+        self.square_changes.square_changed(square, bits);
     }
 
     /// `PathfindNative.addVehicle(vehicle)`.
@@ -487,7 +531,7 @@ impl PathfindService {
     /// has anything to do.
     pub fn has_thread_work(&self) -> bool {
         !self.chunk_tasks.is_empty()
-            || !self.square_tasks.is_empty()
+            || !self.square_changes.0.lock().unwrap().tasks.is_empty()
             || !self.vehicle_tasks.is_empty()
             || !self.request_tasks.is_empty()
             || !self.requests.is_empty()
@@ -558,7 +602,8 @@ impl PathfindService {
                 ChunkTask::Remove { wx, wy } => self.world.remove_chunk(wx, wy)?,
             }
         }
-        while let Some(t) = self.square_tasks.pop_front() {
+        let mut changes = self.square_changes.0.lock().unwrap();
+        for t in changes.tasks.drain(..) {
             pass.square_tasks += 1;
             let u = t.update;
             self.world.update_square(
@@ -573,6 +618,7 @@ impl PathfindService {
                 u.slope_max,
             );
         }
+        drop(changes);
         while let Some(t) = self.vehicle_tasks.pop_front() {
             pass.vehicle_tasks += 1;
             match t {
@@ -665,9 +711,9 @@ impl PathfindService {
         &self.chunk_tasks
     }
 
-    /// The queued square tasks.
-    pub fn queued_square_tasks(&self) -> &VecDeque<SquareTask> {
-        &self.square_tasks
+    /// Snapshot of the queued square tasks for diagnostics.
+    pub fn queued_square_tasks(&self) -> VecDeque<SquareTask> {
+        self.square_changes.0.lock().unwrap().tasks.clone()
     }
 
     /// The queued vehicle tasks.

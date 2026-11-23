@@ -1138,7 +1138,7 @@ impl StatesWorldAdapter<'_> {
                 drop(o);
                 self.replace_object_sprite_tile(&o_owner, smashed);
             }
-            self.engine.square_changed((r.x, r.y, r.z));
+            self.engine.geometry_changed(self.cell, self.meta, self.sprites, (r.x, r.y, r.z));
             self.add_broken_glass(r, t);
             if t.zombie {
                 if let Some(tf) = self.thumpable_for(r, Some(t)) {
@@ -1239,7 +1239,7 @@ impl StatesWorldAdapter<'_> {
                 self.engine.do_room_alarm(room, building);
             }
         }
-        self.engine.square_changed(sqp);
+        self.engine.geometry_changed(self.cell, self.meta, self.sprites, sqp);
     }
 
     /// `IsoWindow.addBrokenGlass(chr)`.
@@ -1310,7 +1310,7 @@ impl StatesWorldAdapter<'_> {
         drop(sq);
         self.cell
             .recalc_all_with_neighbours(p.0, p.1, p.2, self.meta, sprites);
-        self.engine.square_changed(p);
+        self.engine.geometry_changed(self.cell, self.meta, self.sprites, p);
     }
 
     fn thump_barricade(&mut self, r: ObjectRef, t: &Thumper) {
@@ -1476,7 +1476,7 @@ impl StatesWorldAdapter<'_> {
         }
         self.engine
             .object_removed((r.x, r.y, r.z), &obj.ref_handle(), destroyed);
-        self.engine.square_changed((r.x, r.y, r.z));
+        self.engine.geometry_changed(self.cell, self.meta, self.sprites, (r.x, r.y, r.z));
         Some(obj)
     }
 

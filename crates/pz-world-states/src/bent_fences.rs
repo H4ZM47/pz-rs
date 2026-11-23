@@ -639,7 +639,7 @@ impl StatesWorldAdapter<'_> {
     fn square_update_tasks(&mut self, p: (i32, i32, i32)) {
         self.cell
             .recalc_all_with_neighbours(p.0, p.1, p.2, self.meta, self.sprites);
-        self.engine.square_changed(p);
+        self.engine.geometry_changed(self.cell, self.meta, self.sprites, p);
     }
 
     /// `square.AddTileObject(IsoObject.getNew(square, name), index)`.
@@ -663,7 +663,7 @@ impl StatesWorldAdapter<'_> {
         drop(sq);
         self.cell
             .recalc_all_with_neighbours(p.0, p.1, p.2, self.meta, self.sprites);
-        self.engine.square_changed(p);
+        self.engine.geometry_changed(self.cell, self.meta, self.sprites, p);
     }
 
     /// `bendFence(obj, dir)` (`dir` is null for an unbent fence's
