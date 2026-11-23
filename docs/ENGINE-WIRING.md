@@ -1908,7 +1908,7 @@ registered):
       end; then `late`) (#124).
 - [x] `render_animated_attachments` per chunk between water and
       translucent passes (#76) — done by the frame itself (#124).
-- [ ] `render_weather_fx` as `world_frame_full`'s `late`, driven by
+- [x] `render_weather_fx` as `world_frame_full`'s `late`, driven by
       `ClimateRenderValues` (#81); pass `weather_fx_mask::FxMaskCharacters
       { world, objects: &frame_objects }` as its `FxMaskWorld` so the mask's
       `renderCharacters` replays #79's `ObjectRender` draws without shadows.
@@ -1916,7 +1916,8 @@ registered):
       (`render_character_object` does; set it on hand-built zombies and
       animals) (#124).
 - [ ] Feed corpses, world items and fireplace state from pz-world (#87, #76).
-- [ ] Lighting pass reads `ClimateManager::render_values` (#49).
+- [x] Lighting pass reads `ClimateManager::render_values` (#49): `IngameState.render_settings` builds
+      the `ClimateSettings` the lighting frame takes from them.
 - [ ] Vehicles in `FrameObjects.moving` (cell object-list order): per
       vehicle `update_transform`, `instance.update_lights`,
       `instance.do_damage_overlay` (when `doDamageOverlay` is flagged or the
@@ -1935,7 +1936,7 @@ registered):
       (pz-iso-render `skybox.rs`, now on the same stack (#124)).
       Until that is wired, load vehicle models with `reflections: false` (the
       `_noreflect` shader variants, as with `bPerfReflections` off) (#90).
-- [ ] Character outlines: per character, `ObjectRender.outline =
+- [x] Character outlines: per character, `ObjectRender.outline =
       OutlineHighlight::character_request(playerIndex, x, y, isProne,
       camCharacterX, camCharacterY)` from the object's highlight state
       (`IsoObject.setOutlineHighlight`/`Col`: CombatManager's aim targets in
@@ -1944,6 +1945,13 @@ registered):
       `renderlast` clears the highlight. `world_frame_with_objects` runs
       `startFrameMain`/`endFrameMain` around the object and translucent
       passes (#94).
+      Done: the state is `GameCharacter.outline` (pz-characters
+      `character/outline.rs`), the Lua methods are in
+      `bind_character_sim/outline.rs`, and `renderlast` runs after each
+      player frame for the characters it drew. Still open: CombatManager's
+      melee aim outline (`highlightTargets`/`highlightMeleeTargets`) needs
+      the melee `calculateHitInfoList`, and the ballistics/ragdoll debug
+      outlines.
 - [ ] Held/attached item textures: once the slot is built (and each frame
       before drawing it) `item_texture::render_equipped_textures_with(slot,
       exists, file, gpu, tm)` renders the dirty initializers (tint/TINT

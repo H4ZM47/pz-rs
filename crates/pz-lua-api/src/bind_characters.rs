@@ -1186,7 +1186,7 @@ macro_rules! desc_float {
     };
 }
 
-fn color_info_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<pz_core::core::ColorInfo> {
+pub(crate) fn color_info_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<pz_core::core::ColorInfo> {
     match c.arg(i) {
         Value::Object(o) => match o.as_any().downcast_ref::<LuaColorInfo>() {
             Some(ci) => Ok(ci.c.get()),

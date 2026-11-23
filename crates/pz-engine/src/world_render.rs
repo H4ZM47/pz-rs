@@ -16,6 +16,7 @@ use pz_iso_render::chunk::dirty;
 use pz_iso_render::cutaways::{CutawayPlayer, Cutaways};
 use pz_iso_render::frame::{plan_chunks, world_frame_full, FrameSize};
 use pz_iso_render::objects::FrameObjects;
+use pz_iso_render::outlines::OutlineHighlight;
 use pz_iso_render::weather::{SurfaceSettings, SurfaceTextures, Surfaces};
 use pz_iso_render::weather_fx::{IsoWeatherFx, WeatherFxView};
 use pz_iso_render::weather_fx_mask::{
@@ -117,6 +118,11 @@ pub struct WorldRender {
     corpse_error: Option<String>,
     /// What the square mutations changed since the last frame.
     pub pending: PendingRender,
+    /// The characters the last player frame drew (local players by
+    /// index, zombies by position in the world's list), for their
+    /// `renderlast`.
+    pub drawn_players: [bool; MAX_PLAYERS],
+    pub drawn_zombies: Vec<usize>,
     /// `WeatherFxMask.playerFxMasks`.
     fx_masks: [WeatherFxMask; MAX_PLAYERS],
     /// `WeatherFxMask.init`'s stand-in sprites, built on the first frame.
@@ -209,6 +215,8 @@ impl WorldRender {
             lighting_error: false,
             corpse_error: None,
             pending: PendingRender::new(),
+            drawn_players: [false; MAX_PLAYERS],
+            drawn_zombies: Vec::new(),
             fx_masks: std::array::from_fn(|_| WeatherFxMask::default()),
             fx_sprites: None,
             fx_mask_to_draw: [false; MAX_PLAYERS],
@@ -793,8 +801,22 @@ impl WorldRender {
                     tick: v.tick,
                     thirty_fps_multiplier: v.multiplier / 1.6,
                 };
-                models.render_character(chr, &cv)
+                let mut object = models.render_character(chr, &cv)?;
+                // `ModelSlotRenderData.init`: the outline when the
+                // character is highlighted for this player, on the side of
+                // the camera character it stands.
+                let o = &chr.outline;
+                object.outline = OutlineHighlight {
+                    highlight: o.highlight,
+                    attached: o.attached,
+                    blink: o.blink,
+                    col: o.col,
+                }
+                .character_request(p, chr.vars.x, chr.vars.y, chr.is_prone(), v.x, v.y);
+                Some(object)
             };
+            self.drawn_players = [false; MAX_PLAYERS];
+            self.drawn_zombies.clear();
             for n in 0..MAX_PLAYERS {
                 // A player whose corpse was made is off the world: its
                 // corpse draws instead.
@@ -802,12 +824,14 @@ impl WorldRender {
                     if let Some(mut object) = draw(&player.borrow()) {
                         object.local_player = n == v.player;
                         objects.players.push(object);
+                        self.drawn_players[n] = true;
                     }
                 }
             }
-            for zombie in zombies {
+            for (i, zombie) in zombies.iter().enumerate() {
                 if let Some(object) = draw(zombie) {
                     objects.moving.push(object);
+                    self.drawn_zombies.push(i);
                 }
             }
             // Port extension: the 3D view draws no corpses, and its frame
@@ -1127,6 +1151,28 @@ impl IsoWorld {
             check_changed_buildings(&mut r.lighting, &mut r.caches, &mut r.pending, num_players);
             Ok(())
         })?;
+        // `renderlast()` of each character the frame drew: an outline
+        // highlight not set during this UI frame ends with the frame.
+        {
+            if let Some(r) = render.as_ref() {
+                use pz_lua_api::bind_character_sim::outline::{ui_frame_times, RENDER_CONTAINER_HIGHLIGHT};
+                let now = ui_frame_times();
+                let p = view.player;
+                for (n, drawn) in r.drawn_players.iter().enumerate() {
+                    let player = pz_lua_api::bind_players::player(n).filter(|_| *drawn);
+                    if let Some(player) = player {
+                        if let Ok(mut c) = player.try_borrow_mut() {
+                            c.outline.render_last(p, RENDER_CONTAINER_HIGHLIGHT, now);
+                        }
+                    }
+                }
+                for &i in &r.drawn_zombies {
+                    if let Some(z) = zombies.get_mut(i) {
+                        z.outline.render_last(p, RENDER_CONTAINER_HIGHLIGHT, now);
+                    }
+                }
+            }
+        }
         // TODO(port): `Gizmos.render`, `DrawIsoCursorHelper`, the
         // pathfinding/sound/vocals debug renders, `FBORenderAreaHighlights`,
         // `LineDrawer.render`.
