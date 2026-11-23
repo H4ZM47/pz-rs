@@ -276,6 +276,7 @@ mod tests {
         let mut block = [0.0_f32; 2048];
         let mut peak = 0.0_f32;
         for _ in 0..128 {
+            block.fill(0.0);
             studio.lock().unwrap().mix(&mut block);
             assert!(block.iter().all(|x| x.is_finite()));
             peak = block.iter().fold(peak, |p, x| p.max(x.abs()));
@@ -284,6 +285,7 @@ mod tests {
         system.with(|_, ctx| ambient.update_ambiance(ctx, count, None));
         assert!(ambient.ambiance.is_none());
         assert_eq!(ambient.channel, 0);
+        block.fill(0.0);
         studio.lock().unwrap().mix(&mut block);
         assert!(block.iter().all(|&x| x == 0.0));
         system.with(|_, ctx| ambient.update_ambiance(ctx, count, Some((251.0, 101.0))));
