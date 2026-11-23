@@ -123,12 +123,16 @@ pub(crate) fn install_game_mode_class(jar: &pz_classfile::Jar, core: &mut pz_cor
 /// assets item visuals read, with the loaded mods' script folders.
 /// TODO: `CustomPerks`.
 pub fn load_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>) -> Result<(), String> {
+    load_session_scripts(game_dir, fs, true)
+}
+
+fn load_session_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>, initial_boot: bool) -> Result<(), String> {
     // Same real asset owner before any Item.DoParam. The immutable load
     // scope permits nested provider reads; population gets a later mut scope.
     pz_lua_api::bind_render::install_texture_capture(fs.clone());
     let jar=pz_classfile::Jar::open(game_dir.join("projectzomboid.jar"))
         .map_err(|error|format!("native item key registry jar: {error}"))?;
-    debug_catalog::install(&jar, fs.borrow().cache_dir())?;
+    if initial_boot { debug_catalog::install(&jar, fs.borrow().cache_dir())?; }
     let native_keys=pz_scripts::native_item_keys::native_item_key_statics(&jar)
         .map_err(|error|format!("native item key statics: {error}"))?;
     let modes = install_game_mode_class(&jar, &mut pz_lua_api::bind_core::shared_core().borrow_mut())?;
@@ -207,7 +211,7 @@ pub fn reload_main_menu_environment(
     // Read the installation before retiring the current Lua/UI owners.
     // Later failures retain the LuaManager value but cannot roll back
     // every shared host registry changed during initialization.
-    load_scripts(&launch.game_dir, &fs)?;
+    load_session_scripts(&launch.game_dir, &fs, false)?;
     replace_menu_environment(lua, fs, |fresh| {
         pz_lua_api::bind_text::boot(
             &fresh.fs.borrow(),

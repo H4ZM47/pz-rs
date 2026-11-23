@@ -1528,6 +1528,9 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         self.engine.toggle_window(self.cell, self.meta, self.sprites, window, &Thumper::of(chr))
     }
 
+    fn debug_unlock_window(&mut self, window: ObjectRef, opening: bool) -> pz_inventory::floor_drop::HostResult<()> {
+        self.debug_unlock_window_at(window, opening)
+    }
     fn set_window_perma_locked(&mut self, window: ObjectRef, perma: bool) {
         self.set_window_perma_locked_at(window, perma);
     }

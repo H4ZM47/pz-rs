@@ -6,8 +6,7 @@
 //!
 //! The window itself is the world's ([`StateWorld::window_info`],
 //! [`StateWorld::toggle_window`], [`StateWorld::window_weapon_hit`]).
-//! Not here: the debug cheat that unlocks windows on enter,
-//! `IsoPlayer.updateLOS()` (TODO(los)), the network `setParams(stage)`
+//! Remaining work includes `IsoPlayer.updateLOS()` (TODO(los)), the network `setParams(stage)`
 //! (only the multiplayer code calls it) and `processOnEnter`.
 //!
 //! [`StateWorld::window_info`]: crate::character::state::StateWorld::window_info
@@ -139,6 +138,15 @@ fn face_window<I: 'static>(owner: &mut GameCharacter<I>, w: &WindowInfo) {
         IsoDirections::E
     };
     owner.set_forward_iso_direction(dir);
+}
+
+/// Opening honors a WindowLocked sprite. Closing clears both lock fields.
+fn face_and_unlock<I: 'static>(owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>, window: ObjectRef, info: &WindowInfo, opening: bool) -> pz_inventory::floor_drop::HostResult<()> {
+    if cx.ctx.is_debug() && pz_core::debug::debug_options().borrow().get_boolean("Cheat.Window.Unlock") {
+        cx.world.debug_unlock_window(window, opening)?;
+    }
+    face_window(owner, info);
+    Ok(())
 }
 
 /// `player.pressedMovement(false) || player.pressedCancelAction()`.
@@ -432,8 +440,11 @@ impl<I: 'static> State<I> for OpenWindowState {
         owner.vars.ignore_movement = true;
         owner.vars.hide_weapon_model = true;
         // The original dereferences the window here.
-        if let Some((_, w)) = info(cx, OPEN_WINDOW.get(&mut owner.state.params)) {
-            face_window(owner, &w);
+        if let Some((target, w)) = info(cx, OPEN_WINDOW.get(&mut owner.state.params)) {
+            if let Err(error) = face_and_unlock(owner, cx, target, &w, true) {
+                cx.record_host_error(error);
+                return;
+            }
         }
         owner.set_var_bool("bOpenWindow", true);
     }
@@ -580,8 +591,11 @@ impl<I: 'static> State<I> for CloseWindowState {
     fn enter(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
         owner.vars.ignore_movement = true;
         owner.vars.hide_weapon_model = true;
-        if let Some((_, w)) = info(cx, CLOSE_WINDOW.get(&mut owner.state.params)) {
-            face_window(owner, &w);
+        if let Some((target, w)) = info(cx, CLOSE_WINDOW.get(&mut owner.state.params)) {
+            if let Err(error) = face_and_unlock(owner, cx, target, &w, false) {
+                cx.record_host_error(error);
+                return;
+            }
         }
         owner.set_var_bool("bCloseWindow", true);
         owner.clear_var("BlockWindow");

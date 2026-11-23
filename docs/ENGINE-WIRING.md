@@ -1786,11 +1786,10 @@ registered):
       (`climbOverFence`, `climbThroughWindow`, ... in
       `bind_character_sim::climb`) and the player's update runs the queue with
       the states world (`GameCharacter::run_path_requests`). A short E press
-      opens or closes a window, a held E (0.5 s) climbs through it; the open
-      and close action still needs `faceThisObject` (the queued
-      `FaceObject` request is not handled), and the climb check of
-      `IsoThumpable` and `IsoWindowFrame` is not bound to Lua yet;
-      `SimContext::wet_ground_final_value`, `clothing_degradation`
+      opens or closes a window, and a held E (0.5 s) climbs through it.
+      The shipped actions use live facing, turning and climb eligibility for
+      windows, thumpables and frames. Remaining simulation inputs include
+      `SimContext::wet_ground_final_value` and `clothing_degradation`
       (#135).
 
 - [ ] Ragdolls, boot: after ScriptManager loads `media/scripts/ragdolls`,
@@ -1833,21 +1832,16 @@ registered):
       `unregister_device`; DeviceData preset generation takes the radio
       as its `ChannelLists` (#200).
 
-- [ ] Windows (#208): `StatesEngine::player_input` returns the local
-      player's frame `PlayerInput` (Open/Close/Smash window states read
-      `pressedMovement` / `pressedCancelAction` from it); `toggle_window`
-      must run `IsoWindow.ToggleWindow` (also used by `OpenWindowState`
-      and `CloseWindowState`); `weapon_hit_thumpable` fires Lua
-      `OnWeaponHitThumpable`; `vehicle_window_destroyed` /
-      `vehicle_window_hit` from pz-vehicles (`smashCarWindow`).
-      `window_closing_success` should answer from
-      `pz_characters::character::states::window::closing_window(chr)` of
-      the characters on the window's squares. `SimContext::easy_climbing`
-      = `SandboxOptions.easyClimbing`. Lua `ISOpenCloseWindow` and
-      `ISSmashWindow` call `GameCharacter::open_window`, `close_window`,
-      `smash_window`, `smash_car_window`. Not ported: the debug
-      window-unlock cheat, the `Hit_Door` render effect on a bare-handed
-      barricade hit.
+- [x] Regular window interactions (#208). Stock Lua open, climb, close and
+      smash actions run through the player animation states with real input,
+      including movement cancellation. A successful close blocks another
+      climb. Window toggles notify Lua and update local-player music. Bare-hand
+      impacts notify Lua before damage. Vehicle window smashes retain and
+      damage the selected vehicle part. The installed-session test exercises
+      world windows and save/reload. The vehicle-part regression uses a live
+      vehicle constructed in the binding test.
+- [ ] Window rendering and navigation (#208). Connect the `Hit_Door` effect
+      for a surviving barricade and propagate geometry changes to pathfinding.
 
 - [ ] Radio devices: implement `pz_inventory::device_sim::DeviceEnv`
       per device (GameTime minutes stamp / multiplier, `Rand`, the

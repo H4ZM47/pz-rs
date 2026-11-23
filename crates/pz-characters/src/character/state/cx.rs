@@ -757,6 +757,8 @@ pub trait StateWorld<I> {
     }
     /// `IsoWindow.ToggleWindow(chr)`.
     fn toggle_window(&mut self, _window: pz_pathfind::mover::ObjectRef, _chr: &GameCharacter<I>) -> pz_inventory::floor_drop::HostResult<()> { Ok(()) }
+    /// Clear both locks on state entry when the debug unlock option is enabled.
+    fn debug_unlock_window(&mut self, _window: pz_pathfind::mover::ObjectRef, _opening: bool) -> pz_inventory::floor_drop::HostResult<()> { Ok(()) }
     /// `window.setPermaLocked(perma)` then `window.sync()`.
     fn set_window_perma_locked(&mut self, _window: pz_pathfind::mover::ObjectRef, _perma: bool) {}
     /// Retain the live window or barricade for the pre-damage Lua callback.

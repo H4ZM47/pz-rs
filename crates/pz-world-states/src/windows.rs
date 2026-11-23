@@ -47,6 +47,21 @@ impl StatesWorldAdapter<'_> {
         })
     }
 
+    pub(crate) fn debug_unlock_window_at(&self, window: ObjectRef, opening: bool) -> pz_entity::runtime_load::HostResult<()> {
+        use pz_entity::runtime_load::RuntimeHostError;
+        let Some(window) = self.object_ref(window) else { return Ok(()) };
+        let mut body = window.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("debug unlock window"))?;
+        if opening && !body.sprite.try_read(self.sprites)?.is_some_and(|sprite|
+            !sprite.properties.has_name(&self.sprites.alias, "WindowLocked")) {
+            return Ok(())
+        }
+        if let ObjectKind::Window(window) = &mut body.kind {
+            window.locked = false;
+            window.perma_locked = false;
+        }
+        Ok(())
+    }
+
     /// `window.setPermaLocked(perma)` (`sync()` is the network's).
     pub fn set_window_perma_locked_at(&mut self, r: ObjectRef, perma: bool) {
         self.with_object_mut(r, |o| {

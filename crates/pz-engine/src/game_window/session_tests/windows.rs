@@ -171,13 +171,31 @@ fn check_direct_alarm(app: &mut App) {
 
 /// Start the native state directly so the queue cannot cancel on its behalf.
 fn cancel_open_with_movement(app: &mut App) {
-    lua_check(app.lua.as_mut().unwrap(), "getPlayer():openWindow(rustSessionWindow)");
+    let options = pz_core::debug::debug_options();
+    let was_debug = app.core.borrow().debug;
+    let option_debug = options.borrow().core_debug;
+    app.core.borrow_mut().debug = true;
+    options.borrow_mut().core_debug = true;
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        rustOldWindowCheat = getDebugOptions():getBoolean("Cheat.Window.Unlock")
+        getDebugOptions():setBoolean("Cheat.Window.Unlock", true)
+        rustSessionWindow:setIsLocked(true)
+        rustSessionWindow:setPermaLocked(true)
+        assert(rustSessionWindow:isLocked() and rustSessionWindow:isPermaLocked())
+        getPlayer():openWindow(rustSessionWindow)
+    "#);
     let player = bind_players::player(0).unwrap();
     for _ in 0..30 {
         run_frames(app, 1);
         if player.borrow().is_current_state_id(ids::OPEN_WINDOW) { break }
     }
     assert!(player.borrow().is_current_state_id(ids::OPEN_WINDOW));
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        assert(not rustSessionWindow:isLocked() and not rustSessionWindow:isPermaLocked())
+        getDebugOptions():setBoolean("Cheat.Window.Unlock", rustOldWindowCheat)
+    "#);
+    app.core.borrow_mut().debug = was_debug;
+    options.borrow_mut().core_debug = option_debug;
     pz_input::with_input(|i| i.key(17, 1));
     run_frames(app, 1);
     pz_input::with_input(|i| i.key(17, 0));

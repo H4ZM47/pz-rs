@@ -241,6 +241,22 @@ pub(crate) fn register(thread: &mut Thread) {
     window.method("IsOpen", |c| Ok(c.push(window_field(c, |w| w.open)?)));
     window.method("isOpen", |c| Ok(c.push(window_field(c, |w| w.open)?)));
     window.method("isNorth", |c| Ok(c.push(window_field(c, |w| w.north)?)));
+    for (method, permanent) in [("setIsLocked", false), ("setPermaLocked", true)] {
+        window.method(method, move |c| {
+            let value = match c.arg(1) {
+                Value::Bool(value) => value,
+                Value::Nil if permanent => return Err(pz_kahlua::LuaError::Runtime {
+                    class: "java.lang.NullPointerException", message: String::new(),
+                }),
+                _ => return Err(pz_kahlua::LuaError::runtime("expected a boolean window lock value")),
+            };
+            let object = receiver(c)?;
+            let mut body = object.try_borrow_mut().map_err(|_| borrowed("IsoWindow body"))?;
+            let ObjectKind::Window(pane) = &mut body.kind else { return Err(unsupported("window lock setter on another object kind")) };
+            if permanent { pane.perma_locked = value } else { pane.locked = value }
+            Ok(0)
+        });
+    }
     window.method("isLocked", |c| Ok(c.push(window_field(c, |w| w.locked)?)));
     window.method("isPermaLocked", |c| Ok(c.push(window_field(c, |w| w.perma_locked)?)));
     window.method("isDestroyed", |c| Ok(c.push(window_field(c, |w| w.destroyed)?)));
