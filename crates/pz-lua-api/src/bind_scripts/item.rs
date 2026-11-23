@@ -105,7 +105,7 @@ pub(crate) fn is_favourite_recipe(t: &mut Thread, player: &pz_kahlua::Value, nam
     use pz_kahlua::Value;
     let data = crate::item_tooltip::chr::call_or(t, player, "getModData", &[], Value::Nil)?;
     let Value::Table(data) = data else {
-        return Err(crate::bind_java_util::npe());
+        return Err(super::npe());
     };
     match data.get_str(&format!("recipeFavourite:{name}")) {
         Value::Nil => Ok(false),
@@ -230,7 +230,7 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
             return Ok(false.into_lua());
         }
         if player.is_nil() {
-            return Err(crate::bind_java_util::npe());
+            return Err(super::npe());
         }
         let lookup = craft_recipe_lookup(&s);
         let usable = crate::bind_character_sim::with_recipe_knowledge(c, &player, &s, |k| {

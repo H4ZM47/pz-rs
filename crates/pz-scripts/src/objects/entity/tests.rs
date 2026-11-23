@@ -447,16 +447,25 @@ fn test_perks() -> Vec<String> {
 /// buildable recipes `isUsedInBuildRecipes`.
 #[test]
 fn resolved_inputs_record_used_in_recipes() {
-    let (sm, _m) = manager(
-        "item A { Type = Normal, } item B { Type = Normal, } item C { Type = Normal, } \
+    let dir = std::env::temp_dir().join(format!("pz-entity-used-in-{}", std::process::id()));
+    let path = dir.join("media/scripts/test.txt");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "module Base { item A { DisplayName = A, } item B { DisplayName = B, } item C { DisplayName = C, } \
          craftRecipe Make { inputs { item 1 [Base.A], item 1 [Base.A;Base.B], } outputs { item 1 Base.C, } } \
-         craftRecipe Build { Tags = EntityRecipe, inputs { item 1 [Base.B], } outputs { item 1 Base.C, } }",
-    );
+         craftRecipe Build { Tags = EntityRecipe, inputs { item 1 [Base.B], } outputs { item 1 Base.C, } } }",
+    )
+    .unwrap();
+    let sm = ScriptManager::new();
+    sm.builtin_tables.borrow_mut().perk_ids = test_perks();
+    sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
     sm.post_world_dictionary_init();
     let item = |name: &str| {
         sm.get_script(crate::script_type::ScriptType::Item, name)
             .and_then(|s| s.downcast::<crate::objects::items::Item>())
-            .unwrap()
+            .unwrap_or_else(|| panic!("{name} not loaded"))
     };
     let (a, b, c) = (item("Base.A"), item("Base.B"), item("Base.C"));
     assert_eq!(a.borrow().used_in_recipes(), ["Make", "Make"]);
