@@ -162,3 +162,47 @@ fn held_game_fs_borrow_is_a_failure_and_does_not_become_a_negative_cache_entry()
     drop(held);
     assert_eq!(backend.load_sound("media/sound/borrow.wav", true), loaded);
 }
+
+/// Run the installed sound script through the world emitter and Studio mixer.
+#[test]
+#[ignore = "requires PZ_GAME_DIR and installed sound banks"]
+fn installed_window_smash_renders_and_releases_world_audio() {
+    use pz_scripts::objects::models::game_sound::GameSoundScript;
+    use pz_scripts::{ScriptManager, ScriptObject};
+    use pz_sound::system::SoundSystem;
+
+    let game = PathBuf::from(std::env::var_os("PZ_GAME_DIR").expect("PZ_GAME_DIR"));
+    let script = std::fs::read_to_string(game.join("media/scripts/generated/sounds/objects/sounds_object_window.txt")).unwrap();
+    let manager = ScriptManager::new();
+    let root = manager.parse(&script);
+    let sound = root.get_block("module", Some("Base")).unwrap().get_block("sound", Some("SmashWindow")).unwrap();
+    let mut body = String::new();
+    sound.pretty_print(0, &mut body, "\n", "    ");
+    let mut clip = GameSoundScript::new();
+    clip.load(&manager, "SmashWindow", &body).unwrap();
+    let mut studio = Studio::new(SetupHeaders::from_game_dir(&game).unwrap());
+    for bank in pz_audio::startup_bank_paths(&game) {
+        studio.load_bank(&bank).unwrap();
+    }
+    let studio = Arc::new(Mutex::new(studio));
+    let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&game)));
+    let backend = backend_with_game_fs(studio.clone(), fs);
+    let count = backend.parameter_count();
+    let mut system = SoundSystem::new(Box::new(backend), Default::default(), count);
+    system.sounds.add_sound(Rc::new(RefCell::new(clip)), system.backend.as_mut());
+    let (emitter, handle) = system.play_world_clip("SmashWindow", [0.5, 0.5, 0.0], true);
+    assert_ne!(handle, 0);
+    system.with_world_emitters(|pool, ctx| pool.update(1, ctx));
+    let mut block = [0.0; 2048];
+    let mut peak = 0.0_f32;
+    for _ in 0..24 {
+        studio.lock().unwrap().mix(&mut block);
+        assert!(block.iter().all(|sample| sample.is_finite()));
+        peak = block.iter().fold(peak, |peak, sample| peak.max(sample.abs()));
+    }
+    assert!(peak > 0.001, "SmashWindow PCM peak {peak}");
+    system.with_world_emitters(|pool, ctx| drop(pool.stop_and_reset(ctx)));
+    assert!(emitter.borrow().is_empty());
+    studio.lock().unwrap().mix(&mut block);
+    assert!(block.iter().all(|sample| *sample == 0.0), "audio persisted after world exit");
+}
