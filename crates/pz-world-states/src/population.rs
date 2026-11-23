@@ -15,7 +15,7 @@ pz_vehicles::pathfind_adapter!(pz_pathfind);
 
 /// Borrow the current cell directly. A Lua climb query can already hold
 /// the world owner when collision scans a neighbouring chunk.
-struct CellVehicles<'a>(&'a pz_world::IsoCell);
+pub(crate) struct CellVehicles<'a>(pub(crate) &'a pz_world::IsoCell);
 impl pz_pathfind::game_vehicle::VehicleSource for CellVehicles<'_> {
     fn for_each_vehicle(&self, f: &mut dyn FnMut(&dyn pz_pathfind::game_vehicle::GameVehicle)) {
         for vehicle in pz_vehicles::pathfind_view::cell_vehicles() {

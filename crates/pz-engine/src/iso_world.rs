@@ -215,6 +215,12 @@ pub struct IsoWorld {
     pub next_object_id: i32,
     /// Object state the character states keep outside the objects.
     pub states_runtime: pz_world_states::StatesRuntime,
+    /// Active `ObjectRenderEffects` (vegetation rustle, tree shudder, hit door)
+    /// keyed by object reference, storing `(effect, elapsed_ticks)`.
+    pub render_effects: std::collections::HashMap<
+        pz_pathfind::mover::ObjectRef,
+        (pz_world_states::NewRenderEffect, f32),
+    >,
     /// `ActionGroup.getActionGroup(name)`'s loaded groups.
     pub action_groups: pz_characters::character::state::ActionGroups,
     /// `IsoFireManager`.
@@ -348,6 +354,7 @@ impl IsoWorld {
             player_stand_ins: Vec::new(),
             next_object_id: 0,
             states_runtime: Default::default(),
+            render_effects: std::collections::HashMap::new(),
             action_groups: pz_characters::character::state::ActionGroups::from_media(
                 game_dir.join("media"),
             ),
@@ -1557,10 +1564,14 @@ end
             if res.is_ok() {
                 self.player_sql_ids[0] = data.sql_id;
             }
-            if on_fire {
-                // TODO(port): `SetOnFire()` (`pz_world::fire::character::set_on_fire`
-                // needs the world's `IsoFireManager`).
-                self.log_error("IsoPlayer.load: the player is on fire (SetOnFire is not ported)");
+            if on_fire && res.is_ok() {
+                let mut c = chr.borrow_mut();
+                let chars = chars.borrow();
+                pz_world::fire::character::set_on_fire(
+                    &mut self.fire,
+                    &mut c.as_fire(&sm, &chars, &ctx),
+                    &mut self.rand,
+                );
             }
             res.map(|()| r.pos)
         };

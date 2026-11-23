@@ -497,6 +497,10 @@ pub trait StatesEngine {
     fn fire(&mut self) -> Option<StatesFire<'_>> {
         None
     }
+    /// Called immediately after [`StateWorld::character_fire`] finishes using
+    /// the [`StatesFire`] returned by [`Self::fire`], so an engine that
+    /// lazily borrowed `IsoRegions` can release the borrow right away.
+    fn finish_fire(&mut self) {}
 
     // ---- render effects and tree sounds (the renderer, pz-audio) ----
 
@@ -1446,20 +1450,47 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         frame: pz_world::fire::character::CharacterFireFrame,
         rand: &mut dyn GameRand,
     ) {
-        let Some(f) = self.engine.fire() else { return };
-        let mut w = pz_world::fire::manager::FireWorld {
-            cell: &mut *self.cell,
-            meta: self.meta,
-            sprites: &mut *self.sprites,
-            mutation: f.mutation,
-            flags: f.flags,
-            settings: f.settings,
-            hooks: f.hooks,
-        };
-        pz_characters::character::fire::update_character_fire(f.manager, &mut w, chr, frame, rand);
+        {
+            let Some(f) = self.engine.fire() else { return };
+            let mut w = pz_world::fire::manager::FireWorld {
+                cell: &mut *self.cell,
+                meta: self.meta,
+                sprites: &mut *self.sprites,
+                mutation: f.mutation,
+                flags: f.flags,
+                settings: f.settings,
+                hooks: f.hooks,
+            };
+            pz_characters::character::fire::update_character_fire(f.manager, &mut w, chr, frame, rand);
+        }
+        self.engine.finish_fire();
     }
 
     fn resolve_collision(&mut self, chr: &dyn CharacterView, nx: f32, ny: f32) -> (f32, f32) {
+        if let Some((host, _)) = self.path.as_mut() {
+            let cell = &*self.cell;
+            let sprites = &*self.sprites;
+            let obj_hooks = pz_world::ObjectHooks::new(cell, sprites);
+            if let Ok(bits) =
+                pz_pathfind::square_bits::SquareBits::new(sprites, self.meta, cell, &obj_hooks)
+            {
+                let vehicles = population::CellVehicles(cell);
+                let mut map = pz_pathfind::main_thread::MainThreadMap::new(&bits, &vehicles);
+                map.is_server = self.settings.server;
+                return host.resolve_collision(&map, chr, nx, ny);
+            }
+            let def_hooks = pz_pathfind::square_bits::DefaultBitsHooks;
+            if let Ok(bits) =
+                pz_pathfind::square_bits::SquareBits::new(sprites, self.meta, cell, &def_hooks)
+            {
+                let mut map = pz_pathfind::main_thread::MainThreadMap::new(
+                    &bits,
+                    &pz_pathfind::game_vehicle::NoVehicles,
+                );
+                map.is_server = self.settings.server;
+                return host.resolve_collision(&map, chr, nx, ny);
+            }
+        }
         let view = WorldView {
             cell: &*self.cell,
             meta: self.meta,
@@ -1473,6 +1504,30 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         chr: &dyn CharacterView,
         radius: f32,
     ) -> (bool, (f32, f32)) {
+        if let Some((host, _)) = self.path.as_mut() {
+            let cell = &*self.cell;
+            let sprites = &*self.sprites;
+            let obj_hooks = pz_world::ObjectHooks::new(cell, sprites);
+            if let Ok(bits) =
+                pz_pathfind::square_bits::SquareBits::new(sprites, self.meta, cell, &obj_hooks)
+            {
+                let vehicles = population::CellVehicles(cell);
+                let mut map = pz_pathfind::main_thread::MainThreadMap::new(&bits, &vehicles);
+                map.is_server = self.settings.server;
+                return host.resolve_collision_radius(&map, chr, radius);
+            }
+            let def_hooks = pz_pathfind::square_bits::DefaultBitsHooks;
+            if let Ok(bits) =
+                pz_pathfind::square_bits::SquareBits::new(sprites, self.meta, cell, &def_hooks)
+            {
+                let mut map = pz_pathfind::main_thread::MainThreadMap::new(
+                    &bits,
+                    &pz_pathfind::game_vehicle::NoVehicles,
+                );
+                map.is_server = self.settings.server;
+                return host.resolve_collision_radius(&map, chr, radius);
+            }
+        }
         let view = WorldView {
             cell: &*self.cell,
             meta: self.meta,

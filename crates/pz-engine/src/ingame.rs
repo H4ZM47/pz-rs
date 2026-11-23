@@ -116,11 +116,14 @@ impl IngameState {
                 // wraps `IsoFireManager.Update` in its own
                 // `catch (Exception)`: an `Err` is logged (`update_fire`
                 // does) and the frame goes on.
+                let raining = pz_lua_api::bind_climate::shared_game_time()
+                    .try_borrow()
+                    .is_ok_and(|g| g.climate.is_raining());
                 let _ = w.update_fire(
                     &sim,
                     pz_world::fire::FireSettings {
                         fire_spread,
-                        raining: false,
+                        raining,
                         tutorial,
                     },
                 );

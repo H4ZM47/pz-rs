@@ -2212,6 +2212,13 @@ fn the_states_find_paths_through_the_host() {
     let b = StateWorld::<()>::path_behavior(&a, 10).unwrap();
     assert!(b.is_goal_location());
     assert_eq!((b.target_x(), b.target_y()), (3.5, 4.5));
+    // With a host attached, resolve_collision and resolve_collision_radius
+    // delegate directly to PathHost rather than the mock engine fallback.
+    let resolved = StateWorld::<()>::resolve_collision(&mut a, &z, 10.6, 10.7);
+    assert_eq!(resolved, (10.6, 10.7));
+    let (overlapped, slide) = StateWorld::<()>::resolve_collision_radius(&mut a, &z, 0.3);
+    assert!(!overlapped);
+    assert_eq!(slide, (10.5, 10.5));
     StateWorld::<()>::put_character(&mut a, z);
     // A target that is not in the list is not followed.
     let mut other = zombie(1.5, 1.5, 1);

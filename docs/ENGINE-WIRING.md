@@ -885,8 +885,10 @@ all installed assets, render paths or foreign platforms.
       squares: call `bind_map_objects::on_new_callbacks(sprite)` /
       `on_load_callbacks(sprite)` with each object (needs an `IsoObject`
       Lua binding); `MapObjects.Reset` on world unload (#224).
-- [ ] Fence bending (`pz-world-states`) reads its `BentFences` from
-      `bind_bent_fences::shared_bent_fences()` (#224).
+- [x] Fence bending (`pz-world-states`) reads its `BentFences` from
+      `bind_bent_fences::shared_bent_fences()` (#224): wired on
+      `EngineStates::bent_fences` and `bent_fences_enabled` (alongside
+      `is_breakable_fence` from `shared_broken_fences()`).
 - [ ] Water rendering reads `IsoWaterFlow` from
       `lua_world::shared_water_flow()`; `IsoWaterFlow.Reset` on world
       unload (#224).
@@ -1527,13 +1529,19 @@ registered):
 - [ ] Saved windows: `IsoChunk::apply_window_load_sprites(&mut sprites)` for
       every chunk the streamer loads, before its squares' properties and
       matrices are recalculated (#95).
-- [ ] States path host hooks (#95): `StatesEngine::resolve_collision`,
-      `resolve_collision_radius` (PathHost over the `WorldView`) and
-      `path_cancel_request` (`PathfindService::cancel_request`).
-- [ ] States fire and render effects (#95): `StatesEngine::fire()` (the
-      world's `IsoFireManager`, FireHooks, flags, settings);
-      `has_render_effect` / `set_render_effect` (ObjectRenderEffects) and
-      `do_tree_noises` (tree sound manager); `ThumpSettings::server`.
+- [x] States path host hooks (#95): `StatesWorldAdapter::resolve_collision`,
+      `resolve_collision_radius` (delegating to attached `PathHost` over
+      `SquareBits`/`MainThreadMap` with `CellVehicles`) and
+      `path_cancel_request` (`PathfindService::cancel_request`); player and
+      zombie updates/postupdates now lend `IsoWorld::pathfind`.
+- [ ] States fire and render effects (#95): `StatesEngine::fire()` (wired
+      to `IsoWorld::fire`, `FireFlags`, `FireSettings`, `IsoRegions` with
+      immediate `finish_fire()` borrow release, and `DoorTables`; still
+      uses `NoFireHooks`/`NoMutationHooks`), `has_render_effect` /
+      `set_render_effect` (wired to `IsoWorld::render_effects` with
+      per-tick decay), and `ThumpSettings::server` (wired from
+      `sim.is_server()`). Left: `FireHooks`, `do_tree_noises` (tree sound
+      manager), and rendering `IsoWorld::render_effects` offsets.
 - [ ] `SimContext` climate values from `ClimateManager` (#49).
 - [ ] Square edits → pathfinding: `pz_pathfind::pathfind_square_hooks!(pz_world)`
       in the engine crate, and pass `PathfindSquareHooksImpl(PathfindMutationHooks { service:
@@ -1578,8 +1586,8 @@ registered):
       with the world's fire manager. Then, for an `isDead` row,
       `setOverallBodyHealth(0)`/`setHealth(0)`; `saved_vehicle` seats the
       player; save with `save_player` (#101). Wired in
-      `IsoWorld::load_player` over the save's `ScriptItems` (#212). Left:
-      `set_on_fire` is only logged (no `IsoFireManager` on `IsoWorld`),
+      `IsoWorld::load_player` over the save's `ScriptItems` (#212),
+      including `set_on_fire` via `IsoWorld::fire`. Left:
       `saved_vehicle` seating, and saving through `save_player` (#212).
 - [ ] `WorldDictionary.init()` (#212): `world_dictionary::init` ports
       `DictionaryData.load()` only. Still to port: `collectObjectNames`,
