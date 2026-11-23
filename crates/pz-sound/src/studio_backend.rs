@@ -280,6 +280,17 @@ impl AudioBackend for StudioBackend {
         }
     }
 
+    fn instance_watch_timeline_markers(&mut self, handle: InstanceHandle) {
+        if let Some(id) = id(handle) {
+            self.studio.lock().unwrap().watch_timeline_markers(id);
+        }
+    }
+
+    fn take_timeline_markers(&mut self) -> Vec<(InstanceHandle, String, i32)> {
+        self.studio.lock().unwrap().take_timeline_markers().into_iter()
+            .map(|(id, name, ms)| (id as InstanceHandle + 1, name, ms)).collect()
+    }
+
     fn instance_timeline_position(&mut self, inst: InstanceHandle) -> i64 {
         id(inst).map_or(0, |i| self.studio.lock().unwrap().timeline_position_ms(i))
     }

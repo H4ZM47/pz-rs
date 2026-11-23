@@ -46,6 +46,7 @@ pub struct Studio {
     pcm_cache: HashMap<(usize, u32), Arc<Pcm>>,
     instances: BTreeMap<InstanceId, EventInstance>,
     next_instance: InstanceId,
+    timeline_markers: Vec<(InstanceId, String, i32)>,
     rng: u64,
     bus_buffers: HashMap<Guid, Vec<f32>>,
     /// Paths of the loaded strings banks.
@@ -124,6 +125,7 @@ pub struct EventInstance {
     /// `EventInstance::release`: free once stopped.
     released: bool,
     timeline_finished: bool,
+    watch_markers: bool,
 }
 
 /// What `EventDescription` queries report.
@@ -148,6 +150,7 @@ impl Studio {
             pcm_cache: HashMap::new(),
             instances: BTreeMap::new(),
             next_instance: 0,
+            timeline_markers: Vec::new(),
             rng: 0x9e37_79b9_7f4a_7c15,
             bus_buffers: HashMap::new(),
             listener: [[0.0; 3], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
@@ -283,6 +286,17 @@ impl Studio {
         let Some(g) = self.parameter_by_id(pid) else { return };
         let Some(p) = self.find_parameter(&g).cloned() else { return };
         self.global_params.insert(g, value.clamp(p.minimum, p.maximum));
+    }
+
+    /// Subscribe the instance to FMOD timeline marker callbacks.
+    pub fn watch_timeline_markers(&mut self, id: InstanceId) {
+        if let Some(instance) = self.instances.get_mut(&id) {
+            instance.watch_markers = true;
+        }
+    }
+
+    pub fn take_timeline_markers(&mut self) -> Vec<(InstanceId, String, i32)> {
+        std::mem::take(&mut self.timeline_markers)
     }
 
     /// `EventInstance::getTimelinePosition` (ms).
@@ -508,6 +522,7 @@ impl Studio {
             distance_override: (None, None),
             released: false,
             timeline_finished: false,
+            watch_markers: false,
         });
         Some(id)
     }
@@ -897,7 +912,8 @@ impl Studio {
                 let i = &self.instances[&id];
                 (i.bank, self.banks[i.bank].model.events[&i.event].clone())
             };
-            if !self.instances[&id].started {
+            let first_block = !self.instances[&id].started;
+            if first_block {
                 self.instances.get_mut(&id).unwrap().started = true;
                 for g in event.instruments.clone() {
                     self.start_instrument(id, g, None, leading_silence);
@@ -912,6 +928,18 @@ impl Studio {
                 .cloned()
             {
                 let pos = self.instances[&id].position;
+                if self.instances[&id].watch_markers {
+                    let end = pos + active_frames as u64;
+                    for marker in &t.markers {
+                        let at = u64::from(marker.position);
+                        if marker.length == 0 && !marker.name.is_empty() && at <= end
+                            && (at > pos || (first_block && pos == 0 && at == 0))
+                        {
+                            let ms = (at * 1000 / u64::from(SAMPLE_RATE)) as i32;
+                            self.timeline_markers.push((id, marker.name.clone(), ms));
+                        }
+                    }
+                }
                 for (k, p) in t.instruments.iter().chain(&t.instruments_2).enumerate() {
                     if !self.instances[&id].triggered[k] && (p.start as u64) < pos + active_frames as u64 {
                         self.instances.get_mut(&id).unwrap().triggered[k] = true;

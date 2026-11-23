@@ -214,3 +214,34 @@ fn installed_window_smash_renders_and_releases_world_audio() {
     studio.lock().unwrap().mix(&mut block);
     assert!(block.iter().all(|sample| *sample == 0.0), "audio persisted after world exit");
 }
+
+
+#[test]
+#[ignore = "requires PZ_GAME_DIR and installed sound banks"]
+fn installed_electricity_marker_is_delivered_to_the_watched_instance() {
+    let (mut system, studio, _) = installed_sound(
+        "media/scripts/generated/sounds/sounds_ambience.txt", "WorldEventElectricityShutdown");
+    let backend = &mut system.backend;
+    let event = backend.event_description("event:/World/Event/ElectricityShutdown").unwrap();
+    let watched = backend.create_event_instance(&event);
+    let unwatched = backend.create_event_instance(&event);
+    backend.instance_watch_timeline_markers(watched);
+    backend.instance_start(watched);
+    backend.instance_start(unwatched);
+    let mut block = vec![0.0; 480 * 2];
+    for _ in 0..264 {
+        block.fill(0.0);
+        studio.lock().unwrap().mix(&mut block);
+    }
+    assert!(backend.take_timeline_markers().is_empty());
+    block.fill(0.0);
+    studio.lock().unwrap().mix(&mut block);
+    assert_eq!(backend.take_timeline_markers(), [(watched, "ElectricityOff".to_owned(), 2650)]);
+    block.fill(0.0);
+    studio.lock().unwrap().mix(&mut block);
+    assert!(backend.take_timeline_markers().is_empty());
+    backend.instance_stop(watched, true);
+    backend.instance_stop(unwatched, true);
+    backend.instance_release(watched);
+    backend.instance_release(unwatched);
+}
