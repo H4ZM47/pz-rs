@@ -133,3 +133,84 @@ pub(super) fn register(thread: &mut Thread) {
         Ok(0)
     });
 }
+
+/// The chunk archive retains component blocks until their object has a
+/// canonical square, sprite manager and the registries of the loaded save.
+pub fn restore_components(
+    obj: &IsoObjectRef,
+    ctx: Option<&dyn pz_entity::EntityContext>,
+) -> LuaResult<()> {
+    let kinds = {
+        let body = obj
+            .try_borrow()
+            .map_err(|_| borrowed("map furniture components"))?;
+        body.components
+            .entry_slots()
+            .filter_map(|entry| {
+                let RuntimeEntryView::Encoded(block) = entry else {
+                    return None;
+                };
+                let kind = ComponentType::from_id(block.type_id());
+                matches!(
+                    kind,
+                    ComponentType::SpriteConfig
+                        | ComponentType::FluidContainer
+                        | ComponentType::ContextMenuConfig
+                        | ComponentType::CraftRecipe
+                        | ComponentType::UiConfig
+                        | ComponentType::Script
+                )
+                .then_some(kind)
+            })
+            .collect::<Vec<_>>()
+    };
+    if kinds.is_empty() {
+        return Ok(());
+    }
+    let ctx = ctx.ok_or_else(|| unsupported("save entity registries"))?;
+    let owner = EntityOwner::from_ref(obj);
+    let mut retired = pz_entity::RetiredComponents::new();
+    let result = (|| {
+        for kind in kinds {
+            let mut p = obj
+                .try_borrow_mut()
+                .map_err(|_| borrowed("saved furniture"))?
+                .components
+                .runtime_mut()
+                .promote_encoded(kind, ctx)
+                .map_err(runtime_error)?;
+            if p.promoted {
+                let mut component = p.component.borrow_mut();
+                if let Some(old) = component.replace_owner(Some(&owner)) {
+                    retired.push_owner(old);
+                }
+                if let Some(info) = component.script_info() {
+                    if let Some(full) = info
+                        .original_script
+                        .clone()
+                        .filter(|_| !info.original_is_item)
+                    {
+                        let sm = crate::bind_registry::shared_script_manager();
+                        if let Some(script) =
+                            sm.get::<GameEntityScript>(pz_scripts::ScriptType::Entity, &full)
+                        {
+                            let actual = EntityOwner::from_ref(&script);
+                            if let Some(old) = component
+                                .set_original_script_actual(false, full, &actual)
+                                .map_err(runtime_error)?
+                            {
+                                retired.push_owner(old);
+                            }
+                        }
+                    }
+                }
+            }
+            retired.append(std::mem::take(&mut p.retired));
+        }
+        Ok(())
+    })();
+    pz_world::object_slot::observe_object(obj, class_of(obj)?);
+    retired.push_owner(owner);
+    pz_inventory::component_host::retire_components(retired);
+    result
+}

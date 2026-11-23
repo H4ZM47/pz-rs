@@ -105,9 +105,10 @@ impl IsoWorld {
                                     body.replace_square(Some(&square), &mut pz_entity::RetiredComponents::new());
                                 }
                             }
-                            if matches!(object.borrow().kind, pz_world::ObjectKind::FeedingTrough(_)) {
-                                pz_lua_api::bind_world_object::trough::restore_fluid(&object)
-                                    .map_err(|e| format!("restoring trough fluid at {pos:?}: {e}"))?;
+                            if matches!(object.borrow().kind, pz_world::ObjectKind::FeedingTrough(_) | pz_world::ObjectKind::Thumpable(_)) {
+                                let ctx = self.items.as_ref().and_then(|items| items.components.entity_context());
+                                pz_lua_api::bind_world_object::map_entity::restore_components(&object, ctx)
+                                    .map_err(|e| format!("restoring map furniture at {pos:?}: {e}"))?;
                             }
                             restore_map_sprite(&object, sprites, self.items.as_ref().map(|items| &items.dictionary.sprite_names))
                                 .map_err(|e| format!("restoring object sprite at {pos:?}: {e:?}"))?;

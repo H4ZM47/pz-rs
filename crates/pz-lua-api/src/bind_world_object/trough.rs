@@ -186,34 +186,6 @@ fn fluid(obj: &IsoObjectRef) -> LuaResult<Option<ComponentRef>> {
         .map_err(runtime_error)
 }
 
-/// The chunk codec preserves opaque entries. Promote just the trough fluid
-/// at the archive boundary and bind it to its actual live receiver.
-pub fn restore_fluid(obj: &IsoObjectRef) -> LuaResult<()> {
-    let mut b = obj
-        .try_borrow_mut()
-        .map_err(|_| borrowed("IsoFeedingTrough"))?;
-    if !b.components.entry_slots().any(|entry|matches!(entry,pz_entity::RuntimeEntryView::Encoded(raw) if raw.type_id()==FLUID.id())){return Ok(())}
-    let env = crate::bind_items::item_env();
-    let ctx = env
-        .entity()
-        .ok_or_else(|| unsupported("installed fluid registry"))?;
-    let mut p = b
-        .components
-        .runtime_mut()
-        .promote_encoded(FLUID, ctx)
-        .map_err(runtime_error)?;
-    if p.promoted {
-        let owner = EntityOwner::from_ref(obj);
-        let old=p.component.borrow_mut().replace_owner(Some(&owner));
-        if let Some(previous)=old { p.retired.push_owner(previous); }
-        drop(b);
-        pz_world::object_slot::observe_object(obj, CLASS);
-        p.retired.push_owner(owner);
-    }
-    pz_inventory::component_host::retire_components(p.retired);
-    Ok(())
-}
-
 fn master(obj: &IsoObjectRef) -> LuaResult<Option<IsoObjectRef>> {
     let (x, y) = inspect(obj, |t| (t.linked_x, t.linked_y))?;
     if x <= 0 || y <= 0 {

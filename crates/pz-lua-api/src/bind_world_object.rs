@@ -842,7 +842,7 @@ mod tests;
 mod sprite_edit;
 mod thumpable;
 mod construction;
-mod map_entity;
+pub mod map_entity;
 mod compost;
 pub mod hutch;
 pub mod trough;
