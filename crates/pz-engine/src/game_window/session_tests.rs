@@ -249,10 +249,41 @@ fn verify_utilities_and_ambience(app: &mut super::App, streamer: bool) {
             object:doFindExternalWaterSource()
             if not object:hasExternalWaterSource() then assert(object:getFluidAmount() == 0) end
             object:setUsesExternalWaterSource(false)
+            if not rustCollectorProbe then
+                local x, y, z = sq:getX(), sq:getY(), sq:getZ()
+                local upper, nextUpper = getSquare(x,y,z+1), getSquare(x+1,y,z+1)
+                if upper and nextUpper and not upper:isNoWater() and not nextUpper:isNoWater() then
+                    local outlet = sq:addTileObject('fencing_01_1')
+                    outlet:setUsesExternalWaterSource(true)
+                    local function addCollector(target, amount)
+                        local notes = {fixture=amount}
+                        local tank = IsoThumpable.new(getCell(), target, object:getSprite():getName(), true, notes)
+                        assert(tank:getTable() == notes and tank:getSquare() == target)
+                        local meta = {canBeWaterPiped=false,waterAmount=amount,waterMaxAmount=100}
+                        meta["need:Base.Plank"] = 2
+                        tank:setModData(meta)
+                        assert(tank:getModData() == meta and meta["need:Base.Plank"] == nil)
+                        assert(tank:hasBuildMaterials() and tank:getBuildMaterials()["Base.Plank"] == 2)
+                        target:AddSpecialObject(tank)
+                        assert(tank:getObjectIndex() >= 0 and tank:getFluidAmount() == amount)
+                        return tank
+                    end
+                    local tank, neighbor = addCollector(upper, 13), addCollector(nextUpper, 17)
+                    assert(outlet:getFluidAmount() == 13 and outlet:hasExternalWaterSource())
+                    tank:getModData().waterAmount = 0
+                    assert(outlet:getFluidAmount() == 17)
+                    tank:getModData().waterAmount = 13
+                    assert(outlet:getFluidAmount() == 17 and outlet:getFluidCapacity() == 100)
+                    outlet:doFindExternalWaterSource()
+                    assert(outlet:getFluidAmount() == 13)
+                    tank:setName('roof-collector-identity-fixture')
+                    rustCollectorProbe = true
+                end
+            end
             sb:set("WaterShutModifier", shut)
             data.canBeWaterPiped, data.waterAmount, data.waterMaxAmount = moved, remaining, maximum
-            return true
-        end), "no indoor piped fixture near player")
+            return rustCollectorProbe
+        end), "no indoor piped fixture with two loaded roof squares near player")
         local others = ArrayList.new()
         assert(findObject(function(object)
             object:getSpriteGridObjectsExcludingSelf(others)
