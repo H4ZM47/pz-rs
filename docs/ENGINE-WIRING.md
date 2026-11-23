@@ -1089,15 +1089,17 @@ all installed assets, render paths or foreign platforms.
       TODO(network). The part names in the wound list are
       `BodyPartType.getDisplayName`, translated through
       `bind_text::translate` (`Translator.getText`).
-- [ ] Debug console (built in `hud::init_ui`): with `Core.debug`, the
+- [x] Debug console (built in `hud::init_ui`): with `Core.debug`, the
       `TOGGLE_LUA_CONSOLE` key toggles `UIManager.debug_console`'s visibility
       in `GameWindow.logic`; `DebugLog`'s stream calls
       `hud::debug_console::debug_log_write(bytes)`; `HudDebug`'s
-      `ui_debug_console_start_visible/echo_command/debug_log` options;
-      `HudNetwork::may_process_console_commands` (role capability or coop
-      host; network thread); `HudConsoleMethods` (GlobalObject's declared
-      methods and each return type's public methods, for suggestions;
-      ours, from the exposure tables) (#160).
+      `ui_debug_console_start_visible/echo_command/debug_log` options
+      (`DebugOptionsHud`); `HudNetwork::may_process_console_commands`
+      (`CoreNetwork` for SP; role capability / coop host TODO(network));
+      `HudConsoleMethods` (`ExposedConsoleMethods`, installed by
+      `install_console_methods_host` from `expose.rs` exposure tables and
+      lazily enriched from `projectzomboid.jar` via `pz-classfile` when
+      present) (#160).
 - [x] TextDrawObject: `IngameState.renderframeui` calls
       `hud::text_draw::render_batch(player)` after `WorldMarkers`/`IsoMarkers`
       (`DebugChunkState` calls `no_render`); `ChatElement`'s constructor calls
@@ -2012,11 +2014,13 @@ registered):
       `mannequin::chunk_models(.., chunk texture, camera square)` into
       `FrameObjects.chunk_models`; every frame `mannequins` gets an
       `ObjectRender` with `Mannequin::shadow(lightInfo)` (#125).
-- [ ] Animal corpses: `DeadBody { animal: true, animal_anim_set:
-      animalAnimSet, animal_size }`, a slot from
+- [x] Animal corpses: `WorldModels::render_corpse` handles
+      `CorpseVisual::Animal` (`DeadBody { animal: true, animal_anim_set,
+      animal_size }`), resolves `AnimalDefinitions`, `ModelScript` and
+      `AnimationsMesh` into `Assets::skeleton_for_mesh` +
       `ModelSlot::single_body(model script mesh, Body/<skin texture>,
-      animalEffect)` for the breed's `AnimalVisual`, the anim set's
-      `deadbody` state, keyed with `animal_body_key` (#125).
+      animalEffect)`, poses the anim set's `deadbody` state and caches in
+      `DeadBodyAtlas` keyed with `animal_body_key` (#125).
 - [ ] Split screen: one `world_frame_for_player(.., Some(PlayerView {
       player, num_players, screen }), ..)` per player into the shared
       offscreen buffer (each draws in its `glViewport` quarter, outline

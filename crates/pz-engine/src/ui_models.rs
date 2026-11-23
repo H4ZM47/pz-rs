@@ -110,6 +110,8 @@ pub(crate) struct Assets {
     sets: HashMap<String, Rc<AnimationSet>>,
     /// Body skeleton with the clips, per sex.
     skeletons: HashMap<(bool, String), Rc<SkinningData>>,
+    /// Arbitrary skinned mesh skeletons (animals, etc.) with an anim set's clips.
+    mesh_skeletons: HashMap<(String, String), Rc<SkinningData>>,
     clothing: HashMap<String, Option<Rc<ClothingItem>>>,
 }
 
@@ -233,6 +235,7 @@ impl Assets {
             actions: ActionGroups::from_media(game_dir.join("media")),
             sets: HashMap::new(),
             skeletons: HashMap::new(),
+            mesh_skeletons: HashMap::new(),
             clothing: HashMap::new(),
         })
     }
@@ -289,6 +292,53 @@ impl Assets {
         }
         let sd = Rc::new(sd);
         self.skeletons.insert(key, sd.clone());
+        Some(sd)
+    }
+
+    /// Skeleton for an arbitrary skinned mesh (e.g. an animal's `ModelScript`
+    /// mesh or `AnimationsMesh`), populated with every clip `set` names from
+    /// `anim_dirs` (falling back to `set.name` when empty).
+    pub(crate) fn skeleton_for_mesh(
+        &mut self,
+        mesh: &str,
+        anim_dirs: &[String],
+        set: &AnimationSet,
+    ) -> Option<Rc<SkinningData>> {
+        let key = (mesh.to_lowercase(), set.name.to_lowercase());
+        if let Some(s) = self.mesh_skeletons.get(&key) {
+            return Some(s.clone());
+        }
+        let (path, ty) = resolve_model_file(&self.media, mesh, AssetKind::Mesh)?;
+        let scene = load_mesh(
+            &std::fs::read(path).ok()?,
+            ty.import_format()?,
+            &MeshParams::default(),
+        )
+        .ok()?;
+        let mut sd = scene.skeleton.clone()?;
+        let fallback = [set.name.clone()];
+        let dirs: &[String] = if anim_dirs.is_empty() {
+            &fallback
+        } else {
+            anim_dirs
+        };
+        for name in animation_clip_names(set) {
+            let found = dirs
+                .iter()
+                .find_map(|d| {
+                    resolve_model_file(&self.media, &format!("{d}/{name}"), AssetKind::Animation)
+                })
+                .or_else(|| resolve_model_file(&self.media, name, AssetKind::Animation));
+            let Some((p, ty)) = found else { continue };
+            let (Ok(data), Some(fmt)) = (std::fs::read(&p), ty.import_format()) else {
+                continue;
+            };
+            if let Ok(clips) = load_animation(&data, fmt, Some(&sd)) {
+                sd.animation_clips.extend(clips);
+            }
+        }
+        let sd = Rc::new(sd);
+        self.mesh_skeletons.insert(key, sd.clone());
         Some(sd)
     }
 

@@ -1996,6 +1996,7 @@ name = "pz-engine"
 version = "0.1.0"
 dependencies = [
  "pz-anim",
+ "pz-animals",
  "pz-audio",
  "pz-character-model",
  "pz-characters",
