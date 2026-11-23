@@ -25,6 +25,7 @@ use pz_anim::AnimationVariableSource;
 pub enum PathMoverRequest {
     ClimbOverFence(IsoDirections),
     ClimbThroughWindow(ObjectRef),
+    ClimbThroughWindowAtFrame(ObjectRef),
     ClimbThroughWindowFrame(ObjectRef),
     ToggleDoor(ObjectRef),
     ClimbOverWall(IsoDirections),
@@ -100,6 +101,7 @@ impl<I: 'static> GameCharacter<I> {
                 r,
                 PathMoverRequest::ClimbOverFence(_)
                     | PathMoverRequest::ClimbThroughWindow(_)
+                    | PathMoverRequest::ClimbThroughWindowAtFrame(_)
                     | PathMoverRequest::ClimbThroughWindowFrame(_)
                     | PathMoverRequest::ClimbOverWall(_)
             )
@@ -113,6 +115,7 @@ impl<I: 'static> GameCharacter<I> {
             match r {
                 PathMoverRequest::ClimbOverFence(d) => self.do_climb_over_fence(d, cx),
                 PathMoverRequest::ClimbThroughWindow(w) => self.climb_through_window(w, cx),
+                PathMoverRequest::ClimbThroughWindowAtFrame(w) => self.climb_through_window_at_frame(w, cx),
                 PathMoverRequest::ClimbThroughWindowFrame(f) => self.climb_through_window_frame(f, cx),
                 PathMoverRequest::ClimbOverWall(d) => {
                     self.climb_over_wall(d, cx);

@@ -241,9 +241,7 @@ impl StatesWorldAdapter<'_> {
         }
         if !(env.can_climb_down_sheet_rope(Some(t))
             || env.has_stairs_below(t)
-            || self
-                .engine
-                .can_stand_at(t.x as f32 + dx, t.y as f32 + dy, t.z, 19))
+            || self.can_stand_at_window(t.x as f32 + dx, t.y as f32 + dy, t.z))
         {
             return !t.treat_as_solid_floor(self.sprites);
         }

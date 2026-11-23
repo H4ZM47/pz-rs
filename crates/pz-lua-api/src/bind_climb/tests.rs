@@ -197,6 +197,7 @@ fn window_frame_and_thumpable_climb_checks_use_the_live_object_and_actor() {
     f.run(r#"
         local objects = IsoCell.getInstance():getGridSquare(1,2,0):getObjects()
         w, frame, wall, other = objects:get(0), objects:get(1), objects:get(2), objects:get(3)
+        check(w:getNorth() and frame:getNorth() and not wall:getNorth())
         check(w:isWindow() and wall:isWindow() and not other:isWindow())
         check(not w:canClimbThrough(nil))
         w:ToggleWindow(nil)

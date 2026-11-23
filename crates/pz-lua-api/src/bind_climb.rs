@@ -194,14 +194,25 @@ pub(crate) fn register(thread: &mut Thread) {
         Ok(0)
     });
     for class in [ISO_WINDOW, "zombie.iso.objects.IsoThumpable", "zombie.iso.objects.IsoWindowFrame"] {
-        expose_class(thread, class, Some(ISO_OBJECT)).method("canClimbThrough", |c| {
+        let portal = expose_class(thread, class, Some(ISO_OBJECT));
+        portal.method("canClimbThrough", |c| {
             let can = can_climb_through(c)?;
             Ok(c.push(can))
+        });
+        portal.method("getNorth", |c| {
+            let object = receiver(c)?;
+            let body = object.try_borrow().map_err(|_| borrowed("window or frame"))?;
+            let north = match &body.kind {
+                ObjectKind::Window(w) => w.north,
+                ObjectKind::Thumpable(w) => w.north,
+                ObjectKind::WindowFrame { north } => *north,
+                _ => return Err(unsupported("getNorth on an object without a window edge")),
+            };
+            Ok(c.push(north))
         });
     }
     window.method("IsOpen", |c| Ok(c.push(window_field(c, |w| w.open)?)));
     window.method("isOpen", |c| Ok(c.push(window_field(c, |w| w.open)?)));
-    window.method("getNorth", |c| Ok(c.push(window_field(c, |w| w.north)?)));
     window.method("isNorth", |c| Ok(c.push(window_field(c, |w| w.north)?)));
     window.method("isLocked", |c| Ok(c.push(window_field(c, |w| w.locked)?)));
     window.method("isPermaLocked", |c| Ok(c.push(window_field(c, |w| w.perma_locked)?)));

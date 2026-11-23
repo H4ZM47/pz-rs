@@ -560,6 +560,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     "#);
     movement_diagnostics(&mut reloaded, "reloaded");
     windows::check(&mut reloaded);
+    let after_climb = { let p = loaded_player.borrow(); (p.vars.x, p.vars.y, p.vars.z) };
     let old_scripts = pz_lua_api::bind_registry::shared_script_manager();
     let old_globals = reloaded.lua.as_ref().unwrap().thread.globals().clone();
     // Preserve the first save in the isolated test cache. Each resident
@@ -580,6 +581,10 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     assert_eq!(reloaded.current_state(), Some("zombie.gameStates.MainScreenState"), "quit did not return to the main menu");
     assert!(reloaded.world.is_none(), "menu return retained the old world");
     mannequin::check_saved(&save_dir, &reloaded_chunks);
+    let mut db = PlayerDb::new(false, &save_dir.to_string_lossy());
+    let saved = db.load_player(sql_id).expect("quit after climbing saved the player");
+    assert_eq!((saved.x, saved.y, saved.z), after_climb);
+    db.close();
     assert!(!Rc::ptr_eq(&old_scripts, &pz_lua_api::bind_registry::shared_script_manager()), "menu retained the old script definitions");
     assert!(reloaded.lua.as_ref().unwrap().thread.globals().get_str("rustSessionOldEnvironment").is_nil(), "menu retained old Lua globals");
     assert_eq!(old_globals.get_str("rustSessionOldMenuCount").as_num(), Some(0.0), "old menu callback ran after reset");

@@ -13,6 +13,42 @@ use crate::StatesWorldAdapter;
 
 pz_vehicles::pathfind_adapter!(pz_pathfind);
 
+/// Borrow the current cell directly. A Lua climb query can already hold
+/// the world owner when collision scans a neighbouring chunk.
+struct CellVehicles<'a>(&'a pz_world::IsoCell);
+impl pz_pathfind::game_vehicle::VehicleSource for CellVehicles<'_> {
+    fn for_each_vehicle(&self, f: &mut dyn FnMut(&dyn pz_pathfind::game_vehicle::GameVehicle)) {
+        for vehicle in pz_vehicles::pathfind_view::cell_vehicles() {
+            f(&PathfindVehicle(vehicle));
+        }
+    }
+
+    fn for_each_vehicle_in_chunk(&self, x: i32, y: i32,
+        f: &mut dyn FnMut(&dyn pz_pathfind::game_vehicle::GameVehicle) -> bool) {
+        if let Some(list) = self.0.chunk_vehicles(x, y) {
+            for vehicle in list.of_type::<pz_vehicles::BaseVehicle>() {
+                if f(&PathfindVehicle(vehicle)) { break }
+            }
+        }
+    }
+}
+
+impl StatesWorldAdapter<'_> {
+    /// The landing query used by IsoWindow.canClimbThroughHelper.
+    pub(crate) fn can_stand_at_window(&self, x: f32, y: f32, z: i32) -> bool {
+        let cell = &*self.cell;
+        let sprites = &*self.sprites;
+        let hooks = ObjectHooks::new(cell, sprites);
+        let Ok(bits) = SquareBits::new(sprites, self.meta, cell, &hooks) else {
+            // A host with partial sprite definitions supplies its own collision query.
+            return self.engine.can_stand_at(x, y, z, 19);
+        };
+        let vehicles = CellVehicles(cell);
+        let map = MainThreadMap::new(&bits, &vehicles);
+        LineClearCollideMain::new(&map).can_stand_at_old(x, y, z as f32, None, 19)
+    }
+}
+
 impl SittingChecks for StatesWorldAdapter<'_> {
     /// [`StatesEngine::has_moving_objects`](crate::StatesEngine::has_moving_objects).
     fn has_moving_objects(&self, x: i32, y: i32, z: i32) -> bool {

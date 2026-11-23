@@ -147,7 +147,17 @@ pub(super) fn register(b: &ClassBuilder) {
     // `(IsoWindow, Integer)` form.
     b.method("climbThroughWindow", |c| {
         let window = object_arg(c, 1)?;
-        PathMover::climb_through_window(&mut *chr_of(c)?.borrow_mut(), window);
+        let actor = chr_of(c)?;
+        let mut actor = actor.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("climbing character"))?;
+        if c.nargs() > 2 {
+            let frame = c.arg(2);
+            if !matches!(frame, Value::Nil | Value::Num(_)) {
+                return Err(crate::bind_java_util::class_cast(&frame, "java.lang.Integer"));
+            }
+            actor.path.requests.push(pz_characters::character::path_mover::PathMoverRequest::ClimbThroughWindowAtFrame(window));
+        } else {
+            PathMover::climb_through_window(&mut *actor, window);
+        }
         Ok(0)
     });
     // `climbThroughWindowFrame(IsoWindowFrame)`.

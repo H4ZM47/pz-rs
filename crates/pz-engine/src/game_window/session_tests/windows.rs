@@ -84,6 +84,43 @@ pub(super) fn check(app: &mut App) {
                         else { "assert(not rustSessionWindow:canClimbThrough(getPlayer()))" };
         lua_check(app.lua.as_mut().unwrap(), assertion);
         lua_check(app.lua.as_mut().unwrap(), "assert(#rustWindowEvents > 0 and rustWindowEvents[#rustWindowEvents] == rustSessionWindow:IsOpen())");
+        if open {
+            climb(app, x, y);
+        }
     }
     lua_check(app.lua.as_mut().unwrap(), "Events.OnContainerUpdate.Remove(rustObserveWindow)");
+}
+
+/// Queue the installed action and observe both the animation state and
+/// physical occupancy of the square on the other side.
+fn climb(app: &mut App, x: i32, y: i32) {
+    let lua = app.lua.as_mut().unwrap();
+    lua_check(lua, r#"
+        require "TimedActions/ISClimbThroughWindow"
+        local action = ISClimbThroughWindow:new(getPlayer(), rustSessionWindow, 1)
+        assert(action:isValid())
+        rustSessionWindowNorth = rustSessionWindow:getNorth()
+        ISTimedActionQueue.add(action)
+    "#);
+    let north = lua.thread.globals().get_str("rustSessionWindowNorth").truthy();
+    let expected = (x - i32::from(!north), y - i32::from(north), 0);
+    let player = bind_players::player(0).unwrap();
+    let mut entered = false;
+    let mut last_state = String::new();
+    for frame in 1..=300 {
+        run_frames(app, 1);
+        assert!(app.error.is_none(), "climb frame failed: {:?}", app.error);
+        let actor = player.borrow();
+        entered |= actor.is_current_state_id(ids::CLIMB_THROUGH_WINDOW);
+        let state = actor.state.action_context.current_state_name();
+        if state != last_state {
+            eprintln!("window traversal frame {frame}, state {state}, square {:?}", actor.current_square_xyz());
+            last_state = state.to_owned();
+        }
+        if entered && state.eq_ignore_ascii_case("idle") {
+            assert_eq!(actor.current_square_xyz(), Some(expected), "window traversal ended on the wrong tile");
+            return;
+        }
+    }
+    panic!("window traversal failed to finish, entered={entered}, state={last_state}, square={:?}", player.borrow().current_square_xyz());
 }
