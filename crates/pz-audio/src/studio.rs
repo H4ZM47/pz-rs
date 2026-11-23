@@ -1032,15 +1032,22 @@ mod lifetime_tests {
         let mut studio = Studio::new(SetupHeaders::from_game_dir(&game).unwrap());
         for bank in crate::startup_bank_paths(&game) { studio.load_bank(&bank).unwrap(); }
         let footsteps = studio.event_by_path("event:/Character/Foley/Footsteps").unwrap();
-        for (material, shoe, gait, expected) in [
-            (2, 3, 3, "Player_Fs_Concrete_Sneakers_Walk_"),
-            (0, 0, 0, "Player_Fs_Wood_Loose_Barefoot_Sneak_"),
-            (7, 3, 3, "Player_Fs_Wood_Loose_Sneakers_Walk_"),
-            (2, 3, 5, "Player_Fs_Concrete_Sneakers_Sprint_"),
-            (12, 1, 1, "Player_Fs_Metal_Boots_Sneak_"),
+        let concrete = "Player_Fs_Concrete_Sneakers_Walk_";
+        for (material, shoe, gait, overlay, base_family, layer_family) in [
+            (2, 3, 3, 0, concrete, None),
+            (0, 0, 0, 0, "Player_Fs_Wood_Loose_Barefoot_Sneak_", None),
+            (7, 3, 3, 0, "Player_Fs_Wood_Loose_Sneakers_Walk_", None),
+            (2, 3, 5, 0, "Player_Fs_Concrete_Sneakers_Sprint_", None),
+            (12, 1, 1, 0, "Player_Fs_Metal_Boots_Sneak_", None),
+            (2, 3, 3, 1, concrete, Some("Player_Fs_Glass_Walk_")),
+            (2, 3, 3, 2, concrete, Some("Player_Fs_Water_Walk_")),
+            (2, 3, 3, 3, concrete, Some("Player_Fs_Water_Walk_")),
+            (2, 3, 3, 4, concrete, Some("Player_Fs_Garbage_Walk_")),
+            (2, 3, 3, 5, concrete, Some("Player_Fs_Leaves_Walk_")),
         ] {
             let id = studio.create_instance(footsteps).unwrap();
-            for (name, value) in [("FootstepMaterial", material), ("ShoeType", shoe), ("CharacterMovementSpeed", gait)] {
+            for (name, value) in [("FootstepMaterial", material), ("FootstepMaterial2", overlay),
+                ("ShoeType", shoe), ("CharacterMovementSpeed", gait)] {
                 assert!(studio.set_parameter_by_name(id, name, value as f32));
             }
             studio.start(id);
@@ -1052,8 +1059,10 @@ mod lifetime_tests {
                         .find(|(_, pcm)| Arc::ptr_eq(pcm, &voice.pcm)).unwrap();
                     studio.banks[bank].file.fsb.as_ref().unwrap().samples[sample as usize].name.as_deref().unwrap()
                 }).collect();
-            assert_eq!(playing.len(), 1, "{material}/{shoe}/{gait}: {playing:?}");
-            assert!(playing[0].starts_with(expected), "{playing:?} expected {expected}");
+            assert_eq!(playing.len(), 1 + usize::from(layer_family.is_some()), "{material}/{shoe}/{gait}/{overlay}: {playing:?}");
+            for expected in [Some(base_family), layer_family].into_iter().flatten() {
+                assert!(playing.iter().any(|s| s.starts_with(expected)), "{playing:?} expected {expected}");
+            }
             let mut samples = vec![0.0; 12000 * 2];
             studio.mix(&mut samples);
             assert!(samples.iter().all(|s| s.is_finite()));
