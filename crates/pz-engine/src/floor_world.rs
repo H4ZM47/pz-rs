@@ -539,6 +539,7 @@ impl IsoWorld {
     }
 }
 
+mod tile_hooks;
 mod tiles;
 
 #[cfg(test)]

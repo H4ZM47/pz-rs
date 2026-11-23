@@ -707,7 +707,9 @@ impl IsoWorld {
         // TODO(port): `ProcessItems`: dispatch real item update/finishupdate
         // and world-item updates. Saved codec items are not runtime ItemRefs.
         self.process_remove_items();
-        // TODO(port): `ProcessIsoObject`.
+        let retired = with_world(|w| w.cell.as_ref().map(|cell| cell.process_objects.borrow_mut().drain_removed()));
+        drop(retired);
+        // TODO(port): subclass updates from IsoCell.ProcessIsoObject.
         self.update_characters(lua, sim)?;
         // TODO(port): `ProcessStaticUpdaters`, `ObjectDeletionAddition`,
         // `IsoDeadBody.updateBodies`, `FishSchoolManager.update` and the
@@ -2129,13 +2131,15 @@ impl IsoWorld {
         // The stream reports this after the chunk has detached. Retire the
         // matching manager references outside the world borrow.
         let retired = with_world(|w| {
-            w.hutches.extract_if(.., |object| {
+            let mut retired = w.cell.as_ref().map(|c| c.process_objects.borrow_mut().unload_chunk(wx, wy)).unwrap_or_default();
+            retired.extend(w.hutches.extract_if(.., |object| {
                 object.borrow().square_slot().is_some_and(|sq| {
                     let sq = sq.borrow();
                     let size = pz_world::chunk::CHUNK_WIDTH;
                     sq.x.div_euclid(size) == wx && sq.y.div_euclid(size) == wy
                 })
-            }).collect::<Vec<_>>()
+            }));
+            retired
         });
         drop(retired);
         if let Some(h) = self.pathfind.as_mut() {

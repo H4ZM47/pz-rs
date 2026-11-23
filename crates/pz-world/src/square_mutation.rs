@@ -1245,6 +1245,11 @@ impl MutationEnv<'_> {
                 .as_ref()
                 .and_then(|r| sq.objects.iter().position(|o| o.ptr_eq_ref(r)));
             let index = actual_index.map(|i| i as i32).unwrap_or_else(|| {
+                // The sparse special list stores ids of objects in this
+                // square. A foreign receiver can carry the same numeric id.
+                if receiver.is_some() && sq.objects.iter().any(|o| o.borrow().id == id) {
+                    return -1;
+                }
                 sq.special_objects
                     .iter()
                     .position(|&s| s == id)

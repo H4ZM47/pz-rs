@@ -59,7 +59,10 @@ impl LiveFloorWorld {
                 .as_ref()
                 .ok_or_else(|| unsupported("tile meta grid"))?;
             let mut pathfind = NoMutationHooks;
-            let mut hooks = NoMutationHooks;
+            let mut hooks = super::tile_hooks::TileHooks {
+                objects: cell.process_objects.clone(),
+                items: cell.process_items.clone(),
+            };
             let mut env = MutationEnv {
                 cell,
                 meta,
@@ -251,7 +254,11 @@ fn remove_tiles(
             .with_tile_env(|env, _| env.prepare_tile_removal(r.pos, r.id, Some(part.clone())))
             .map_err(host_error)?;
         let Some(pending) = pending else { continue };
-        let value = pz_lua_api::bind_world_object::object_value(&part)?;
+        let value = if pending.actual_index.is_some() {
+            square_object_value(&part, r.pos)?
+        } else {
+            pz_lua_api::bind_world_object::object_value(&part)?
+        };
         if pending.actual_index.is_some() {
             thread.call1(
                 &trigger,
@@ -260,6 +267,9 @@ fn remove_tiles(
         }
         let (index, removed) = get_service()?
             .with_tile_env(|env, geometry| {
+                if pending.actual_index.is_some() {
+                    super::tile_hooks::check_tile_resources(&part, env.sprites)?;
+                }
                 let result = env.detach_removing_tile(pending)?;
                 geometry.notify(env.cell, env.meta, env.sprites, r.pos);
                 Ok(result)

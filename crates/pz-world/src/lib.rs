@@ -37,6 +37,7 @@ pub mod object_mod_data;
 pub mod object_slot;
 pub mod objects;
 pub mod process_items;
+pub mod process_objects;
 pub mod save;
 pub mod sprite;
 pub mod square;

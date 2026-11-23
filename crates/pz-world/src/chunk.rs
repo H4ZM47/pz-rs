@@ -1188,6 +1188,7 @@ pub struct IsoCell {
     pub snow_target: i32,
     pub chunks: HashMap<(i32, i32), IsoChunk>,
     pub drag: crate::cell_drag::CellDrag,
+    pub process_objects: std::rc::Rc<std::cell::RefCell<crate::process_objects::ProcessObjects>>,
     pub process_items: crate::process_items::ProcessItemQueues,
     cache: LotCache,
     retired_objects: Vec<crate::ObjectSlot>,

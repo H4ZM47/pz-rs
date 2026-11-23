@@ -22,7 +22,7 @@ pub fn same_item(a: &Option<ItemRef>, b: &Option<ItemRef>) -> bool {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ProcessItemQueues {
     /// `processItems`, including any direct ArrayList mutations.
     pub items: ProcessItemEntries,

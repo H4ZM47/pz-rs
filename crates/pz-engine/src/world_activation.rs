@@ -150,6 +150,18 @@ impl IsoWorld {
                             }
                             for (receiver, call) in calls.0 {
                                 match call {
+                                    WorldCall::ProcessIsoObjectAdd | WorldCall::StaticUpdater { add: true } => {
+                                        with_world(|w| {
+                                            if let Some(cell) = w.cell.as_ref() {
+                                                let mut lists = cell.process_objects.borrow_mut();
+                                                if call == WorldCall::ProcessIsoObjectAdd {
+                                                    lists.add(&receiver);
+                                                } else {
+                                                    lists.static_updater(&receiver, true);
+                                                }
+                                            }
+                                        });
+                                    }
                                     WorldCall::FeedingTroughCheck => {
                                         pz_lua_api::bind_world_object::trough::added_to_world(&mut lua.thread, &receiver)
                                             .map_err(|e| format!("placing trough at {pos:?}: {e}"))?;
