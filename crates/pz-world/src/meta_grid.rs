@@ -1760,6 +1760,19 @@ mod building_api_tests {
     }
 
     #[test]
+    fn listener_counts_intersecting_rooms_once_across_chunks_and_levels() {
+        let mut g = grid();
+        g.add_building(0, 0, BuildingDef::new(&mut Zero),
+            vec![room("hall", 0, &[(10, 10, 24, 6)]), room("cellar", -1, &[(10, 10, 4, 6)]),
+                 room("shed", 0, &[(55, 10, 3, 3)])],
+            vec![room("emptyoutside", 0, &[(7, 10, 3, 3)])],
+        ).unwrap();
+        assert_eq!(g.count_nearby_buildings_rooms(20.5, 20.5), 2);
+        assert_eq!(g.count_nearby_buildings_rooms(75.0, 20.0), 1);
+        assert_eq!(g.count_nearby_buildings_rooms(80.0, 20.0), 0);
+    }
+
+    #[test]
     fn runtime_building_rooms_follow_create_from_and_later_exterior_lookups() {
         for exterior_first in [true, false] {
             let mut g = grid();

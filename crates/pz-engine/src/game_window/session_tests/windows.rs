@@ -76,6 +76,15 @@ pub(super) fn check(app: &mut App) {
         p.vars.last_square = p.path.current_square;
     }
     super::queue::wait_for_idle(app);
+    {
+        use pz_sound::emitter::EmitterWorld;
+        let audio = pz_lua_api::bind_audio::GameEmitterWorld;
+        let listener = audio.player(0).expect("live emitter player");
+        let square = listener.square.expect("live emitter player square");
+        assert_eq!((square.x, square.y, square.z), (x, y, 0));
+        assert!(listener.num_nearby_buildings_rooms > 0.0);
+        assert_eq!(audio.square(x as f32 + 0.5, y as f32 + 0.5, 0.0), Some(square));
+    }
     cancel_open_with_movement(app);
     check_direct_alarm(app, x, y);
     for (state, open) in [(ids::OPEN_WINDOW, true), (ids::CLOSE_WINDOW, false)] {
