@@ -441,3 +441,38 @@ fn item_config_selector_buckets() {
 fn test_perks() -> Vec<String> {
     ["Axe", "Cooking", "Fitness", "Woodwork"].map(String::from).to_vec()
 }
+
+/// Resolving a recipe's inputs appends the recipe to each listed item's
+/// `usedInRecipes` (an item listed twice gets it twice), and marks items of
+/// buildable recipes `isUsedInBuildRecipes`.
+#[test]
+fn resolved_inputs_record_used_in_recipes() {
+    let dir = std::env::temp_dir().join(format!("pz-entity-used-in-{}", std::process::id()));
+    let path = dir.join("media/scripts/test.txt");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        "module Base { item A { DisplayName = A, } item B { DisplayName = B, } item C { DisplayName = C, } \
+         craftRecipe Make { inputs { item 1 [Base.A], item 1 [Base.A;Base.B], } outputs { item 1 Base.C, } } \
+         craftRecipe Build { Tags = EntityRecipe, inputs { item 1 [Base.B], } outputs { item 1 Base.C, } } }",
+    )
+    .unwrap();
+    let sm = ScriptManager::new();
+    sm.builtin_tables.borrow_mut().perk_ids = test_perks();
+    sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    sm.post_world_dictionary_init();
+    let item = |name: &str| {
+        sm.get_script(crate::script_type::ScriptType::Item, name)
+            .and_then(|s| s.downcast::<crate::objects::items::Item>())
+            .unwrap_or_else(|| panic!("{name} not loaded"))
+    };
+    let (a, b, c) = (item("Base.A"), item("Base.B"), item("Base.C"));
+    assert_eq!(a.borrow().used_in_recipes(), ["Make", "Make"]);
+    let mut b_recipes = b.borrow().used_in_recipes().to_vec();
+    b_recipes.sort();
+    assert_eq!(b_recipes, ["Build", "Make"]);
+    assert!(c.borrow().used_in_recipes().is_empty());
+    assert!(!a.borrow().is_used_in_build_recipes);
+    assert!(b.borrow().is_used_in_build_recipes);
+}
