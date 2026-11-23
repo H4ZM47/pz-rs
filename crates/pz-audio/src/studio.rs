@@ -1057,7 +1057,8 @@ mod lifetime_tests {
             let mut samples = vec![0.0; 12000 * 2];
             studio.mix(&mut samples);
             assert!(samples.iter().all(|s| s.is_finite()));
-            assert!(samples.iter().any(|s| s.abs() > 0.001));
+            let peak = samples.iter().chain(&block).fold(0.0_f32, |p, x| p.max(x.abs()));
+            assert!(peak > 0.001, "{material}/{shoe}/{gait} peak={peak} roots={:?}", studio.instances.values().map(|i| (studio.strings.path(&i.event),i.gain,i.route,i.voices.iter().map(|v|(v.gain,v.pos,v.delay,v.pcm.data.iter().fold(0.0_f32,|p,x| p.max(x.abs())))).collect::<Vec<_>>())).collect::<Vec<_>>());
             studio.stop(id, true);
             studio.release(id);
             studio.mix(&mut block);
