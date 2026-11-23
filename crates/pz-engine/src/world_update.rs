@@ -225,6 +225,12 @@ impl StatesEngine for EngineStates<'_> {
         pz_lua_api::bind_sandbox::current_bool("ZombieLore.TriggerHouseAlarm").unwrap_or(false)
     }
 
+    fn play_world_sound(&mut self, name: &str, square: (i32, i32, i32)) {
+        if let Some(sim) = self.sim {
+            pz_characters::character::SimContext::event(sim, SimEvent::PositionedSound { name: name.into(), square });
+        }
+    }
+
     fn do_room_alarm(&mut self, room: i64, _building: pz_world::BuildingIdx) {
         if let Some(sim) = self.sim {
             pz_characters::character::SimContext::event(sim, SimEvent::RoomAlarm(room));
@@ -1169,6 +1175,10 @@ impl IsoWorld {
                         pz_lua_api::bind_audio::intensity_config().borrow()
                             .trigger(Some(id), &p.player.music_intensity_events);
                     }
+                }
+                SimEvent::PositionedSound { name, square: (x, y, z) } => {
+                    pz_lua_api::bind_audio::sound_system().borrow_mut().play_world_clip(&name,
+                        [x as f32 + 0.5, y as f32 + 0.5, z as f32], true);
                 }
                 SimEvent::RoomAlarm(room) => {
                     if let Err(error) = pz_lua_api::bind_world::power::trigger_room_alarm(room) {

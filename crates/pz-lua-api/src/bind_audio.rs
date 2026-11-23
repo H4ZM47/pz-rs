@@ -13,7 +13,7 @@
 //! shared [`pz_sound::system::SoundSystem`]: call [`install_sound_system`]
 //! with the engine's before Lua starts; without one a silent system is used
 //! (the original's `DummySoundManager` when sound is off). Methods that need
-//! the world (`PlaySound`, `PlayWorldSound*`) return nil until it is ported.
+//! the world use the shared pool of positioned emitters.
 //! `getUIEmitter()` returns the manager's `fmod.fmod.FMODSoundEmitter`, the
 //! same one `playUISound` plays on, with the `BaseSoundEmitter` methods.
 //!
@@ -22,6 +22,8 @@
 
 pub use pz_characters::character::player::music::{MusicIntensityEvent, MusicIntensityEvents, INTENSITY_EVENT_CLASS, INTENSITY_EVENTS_CLASS};
 pub use pz_characters::character::player::music::{MusicThreatLevels, MusicThreatStatus, THREAT_STATUS_CLASS};
+mod world;
+
 use crate::expose::{expose_class, num_arg, str_arg};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, TableRef, Thread, Value};
@@ -543,14 +545,7 @@ fn register_sound_manager(thread: &mut Thread) {
         sm_this(c)?;
         Ok(c.push(crate::bind_java_util::list_value(Vec::new())))
     });
-    // World sounds need IsoWorld's free emitters (not ported yet): the
-    // original returns null when there is no world.
-    for name in ["PlaySound", "PlayWorldSound", "PlayWorldSoundImpl", "PlayWorldSoundWav", "PlayWorldSoundWavImpl"] {
-        b.method(name, |c| {
-            sm_this(c)?;
-            Ok(c.push(Value::Nil))
-        });
-    }
+    world::register_manager(&b);
 }
 
 /// Run `f` on the emitter `self` (argument 0) refers to.
@@ -753,6 +748,7 @@ fn register_sound_emitter(thread: &mut Thread) {
 }
 
 pub fn register(thread: &mut Thread) {
+    world::register_audio(thread);
     register_sound_manager(thread);
     register_sound_emitter(thread);
     let b = expose_class(thread, INTENSITY_CONFIG_CLASS, None);

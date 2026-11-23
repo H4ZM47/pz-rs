@@ -172,6 +172,8 @@ pub enum SimEvent {
     AddHoleFromZombieAttacks { part: i32, scratch_or_bite: bool },
     /// `playSound(name)` / `getEmitter().playSoundImpl(name, null)`.
     PlaySound(String),
+    /// SoundManager.PlayWorldSound on a retained square position.
+    PositionedSound { name: String, square: (i32, i32, i32) },
     /// `getEmitter().stopOrTriggerSoundByName(name)`.
     StopSound(&'static str),
     /// `LuaEventManager.triggerEvent("OnZombieDead", zombie)`.

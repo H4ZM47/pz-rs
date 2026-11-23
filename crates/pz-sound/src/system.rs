@@ -70,6 +70,22 @@ impl SoundSystem {
         f(manager, &mut ctx)
     }
 
+    /// A positioned IsoWorld emitter remains on the world's update list.
+    /// Local playback uses playSoundImpl and bypasses network forwarding.
+    pub fn play_world_clip(&mut self, name: &str, pos: [f32; 3], local: bool)
+        -> (crate::world_emitters::EmitterRef, i64) {
+        self.with_world_emitters(|pool, ctx| {
+            let owner = pool.get_free();
+            let handle = {
+                let mut e = owner.borrow_mut();
+                e.set_pos(pos[0], pos[1], pos[2]);
+                if local { e.play_sound_impl(name, crate::emitter::ParentObject::None, ctx) }
+                else { e.play_sound(name, ctx) }
+            };
+            (owner, handle)
+        })
+    }
+
     /// Run world/item emitter work against the same real backend and sound
     /// catalog as SoundManager, without borrowing or reusing its UI emitter.
     pub fn with_world_emitters<R>(
