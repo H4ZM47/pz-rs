@@ -663,7 +663,7 @@ fn register_special_tooltip(object: &crate::expose::ClassBuilder) {
     });
 }
 
-pub(crate) fn object_value(object: &IsoObjectRef) -> LuaResult<Value> {
+pub fn object_value(object: &IsoObjectRef) -> LuaResult<Value> {
     let class = class_of(object)?;
     let userdata = USERDATA
         .try_with(|cache| -> LuaResult<Rc<LuaWorldObject>> {

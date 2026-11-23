@@ -1525,6 +1525,15 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         self.set_window_perma_locked_at(window, perma);
     }
 
+    fn window_hit_target(&self, window: ObjectRef, chr: &GameCharacter<I>) -> Option<pz_characters::character::state::cx::WindowHitTarget> {
+        let location = self.thumpable_for(window, Some(&Thumper::of(chr)))?;
+        let object = self.object_ref(location)?;
+        if matches!(&object.borrow().kind, pz_world::objects::ObjectKind::Barricade(b) if b.is_destroyed()) {
+            return None;
+        }
+        Some(pz_characters::character::state::cx::WindowHitTarget { location, object })
+    }
+
     fn window_weapon_hit(&mut self, window: ObjectRef, chr: &GameCharacter<I>) {
         let t = Thumper::of(chr);
         self.window_weapon_hit_by(window, &t, chr.is_player());

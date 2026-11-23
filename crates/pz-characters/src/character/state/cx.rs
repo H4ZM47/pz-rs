@@ -759,6 +759,9 @@ pub trait StateWorld<I> {
     fn toggle_window(&mut self, _window: pz_pathfind::mover::ObjectRef, _chr: &GameCharacter<I>) -> pz_inventory::floor_drop::HostResult<()> { Ok(()) }
     /// `window.setPermaLocked(perma)` then `window.sync()`.
     fn set_window_perma_locked(&mut self, _window: pz_pathfind::mover::ObjectRef, _perma: bool) {}
+    /// Retain the live window or barricade for the pre-damage Lua callback.
+    fn window_hit_target(&self, _window: pz_pathfind::mover::ObjectRef, _chr: &GameCharacter<I>) -> Option<WindowHitTarget> { None }
+
     /// `IsoWindow.WeaponHit(chr, null)` (bare hands smash a window).
     fn window_weapon_hit(&mut self, _window: pz_pathfind::mover::ObjectRef, _chr: &GameCharacter<I>) {}
     /// `VehicleWindow.isDestroyed()` of a vehicle part (`None`: no window).
@@ -1091,12 +1094,19 @@ impl std::error::Error for StateFailure {
     }
 }
 
+/// The map object selected for a hit before Lua examines it.
+pub struct WindowHitTarget {
+    pub location: pz_pathfind::mover::ObjectRef,
+    pub object: pz_world::IsoObjectRef,
+}
+
 /// The context a state runs in.
 pub struct StateCx<'a, I> {
     pub sm: &'a ScriptManager,
     pub chars: &'a Characters,
     pub ctx: &'a dyn SimContext,
     pub world: &'a mut dyn StateWorld<I>,
+    pub window_hit: Option<&'a mut Option<WindowHitTarget>>,
     // One immediate first-fault carrier per outer action. Reborrows share
     // the same fault, so nested void State callbacks cannot hide it.
     host_fault: Rc<RefCell<Option<StateFailure>>>,
@@ -1104,12 +1114,12 @@ pub struct StateCx<'a, I> {
 
 impl<'a, I> StateCx<'a, I> {
     pub fn new(sm: &'a ScriptManager, chars: &'a Characters, ctx: &'a dyn SimContext, world: &'a mut dyn StateWorld<I>) -> Self {
-        StateCx { sm, chars, ctx, world, host_fault: Rc::new(RefCell::new(None)) }
+        StateCx { sm, chars, ctx, world, window_hit: None, host_fault: Rc::new(RefCell::new(None)) }
     }
 
     /// The same context with a shorter borrow (to pass on).
     pub fn reborrow(&mut self) -> StateCx<'_, I> {
-        StateCx { sm: self.sm, chars: self.chars, ctx: self.ctx, world: &mut *self.world, host_fault: self.host_fault.clone() }
+        StateCx { sm: self.sm, chars: self.chars, ctx: self.ctx, world: &mut *self.world, window_hit: self.window_hit.as_deref_mut(), host_fault: self.host_fault.clone() }
     }
 
     /// Stop this action at its first host failure. No callback/event queue is

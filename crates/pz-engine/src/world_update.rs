@@ -547,9 +547,9 @@ fn dispatch_player_animation_event(
     lua: &mut LuaManager,
     character: &LuaGameCharacterRef,
     event: &pz_anim::AnimEventRecord,
-    state_phase: impl FnOnce() -> pz_characters::character::state::StateResult<()>,
+    state_phase: impl FnOnce(&mut LuaManager) -> pz_characters::character::state::StateResult<()>,
 ) -> pz_characters::character::state::StateResult<()> {
-    state_phase()?;
+    state_phase(lua)?;
     pz_lua_api::timed_actions::anim_event(
         &mut lua.thread,
         character,
@@ -1542,10 +1542,11 @@ impl IsoWorld {
             match events {
                 Ok(events) if !events.is_empty() => {
                     for event in events {
-                        let result = dispatch_player_animation_event(lua, &p, &event, || {
+                        let result = dispatch_player_animation_event(lua, &p, &event, |lua| {
                             let Some(sprites) = self.sprites.as_ref() else {
                                 return Ok(());
                             };
+                            let mut pending_hit = None;
                             let result = with_states_and_characters(
                                 sprites,
                                 &mut self.states_runtime,
@@ -1556,11 +1557,24 @@ impl IsoWorld {
                                 |w| {
                                     let chars = chars.borrow();
                                     let mut cx = StateCx::new(&sm, &chars, sim, w);
+                                    cx.window_hit = Some(&mut pending_hit);
                                     p.borrow_mut().on_anim_event(&event, &mut cx);
                                     cx.state_result()
                                 },
                             );
-                            result.unwrap_or(Ok(()))
+                            result.unwrap_or(Ok(()))?;
+                            if let Some(target) = pending_hit {
+                                let object = pz_lua_api::bind_world_object::object_value(&target.object)
+                                    .map_err(|e| pz_scripts::ScriptError::new(e.to_string()))?;
+                                lua.trigger_event("OnWeaponHitThumpable", &[character_value(&p), Value::Nil, object]);
+                                with_states(sprites, &mut self.states_runtime, Some(&mut models), sim,
+                                    self.floor_world.as_ref(), |world| {
+                                        let mut actor = p.borrow_mut();
+                                        world.finish_window_hit(&target, &pz_world_states::Thumper::of(&actor), actor.is_player());
+                                        actor.finish_window_smash(&sm, &chars.borrow(), sim);
+                                    });
+                            }
+                            Ok(())
                         });
                         if let Err(error) = result {
                             self.models = Some(models);
@@ -2666,7 +2680,7 @@ mod quit_save_tests {
                 0.5,
             )),
         };
-        let error = dispatch_player_animation_event(&mut lua, &character, &event, || {
+        let error = dispatch_player_animation_event(&mut lua, &character, &event, |_| {
             let chars = chars.borrow();
             let mut cx = StateCx::new(&sm, &chars, &sim, &mut state_world);
             character.borrow_mut().on_anim_event(&event, &mut cx);
@@ -2694,7 +2708,7 @@ mod quit_save_tests {
         );
         // The same genuine queued action callback is live when the state
         // phase succeeds; no API/callback replacement manufactured the zero.
-        dispatch_player_animation_event(&mut lua, &character, &event, || Ok(())).unwrap();
+        dispatch_player_animation_event(&mut lua, &character, &event, |_| Ok(())).unwrap();
         assert_eq!(
             lua.thread.globals().get_str("animationCallbacks").as_num(),
             Some(1.0)

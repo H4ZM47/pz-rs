@@ -84,6 +84,27 @@ impl StatesWorldAdapter<'_> {
             return;
         }
         self.engine.weapon_hit_thumpable(t.id, r);
+        self.damage_hit_window(r, t, player);
+    }
+
+    /// Resume after Lua has examined or changed the receiver. A replacement
+    /// with the same square and ID must never inherit the original hit.
+    pub fn finish_window_hit(&mut self, target: &pz_characters::character::state::cx::WindowHitTarget, actor: &Thumper, player: bool) {
+        let r = target.location;
+        if !self.object_ref(r).is_some_and(|object| std::rc::Rc::ptr_eq(&object, &target.object)) { return }
+        let metal = match &target.object.borrow().kind {
+            ObjectKind::Window(_) => None,
+            ObjectKind::Barricade(b) => Some(b.metal_health > 0 || b.metal_bar_health > 0),
+            _ => return,
+        };
+        if let Some(metal) = metal {
+            self.damage_hit_barricade(r, actor, metal);
+        } else {
+            self.damage_hit_window(r, actor, player);
+        }
+    }
+
+    fn damage_hit_window(&mut self, r: ObjectRef, t: &Thumper, player: bool) {
         // weapon == null: `damage(100.0f, owner)`.
         self.window_damage(r, 100, t);
         self.weapon_hit_sound(t.id, r);
@@ -139,6 +160,10 @@ impl StatesWorldAdapter<'_> {
         let metal = b.metal_health > 0 || b.metal_bar_health > 0;
         drop(b);
         self.engine.weapon_hit_thumpable(t.id, r);
+        self.damage_hit_barricade(r, t, metal);
+    }
+
+    fn damage_hit_barricade(&mut self, r: ObjectRef, t: &Thumper, metal: bool) {
         let sound = if metal {
             "HitBarricadeMetal"
         } else {

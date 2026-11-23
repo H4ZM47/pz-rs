@@ -296,6 +296,13 @@ impl<I: 'static> GameCharacter<I> {
         false
     }
 
+    pub fn finish_window_smash(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn crate::character::SimContext) {
+        if self.no_hand_weapon() {
+            let _ = self.set_scratched_window(sm, chars, ctx);
+            ctx.event(SimEvent::PlayerVoiceSound("PainFromGlassCut"));
+        }
+    }
+
     /// The hands hold no `HandWeapon`.
     fn no_hand_weapon(&self) -> bool {
         let primary = self
@@ -736,11 +743,14 @@ impl<I: 'static> State<I> for SmashWindowState {
                 // `IsoPlayer.getInstance().contextPanic`: the local player.
                 owner.player.context_panic = 0.0;
                 if !cx.ctx.is_client() {
-                    cx.world.window_weapon_hit(window, owner);
-                    if owner.no_hand_weapon() {
-                        let _ = owner.set_scratched_window(cx.sm, cx.chars, cx.ctx);
-                        cx.ctx.event(SimEvent::PlayerVoiceSound("PainFromGlassCut"));
+                    if let Some(slot) = cx.window_hit.as_deref_mut() {
+                        if let Some(target) = cx.world.window_hit_target(window, owner) {
+                            *slot = Some(target);
+                            return;
+                        }
                     }
+                    cx.world.window_weapon_hit(window, owner);
+                    owner.finish_window_smash(cx.sm, cx.chars, cx.ctx);
                 }
             } else if name.eq_ignore_ascii_case("ActiveAnimFinishing") {
                 owner.set_var_bool("bSmashWindow", false);
@@ -757,10 +767,7 @@ impl<I: 'static> State<I> for SmashWindowState {
                 owner.player.context_panic = 0.0;
                 if owner.is_local_player(cx.ctx) && !cx.ctx.is_client() {
                     window.hit(owner, cx);
-                    if owner.no_hand_weapon() {
-                        let _ = owner.set_scratched_window(cx.sm, cx.chars, cx.ctx);
-                        cx.ctx.event(SimEvent::PlayerVoiceSound("PainFromGlassCut"));
-                    }
+                    owner.finish_window_smash(cx.sm, cx.chars, cx.ctx);
                 }
             } else if name.eq_ignore_ascii_case("ActiveAnimFinishing") {
                 owner.set_var_bool("bSmashWindow", false);

@@ -128,6 +128,13 @@ fn cancel_open_with_movement(app: &mut App) {
 fn smash(app: &mut App) {
     lua_check(app.lua.as_mut().unwrap(), r#"
         require "TimedActions/ISSmashWindow"
+        rustWindowHitCount = 0
+        rustObserveWindowHit = function(actor, weapon, target)
+            if actor == getPlayer() and weapon == nil and target == rustSessionWindow and not target:isSmashed() then
+                rustWindowHitCount = rustWindowHitCount + 1
+            end
+        end
+        Events.OnWeaponHitThumpable.Add(rustObserveWindowHit)
         ISTimedActionQueue.add(ISSmashWindow:new(getPlayer(), rustSessionWindow))
     "#);
     let player = bind_players::player(0).unwrap();
@@ -140,6 +147,7 @@ fn smash(app: &mut App) {
         if entered && p.state.action_context.current_state_name().eq_ignore_ascii_case("idle") {
             drop(p);
             lua_check(app.lua.as_mut().unwrap(), "assert(rustSessionWindow:isSmashed() and rustSessionWindow:canClimbThrough(nil))");
+            lua_check(app.lua.as_mut().unwrap(), "Events.OnWeaponHitThumpable.Remove(rustObserveWindowHit); assert(rustWindowHitCount == 1)");
             eprintln!("installed smash window returned to idle at frame {frame}");
             return;
         }
