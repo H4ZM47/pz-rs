@@ -392,6 +392,7 @@ pub(crate) fn register_classes(thread: &mut Thread) {
     });
     sprite_edit::register(&object);
     thumpable::register(thread);
+    construction::register(thread);
     hutch::register(thread);
     trough::register(thread);
     object.method("getOverlaySprite", |c| {
@@ -838,5 +839,6 @@ mod tests;
 
 mod sprite_edit;
 mod thumpable;
+mod construction;
 pub mod hutch;
 pub mod trough;
