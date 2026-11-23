@@ -51,7 +51,7 @@ Selected comparisons and runtime checks follow.
 | Engine integration | 85 of 216 items in the integration checklist done | A checked item means the connection exists, not that runtime parity is verified ([ENGINE-WIRING.md](docs/ENGINE-WIRING.md)) |
 | Item creation | All 58 Build 42.21 callback names are registered. The tested scarecrow and skeleton callbacks produce loadable moveable payloads | Installed stock scripts and a dressed scarecrow script override |
 | Installed Steam session | Created a world, moved, performed a timed action, saved and reloaded, and rewrote 169 resident chunks on return to menu | Apple Silicon, Build 42.22 assets, Rust save version 249 |
-| Menu and guide video | All 26,751 decoded frames across 105 installed colour BIKi clips matched FFmpeg. The first three title frames also matched native Bink RGBA output pixel for pixel | Build 42.22 assets. The Bink 2 guide still needs a decoder |
+| Menu and guide video | Not played yet: `pz-video` reads the Bink container and frame index, but this branch has no Bink video decoder, so the menu shows its still background | Bink 1 and Bink 2 decoding are both open |
 
 [docs/STATUS.md](docs/STATUS.md) has the per-workstream status and the full
 checklist of what remains.
@@ -73,8 +73,8 @@ checklist of what remains.
   through Rosetta both created, saved and reloaded a world in separate
   processes. Windows and Linux x64 clients linked locally. Both still need
   an installed-game run on their native OS.
-* **Game version.** The parity target is Build 42.21. Installed-session and
-  video results here used Build 42.22.
+* **Game version.** The parity target is Build 42.21. Installed-session
+  results here used Build 42.22.
 
 ## How results are checked
 

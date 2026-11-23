@@ -70,10 +70,10 @@ and by numeric ID.
 The x64 Windows and Linux client binaries linked locally. The Intel macOS
 binary ran under Rosetta, rendered the installed menu, and passed the same
 two-process, windowed save and reload check. The macOS menu
-opens the installed audio banks and plays colour BIKi video. All 26,751 YUV frames across
-the 105 installed clips matched FFmpeg. The first three title frames
-also matched the game's Bink RGBA output pixel for pixel. Bink 2 video and
-video audio tracks remain outside the current playback implementation.
+opens the installed audio banks. Menu and guide videos are not played: `pz-video`
+reads the Bink container and frame index, but there is no Bink video decoder on this
+branch, so the title screen draws its still background. Bink 1 and Bink 2 video
+decoding and video audio tracks are open.
 
 The loader supports both tile-definition directory layouts. Core uses the
 installed getter signature to select Build 42.21's string game modes or
