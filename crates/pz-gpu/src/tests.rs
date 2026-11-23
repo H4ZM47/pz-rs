@@ -287,6 +287,15 @@ fn surface_programs_draw_with_their_fragment_depth() {
 fn skybox_renders_into_its_reflection_texture() {
     let Some(mut g) = gpu(64, 64) else { return };
     let mut tm = TextureManager::new();
+    // Water can sample either target before the first timed sky update.
+    let mut unlit = DrawList::default();
+    for (i, x) in [0.0, 32.0].into_iter().enumerate() {
+        unlit.render(Some(&pz_render::skybox_texture(i)), x, 0.0, 32.0, 64.0, Rgba(1.0, 1.0, 1.0, 1.0));
+    }
+    g.render_frame(&[(opaque_black(64, 64), &unlit)], &mut tm);
+    assert_eq!(g.sky_targets.len(), 2);
+    let pixels = g.read_pixels();
+    for x in [16, 48] { assert_eq!(&px(&pixels, 64, x, 32)[..3], &[0, 0, 0]); }
     let l = [0.35f32, 0.22, 0.3];
     let n = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
     let uniforms = pz_render::SkyBoxUniforms {

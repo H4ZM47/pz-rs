@@ -9,7 +9,17 @@ use pz_world::world_state::{self, WorldState as NativeWorldState};
 type SandboxRef = Rc<RefCell<SandboxOptions>>;
 
 thread_local! {
+    static HYDRO_POWER_ON: Cell<bool> = const { Cell::new(false) };
     static SANDBOX: RefCell<Option<SandboxRef>> = const { RefCell::new(None) };
+}
+
+/// IsoWorld's grid supply can be read while a square or cell is borrowed.
+pub fn hydro_power_on() -> bool {
+    HYDRO_POWER_ON.with(Cell::get)
+}
+
+pub fn set_hydro_power_on(on: bool) {
+    HYDRO_POWER_ON.with(|power| power.set(on));
 }
 
 /// Install the same sandbox owner used by the engine, before streaming
@@ -60,7 +70,56 @@ fn constructor_radius() -> pz_world::save::io::SaveResult<i32> {
     constructor_integer("GeneratorTileRange")
 }
 
+/// Run the window alarm before the container-update callback and store it in
+/// the same tracker that loads and writes metadata.bin.
+pub fn trigger_room_alarm(room: i64) -> LuaResult<()> {
+    let options = sandbox()?;
+    let options = options.try_borrow().map_err(|_| crate::bind_world_object::borrowed("alarm sandbox"))?;
+    let time = crate::bind_climate::shared_game_time();
+    let time = time.try_borrow().map_err(|_| crate::bind_world_object::borrowed("alarm clock"))?;
+    let hours = time.world_age_hours() as f32;
+    let end_game_time = hours + 0.013611111_f32 * (1440.0 / time.minutes_per_day);
+    with_world_state_cell(|w| {
+        let mut world = w.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("alarm world"))?;
+        let world = &mut *world;
+        let (Some(cell), Some(meta)) = (&world.cell, &mut world.meta_grid) else { return Ok(()) };
+        let tracker = world.meta_tracker.as_ref().ok_or_else(|| crate::bind_world_object::unsupported("house alarm without world tracker"))?;
+        let mut tracker = tracker.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("house alarm tracker"))?;
+        let center = world_state::trigger_room_alarm(cell, meta, room, |decay| options.does_power_grid_exist(hours / 24.0, decay))
+            .map_err(crate::bind_world_object::host_error)?;
+        if let Some((x, y)) = center {
+            tracker.alarms.push(pz_core::save_trackers::AlarmSave { x, y, end_game_time });
+        }
+        Ok(())
+    })
+}
+
+fn square_utility(c: &NativeCall<'_>, check: fn(&IsoMetaGrid, &pz_world::IsoGridSquare) -> bool) -> LuaResult<bool> {
+    let (x, y, z) = self_square(c)?;
+    with_world_state_cell(|w| {
+        let w = w.try_borrow().map_err(|_| LuaError::runtime("IsoWorld is in use"))?;
+        let meta = w.meta_grid.as_ref().ok_or_else(|| LuaError::runtime("IsoMetaGrid is not loaded"))?;
+        let square = w.cell.as_ref().and_then(|cell| cell.get_grid_square(x, y, z))
+            .ok_or_else(|| LuaError::runtime("IsoGridSquare is no longer loaded"))?;
+        let square = square.try_borrow().map_err(|_| LuaError::runtime("IsoGridSquare is in use"))?;
+        Ok(check(meta, &square))
+    })
+}
+
 pub(super) fn register(b: &ClassBuilder) {
+    get(b, "isDerelict", |c| Ok(square_utility(c, world_state::square_is_derelict)?.into()));
+    get(b, "isNoPower", |c| Ok(square_utility(c, world_state::square_has_no_power)?.into()));
+    get(b, "isNoGas", |c| Ok(square_utility(c, world_state::square_has_no_gas)?.into()));
+    get(b, "isNoWater", |c| Ok(square_utility(c, world_state::square_has_no_water)?.into()));
+    get(b, "hasGridPower", |c| {
+        if square_utility(c, world_state::square_has_no_power)? { return Ok(false.into()); }
+        let options = sandbox()?;
+        let sb = options.try_borrow().map_err(|_| LuaError::runtime("SandboxOptions is in use"))?;
+        let time = crate::bind_climate::shared_game_time();
+        let clock = time.try_borrow().map_err(|_| LuaError::runtime("GameTime is in use"))?;
+        let days = clock.world_age_days_since_begin(sb.time_since_apo());
+        Ok(sb.does_power_grid_exist(days as f32, int_arg(c, 1)).into())
+    });
     get(b, "haveElectricity", |c| {
         let (x, y, z) = self_square(c)?;
         // Resolve external owners and read settings before WORLD: this path

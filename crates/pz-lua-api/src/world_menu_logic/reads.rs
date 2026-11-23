@@ -5,11 +5,10 @@ use std::any::Any;
 use std::rc::Rc;
 
 use pz_kahlua::value::LuaObject;
-use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
-use pz_world::objects::ObjectSprite;
+use pz_kahlua::{LuaResult, Thread, Value};
 
 use super::Cx;
-use crate::bind_world_object::{borrowed, object_from_value, object_square, unsupported, LuaWorldObject, ISO_OBJECT};
+use crate::bind_world_object::{borrowed, object_from_value, object_square, LuaWorldObject, ISO_OBJECT};
 use crate::expose::expose_class;
 
 const SPRITE_INSTANCE: &str = "zombie.iso.sprite.IsoSpriteInstance";
@@ -50,21 +49,19 @@ pub(super) fn register(thread: &mut Thread) {
     // getProperties(): `sprite == null ? null : sprite.getProperties()`.
     object.method("getProperties", |c| {
         let this = c.arg(0);
-        let sprite = tile_sprite(receiver(&this)?, "IsoObject.getProperties")?;
-        Ok(c.push(crate::bind_sprites::sprite_value(sprite, true)))
+        let body = receiver(&this)?.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
+        let props = crate::bind_sprites::object_sprite_value(&body.sprite, true)?;
+        Ok(c.push(props))
     });
-    // getProperty(String): `getProperties()`, then its `get(key)`; null
-    // without a sprite.
     object.method("getProperty", |c| {
         let this = c.arg(0);
-        let sprite = tile_sprite(receiver(&this)?, "IsoObject.getProperty")?;
-        let props = crate::bind_sprites::sprite_value(sprite, true);
-        if props.is_nil() {
-            return Ok(c.push(Value::Nil));
-        }
-        let get = c.thread.table_get(&props, &Value::str("get"))?;
-        let v = c.thread.call1(&get, &[props, c.arg(1)])?;
-        Ok(c.push(v))
+        let mut cx = Cx { t: c.thread };
+        let props = cx.call(&this, "getProperties", &[])?;
+        let value = if props.is_nil() { Value::Nil } else {
+            let key = c.arg(1);
+            Cx { t: c.thread }.call(&props, "get", &[key])?
+        };
+        Ok(c.push(value))
     });
     // getAttachedAnimSprite(): `attachedAnimSprite`, as a copy.
     object.method("getAttachedAnimSprite", |c| {
@@ -84,20 +81,14 @@ pub(super) fn register(thread: &mut Thread) {
     // of `GroupName CustomName` (or of `CustomName`); else getName().
     object.method("getTileName", |c| {
         let this = c.arg(0);
-        let names = match tile_sprite(receiver(&this)?, "IsoObject.getTileName")? {
-            None => None,
-            Some(sprite) => {
-                let m = crate::bind_sprites::manager()?;
-                let m = m.try_borrow().map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
-                let props = &m.sprites[sprite].properties;
-                props.get(&m.alias, "CustomName").map(|custom| {
-                    match props.get(&m.alias, "GroupName") {
-                        Some(group) => format!("{group} {custom}"),
-                        None => custom.to_string(),
-                    }
-                })
-            }
-        };
+        let names = with_sprite(receiver(&this)?, |manager, sprite| {
+            let props = &sprite?.properties;
+            let custom = props.get(&manager.alias, "CustomName")?;
+            Some(match props.get(&manager.alias, "GroupName") {
+                Some(group) => format!("{group} {custom}"),
+                None => custom.to_owned(),
+            })
+        })?;
         let r = match names {
             Some(name) => {
                 let display = crate::bind_text::with_translator(|t| t.get_moveable_display_name(&name));
@@ -107,145 +98,48 @@ pub(super) fn register(thread: &mut Thread) {
         };
         Ok(c.push(r))
     });
+    object.method("getType", |c| {
+        let this = c.arg(0);
+        let value = with_sprite(receiver(&this)?, |manager, sprite| {
+            let ty = sprite.map_or(manager.tables.object_type_max(), |sprite| sprite.tile_type);
+            crate::expose::enum_value(crate::bind_iso_enums::ISO_OBJECT_TYPE, manager.tables.object_type_name(ty))
+        })?;
+        Ok(c.push(value))
+    });
     // getSpriteName(): the sprite's name while `spriteName` is null, else
     // `spriteName`.
     object.method("getSpriteName", |c| {
         let this = c.arg(0);
         let object = receiver(&this)?;
         let body = object.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
-        if body.sprite_name.is_none() {
-            if let ObjectSprite::Tile(sprite) = body.sprite {
-                let m = crate::bind_sprites::manager()?;
-                let m = m.try_borrow().map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
-                if let Some(name) = &m.sprites[sprite].name {
-                    return Ok(c.push(Value::str(name)));
-                }
-            } else if !matches!(body.sprite, ObjectSprite::None) {
-                return Err(unsupported("IsoObject.getSpriteName: the sprite has no Lua object"));
-            }
-        }
-        let r = match &body.sprite_name {
-            None => Value::Nil,
-            Some(pz_world::objects::SpriteName::Str(name)) => Value::str(name),
-            Some(pz_world::objects::SpriteName::Dict(_)) => {
-                return Err(unsupported("IsoObject.getSpriteName: a spriteName from the save dictionary"))
-            }
+        let manager = crate::bind_sprites::manager()?;
+        let manager = manager.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
+        let name = match &body.sprite_name {
+            Some(name) => crate::bind_world_object::resolve_sprite_name(name, &manager)?,
+            None => body.sprite.try_read(&manager).map_err(crate::bind_world_object::host_error)?
+                .and_then(|sprite| sprite.name.clone()),
         };
+        let r = name.as_deref().map_or(Value::Nil, Value::str);
         Ok(c.push(r))
     });
-    object.method("hasFluid", |c| {
-        let this = c.arg(0);
-        let r = has_fluid(c, &this)?;
-        Ok(c.push(r))
-    });
-    object.method("getPipedFuelAmount", |c| {
-        let this = c.arg(0);
-        let r = piped_fuel_amount(c, &this)?;
-        Ok(c.push(r))
-    });
+    super::water::register(&object);
+    super::fuel::register(&object);
 }
 
-fn receiver(this: &Value) -> LuaResult<&LuaWorldObject> {
+pub(super) fn receiver(this: &Value) -> LuaResult<&LuaWorldObject> {
     match this {
         Value::Nil => Err(super::null_pointer()),
         v => object_from_value(v).ok_or_else(|| crate::bind_java_util::class_cast(v, ISO_OBJECT)),
     }
 }
 
-/// The object's tile sprite; `None` for no sprite.
-fn tile_sprite(object: &LuaWorldObject, what: &str) -> LuaResult<Option<pz_world::sprite::SpriteIdx>> {
+pub(super) fn with_sprite<R>(
+    object: &LuaWorldObject,
+    f: impl FnOnce(&pz_world::IsoSpriteManager, Option<&pz_world::sprite::IsoSprite>) -> R,
+) -> LuaResult<R> {
+    let manager = crate::bind_sprites::manager()?;
+    let manager = manager.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
     let body = object.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
-    match &body.sprite {
-        ObjectSprite::None => Ok(None),
-        ObjectSprite::Tile(idx) => Ok(Some(*idx)),
-        _ => Err(unsupported(format!("{what}: the sprite has no Lua object"))),
-    }
-}
-
-/// `hasFluid()`: a solid floor on a square with more than 0.09 of
-/// puddles (`IsoGridSquare.getPuddlesInGround`).
-fn has_fluid(c: &mut NativeCall<'_>, this: &Value) -> LuaResult<bool> {
-    let object = receiver(this)?;
-    let square = object_square(object)?;
-    if square.is_nil() {
-        return Ok(false);
-    }
-    let Some(sprite) = tile_sprite(object, "IsoObject.hasFluid")? else {
-        return Ok(false);
-    };
-    let solid_floor = {
-        let m = crate::bind_sprites::manager()?;
-        let m = m.try_borrow().map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
-        m.sprites[sprite].properties.has(m.tables.flag.solidfloor)
-    };
-    if !solid_floor {
-        return Ok(false);
-    }
-    Ok(puddles_in_ground(&mut Cx { t: c.thread }, &square)? > 0.09)
-}
-
-/// `IsoGridSquare.getPuddlesInGround()` as far as it answers without
-/// puddles: -1 in a room, else `IsoPuddlesCompute.computePuddle`, which
-/// gives -0.1 without shaders, with puddles off, above the ground with
-/// puddles on, or while `IsoPuddles.getPuddlesSize()` is 0. The cache of
-/// the original only keeps the last computed level.
-fn puddles_in_ground(cx: &mut Cx<'_>, square: &Value) -> LuaResult<f32> {
-    let puddles_size = crate::bind_puddles::shared_puddles()
-        .try_borrow()
-        .map_err(|_| LuaError::runtime("IsoPuddles is in use"))?
-        .state
-        .puddles_size
-        .get();
-    if puddles_size <= 0.0 {
-        // Both the room answer (-1) and every early answer of
-        // computePuddle (-0.1) are below any threshold the callers use;
-        // with no puddles computePuddle answers -0.1 too.
-        return Ok(-0.1);
-    }
-    if !cx.call(square, "getRoom", &[])?.is_nil() {
-        return Ok(-1.0);
-    }
-    let core = cx.global("getCore", &[])?;
-    if !cx.is(&core, "getUseShaders", &[])? {
-        return Ok(-0.1);
-    }
-    if cx.num(&core, "getPerfPuddlesOnLoad", &[])? == 3.0 || cx.num(&core, "getPerfPuddles", &[])? == 3.0 {
-        return Ok(-0.1);
-    }
-    if cx.num(&core, "getPerfPuddles", &[])? > 0.0 && cx.num(square, "getZ", &[])? > 0.0 {
-        return Ok(-0.1);
-    }
-    Err(unsupported(
-        "IsoGridSquare.getPuddlesInGround: IsoGridSquare.getIsoWorldRegion and IsoPuddlesCompute.computePuddle",
-    ))
-}
-
-/// `getPipedFuelAmount()`: the mod data's `fuelAmount`. A fuel pump
-/// (`fuelAmount` property) fills it on first use from the sandbox options.
-fn piped_fuel_amount(c: &mut NativeCall<'_>, this: &Value) -> LuaResult<i32> {
-    let object = receiver(this)?;
-    let Some(sprite) = tile_sprite(object, "IsoObject.getPipedFuelAmount")? else {
-        return Ok(0);
-    };
-    let mut cx = Cx { t: c.thread };
-    let mut fuel = 0.0;
-    if cx.is(this, "hasModData", &[])? {
-        if let Value::Table(data) = cx.call(this, "getModData", &[])? {
-            if !data.is_empty() {
-                let v = data.get_str("fuelAmount");
-                if !v.is_nil() {
-                    fuel = v.as_num().ok_or_else(|| crate::bind_java_util::class_cast(&v, "java.lang.Double"))?;
-                }
-            }
-        }
-    }
-    let pump = {
-        let m = crate::bind_sprites::manager()?;
-        let m = m.try_borrow().map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
-        m.sprites[sprite].properties.has_name(&m.alias, "fuelAmount")
-    };
-    if pump {
-        return Err(unsupported("IsoObject.getPipedFuelAmount: fuel pumps"));
-    }
-    Ok(fuel as i32)
+    let sprite = body.sprite.try_read(&manager).map_err(crate::bind_world_object::host_error)?;
+    Ok(f(&manager, sprite.as_deref()))
 }

@@ -6,7 +6,9 @@ license.workspace = true
 
 [dependencies]
 pz-kahlua.workspace = true
+pz-scripts.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]
+pz-classfile.workspace = true
 png.workspace = true

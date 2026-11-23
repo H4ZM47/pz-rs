@@ -156,27 +156,51 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Writing side of a growable heap `ByteBuffer`.
+/// Direct destination used when another subsystem owns the actual buffer.
+/// Each primitive must reach it immediately; patches restore the previous
+/// cursor only after their put succeeds. Implementations retain their normal
+/// immediate error transport, including bounded-buffer overflow.
+pub trait WriterTarget {
+    fn pos(&self) -> usize;
+    fn bytes(&mut self, bytes: &[u8]);
+    fn patch_bytes(&mut self, at: usize, bytes: &[u8]);
+}
+
+/// Writing side of a heap `ByteBuffer`. The default profile owns a growable
+/// Vec; direct targets keep that Vec unused and retain the caller's buffer.
 #[derive(Default)]
 pub struct Writer {
     pub buf: Vec<u8>,
+    target: Option<Box<dyn WriterTarget>>,
 }
 
 impl Writer {
     pub fn new() -> Self {
-        Writer { buf: Vec::new() }
+        Self::default()
+    }
+
+    pub fn with_target(target: Box<dyn WriterTarget>) -> Self {
+        Self {
+            buf: Vec::new(),
+            target: Some(target),
+        }
     }
 
     pub fn pos(&self) -> usize {
-        self.buf.len()
+        self.target
+            .as_ref()
+            .map_or_else(|| self.buf.len(), |target| target.pos())
     }
 
     pub fn bytes(&mut self, b: &[u8]) {
-        self.buf.extend_from_slice(b);
+        match &mut self.target {
+            Some(target) => target.bytes(b),
+            None => self.buf.extend_from_slice(b),
+        }
     }
 
     pub fn i8(&mut self, v: i8) {
-        self.buf.push(v as u8);
+        self.bytes(&[v as u8]);
     }
 
     /// `put(b ? 1 : 0)`.
@@ -216,8 +240,19 @@ impl Writer {
         self.string(s.unwrap_or(""));
     }
 
+    pub(crate) fn patch_bytes(&mut self, at: usize, bytes: &[u8]) {
+        match &mut self.target {
+            Some(target) => target.patch_bytes(at, bytes),
+            None => self.buf[at..at + bytes.len()].copy_from_slice(bytes),
+        }
+    }
+
     pub(crate) fn patch_i32(&mut self, at: usize, v: i32) {
-        self.buf[at..at + 4].copy_from_slice(&v.to_be_bytes());
+        self.patch_bytes(at, &v.to_be_bytes());
+    }
+
+    pub(crate) fn patch_i64(&mut self, at: usize, v: i64) {
+        self.patch_bytes(at, &v.to_be_bytes());
     }
 
     /// `ByteBlock.Start(Save)`: a length placeholder; returns the start.
@@ -279,10 +314,8 @@ impl HeaderWrite {
     pub fn write(self, w: &mut Writer) {
         let at = self.start;
         match self.size {
-            HeaderSize::Byte => w.buf[at] = self.flags as u8,
-            HeaderSize::Short => {
-                w.buf[at..at + 2].copy_from_slice(&(self.flags as i16).to_be_bytes())
-            }
+            HeaderSize::Byte => w.patch_bytes(at, &[self.flags as u8]),
+            HeaderSize::Short => w.patch_bytes(at, &(self.flags as i16).to_be_bytes()),
             HeaderSize::Integer => w.patch_i32(at, self.flags as i32),
         }
     }

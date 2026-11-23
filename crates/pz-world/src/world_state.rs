@@ -22,6 +22,120 @@ use crate::square::{
 // `IsoGenerator.GeneratorMinZ`/`GeneratorMaxZ` are the world's level range.
 use crate::chunk::{MAX_LEVEL, MIN_LEVEL};
 
+/// Apply an IsoWindow toggle to a retained object that still belongs to this cell.
+/// The old sprite is retired after the object guard ends, as for other live edits.
+pub fn toggle_window(
+    cell: &mut IsoCell,
+    meta: &IsoMetaGrid,
+    sprites: &IsoSpriteManager,
+    pos: (i32, i32, i32),
+    object: &IsoObjectRef,
+    actor: Option<(f32, f32)>,
+) -> pz_entity::runtime_load::HostResult<bool> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let (x, y, z) = pos;
+    let Some(square) = cell.get_grid_square(x, y, z) else { return Ok(false) };
+    let next = {
+        let square = square.try_borrow().map_err(|_| RuntimeHostError::Borrowed("window square"))?;
+        if !square.objects.iter().any(|slot| std::rc::Rc::ptr_eq(&slot.ref_handle(), object)) {
+            return Ok(false);
+        }
+        let body = object.try_borrow().map_err(|_| RuntimeHostError::Borrowed("window body"))?;
+        let ObjectKind::Window(w) = &body.kind else { return Ok(false) };
+        if w.perma_locked || w.destroyed {
+            return Ok(false);
+        }
+        if let Some((ax, ay)) = actor {
+            let (same, opposite) = ObjectHooks::new(cell, sprites).barricades_for(&square, w.north);
+            let across = if w.north { ay < y as f32 } else { ax < x as f32 };
+            if (if across { opposite } else { same }).is_some() { return Ok(false) }
+        }
+        if w.open { w.closed_sprite } else { w.open_sprite }
+    };
+    let old = {
+        let mut body = object.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("window body"))?;
+        let ObjectKind::Window(w) = &mut body.kind else { return Ok(false) };
+        w.locked = false;
+        w.open = !w.open;
+        std::mem::replace(&mut body.sprite, next.into())
+    };
+    let mut retired = pz_entity::RetiredComponents::new();
+    retired.push_payload(Box::new(old));
+    cell.retire_components(retired);
+    crate::object_slot::observe_object(object, "zombie.iso.objects.IsoWindow");
+    cell.recalc_all_with_neighbours(x, y, z, meta, sprites);
+    Ok(true)
+}
+
+/// Resolve an alarm only when a toggle actually opened its receiver.
+pub fn opened_window_alarm(cell: &IsoCell, meta: &IsoMetaGrid, pos: (i32, i32, i32), object: &IsoObjectRef)
+    -> pz_entity::runtime_load::HostResult<Option<(i64, crate::BuildingIdx)>> {
+    let body = object.try_borrow().map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("toggled window"))?;
+    match &body.kind {
+        ObjectKind::Window(w) if w.open => window_alarm_room(cell, meta, pos, w.north),
+        _ => Ok(None),
+    }
+}
+
+/// Indoor room for a regular window alarm. The room on the window's own
+/// square takes precedence over the room on its opposite edge.
+pub fn window_alarm_room(cell: &IsoCell, meta: &IsoMetaGrid, (x, y, z): (i32, i32, i32), north: bool)
+    -> pz_entity::runtime_load::HostResult<Option<(i64, crate::BuildingIdx)>> {
+    for (sx, sy) in [(x, y), (x - i32::from(!north), y - i32::from(north))] {
+        let Some(square) = cell.get_grid_square(sx, sy, z) else { continue };
+        let square = square.try_borrow().map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("window indoor square"))?;
+        if let Some(room) = square.room_def(meta) {
+            return Ok(room.building.filter(|b| meta.building_defs[b.0 as usize].alarmed).map(|b| (room.id, b)));
+        }
+    }
+    Ok(None)
+}
+
+/// Consume the building alarm and reveal its rooms. Only a loaded, powered
+/// ground-floor square at the triggering room's origin starts an audible alarm.
+pub fn trigger_room_alarm(cell: &IsoCell, meta: &mut IsoMetaGrid, room_id: i64, grid_exists: impl FnOnce(i32) -> bool)
+    -> pz_entity::runtime_load::HostResult<Option<(i32, i32)>> {
+    let Some(room) = meta.get_room_def_by_id(room_id) else { return Ok(None) };
+    let Some(building) = room.building else { return Ok(None) };
+    let def = &meta.building_defs[building.0 as usize];
+    if !def.alarmed { return Ok(None) }
+    let center = (room.x + (room.x2 - room.x) / 2, room.y + (room.y2 - room.y) / 2);
+    let powered = if let Some(origin) = cell.get_grid_square(room.x, room.y, 0) {
+        let origin = origin.try_borrow().map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("alarm room origin"))?;
+        !square_has_no_power(meta, &origin) && grid_exists(def.alarm_decay)
+    } else { false };
+    let def = &mut meta.building_defs[building.0 as usize];
+    def.alarmed = false;
+    for room in &def.rooms {
+        meta.room_defs[room.0 as usize].explored = true;
+    }
+    Ok(powered.then_some(center))
+}
+
+pub fn square_is_derelict(meta: &IsoMetaGrid, sq: &IsoGridSquare) -> bool {
+    sq.room_def(meta).is_some_and(|r| r.name.to_lowercase().contains("derelict"))
+}
+
+fn blocked_by_zone(meta: &IsoMetaGrid, sq: &IsoGridSquare, kind: &str) -> bool {
+    meta.get_zones_at(sq.x, sq.y, 0).into_iter().any(|id| {
+        let zone = &meta.zone(id).zone_type;
+        zone == kind || zone == "NoPowerOrWater"
+    })
+}
+
+pub fn square_has_no_power(meta: &IsoMetaGrid, sq: &IsoGridSquare) -> bool {
+    square_is_derelict(meta, sq) || sq.room_def(meta).is_some_and(|r| r.user_defined)
+        || blocked_by_zone(meta, sq, "NoPower")
+}
+
+pub fn square_has_no_gas(meta: &IsoMetaGrid, sq: &IsoGridSquare) -> bool {
+    meta.get_zones_at(sq.x, sq.y, 0).into_iter().any(|id| meta.zone(id).zone_type == "NoGas")
+}
+
+pub fn square_has_no_water(meta: &IsoMetaGrid, sq: &IsoGridSquare) -> bool {
+    square_is_derelict(meta, sq) || blocked_by_zone(meta, sq, "NoWater")
+}
+
 /// The class-static ranges read by `IsoGenerator.isPoweringSquare`.
 /// Sandbox edits take effect when the next generator is constructed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,6 +284,27 @@ impl IsoBarricade {
 }
 
 impl IsoThumpable {
+    pub fn furniture_break_sound(sprite: Option<&crate::sprite::IsoSprite>, manager: &IsoSpriteManager) -> &'static str {
+        let Some(sprite) = sprite else { return "BreakFurniture"; };
+        let props = &sprite.properties;
+        if props.property_equals(&manager.alias, "MoveType", "Vegitation") { return "BreakPlant"; }
+        for key in ["SinkType", "FenceTypeLow", "FenceTypeHigh", "MaterialType"] {
+            let Some(value) = props.get(&manager.alias, key) else { continue; };
+            return match (key, value) {
+                ("SinkType" | "MaterialType", "Ceramic") => "BreakFurnitureCeramic",
+                (_, "Metal") | ("FenceTypeLow" | "FenceTypeHigh", "MetalGate")
+                    | ("FenceTypeLow", "Barbwire")
+                    | ("MaterialType", "Metal_Large" | "Metal_Light" | "Metal_Solid") => "BreakFurnitureMetal",
+                _ => "BreakFurniture",
+            };
+        }
+        "BreakFurniture"
+    }
+
+    pub fn custom_break_sound(&self) -> Option<&str> {
+        self.break_sound.as_deref().filter(|s| !s.eq_ignore_ascii_case("BreakObject"))
+    }
+
     /// `isBlockedDoor()` given `isBarricaded()`.
     pub fn is_blocked_door(&self, barricaded: bool) -> bool {
         self.is_door && (!self.open || barricaded)
@@ -192,11 +327,12 @@ pub fn get_barricade_on_square(
 }
 
 /// `getNorth()` of a `BarricadeAble` (`IsoDoor`, `IsoWindow`,
-/// `IsoThumpable`); `None` for other objects.
+/// `IsoThumpable`, `IsoWindowFrame`); `None` for other objects.
 pub fn barricade_able_north(obj: &IsoObject) -> Option<bool> {
     match &obj.kind {
         ObjectKind::Door(d) => Some(d.north),
         ObjectKind::Window(w) => Some(w.north),
+        ObjectKind::WindowFrame { north } => Some(*north),
         ObjectKind::Thumpable(t) => Some(t.north),
         _ => None,
     }
@@ -467,8 +603,7 @@ pub struct WorldState<'a> {
     pub meta: &'a IsoMetaGrid,
     pub sprites: &'a IsoSpriteManager,
     pub power: PowerSettings,
-    /// STUB: `IsoMetaGrid.getZonesAt(x, y, 0)` has a `NoPower` or
-    /// `NoPowerOrWater` zone (zones are not ported; runtime input).
+    /// Additional no-power zones supplied by the caller.
     pub no_power_zone: &'a dyn Fn(i32, i32) -> bool,
     /// The local players' light items, in player order.
     pub players: Vec<PlayerLights<'a>>,
@@ -549,12 +684,7 @@ impl<'a> WorldState<'a> {
     /// `IsoGridSquare.isNoPower()`: derelict or user-defined room, or a
     /// `NoPower` zone.
     pub fn is_no_power(&self, sq: &IsoGridSquare) -> bool {
-        if let Some(room) = sq.room_def(self.meta) {
-            if room.name.to_lowercase().contains("derelict") || room.user_defined {
-                return true;
-            }
-        }
-        (self.no_power_zone)(sq.x, sq.y)
+        square_has_no_power(self.meta, sq) || (self.no_power_zone)(sq.x, sq.y)
     }
 
     /// `IsoGridSquare.hasGridPower()`.

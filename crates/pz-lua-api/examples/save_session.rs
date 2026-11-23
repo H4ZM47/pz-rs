@@ -538,7 +538,6 @@ fn main() {
                     save_dir: work,
                     no_save: false,
                     has_cell: true,
-                    game_mode: "Sandbox",
                     game_map: game_map.as_deref(),
                     sandbox: &sandbox_bin,
                     game_time: &gt,

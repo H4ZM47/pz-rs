@@ -58,6 +58,7 @@ impl Fixture {
     fn window(&self, locked: bool, perma_locked: bool) {
         let window = pz_world::objects::IsoWindow {
             north: true,
+            health: 50,
             locked,
             perma_locked,
             closed_sprite: Some(self.closed),
@@ -119,6 +120,30 @@ fn toggle_window_leaves_a_permanently_locked_window_alone() {
 }
 
 #[test]
+fn glass_changes_only_on_smashed_windows_and_follows_the_retained_receiver() {
+    let mut f = Fixture::new();
+    f.window(false, false);
+    f.run("w = IsoCell.getInstance():getGridSquare(1,2,0):getObjects():get(0)
+           w:removeBrokenGlass()
+           check(not w:isGlassRemoved())");
+    let square = with_world(|w| w.cell.as_ref().unwrap().get_grid_square(1, 2, 0).unwrap());
+    let pane = square.borrow().objects[0].ref_handle();
+    {
+        let mut body = pane.borrow_mut();
+        let ObjectKind::Window(window) = &mut body.kind else { unreachable!() };
+        window.destroyed = true;
+        window.smashed_sprite = Some(f.closed);
+        window.glass_removed_sprite = Some(f.open);
+    }
+    f.run("w:removeBrokenGlass() check(w:isGlassRemoved())");
+    assert_eq!(pane.borrow().sprite, ObjectSprite::Tile(f.open));
+    square.borrow_mut().objects.clear();
+    f.window(false, false);
+    f.run("check(w:getObjectIndex() == -1) w:setGlassRemoved(false) check(not w:isGlassRemoved())");
+    assert_eq!(pane.borrow().sprite, ObjectSprite::Tile(f.closed));
+}
+
+#[test]
 fn get_object_index_is_the_position_in_the_square() {
     let mut f = Fixture::new();
     f.window(false, false);
@@ -134,6 +159,11 @@ fn get_object_index_is_the_position_in_the_square() {
 fn square_get_room_is_one_object_per_room() {
     let mut f = Fixture::new();
     with_world(|world| {
+        let meta = world.meta_grid.as_mut().unwrap();
+        let mut meta_cell = pz_world::IsoMetaCell::new(0, 0);
+        meta.room_defs.push(pz_world::RoomDef::new(7, "test room".into()));
+        meta_cell.rooms.insert(7, pz_world::RoomIdx(0));
+        meta.set_cell(0, 0, Some(meta_cell));
         let cell = world.cell.as_mut().unwrap();
         cell.get_grid_square_mut(1, 1, 0).unwrap().borrow_mut().room_id = 7;
         cell.get_grid_square_mut(1, 2, 0).unwrap().borrow_mut().room_id = 7;
@@ -159,4 +189,75 @@ fn square_get_adjacent_square_steps_one_tile_and_answers_nil_when_not_loaded() {
          check(north ~= nil and north:getX() == 1 and north:getY() == 1)
          check(north:getAdjacentSquare(IsoDirections.N) == nil)",
     );
+}
+
+#[test]
+fn window_frame_and_thumpable_climb_checks_use_the_live_object_and_actor() {
+    use crate::bind_character_sim::{character_value, LuaGameCharacter};
+    use pz_characters::character::CharacterKind;
+    let mut f = Fixture::new();
+    f.window(false, false);
+    let manager = crate::bind_sprites::manager().unwrap();
+    let mut sprites = manager.borrow_mut();
+    let flag = sprites.tables.flag.WindowN;
+    sprites.sprites[f.closed].properties.set_flag(flag);
+    drop(sprites);
+    with_world(|world| {
+        let square = world.cell.as_mut().unwrap().get_grid_square_mut(1, 2, 0).unwrap();
+        let mut square = square.borrow_mut();
+        for (id, kind, sprite) in [
+            (41, ObjectKind::WindowFrame { north: true }, None),
+            (42, ObjectKind::Thumpable(Default::default()), Some(f.closed.into())),
+            (43, ObjectKind::Thumpable(Default::default()), Some(f.open.into())),
+        ] {
+            square.objects.push(ObjectSlot::new(IsoObject::new(id, kind, sprite)));
+        }
+    });
+    let sm = pz_scripts::ScriptManager::new();
+    let animal = Rc::new(RefCell::new(LuaGameCharacter::new(&sm, CharacterKind::Animal)));
+    let player = Rc::new(RefCell::new(LuaGameCharacter::new(&sm, CharacterKind::Player)));
+    f.thread.globals().set_str("animal", character_value(&animal));
+    f.thread.globals().set_str("player", character_value(&player));
+    f.run(r#"
+        local objects = IsoCell.getInstance():getGridSquare(1,2,0):getObjects()
+        w, frame, wall, other = objects:get(0), objects:get(1), objects:get(2), objects:get(3)
+        check(w:getNorth() and frame:getNorth() and not wall:getNorth())
+        check(w:isWindow() and wall:isWindow() and not other:isWindow())
+        check(not w:canClimbThrough(nil))
+        w:ToggleWindow(nil)
+        check(w:canClimbThrough(nil) and w:canClimbThrough(player))
+        check(frame:canClimbThrough(nil) and frame:canClimbThrough(player))
+        check(wall:canClimbThrough(nil) and not other:canClimbThrough(nil))
+        check(not frame:canClimbThrough(animal) and not w:canClimbThrough(animal))
+        check(not wall:canClimbThrough(animal))
+    "#);
+    with_world(|world| {
+        let square = world.cell.as_mut().unwrap().get_grid_square_mut(1, 2, 0).unwrap();
+        square.borrow_mut().objects.remove(1);
+    });
+    f.run("check(not frame:canClimbThrough(nil))");
+}
+
+#[test]
+fn toggle_only_blocks_a_barricade_on_the_actors_side() {
+    use crate::bind_character_sim::{character_value, LuaGameCharacter};
+    use pz_characters::character::CharacterKind;
+    use pz_world::objects::IsoBarricade;
+
+    let mut fixture = Fixture::new();
+    fixture.window(false, false);
+    with_world(|world| {
+        let square = world.cell.as_ref().unwrap().get_grid_square(1, 2, 0).unwrap();
+        let mut square = square.borrow_mut();
+        let barricade = IsoBarricade { dir: 0, plank_health: [100, 0, 0, 0], metal_health: 0, metal_bar_health: 0 };
+        square.objects.push(ObjectSlot::new(IsoObject::new(2, ObjectKind::Barricade(barricade), None)));
+        square.special_objects.push(2);
+    });
+    let actor = Rc::new(RefCell::new(LuaGameCharacter::new(&pz_scripts::ScriptManager::new(), CharacterKind::Player)));
+    fixture.thread.globals().set_str("actor", character_value(&actor));
+    actor.borrow_mut().set_y(2.5);
+    fixture.run("w = IsoCell.getInstance():getGridSquare(1,2,0):getObjects():get(0); w:ToggleWindow(actor); check(not w:IsOpen())");
+    actor.borrow_mut().set_y(1.5);
+    fixture.run("w:ToggleWindow(actor); check(w:IsOpen() and not w:canClimbThrough(nil))");
+    fixture.run("w:ToggleWindow(nil); check(not w:IsOpen())");
 }

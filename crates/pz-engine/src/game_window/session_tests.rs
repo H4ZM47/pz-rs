@@ -2,6 +2,7 @@
 //! media is read at runtime; saves always go into a fresh test cache.
 
 mod queue;
+mod windows;
 mod cell_drag;
 mod mannequin;
 
@@ -52,6 +53,53 @@ fn lua_check(lua: &mut LuaManager, source: &str) {
     lua.thread.pcall(&f, &[]).unwrap_or_else(|(error, trace)| {
         panic!("session-check Lua failed: {error:?}\n{trace}")
     });
+}
+
+fn observe_tile_definitions(lua: &mut LuaManager) {
+    lua_check(lua, r#"
+        rustTileEvents = 0
+        local floors = {}
+        for _,group in ipairs({"blends_natural_01", "floors_interior_tilesandwood_01", "floors_exterior_natural_01"}) do
+            for i=0,63 do table.insert(floors, group .. "_" .. i) end
+        end
+        rustMapNew, rustMapLoad, rustSquareEvents = 0, 0, 0
+        local observed
+        MapObjects.OnNewWithSprite(floors, function(o)
+            if o:getSquare() then rustMapNew = rustMapNew + 1 end
+        end, 1234)
+        MapObjects.OnLoadWithSprite(floors, function(o)
+            local sq = o:getSquare()
+            if sq then
+                if not (SFarmingSystem and SFarmingSystem.instance) then rustMapEarly = true end
+                rustMapLoad = rustMapLoad + 1
+                observed = sq
+            end
+        end, 1234)
+        Events.LoadGridsquare.Add(function(sq)
+            if observed == sq then
+                rustSquareEvents = rustSquareEvents + 1
+                observed = nil
+            end
+        end)
+        Events.OnLoadedTileDefinitions.Add(function(manager)
+            assert(manager == IsoSpriteManager.instance)
+            local fence = manager:getSprite('fencing_01_1')
+            assert(manager:getSprite(fence:getID()) == fence and fence:getName() == 'fencing_01_1')
+            local props = manager:getSprite('rust_session_tile_probe'):getProperties()
+            assert(not props:has(IsoFlagType.solid))
+            props:set(IsoFlagType.solid)
+            rustTileEvents = rustTileEvents + 1
+        end)
+    "#);
+}
+
+fn verify_tile_definitions(lua: &mut LuaManager) {
+    lua_check(lua, r#"
+        assert(rustTileEvents == 1)
+        assert(not rustMapEarly, "map observers ran before global system initialization")
+        assert(rustMapLoad > 0 and rustSquareEvents > 0, "square and sprite load observers")
+        assert(IsoSpriteManager.instance:getSprite('rust_session_tile_probe'):getProperties():has(IsoFlagType.solid))
+    "#);
 }
 
 fn save_counts(lua: &LuaManager) -> (Option<f64>, Option<f64>) {
@@ -123,6 +171,399 @@ fn close_survival_guide(lua: &mut LuaManager) {
         end
         assert(UIManager.getSpeedControls():getCurrentGameSpeed() == 1,
             "closing the actual survival guide did not resume play")
+    "#);
+}
+
+fn verify_utilities_and_ambience(app: &mut super::App, streamer: bool) {
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        local clock, sb = getGameTime(), getSandboxOptions()
+        local original = sb:getTimeSinceApo()
+        sb:set("TimeSinceApo", 3)
+        local age = 60 + clock:getWorldAgeHours() / 24
+        assert(math.abs(clock:getWorldAgeDaysSinceBegin() - age) < 0.000001)
+        assert(math.abs(getWorld():getWorldAgeDays() - age) < 0.00001)
+        assert(sb:doesPowerGridExist() == (age <= sb:getElecShutModifier()))
+        assert(sb:doesPowerGridExist(70) == (age <= sb:getElecShutModifier() + 70))
+        local world = getWorld()
+        local originalPower = world:isHydroPowerOn()
+        world:setHydroPowerOn(not originalPower)
+        assert(world:isHydroPowerOn() ~= originalPower)
+        world:setHydroPowerOn(originalPower)
+        sb:set("TimeSinceApo", original)
+        rustAmbientPower = originalPower and 1 or 0
+        rustAmbientWater = clock:getWorldAgeDaysSinceBegin() < sb:getWaterShutModifier() and 1 or 0
+        local square = getPlayer():getCurrentSquare()
+        local room = square:getRoomDef()
+        rustAmbientRoom = room and room:getArea() or math.max(0, square:getRoomSize())
+        assert(square:hasGridPower() == (not square:isNoPower() and sb:doesPowerGridExist()))
+        assert(square:hasGridPower(-999) == false)
+        assert(square:getFloor():hasGridPower() == square:hasGridPower())
+        assert(type(square:isNoWater()) == "boolean")
+        local floor = square:getFloor()
+        assert(type(square:isNoGas()) == "boolean")
+        local data = floor:getModData()
+        assert(type(square:HasTree()) == "boolean" and floor:getType() ~= nil)
+        assert(type(SFarmingSystem.instance:hasWeeds(square)) == "boolean")
+        local oldFuel = data.fuelAmount
+        data.fuelAmount = nil
+        assert(floor:getPipedFuelAmount() == -1)
+        floor:setPipedFuelAmount(17)
+        assert(data.fuelAmount == 17 and floor:getPipedFuelAmount() == 17)
+        floor:setPipedFuelAmount(-9)
+        assert(data.fuelAmount == 0)
+        data.fuelAmount = oldFuel
+        local parts = ArrayList.new()
+        parts:add(floor)
+        assert(floor:getSpriteGridObjects(parts) == parts and parts:isEmpty())
+        assert(floor:getSpriteGridObjectsIncludingSelf(parts) == parts and parts:get(0) == floor)
+        local function findObject(check)
+            for y = square:getY()-8, square:getY()+8 do
+                for x = square:getX()-8, square:getX()+8 do
+                    local sq = getCell():getGridSquare(x, y, square:getZ())
+                    local objects = sq and sq:getObjects()
+                    if objects then
+                        for i = 0, objects:size()-1 do
+                            if check(objects:get(i), sq) then return true end
+                        end
+                    end
+                end
+            end
+        end
+        assert(findObject(function(object, sq)
+            local props = object:getProperties()
+            if not props or not props:has(IsoFlagType.waterPiped) or not sq:getRoom() or sq:isNoWater()
+                or object:getUsesExternalWaterSource() or object:getFluidContainer() then return end
+            local data = object:getModData()
+            local moved, remaining, maximum = data.canBeWaterPiped, data.waterAmount, data.waterMaxAmount
+            local shut = sb:getWaterShutModifier()
+            data.canBeWaterPiped = false
+            sb:set("WaterShutModifier", 365)
+            assert(object:hasFluid() and object:getFluidAmount() == 10000 and object:getFluidCapacity() == 10000)
+            sb:set("WaterShutModifier", -1)
+            data.waterAmount, data.waterMaxAmount = 6.25, 19.5
+            assert(object:hasFluid() and object:getFluidAmount() == 6.25 and object:getFluidCapacity() == 19.5)
+            data.canBeWaterPiped = true
+            assert(not object:hasFluid() and object:getFluidAmount() == 0 and object:getFluidCapacity() == 0)
+            object:setUsesExternalWaterSource(true)
+            assert(object:getUsesExternalWaterSource())
+            object:doFindExternalWaterSource()
+            if not object:hasExternalWaterSource() then assert(object:getFluidAmount() == 0) end
+            object:setUsesExternalWaterSource(false)
+            if not rustCollectorProbe then
+                local x, y, z = sq:getX(), sq:getY(), sq:getZ()
+                local upper, nextUpper = getSquare(x,y,z+1), getSquare(x+1,y,z+1)
+                if upper and nextUpper and not upper:isNoWater() and not nextUpper:isNoWater() then
+                    local outlet = sq:addTileObject('fencing_01_1')
+                    outlet:setUsesExternalWaterSource(true)
+                    local function addCollector(target, amount)
+                        local notes = {fixture=amount}
+                        local tank = IsoThumpable.new(getCell(), target, object:getSprite():getName(), true, notes)
+                        assert(tank:getTable() == notes and tank:getSquare() == target)
+                        local meta = {canBeWaterPiped=false,waterAmount=amount,waterMaxAmount=100}
+                        meta["need:Base.Plank"] = 2
+                        tank:setModData(meta)
+                        assert(tank:getModData() == meta and meta["need:Base.Plank"] == nil)
+                        assert(tank:hasBuildMaterials() and tank:getBuildMaterials()["Base.Plank"] == 2)
+                        tank:setSprite("fencing_01_1")
+                        assert(tank:getSprite() == IsoSpriteManager.instance:getSprite("fencing_01_1"))
+                        tank:setSpriteFromName(object:getSprite():getName())
+                        assert(tank:getSprite() == object:getSprite())
+                        target:AddSpecialObject(tank)
+                        assert(tank:getObjectIndex() >= 0 and tank:getFluidAmount() == amount)
+                        return tank
+                    end
+                    local tank, neighbor = addCollector(upper, 13), addCollector(nextUpper, 17)
+                    assert(outlet:getFluidAmount() == 13 and outlet:hasExternalWaterSource())
+                    tank:getModData().waterAmount = 0
+                    assert(outlet:getFluidAmount() == 17)
+                    tank:getModData().waterAmount = 13
+                    assert(outlet:getFluidAmount() == 17 and outlet:getFluidCapacity() == 100)
+                    outlet:doFindExternalWaterSource()
+                    assert(outlet:getFluidAmount() == 13)
+                    tank:setName('roof-collector-identity-fixture')
+                    getPlayer():getModData().rustRoofCollector = {x=upper:getX(), y=upper:getY(), z=upper:getZ()}
+                    rustCollectorProbe = true
+                end
+            end
+            sb:set("WaterShutModifier", shut)
+            data.canBeWaterPiped, data.waterAmount, data.waterMaxAmount = moved, remaining, maximum
+            return rustCollectorProbe
+        end), "no indoor piped fixture with two loaded roof squares near player")
+        local others = ArrayList.new()
+        assert(findObject(function(object)
+            object:getSpriteGridObjectsExcludingSelf(others)
+            if others:isEmpty() then return end
+            object:getSpriteGridObjects(parts, true)
+            assert(parts:size() == others:size()+1)
+            local index = 0
+            for j = 0, parts:size()-1 do
+                local part = parts:get(j)
+                assert(part:getSquare() ~= nil)
+                if part ~= object then
+                    assert(others:get(index) == part)
+                    index = index + 1
+                end
+            end
+            assert(index == others:size())
+            return true
+        end), "no multi-square furniture found near the player")
+        assert(findObject(function(object, sq)
+            local container = object:getContainerByEitherType("fridge", "freezer")
+            if not container or not sq:getRoom() or sq:isNoPower() then return end
+            local shut = sb:getElecShutModifier()
+            sb:set("ElecShutModifier", 365)
+            assert(ItemContainer.isObjectPowered(object, false))
+            assert(container:isPowered() and object:checkObjectPowered())
+            sb:set("ElecShutModifier", -1)
+            assert(not ItemContainer.isObjectPowered(object, false))
+            assert(container:isPowered(), "object power must be stable during a game tick")
+            sb:set("ElecShutModifier", shut)
+            return true
+        end), "no indoor fridge near player")
+        assert(not square:isDerelict() or (square:isNoPower() and square:isNoWater()))
+    "#);
+    let room = app.lua.as_ref().unwrap().thread.globals().get_str("rustAmbientRoom").as_num().unwrap() as f32;
+    let ambient = &app.world.as_ref().unwrap().ambient_parameters;
+    for (parameter, global) in [("Water", "rustAmbientWater"), ("Electricity", "rustAmbientPower")] {
+        let expected = app.lua.as_ref().unwrap().thread.globals().get_str(global).as_num().unwrap() as f32;
+        assert_eq!(ambient.current_value(parameter), Some(expected));
+    }
+    assert_eq!(ambient.current_value("RoomSize"), Some(room));
+    let scripts = pz_lua_api::bind_registry::shared_script_manager();
+    let player = bind_players::player(0).unwrap();
+    let actor = player.borrow();
+    assert_eq!(ambient.current_value("HardOfHearing"), Some(f32::from(actor.has_trait(&scripts, "HARD_OF_HEARING").unwrap())));
+    assert_eq!(ambient.current_value("MoodlePanic"), Some(actor.moodles.moodle_level_of(&scripts, "PANIC").unwrap() as f32 / 4.));
+    let zoom = {
+        let core = app.core.borrow();
+        let min = core.offscreen_buffer.get_min_zoom();
+        (core.get_zoom(actor.player.player_index) - min) / (core.offscreen_buffer.get_max_zoom() - min)
+    };
+    assert_eq!(ambient.current_value("CameraZoom").unwrap().to_bits(), zoom.to_bits());
+    drop(actor);
+    assert_eq!(ambient.current_value("CharacterElevation"), Some(player.borrow().vars.z));
+    assert_eq!(ambient.current_value("StreamerMode"), Some(f32::from(streamer)));
+    let temperature = pz_lua_api::bind_climate::shared_game_time().borrow().climate.get_temperature();
+    assert_eq!(ambient.current_value("Temperature"), Some((temperature * 100.0) as i32 as f32 / 100.0));
+}
+
+fn verify_authored_replacements(lua:&mut LuaManager,create:bool) {
+    if create {
+        lua_check(lua,r#"
+            local sq = getSquare(10679,9374,0)
+            local tile = IsoObject.new(sq, "fencing_01_1", "map-removal-probe")
+            sq:AddTileObject(tile)
+            local index = tile:getObjectIndex()
+            local before,after = 0,0
+            local function removing(o)
+                if o ~= tile then return end
+                assert(o:getObjectIndex() == index and o:getSquare() == sq)
+                before = before + 1
+                sq:AddTileObject(IsoObject.new(sq,"fencing_01_1","removal-observer"))
+            end
+            local function removed(o)
+                if o == tile then
+                    assert(before == 1 and o:getObjectIndex() == -1)
+                    after = after + 1
+                end
+            end
+            Events.OnObjectAboutToBeRemoved.Add(removing)
+            Events.OnTileRemoved.Add(removed)
+            assert(sq:RemoveTileObject(tile,false) == index)
+            assert(sq:transmitRemoveItemFromSquare(tile,false) == -1)
+            assert(before == 1 and after == 1)
+            Events.OnObjectAboutToBeRemoved.Remove(removing)
+            Events.OnTileRemoved.Remove(removed)
+            local def = HutchDefinitions.hutchs.hutchhen
+            local x,y=10678,9377
+            for _,part in ipairs(def.extraSprites) do
+                local dest=getSquare(x+part.xoffset,y+part.yoffset,0)
+                dest:AddTileObject(IsoObject.new(dest,part.sprite,nil))
+            end
+            local original=getSquare(x,y,0):addTileObject(def.baseSprite)
+            assert(original:getObjectIndex() == -1)
+            getSquare(10680,9377,0):addTileObject("location_farm_accesories_01_14")
+            getSquare(10680,9376,0):addTileObject("appliances_misc_01_0")
+            getSquare(10680,9375,0):addTileObject("camping_01_6")
+            getSquare(10680,9374,0):addTileObject("camping_01_20")
+            getSquare(10682,9376,0):addTileObject("carpentry_02_52")
+            getSquare(10682,9377,0):addTileObject("carpentry_02_55")
+        "#);
+    }
+    lua_check(lua,r#"
+        local function find(x,y,pred)
+            local objs=getSquare(x,y,0):getObjects()
+            for i=0,objs:size()-1 do if pred(objs:get(i)) then return objs:get(i) end end
+        end
+        local h=getHutch(10678,9377,0)
+        assert(h and h:isOpen() and not h:isSlave(), "original hen hutch callback")
+        local t=find(10680,9377,function(o) return instanceof(o,"IsoFeedingTrough") end)
+        assert(t and t:getMaxFeed() == FeedingTroughDef.simple.maxFeed, "original trough callback")
+        local g=find(10680,9376,function(o) return instanceof(o,"IsoGenerator") end)
+        assert(g and g:getModData().generatorFullType == "Base.Generator" and g:getCondition() == 100, "original generator callback")
+        local compost=find(10680,9374,function(o) return instanceof(o,"IsoCompost") end)
+        assert(compost and compost:getCompost() >= 10 and compost:getContainer():getType() == "composter","original composter callback")
+        for _,spec in ipairs({{9376,"carpentry_02_122",600},{9377,"carpentry_02_54",400}}) do
+            local barrel=find(10682,spec[1],function(o) return o:getName() == "Rain Collector Barrel" end)
+            assert(barrel and barrel:getSprite():getName() == spec[2], "missing authored barrel "..spec[2])
+            local fluid=barrel:getFluidContainer()
+            assert(fluid and fluid:getOwner() == barrel and fluid:getCapacity() == spec[3], "barrel fluid "..spec[2])
+        end
+        local fire=find(10680,9375,function(o) return o:getName() == "Campfire" end)
+        assert(fire and fire:getSprite():getName() == "camping_01_6", "original campfire callback")
+    "#);
+}
+
+fn verify_feeding_trough(lua: &mut LuaManager, create: bool) {
+    if create {
+        lua_check(lua, r#"
+            local info = SpriteConfigManager.getObjectInfoFromSprite("carpentry_02_122")
+            assert(info and info == SpriteConfigManager.getObjectInfoFromSprite("carpentry_02_122"))
+            local script = info:getScript()
+            local parent = getScriptManager():getGameEntityScript("Base.RainCollectorRound")
+            assert(script:getParent() == parent and parent:getComponentScriptFor(ComponentType.SpriteConfig) == script)
+            assert(not SpriteConfigManager.getObjectInfoFromSprite("rust_absent_sprite"))
+            local feedSquare = getSquare(10684,9378,0)
+            rustDryTrough = IsoFeedingTrough.new(feedSquare,FeedingTroughDef.simple.spriteW[1],nil)
+            feedSquare:AddSpecialObject(rustDryTrough)
+            assert(rustDryTrough:getContainer():AddItem("Base.Plank"))
+            assert(rustDryTrough:getFluidContainer(), "dry trough lost its fluid before cell update")
+            local sq = getSquare(10685,9377,0)
+            local def = FeedingTroughDef.simple
+            local name = def.spriteW[1]
+            local t = IsoFeedingTrough.new(sq,name,nil)
+            sq:AddSpecialObject(t)
+            assert(t:getSquare() == sq and t:getMasterTrough() == t)
+            assert(t:getFluidContainer():getOwner() == t and t:getMaxWater() == def.maxWater)
+            assert(t:getMaxFeed() == def.maxFeed and t:getCurrentFeedAmount() == 0)
+            assert(t:getContainer() and t:getWater() == 0)
+            local upper = getSquare(10685,9378,0)
+            local child = IsoFeedingTrough.new(upper,name,sq)
+            upper:AddSpecialObject(child)
+            assert(child:getMasterTrough() == t, "linked trough master identity")
+            assert(not child:getContainer(), "linked trough has a feed inventory")
+            assert(not child:getFluidContainer(), "placed linked trough has a water component")
+            assert(child:getLinkedX() == sq:getX() and child:getLinkedY() == sq:getY())
+            local events = 0
+            local changed = function() events = events + 1 end
+            Events.OnContainerUpdate.Add(changed)
+            t:addWater(FluidType.TaintedWater, 12.5)
+            assert(events == 1 and not t:getContainer() and t:getWater() == 12.5)
+            assert(t:getOverlaySprite():getName() == def.spriteWaterOverlay1[name])
+            t:addWater(FluidType.Water, def.maxWater)
+            assert(events == 1 and t:getWater() == def.maxWater)
+            Events.OnContainerUpdate.Remove(changed)
+        "#);
+    }
+    lua_check(lua, r#"
+        local function find(x,y)
+            local objects = getSquare(x,y,0):getObjects()
+            for j=0,objects:size()-1 do
+                local o=objects:get(j)
+                if instanceof(o,'IsoFeedingTrough') then return o end
+            end
+        end
+        local t,child = find(10685,9377),find(10685,9378)
+        local def = FeedingTroughDef.simple
+        assert(t, "missing saved master trough")
+        assert(child, "missing saved linked trough")
+        assert(child:getMasterTrough() == t, "saved linked trough points to "..tostring(child:getLinkedX())..","..tostring(child:getLinkedY()))
+        assert(t:getAllFeedingTypes():isEmpty())
+        assert(t:getWater() == def.maxWater and t:getMaxWater() == def.maxWater)
+        assert(not t:getContainer() and t:getFluidContainer():getOwner() == t)
+        assert(t:getOverlaySprite():getName() == def.spriteWaterOverlay2[def.spriteW[1]])
+    "#);
+}
+
+fn verify_hutch(lua: &mut LuaManager, create: bool) {
+    if create {
+        lua_check(lua, r#"
+            local x,y,z = 10686, 9376, 0
+            local def = HutchDefinitions.hutchs.hutchhen
+            local sq = getSquare(x,y,z)
+            assert(sq and not getHutch(x,y,z))
+            local h = IsoHutch.new(sq, true, def.baseSprite, def, nil)
+            assert(h == getHutch(x,y,z) and h:getHutch() == h and not h:isSlave())
+            assert(h:isDoorClosed() and not h:isEggHatchDoorOpen())
+            h:toggleDoor()
+            h:toggleEggHatchDoor()
+            h:setHutchDirt(12.5)
+            h:setNestBoxDirt(3.25)
+        "#);
+    }
+    lua_check(lua, r#"
+        local x,y,z = 10686, 9376, 0
+        local h = IsoHutch.getHutch(x,y,z)
+        assert(h and h:isOpen() and h:isEggHatchDoorOpen())
+        assert(h:getMaxAnimals() == 20 and h:getMaxNestBox() == 3)
+        assert(h:getEnterSpotY() == 1 and h:getHutchDirt() == 12.5 and h:getNestBoxDirt() == 3.25)
+        assert(h:getSprite():getName() == 'location_farm_accesories_01_48')
+        local parts, opened = 0, 0
+        for dx=0,1 do for dy=-1,0 do
+            local objects = getSquare(x+dx,y+dy,z):getObjects()
+            for j=0,objects:size()-1 do
+                local obj = objects:get(j)
+                if instanceof(obj,'IsoHutch') then
+                    parts = parts + 1
+                    assert(obj:getHutch() == h and obj:isSlave() == (obj ~= h))
+                    local name = obj:getSprite():getName()
+                    if name == 'location_farm_accesories_01_46' or name == 'location_farm_accesories_01_47' then opened=opened+1 end
+                end
+            end
+        end end
+        assert(parts == 6 and opened == 2)
+    "#);
+}
+
+fn verify_pump_supply(app: &mut super::App) {
+    let sprites = app.world.as_ref().unwrap().sprites.as_ref().unwrap().borrow();
+    let pump = sprites.sprites.iter().find_map(|s| {
+        let capacity: i32 = s.properties.get(&sprites.alias, "fuelAmount")?.parse().ok()?;
+        (capacity > 1).then(|| s.name.clone()).flatten()
+    }).expect("installed pump sprite");
+    drop(sprites);
+    let lua = app.lua.as_mut().unwrap();
+    lua.thread.globals().set_str("rustPumpSprite", pz_kahlua::Value::str(&pump));
+    lua_check(lua, r#"
+        local sq = getCell():getGridSquare(10689, 9377, 0)
+        local sb = getSandboxOptions()
+        local saved = {}
+        local function set(name, value)
+            if saved[name] == nil then saved[name] = sb:getOptionByName(name):getValue() end
+            sb:set(name, value)
+        end
+        set("AllowExteriorGenerator", false)
+        set("ElecShutModifier", -1)
+        set("FuelStationGasInfinite", false)
+        assert(getSquare(10689.75, 9377.25, 0) == sq)
+        local plant = sq:addTileObject('vegetation_indoor_01_7')
+        local suffix = tonumber(string.match(plant:getSprite():getName(), 'vegetation_indoor_01_(%d+)'))
+        assert(suffix and suffix >= 7 and suffix <= 12)
+        local tile = 'fencing_01_1'
+        local sign = sq:addTileObject(tile)
+        local shared = sign:getSprite()
+        sign:setName('runtime-sprite-fixture')
+        sign:setSprite(tile)
+        local runtime = sign:getSprite()
+        assert(shared ~= runtime and runtime == sign:getSprite())
+        assert(sign:getSpriteName() == tile and sign:getType() == IsoObjectType.MAX)
+        assert(sign:getTileName() == sign:getName())
+        local added = sq:addTileObject(rustPumpSprite)
+        assert(added:getSquare() == sq and added:getObjectIndex() >= 0)
+        assert(added:getPipedFuelAmount() == -1)
+        set("FuelStationGasInfinite", true)
+        assert(added:getPipedFuelAmount() == 1000)
+        set("FuelStationGasInfinite", false)
+        set("FuelStationGasMin", 0.5)
+        set("FuelStationGasMax", 0.5)
+        set("FuelStationGasEmptyChance", 0)
+        set("ElecShutModifier", 365)
+        local capacity = tonumber(added:getProperty("fuelAmount"))
+        assert(added:getPipedFuelAmount() == math.floor(capacity * 0.5))
+        added:setPipedFuelAmount(137)
+        set("ElecShutModifier", -1)
+        assert(added:getPipedFuelAmount() == 137)
+        for key,value in pairs(saved) do sb:set(key, value) end
     "#);
 }
 
@@ -315,16 +756,19 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     .expect("create Rust session");
     app.core.borrow_mut().set_no_save(false);
     app.boot().expect("boot Rust session from installed media");
+    observe_tile_definitions(app.lua.as_mut().unwrap());
     movement_diagnostics(&mut app, "boot");
 
     // Use the real loading/state-machine path, including population startup.
     for _ in 0..1100 {
-        run_frames(&mut app, 1);
+        assert!(run_frames(&mut app, 1), "new session stopped at {:?}: {:?}", app.current_state(), app.error);
         if app.current_state() == Some(INGAME) {
             break;
         }
     }
-    assert_eq!(app.current_state(), Some(INGAME), "session never entered gameplay; cache: {}", cache_dir.display());
+    assert_eq!(app.current_state(), Some(INGAME), "session never entered gameplay; cache: {}, world errors: {:?}", cache_dir.display(), app.world.as_ref().map(|w| &w.errors));
+    verify_tile_definitions(app.lua.as_mut().unwrap());
+    lua_check(app.lua.as_mut().unwrap(), "assert(rustMapNew > 0, 'new sprite callbacks')");
     run_frames(&mut app, 4);
     movement_diagnostics(&mut app, "before W");
     let player = bind_players::player(0).expect("new session created local player 0");
@@ -342,6 +786,9 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
 
     // The shipped guide pauses through the real speed controls. Held input
     // must not advance simulation until its actual close handler resumes it.
+    let ambient_before_pause = app.world.as_ref().unwrap().ambient_parameters.current_value("StreamerMode");
+    let streamer = app.core.borrow().get_option_streamer_mode();
+    app.core.borrow_mut().set_option_streamer_mode(!streamer);
     lua_check(app.lua.as_mut().unwrap(), r#"
         setGameSpeed(0)
         rustSessionPausedTicks = 0
@@ -363,6 +810,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         assert(rustSessionPausedTicks == 3)
         Events.OnTickEvenPaused.Remove(rustSessionPausedTick)
     "#);
+    assert_eq!(app.world.as_ref().unwrap().ambient_parameters.current_value("StreamerMode"), ambient_before_pause);
     close_survival_guide(app.lua.as_mut().unwrap());
 
     // Keyboard scan code 17 is W. It enters the same input queue as the
@@ -388,6 +836,12 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
             }
         }
     }
+    verify_utilities_and_ambience(&mut app, !streamer);
+    verify_pump_supply(&mut app);
+    verify_hutch(app.lua.as_mut().unwrap(), true);
+    verify_feeding_trough(app.lua.as_mut().unwrap(), true);
+    verify_authored_replacements(app.lua.as_mut().unwrap(), true);
+    app.core.borrow_mut().set_option_streamer_mode(streamer);
     let late_start = late_start.expect("captured held-W frame 40");
     let held_end = {
         let p = player.borrow();
@@ -400,6 +854,11 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     );
     pz_input::with_input(|i| i.key(17, 0));
     run_frames(&mut app, 1);
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        assert(not rustDryTrough:getFluidContainer(), "cell update retained fluid beside feed")
+        assert(rustDryTrough:getContainer():getItems():size() == 1)
+        rustDryTrough = nil
+    "#);
     queue::wait_for_idle(&mut app);
     let after = {
         let p = player.borrow();
@@ -435,10 +894,15 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     // This is the native CloseRequested path, not a direct save helper.
     let parts = app.world.as_ref().unwrap().save_tables.as_ref().unwrap().blood_body_parts;
     let sprites = app.world.as_ref().unwrap().sprites.as_ref().unwrap().clone();
+    mannequin::check_moveable_items(app.lua.as_mut().unwrap(), app.world.as_ref().unwrap());
     mannequin::install_outfit_fixtures(app.lua.as_mut().unwrap(), &game_dir, parts, &sprites);
     let expected_world_chunks = mannequin::check_live(true);
     let expected_mannequins = mannequin::saved_state();
-    app.close();
+    assert!(app.world.as_ref().unwrap().failed_chunk_activation.is_none(), "new map activation stopped");
+    assert!(app.error.is_none(), "session failed before native close: {:?}", app.error);
+    lua_check(app.lua.as_mut().unwrap(), "getCore():quitToDesktop()");
+    run_frames(&mut app, 1);
+    assert!(app.error.is_none(), "native close failed: {:?}", app.error);
     assert!(app.world.is_none(), "native close retained the gameplay world");
     assert_eq!(app.current_state(), None);
     // `GameWindow.exit` delivers `OnPostSave` twice.
@@ -465,6 +929,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     }
     assert!(pz_lua_api::global_objects_save::save_dir().is_none(), "native close retained the global-system save directory");
     assert!(bind_players::player(0).is_none(), "native close retained player 0");
+    assert!(pz_lua_api::bind_sprites::sprite_property("rust_session_tile_probe", "solid").is_none(), "closed world retained its sprite manager");
     drop(app);
 
     // A row readback cannot establish that a session is loadable. Reboot
@@ -483,18 +948,50 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     .expect("create Rust saved session");
     reloaded.core.borrow_mut().set_no_save(false);
     reloaded.boot().expect("boot Rust saved session from installed media");
+    observe_tile_definitions(reloaded.lua.as_mut().unwrap());
     lua_check(reloaded.lua.as_mut().unwrap(), r#"
         rustSessionReloadNewGameCount = 0
         Events.OnNewGame.Add(function() rustSessionReloadNewGameCount = rustSessionReloadNewGameCount + 1 end)
     "#);
     for _ in 0..1100 {
-        run_frames(&mut reloaded, 1);
+        assert!(run_frames(&mut reloaded, 1), "saved session stopped at {:?}: {:?}", reloaded.current_state(), reloaded.error);
         if reloaded.current_state() == Some(INGAME) {
             break;
         }
     }
     assert_eq!(reloaded.current_state(), Some(INGAME), "saved session never entered gameplay; cache: {}", cache_dir.display());
-    mannequin::check_live(false);
+    verify_tile_definitions(reloaded.lua.as_mut().unwrap());
+    verify_hutch(reloaded.lua.as_mut().unwrap(), false);
+    verify_feeding_trough(reloaded.lua.as_mut().unwrap(), false);
+    verify_authored_replacements(reloaded.lua.as_mut().unwrap(), false);
+    lua_check(reloaded.lua.as_mut().unwrap(), r#"
+        local saved = getPlayer():getModData().rustRoofCollector
+        assert(saved and saved.z == 1)
+        local roofs = getSquare(saved.x, saved.y, saved.z):getObjects()
+        local savedTank
+        for j = 0, roofs:size()-1 do
+            local obj = roofs:get(j)
+            if obj:getName() == 'roof-collector-identity-fixture' then savedTank = obj end
+        end
+        assert(savedTank and instanceof(savedTank, 'IsoThumpable'))
+        assert(savedTank:getTable().fixture == 13 and savedTank:getModData().waterAmount == 13)
+        assert(savedTank:getBuildMaterials()['Base.Plank'] == 2)
+        local objects = getCell():getGridSquare(10689, 9377, 0):getObjects()
+        local found, foundSprite = false, false
+        for i = 0, objects:size()-1 do
+            local obj = objects:get(i)
+            if obj:getName() == 'runtime-sprite-fixture' then
+                assert(obj:getSpriteName() == 'fencing_01_1' and obj:getType() == IsoObjectType.MAX)
+                assert(obj:getSprite() and obj:getSprite() ~= IsoSpriteManager.instance:getSprite('fencing_01_1'))
+                assert(obj:getTileName() == 'runtime-sprite-fixture')
+                foundSprite = true
+            end
+            if obj:getProperty("fuelAmount") and obj:getPipedFuelAmount() == 137 then found = true end
+        end
+        assert(foundSprite, "single-texture map object must survive reload")
+        assert(found, "placed pump and its stored fuel must survive reload")
+    "#);
+    let initial_chunks = mannequin::check_live(false);
     assert_eq!(mannequin::saved_state(), expected_mannequins, "mannequin outfit/identity/pose/skin changed across close and fresh reload");
     let loaded_player = bind_players::player(0).expect("saved session reconstructed local player 0");
     assert!(!Rc::ptr_eq(&player, &loaded_player), "saved session reused the closed session's player");
@@ -510,6 +1007,19 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         "starting items or their nested contents/IDs changed across native close and reload"
     );
     inventory_ui_check(reloaded.lua.as_mut().unwrap());
+    lua_check(reloaded.lua.as_mut().unwrap(), r#"
+        local p = getPlayer()
+        local events = p:getMusicIntensityEvents()
+        local count = events:getEventCount()
+        local container = ItemContainer.new("floor", nil, nil)
+        container:setExplored(false)
+        ISInventoryPage:checkExplored(container, p)
+        assert(container:isExplored() and events:getEventCount() == count + 1)
+        local search = events:getEventByIndex(count)
+        assert(search:getId() == "SearchNewContainer" and search:getIntensity() == -10)
+        ISInventoryPage:checkExplored(container, p)
+        assert(events:getEventCount() == count + 1)
+    "#);
     global_systems_check(reloaded.lua.as_mut().unwrap(), true);
     close_survival_guide(reloaded.lua.as_mut().unwrap());
     assert!((loaded_position.0 - after.0).abs() < 0.0001, "reloaded x differs: {} versus {}", loaded_position.0, after.0);
@@ -520,22 +1030,62 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         local saved = getPlayer():getModData().rustSessionRegression
         assert(saved.revision == 7)
         assert(saved.nested.value == "retained nested mutation")
+        rustSessionOldSkin = XuiManager.GetDefaultSkin()
+        assert(rustSessionOldSkin ~= nil and not rustSessionOldSkin:isInvalidated())
         rustSessionOldEnvironment = true
         rustSessionOldMenuCount = 0
         Events.OnMainMenuEnter.Add(function() rustSessionOldMenuCount = rustSessionOldMenuCount + 1 end)
     "#);
     movement_diagnostics(&mut reloaded, "reloaded");
+    windows::check(&mut reloaded);
+    let after_climb = { let p = loaded_player.borrow(); (p.vars.x, p.vars.y, p.vars.z) };
     let old_scripts = pz_lua_api::bind_registry::shared_script_manager();
     let old_globals = reloaded.lua.as_ref().unwrap().thread.globals().clone();
-    reloaded.core.borrow_mut().exiting = true;
-    run_frames(&mut reloaded, 1);
+    // Preserve the first save in the isolated test cache. Each resident
+    // chunk must be written again by quit; the earlier files cannot satisfy it.
+    let reloaded_chunks = mannequin::check_live(false);
+    let streamed_out: Vec<_> = initial_chunks.into_iter().filter(|xy| !reloaded_chunks.contains(xy)).collect();
+    mannequin::check_saved(&save_dir, &streamed_out);
+    let first_save = cache_dir.join("first-close-chunks");
+    std::fs::create_dir(&first_save).unwrap();
+    for &(wx, wy) in &reloaded_chunks {
+        let path = pz_world::save::chunk_file::chunk_path(&save_dir, wx, wy);
+        if path.is_file() {
+            std::fs::rename(&path, first_save.join(format!("{wx}_{wy}.bin"))).unwrap();
+        }
+    }
+    if let Some((_, error)) = &reloaded.world.as_ref().unwrap().failed_chunk_activation {
+        panic!("saved map activation stopped: {error}");
+    }
+    let active_alarms = reloaded.world.as_ref().unwrap().meta_tracker.borrow().alarms.clone();
+    assert_eq!(active_alarms.len(), 2);
+    lua_check(reloaded.lua.as_mut().unwrap(), "getCore():quit()");
+    assert!(run_frames(&mut reloaded, 1), "returning to the menu ended the client");
     assert_eq!(reloaded.current_state(), Some("zombie.gameStates.MainScreenState"), "quit did not return to the main menu");
     assert!(reloaded.world.is_none(), "menu return retained the old world");
+    mannequin::check_saved(&save_dir, &reloaded_chunks);
+    let mut saved_meta = pz_core::save_trackers::MetaTracker::default();
+    saved_meta.load_file(&save_dir, false, true).unwrap();
+    assert_eq!(saved_meta.alarms, active_alarms, "quit must persist the active alarms");
+    let mut db = PlayerDb::new(false, &save_dir.to_string_lossy());
+    let saved = db.load_player(sql_id).expect("quit after climbing saved the player");
+    assert_eq!((saved.x, saved.y, saved.z), after_climb);
+    db.close();
     assert!(!Rc::ptr_eq(&old_scripts, &pz_lua_api::bind_registry::shared_script_manager()), "menu retained the old script definitions");
     assert!(reloaded.lua.as_ref().unwrap().thread.globals().get_str("rustSessionOldEnvironment").is_nil(), "menu retained old Lua globals");
     assert_eq!(old_globals.get_str("rustSessionOldMenuCount").as_num(), Some(0.0), "old menu callback ran after reset");
+    let lua = reloaded.lua.as_mut().unwrap();
+    lua.thread.globals().set_str("rustPreviousSkin", old_globals.get_str("rustSessionOldSkin"));
+    lua_check(lua, r#"
+        assert(rustPreviousSkin:isInvalidated())
+        local skin = XuiManager.GetDefaultSkin()
+        assert(skin ~= nil and skin ~= rustPreviousSkin and not skin:isInvalidated())
+        rustPreviousSkin = nil
+    "#);
     assert!(matches!(reloaded.launch.start, Start::MainMenu), "startup game settings leaked into future menu loads");
-    reloaded.close();
+    lua_check(reloaded.lua.as_mut().unwrap(), "getCore():quit()");
+    assert!(!run_frames(&mut reloaded, 1), "desktop exit left the client running");
+    assert!(reloaded.error.is_none(), "menu quit failed: {:?}", reloaded.error);
     assert!(reloaded.world.is_none(), "native close retained the reloaded world");
     assert_eq!(reloaded.current_state(), None);
     assert!(bind_players::player(0).is_none(), "native close retained the reloaded player");

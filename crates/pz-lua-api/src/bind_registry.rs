@@ -73,7 +73,10 @@ pub(crate) fn reset_session_handles() {
 
 /// Make `sm` the instance `register_all` binds.
 pub fn install_script_manager(sm: Rc<ScriptManager>) {
-    SHARED.with(|s| *s.borrow_mut() = Some(sm));
+    let previous = SHARED.with(|s| s.borrow_mut().replace(sm.clone()));
+    if !previous.as_ref().is_some_and(|old| Rc::ptr_eq(old, &sm)) {
+        crate::bind_xui::reset();
+    }
 }
 
 /// The shared ScriptManager (`ScriptManager.instance`), empty if none was
@@ -150,6 +153,22 @@ pub fn key_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<Rc<RegistryKey>
             "Expected a registry key but got {}",
             pz_kahlua::stdlib::java_class_name(&other)
         ))),
+    }
+}
+
+/// Nullable actual GameMode argument; class metadata is read intrinsically,
+/// without virtual callbacks on rejected userdata.
+pub fn game_mode_arg(value: &Value) -> LuaResult<Option<Rc<RegistryKey>>> {
+    match value {
+        Value::Nil => Ok(None),
+        Value::Object(object) => {
+            let key = (&**object as &dyn Any).downcast_ref::<KeyObject>();
+            match key {
+                Some(key) if key.class == GAME_MODE_CLASS => Ok(Some(key.key.clone())),
+                _ => Err(crate::bind_world_object::unsupported("GameMode argument conversion")),
+            }
+        }
+        _ => Err(crate::bind_world_object::unsupported("GameMode argument conversion")),
     }
 }
 
@@ -320,6 +339,8 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
         let b = expose_class(thread, class, None);
         let constants: Vec<(String, Rc<RegistryKey>)> = if let Some(native) = sm.native_item_key_statics().filter(|_| registry == "item_tag" || registry == "item_type") {
             native.constants(registry).map(|(field, key)| (field.to_owned(), Rc::clone(key))).collect()
+        } else if let Some(native) = sm.native_game_mode_statics().filter(|_| registry == "game_mode") {
+            native.constants().map(|(field, key)| (field.to_owned(), Rc::clone(key))).collect()
         } else {
             let declarations: Vec<(String, String)> = sm.statics.items.borrow().constants.constants(registry)
                 .into_iter().map(|(field, id)| (field.to_owned(), id.to_owned())).collect();

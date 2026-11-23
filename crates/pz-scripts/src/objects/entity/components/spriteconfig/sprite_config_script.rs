@@ -624,3 +624,40 @@ impl ComponentScript for SpriteConfigScript {
         self.check_scripts(sm)
     }
 }
+
+impl ZLayer {
+    pub(super) fn append_version(&self, text: &mut String) {
+        use std::fmt::Write;
+        write!(text, "{}", self.rows.len()).unwrap();
+        for row in &self.rows {
+            write!(text, "{}", row.tiles.len()).unwrap();
+            for tile in &row.tiles {
+                if let Some(name) = &tile.tile_name {
+                    text.push_str(name);
+                }
+                write!(text, "{}{}", tile.is_empty_space, tile.blocks_square).unwrap();
+            }
+        }
+    }
+}
+
+pub(super) fn append_face_version(text: &mut String, face_name: &str, layers: &[ZLayer]) {
+    text.push_str(face_name);
+    text.push_str(&layers.len().to_string());
+    for layer in layers {
+        layer.append_version(text);
+    }
+}
+
+impl SpriteConfigScript {
+    /// Text supplied to VersionHash by getVersion, including face-name case.
+    pub fn dictionary_version_text(&self, script_name: &str) -> String {
+        let mut text = format!("{script_name}{}", self.is_valid());
+        if self.is_valid() {
+            for face in self.faces.iter().flatten() {
+                append_face_version(&mut text, &face.face_name, &face.layers);
+            }
+        }
+        text
+    }
+}

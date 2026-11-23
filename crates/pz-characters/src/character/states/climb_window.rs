@@ -111,6 +111,15 @@ impl<I: 'static> GameCharacter<I> {
     /// the character can climb through puts it in the window's opening,
     /// then `setParams` and `EventClimbWindow`.
     pub fn climb_through_window(&mut self, window: ObjectRef, cx: &mut StateCx<'_, I>) {
+        self.start_window_climb(window, true, cx);
+    }
+
+    /// The overload with a starting frame preserves the current tile position.
+    pub fn climb_through_window_at_frame(&mut self, window: ObjectRef, cx: &mut StateCx<'_, I>) {
+        self.start_window_climb(window, false, cx);
+    }
+
+    fn start_window_climb(&mut self, window: ObjectRef, align: bool, cx: &mut StateCx<'_, I>) {
         if cx.has_host_error() { return; }
         let Some(w) = cx.world.window_climb(&*self, mover_kind(self), window) else { return };
         if !matches!(w.portal, ThumpKind::Window | ThumpKind::Thumpable) || !w.portal_can_climb {
@@ -118,13 +127,15 @@ impl<I: 'static> GameCharacter<I> {
         }
         self.drop_heavy_items_in(cx);
         if cx.has_host_error() { return; }
-        let ox = self.vars.x - fastfloor(self.vars.x) as f32;
-        let oy = self.vars.y - fastfloor(self.vars.y) as f32;
-        let (wx, wy) = (w.square.0 as f32, w.square.1 as f32);
-        let x_mod = if wx > self.vars.x && !w.north { -1 } else { 0 };
-        let y_mod = if wy > self.vars.y && w.north { -1 } else { 0 };
-        self.set_x(wx + ox + x_mod as f32);
-        self.set_y(wy + oy + y_mod as f32);
+        if align {
+            let ox = self.vars.x - fastfloor(self.vars.x) as f32;
+            let oy = self.vars.y - fastfloor(self.vars.y) as f32;
+            let (wx, wy) = (w.square.0 as f32, w.square.1 as f32);
+            let x_mod = if wx > self.vars.x && !w.north { -1 } else { 0 };
+            let y_mod = if wy > self.vars.y && w.north { -1 } else { 0 };
+            self.set_x(wx + ox + x_mod as f32);
+            self.set_y(wy + oy + y_mod as f32);
+        }
         set_params(self, window, cx);
         self.report_event("EventClimbWindow");
     }
@@ -642,6 +653,25 @@ mod tests {
         z.vars.y = 5.6;
         z.path.current_square = Some((5, 5, 0));
         z
+    }
+
+    #[test]
+    fn starting_frame_overload_keeps_position_when_the_regular_call_aligns_to_the_window() {
+        let (sm, chars) = fixture();
+        let ctx = Recorder::default();
+        let mut world = Windowed::default();
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+        for at_frame in [true, false] {
+            let mut actor = zombie(&sm);
+            actor.set_x(6.25);
+            if at_frame {
+                actor.climb_through_window_at_frame(WIN, &mut cx);
+            } else {
+                actor.climb_through_window(WIN, &mut cx);
+            }
+            assert_eq!(actor.vars.x, if at_frame { 6.25 } else { 5.25 });
+            assert_eq!(positioning(&actor).unwrap().window, WIN);
+        }
     }
 
     #[test]

@@ -506,6 +506,21 @@ fn compressed_native_save_patches_current_bit_before_a_later_nested_borrow_error
         101
     );
     assert_eq!(writer.buf.len(), 18);
+    struct Direct(Rc<RefCell<Vec<u8>>>);
+    impl crate::io::WriterTarget for Direct {
+        fn pos(&self) -> usize { self.0.borrow().len() }
+        fn bytes(&mut self, bytes: &[u8]) { self.0.borrow_mut().extend_from_slice(bytes); }
+        fn patch_bytes(&mut self, at: usize, bytes: &[u8]) {
+            self.0.borrow_mut()[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+    }
+    let bytes = Rc::new(RefCell::new(Vec::new()));
+    let mut direct = Writer::with_target(Box::new(Direct(bytes.clone())));
+    assert!(matches!(actual.borrow().write_payload(&mut direct),
+        Err(RuntimeError::BorrowedTransient("AttributeInstance"))));
+    assert!(direct.buf.is_empty());
+    assert_eq!(&*bytes.borrow(), &writer.buf,
+        "direct target must contain the patched masks and completed value prefix at the fault");
     drop(guard);
 }
 

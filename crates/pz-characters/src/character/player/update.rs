@@ -258,7 +258,15 @@ impl<I: 'static> GameCharacter<I> {
         self.vars.precision_aim_key_down = self.player.input.is_precision_aim_key_down(input, self.input_owner());
         self.update_nutrition_and_fitness(sm, chars, ctx)?;
         self.update_vision_effect_targets();
-        // updateSoundListener, SafetySystemManager.update: sound / MP.
+        if self.is_local_player(ctx) {
+            self.player.check_nearby_rooms -= ctx.thirty_fps_multiplier();
+            let count_rooms = self.player.check_nearby_rooms <= 0.0;
+            if count_rooms { self.player.check_nearby_rooms = 30.0; }
+            out.events.push(PlayerEvent::UpdateSoundListener {
+                position: [self.vars.x, self.vars.y, self.vars.z], count_rooms,
+            });
+        }
+        // SafetySystemManager.update is multiplayer-only.
         if self.player.death_finished {
             return Ok(ControlFlow::Continue(false));
         }
@@ -306,14 +314,19 @@ impl<I: 'static> GameCharacter<I> {
         if self.update_while_dead() {
             return Ok(ControlFlow::Continue(true));
         }
-        // updateAttackLoopSound .. updateEquippedBaggageContainer: sound.
+        // updateAttackLoopSound through updateVocalProperties precede baggage.
+        self.update_equipped_baggage_container(sm, ctx)?;
         self.update_sneak_key(input);
         self.check_is_near_wall(cx);
         // checkIsNearVehicle: TODO(vehicles).
         let idle_nodes = cx.world.contains_any_idle_nodes(self.id);
         self.update_ext(sm, ctx, idle_nodes);
         self.update_interact_key_panic();
-        // updateMusicIntensityEvents, updateMusicThreatStatuses: music.
+        out.events.push(PlayerEvent::UpdateMusic {
+            inside: self.environment.square_in_room,
+            panic: self.moodles.moodle_level_of(sm, "PANIC")?,
+            now_ms: self.player.now_ms,
+        });
         if self.asleep {
             self.player_moving = false;
             self.vars.is_player_moving = false;

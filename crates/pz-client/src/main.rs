@@ -3,7 +3,7 @@
 //!
 //! `--headless-frames N` runs the boot sequence and N main-menu frames
 //! without a window and prints Lua errors and UI statistics; it is the
-//! development harness until the GPU backend lands.
+//! menu development harness. The PNG path also renders through the GPU.
 //!
 //! `--new-game <name>` / `--load-game <mode>/<name>` skip the main menu:
 //! they set `Core.gameMode` / `gameSaveWorld` (and for a new game
@@ -18,7 +18,36 @@
 mod install;
 mod main_screen;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), png::EncodingError> {
+    let file = std::fs::File::create(path)?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(rgba)?;
+    writer.finish()
+}
+
+fn usage_error(message: &str) -> ! {
+    eprintln!("{message}");
+    std::process::exit(2);
+}
+
+fn option_value(args: &mut impl Iterator<Item = String>, name: &str) -> String {
+    args.next()
+        .filter(|value| (name == "--seed" || !value.is_empty()) && !value.starts_with("--"))
+        .unwrap_or_else(|| usage_error(&format!("{name} requires a value")))
+}
+
+fn parse_spawn(value: &str) -> Option<(i32, i32, i32)> {
+    let mut coordinates = value.split(',');
+    let x = coordinates.next()?.trim().parse().ok()?;
+    let y = coordinates.next()?.trim().parse().ok()?;
+    let z = coordinates.next()?.trim().parse().ok()?;
+    coordinates.next().is_none().then_some((x, y, z))
+}
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -34,23 +63,23 @@ fn main() {
     let mut seed = String::new();
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--new-game" => new_game = args.next(),
-            "--load-game" => load_game = args.next(),
-            "--game-mode" => game_mode = args.next().unwrap_or(game_mode),
-            "--map" => map = args.next().unwrap_or(map),
+            "--new-game" => new_game = Some(option_value(&mut args, &a)),
+            "--load-game" => load_game = Some(option_value(&mut args, &a)),
+            "--game-mode" => game_mode = option_value(&mut args, &a),
+            "--map" => map = option_value(&mut args, &a),
             "--seed" => seed = args.next().unwrap_or_default(),
             "--spawn" => {
-                let v: Vec<i32> = args.next().unwrap_or_default().split(',').filter_map(|n| n.trim().parse().ok()).collect();
-                if v.len() != 3 {
-                    eprintln!("--spawn takes x,y,z");
-                    std::process::exit(2);
-                }
-                spawn = Some((v[0], v[1], v[2]));
+                let value = option_value(&mut args, &a);
+                spawn = Some(parse_spawn(&value).unwrap_or_else(|| usage_error("--spawn takes x,y,z")));
             }
-            "--game-dir" => game_dir = args.next().map(PathBuf::from),
-            "--png" => png_out = args.next().map(PathBuf::from),
-            "--cache-dir" => cache_dir = args.next().map(PathBuf::from),
-            "--headless-frames" => headless_frames = args.next().and_then(|n| n.parse::<u32>().ok()),
+            "--game-dir" => game_dir = Some(PathBuf::from(option_value(&mut args, &a))),
+            "--png" => png_out = Some(PathBuf::from(option_value(&mut args, &a))),
+            "--cache-dir" => cache_dir = Some(PathBuf::from(option_value(&mut args, &a))),
+            "--headless-frames" => {
+                let value = option_value(&mut args, &a);
+                headless_frames = Some(value.parse::<u32>()
+                    .unwrap_or_else(|_| usage_error("--headless-frames takes a nonnegative integer")));
+            }
             "--help" | "-h" => {
                 println!(
                     "pz-client [--game-dir DIR] [--cache-dir DIR] [--headless-frames N] [--png OUT] \
@@ -63,6 +92,9 @@ fn main() {
                 std::process::exit(2);
             }
         }
+    }
+    if png_out.is_some() && headless_frames.is_none() {
+        usage_error("--png requires --headless-frames");
     }
     let Some(dir) = install::find_game_dir(game_dir) else {
         eprintln!("Cannot find the Project Zomboid install (a directory containing media/) in the Steam libraries. Use --game-dir or PZ_GAME_DIR.");
@@ -105,11 +137,10 @@ fn main() {
         let cache = cache_dir.clone();
         match pz_engine::game_window::render_headless(Launch { game_dir: dir, cache_dir: cache, start }, frames) {
             Ok((w, h, px)) => {
-                let f = std::fs::File::create(&out).expect("png");
-                let mut e = png::Encoder::new(std::io::BufWriter::new(f), w, h);
-                e.set_color(png::ColorType::Rgba);
-                e.set_depth(png::BitDepth::Eight);
-                e.write_header().unwrap().write_image_data(&px).unwrap();
+                if let Err(error) = write_png(&out, w, h, &px) {
+                    eprintln!("could not write {}: {error}", out.display());
+                    std::process::exit(1);
+                }
                 println!("wrote {} ({w}x{h})", out.display());
             }
             Err(e) => {

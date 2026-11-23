@@ -2,6 +2,59 @@ use pz_lua_api::bind_world::with_world;
 use pz_world::objects::ObjectKind;
 use std::path::Path;
 
+/// Both stock moveables run their script callback inside instanceItem. Read
+/// their bytes through the world's ordinary object loader.
+pub(super) fn check_moveable_items(lua: &mut pz_lua_api::LuaManager, world: &crate::iso_world::IsoWorld) {
+    use pz_world::save::{object_io, NoSaveHooks, SaveCtx, WORLD_VERSION};
+    let mut stock_weight = None;
+    for (item_type, name, skin, costume) in [
+        ("Base.Mov_Scarecrow", "MannequinScarecrow02", "Male_Scarecrow", false),
+        ("Base.Mov_SkeletonDisplay", "MannequinSkeleton01", "Skeleton_Mannequin", false),
+        ("Base.Mov_Scarecrow", "MannequinScarecrow02", "Male_Scarecrow", true),
+    ] {
+        let scripts = pz_lua_api::bind_registry::shared_script_manager();
+        let script = scripts.get::<pz_scripts::objects::models::MannequinScript>(pz_scripts::ScriptType::Mannequin, name).unwrap();
+        let original_outfit = script.borrow().outfit().unwrap().to_owned();
+        if costume {
+            // A mod may override either of these mannequin scripts. Exercise
+            // the nonempty contents, item weights and worn-index path.
+            script.borrow_mut().set_outfit("CostumeScarecrow");
+        }
+        // The create callback may consult the sprite manager itself.
+        super::lua_check(lua, &format!("rustSessionMoveable = assert(instanceItem('{item_type}'))"));
+        if costume { script.borrow_mut().set_outfit(&original_outfit); }
+        let item = pz_lua_api::bind_items::item_arg_value(&lua.thread.globals().get_str("rustSessionMoveable")).unwrap();
+        let item = item.borrow();
+        let data = item.byte_data.as_deref().expect("item creation must produce a mannequin payload");
+        let mut reader = pz_inventory::io::Reader::new(data);
+        assert_eq!(reader.i32().unwrap(), WORLD_VERSION);
+        let sprites = world.sprites.as_ref().unwrap().borrow();
+        let ctx = SaveCtx {
+            sprites: &sprites, tables: world.save_tables.as_ref().unwrap(), settings: &world.save_settings,
+            items: world.items.as_ref().unwrap(), hooks: &NoSaveHooks, meta: None,
+        };
+        let object = object_io::load_object(&mut reader, &ctx, WORLD_VERSION, 1).unwrap().unwrap();
+        assert_eq!(reader.pos, data.len());
+        let ObjectKind::Mannequin(m) = object.kind else { panic!("expected a mannequin payload") };
+        assert!(m.init);
+        assert_eq!(m.dir, pz_world::IsoDirections::N as i8);
+        assert_eq!(m.mannequin_script_name.as_deref(), Some(name));
+        assert_eq!(m.pose.as_deref(), Some("pose01"));
+        assert_eq!(m.human_visual.skin_texture_name.as_deref(), Some(skin));
+        let contents = &m.container.as_ref().unwrap().items;
+        if costume {
+            assert!(!contents.is_empty() && !m.worn_items.is_empty());
+            assert!(m.worn_items.iter().all(|(_, index)| (0..contents.len()).contains(&(*index as usize))));
+            assert!(item.get_actual_weight() > stock_weight.unwrap());
+        } else {
+            assert!(contents.is_empty() && m.worn_items.is_empty());
+            if item_type == "Base.Mov_Scarecrow" { stock_weight = Some(item.get_actual_weight()); }
+        }
+        eprintln!("verified {item_type}: script={name} pose=pose01 skin={skin} bytes={}", data.len());
+    }
+    super::lua_check(lua, "rustSessionMoveable = nil");
+}
+
 /// Authored map-style receivers, using only installed mannequin scripts,
 /// outfit assets and the normal item factory. Scarecrow03's CostumeScarecrow
 /// has required clothing; Scarecrow02 explicitly requests no outfit. Neither
@@ -57,7 +110,7 @@ pub(super) fn install_outfit_fixtures(
         // extra receivers isolate both clothing outcomes without RNG retries.
         pz_lua_api::world_mannequins::activate(
             &mut lua.thread, &receiver, Some(&sprite_name), Some(&zone),
-            game_dir, no_black_clothes,
+            game_dir, no_black_clothes, None,
         ).expect("activate installed outfit fixture");
     }
 }
@@ -185,6 +238,10 @@ pub(super) fn check_live(new_world: bool) -> Vec<(i32, i32)> {
                     );
                     for item in &inventory.borrow().items {
                         let item = item.borrow();
+                        let pz_inventory::item_texture::ItemTextures::Live(textures) = &item.textures else {
+                            panic!("mannequin clothing retained archive texture data after activation");
+                        };
+                        assert!(textures.script_item.is_some(), "clothing lost its script item");
                         assert!(
                             item.is_initialised,
                             "factory result missed genuine initialiseItem"

@@ -191,6 +191,13 @@ pub fn update() {
 /// `ItemSoundManager.Reset`: clear the owning lists, after KillCell.
 pub fn reset() {
     let old = std::mem::take(&mut *shared_manager().borrow_mut());
+    if !old.active.is_empty() || !old.to_stop.is_empty() {
+        crate::bind_audio::sound_system().borrow_mut().with_world_emitters(|_, ctx| {
+            for pair in old.active.iter().chain(&old.to_stop) {
+                pair.emitter.borrow_mut().stop_all(ctx);
+            }
+        });
+    }
     drop(old);
 }
 

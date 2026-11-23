@@ -791,7 +791,7 @@ impl<I: 'static> GameCharacter<I> {
             if self.get_variable_string("ZombieHitReaction") == "KnifeDeath" {
                 range_del *= 1000.0;
                 self.vars.knockback_attack_mod = 0.0;
-                cx.ctx.event(SimEvent::WorldSound { radius: 4, volume: 4 });
+                self.add_world_sound_unless_invisible(cx.ctx, 4, 4, false);
                 self.attack_vars.close_kill = true;
                 if let Some(t) = cx.world.character_mut(h.target) {
                     t.vars.close_killed = true;
@@ -801,11 +801,11 @@ impl<I: 'static> GameCharacter<I> {
                 if let Some(t) = cx.world.character_mut(h.target) {
                     t.vars.close_killed = false;
                 }
-                cx.ctx.event(SimEvent::WorldSound { radius: 8, volume: 8 });
+                self.add_world_sound_unless_invisible(cx.ctx, 8, 8, false);
                 if cx.ctx.rand_next(3) == 0 || (self.vars.aim_at_floor && self.vars.do_shove) {
-                    cx.ctx.event(SimEvent::WorldSound { radius: 10, volume: 10 });
+                    self.add_world_sound_unless_invisible(cx.ctx, 10, 10, false);
                 } else if cx.ctx.rand_next(7) == 0 {
-                    cx.ctx.event(SimEvent::WorldSound { radius: 16, volume: 16 });
+                    self.add_world_sound_unless_invisible(cx.ctx, 16, 16, false);
                 }
             }
             let behind = {

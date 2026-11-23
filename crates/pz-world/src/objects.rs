@@ -36,6 +36,26 @@ impl PartialEq for ObjectSquare {
     }
 }
 
+/// Cached external water supply. Its membership in the live cell is checked
+/// before use. Saves and archive comparisons do not include this reference.
+#[derive(Default, Debug)]
+pub struct ExternalWaterSource {
+    source: Option<(crate::square_mutation::SquarePos, std::rc::Weak<std::cell::RefCell<IsoObject>>)>,
+}
+impl ExternalWaterSource {
+    pub fn get(&self) -> Option<(crate::square_mutation::SquarePos, crate::IsoObjectRef)> {
+        let (pos, object) = self.source.as_ref()?;
+        Some((*pos, object.upgrade()?))
+    }
+
+    pub fn set(&mut self, source: Option<(crate::square_mutation::SquarePos, &crate::IsoObjectRef)>) {
+        self.source = source.map(|(pos, object)| (pos, std::rc::Rc::downgrade(object)));
+    }
+}
+impl PartialEq for ExternalWaterSource {
+    fn eq(&self, _: &Self) -> bool { true }
+}
+
 /// Identity of an object within its square (stands in for Java object
 /// identity, e.g. for `specialObjects`).
 pub type ObjectId = u32;
@@ -310,9 +330,9 @@ pub struct IsoThumpable {
     pub paintable: bool,
     pub cross_speed: f32,
     /// `table` (separate from the `IsoObject` mod data).
-    pub table: Option<LuaTable>,
+    pub table: Option<pz_inventory::moddata::ItemModData>,
     /// `modData`.
-    pub mod_data: Option<LuaTable>,
+    pub mod_data: Option<pz_inventory::moddata::ItemModData>,
     pub block_all_the_square: bool,
     pub is_thumpable: bool,
     pub is_hoppable: bool,
@@ -329,10 +349,12 @@ pub struct IsoThumpable {
     pub can_be_lock_by_padlock: bool,
     pub locked_by_code: i32,
     pub thump_sound: String,
+    /// Lua-set override. The original does not serialize this field.
+    pub break_sound: Option<String>,
     pub last_update_hours: f32,
     pub have_fuel: bool,
     pub light_source_on: bool,
-    pub build_materials: Option<LuaTable>,
+    pub build_materials: Option<pz_inventory::moddata::ItemModData>,
 }
 
 impl Default for IsoThumpable {
@@ -376,6 +398,7 @@ impl Default for IsoThumpable {
             can_be_lock_by_padlock: false,
             locked_by_code: 0,
             thump_sound: "ZombieThumpGeneric".to_string(),
+            break_sound: None,
             last_update_hours: -1.0,
             have_fuel: false,
             light_source_on: false,
@@ -428,7 +451,7 @@ pub struct NestBox {
 }
 
 /// `IsoHutch` state saved by the master square.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct HutchMaster {
     pub sprite_name: String,
     pub open: bool,
@@ -442,6 +465,22 @@ pub struct HutchMaster {
     pub hutch_dirt: f32,
     pub nest_box_dirt: f32,
     pub nest_boxes: Vec<NestBox>,
+}
+
+/// The actual definition held by a placed hutch. On restore the installed
+/// definition is resolved from the saved sprite. The counters cache nonzero
+/// definition values on their first getter call, as in IsoHutch.
+#[derive(Debug, Default, PartialEq)]
+pub struct HutchRuntime {
+    pub definition: Option<crate::object_mod_data::LiveModData>,
+    pub max_animals: i32,
+    pub max_nest_box: i32,
+    pub enter_spot_x: i32,
+    pub enter_spot_y: i32,
+    pub slave_open: bool,
+    pub slave_egg_open: bool,
+    pub slave_dirt: f32,
+    pub slave_nest_dirt: f32,
 }
 
 /// `IsoHutch`.
@@ -522,6 +561,7 @@ pub struct IsoMannequin {
     /// A loaded visual without an explicit texture needs the real host skin
     /// list/RNG getter before activation. No placeholder style is selected.
     pub pending_loaded_skin_resolution: bool,
+    pub pending_inventory: Option<std::rc::Rc<crate::mannequin::MannequinInventoryRecord>>,
     /// The mannequin's container (saved after the visual, not with the
     /// `IsoObject` containers) and its worn items as
     /// `(body location, index into the saved items)`.
@@ -768,6 +808,22 @@ pub enum SpriteName {
     Str(String),
 }
 
+impl SpriteName {
+    /// WorldDictionary.getSpriteNameFromID checks the saved override before the tile manager.
+    pub fn resolve<'a>(
+        &'a self,
+        dictionary: Option<&'a std::collections::HashMap<i32, String>>,
+        sprites: &'a crate::IsoSpriteManager,
+    ) -> Option<&'a str> {
+        match self {
+            Self::Str(name) => Some(name),
+            Self::Dict(id) if *id >= 0 => dictionary.and_then(|d| d.get(id)).map(String::as_str)
+                .or_else(|| sprites.by_id(*id)?.name.as_deref()),
+            Self::Dict(_) => None,
+        }
+    }
+}
+
 /// `IsoWallBloodSplat`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WallBloodSplat {
@@ -803,6 +859,8 @@ pub struct IsoObject {
     square: ObjectSquare,
     /// Native Sprite/texture work not represented by this data-profile object.
     pub pending_floor_visual_tail: Option<FloorVisualTail>,
+    /// IsoObject.checkObjectPowered caches the last result for one IngameState tick.
+    pub power_cache: std::cell::Cell<(Option<u64>, bool)>,
     /// `tile`: the map tile name the object was created from.
     pub tile: Option<String>,
     pub sx: f32,
@@ -837,9 +895,12 @@ pub struct IsoObject {
     /// Once installed this is authoritative and `mod_data` is empty (see
     /// [`crate::object_mod_data`]).
     pub runtime_mod_data: Option<crate::object_mod_data::LiveModData>,
+    pub hutch_runtime: Option<Box<HutchRuntime>>,
+    pub trough_definition: Option<crate::object_mod_data::LiveModData>,
     pub special_tooltip: bool,
     pub key_id: i32,
     pub uses_external_water_source: bool,
+    pub external_water_source: ExternalWaterSource,
     pub sheet_rope: bool,
     pub sheet_rope_health: f32,
     pub overlay_sprite: Option<OverlaySprite>,
@@ -859,6 +920,7 @@ impl Clone for IsoObject {
             kind: self.kind.clone(),
             sprite: self.sprite.clone(),
             square: ObjectSquare::default(),
+            power_cache: Default::default(),
             pending_floor_visual_tail: self.pending_floor_visual_tail.clone(),
             tile: self.tile.clone(),
             sx: self.sx.clone(),
@@ -886,8 +948,11 @@ impl Clone for IsoObject {
                 None => self.mod_data.clone(),
             },
             runtime_mod_data: None,
+            hutch_runtime: None,
+            trough_definition: None,
             special_tooltip: self.special_tooltip.clone(),
             key_id: self.key_id.clone(),
+            external_water_source: Default::default(),
             uses_external_water_source: self.uses_external_water_source.clone(),
             sheet_rope: self.sheet_rope.clone(),
             sheet_rope_health: self.sheet_rope_health.clone(),
@@ -942,6 +1007,7 @@ impl IsoObject {
             kind,
             sprite: ObjectSprite::from_tile(sprite),
             square: ObjectSquare::default(),
+            power_cache: Default::default(),
             pending_floor_visual_tail: None,
             tile: None,
             sx: 0.0,
@@ -965,8 +1031,11 @@ impl IsoObject {
             wall_blood_splats: None,
             mod_data: None,
             runtime_mod_data: None,
+            hutch_runtime: None,
+            trough_definition: None,
             special_tooltip: false,
             key_id: -1,
+            external_water_source: Default::default(),
             uses_external_water_source: false,
             sheet_rope: false,
             sheet_rope_health: 100.0,

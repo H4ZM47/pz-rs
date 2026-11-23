@@ -50,6 +50,8 @@ pub struct RenderWorld {
     /// [`crate::PendingRender::apply`] (via [`RenderWorld::init_puddles`])
     /// before the frame draws.
     pub puddles_recalc: BTreeSet<(i32, i32, i32)>,
+    pub(crate) water_chunks: BTreeSet<(i32, i32)>,
+    pub(crate) water_settings: Option<(u64, bool)>,
     /// The loaded chunks' `floorBloodSplats` and `floorBloodSplatsFade`
     /// (the chunk file's splats when the chunk was built, then
     /// [`RenderWorld::add_blood_splat`]).
@@ -66,6 +68,7 @@ pub fn render_square(
 ) -> HostResult<RenderSquare> {
     let mut rs = RenderSquare::new(sq.x, sq.y, sq.z);
     rs.cut = cutaway_info(w, sq);
+    rs.exterior = Some(sq.is_exterior(w.sprites));
     rs.flies = sq.has_flies;
     for o in &sq.objects {
         let o = o
@@ -103,15 +106,9 @@ pub fn render_square(
                         ))?;
                     Some(cache.get(w.sprites, *index, tex))
                 }
-                ObjectSprite::Native(_) => {
-                    return Err(RuntimeHostError::Unsupported {
-                        operation: if kind == ObjectKind::WorldInventory {
-                            "native world-item render/model host"
-                        } else {
-                            "native runtime sprite render host"
-                        },
-                        kind: None,
-                    })
+                ObjectSprite::Native(slot) => {
+                    let sprite = slot.try_borrow().map_err(|_| RuntimeHostError::Borrowed("render runtime sprite"))?;
+                    Some(cache.runtime(w.sprites, &sprite)?)
                 }
                 ObjectSprite::ArchiveUnmanaged(_) => {
                     return Err(RuntimeHostError::Unsupported {
@@ -247,6 +244,43 @@ pub fn puddle_square(
         sloped: sq.has_sloped_surface(),
         puddles_dir: puddles_dir(sq.is_in_a_room(w.meta, regions), names.into_iter()),
     })
+}
+
+/// The same loaded-square corner masks used by drawing and ground interaction.
+pub fn puddle_geometry(w: &WorldView<'_>, regions: &IsoRegions, sq: &IsoGridSquare, perf_puddles: i32)
+    -> HostResult<PuddlesGeometry> {
+    let (x, y, z) = (sq.x, sq.y, sq.z);
+    let input = puddle_square(w, regions, &sq)?;
+    // The pure geometry callback is infallible. Record the first host
+    // fault and reject the whole uncommitted geometry after it returns.
+    // No false-absence geometry is published and no later body is read.
+    let fault = std::cell::RefCell::new(None);
+    let at = |dx: i32, dy: i32| {
+        if fault.borrow().is_some() {
+            return None;
+        }
+        let Some(n) = w.cell.get_grid_square(x + dx, y + dy, z) else {
+            return None;
+        };
+        let value = (|| {
+            let n = n
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("puddle neighbour square"))?;
+            puddle_square(w, regions, &n)
+        })();
+        match value {
+            Ok(value) => Some(value),
+            Err(error) => {
+                *fault.borrow_mut() = Some(error);
+                None
+            }
+        }
+    };
+    let geometry = PuddlesGeometry::init(&input, perf_puddles, at);
+    if let Some(error) = fault.into_inner() {
+        return Err(error);
+    }
+    Ok(geometry)
 }
 
 /// `getWallType()`: 1 north wall, 4 west wall (5 for `WallNW`), 8 the east
@@ -387,6 +421,7 @@ impl RenderWorld {
         tex: &mut dyn SpriteTextures,
     ) -> HostResult<Vec<(i32, i32, i32)>> {
         self.remove_chunk(wx, wy);
+        self.water_changed(wx, wy);
         let Some(ch) = w.cell.chunks.get(&(wx, wy)) else {
             return Ok(Vec::new());
         };
@@ -444,6 +479,7 @@ impl RenderWorld {
         if let Some(ch) = w.cell.chunks.get(&(wx, wy)) {
             self.chunks.insert((wx, wy), (ch.min_level, ch.max_level));
         }
+        self.water_changed(wx, wy);
         let Some(sq_owner) = w.cell.get_grid_square(x, y, z) else {
             self.squares.remove(&(x, y, z));
             return Ok(());
@@ -502,37 +538,7 @@ impl RenderWorld {
         let sq = sq
             .try_borrow()
             .map_err(|_| RuntimeHostError::Borrowed("puddle square"))?;
-        let input = puddle_square(w, regions, &sq)?;
-        // The pure geometry callback is infallible. Record the first host
-        // fault and reject the whole uncommitted geometry after it returns.
-        // No false-absence geometry is published and no later body is read.
-        let fault = std::cell::RefCell::new(None);
-        let at = |dx: i32, dy: i32| {
-            if fault.borrow().is_some() {
-                return None;
-            }
-            let Some(n) = w.cell.get_grid_square(x + dx, y + dy, z) else {
-                return None;
-            };
-            let value = (|| {
-                let n = n
-                    .try_borrow()
-                    .map_err(|_| RuntimeHostError::Borrowed("puddle neighbour square"))?;
-                puddle_square(w, regions, &n)
-            })();
-            match value {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    *fault.borrow_mut() = Some(error);
-                    None
-                }
-            }
-        };
-        let geometry = PuddlesGeometry::init(&input, perf_puddles, at);
-        if let Some(error) = fault.into_inner() {
-            return Err(error);
-        }
-        rs.puddles = Some(geometry);
+        rs.puddles = Some(puddle_geometry(w, regions, &sq, perf_puddles)?);
         Ok(())
     }
 
@@ -541,6 +547,7 @@ impl RenderWorld {
         if self.chunks.remove(&(wx, wy)).is_none() {
             return;
         }
+        self.water_changed(wx, wy);
         self.blood.remove(&(wx, wy));
         self.squares
             .retain(|&(x, y, _), _| (x.div_euclid(8), y.div_euclid(8)) != (wx, wy));

@@ -81,9 +81,16 @@ impl IsoObject {
 
     /// `container.getType()` (`None` without a main container).
     pub fn main_container_type(&self) -> Option<String> {
+        self.try_main_container_type().expect("main container type requires an unborrowed container")
+    }
+
+    pub fn try_main_container_type(&self) -> pz_entity::runtime_load::HostResult<Option<String>> {
         match &self.runtime_containers {
-            Some(r) => r.main.as_ref().map(|c| c.borrow().kind.clone()),
-            None => self.container.as_ref().and_then(|c| c.kind.clone()),
+            Some(r) => r.main.as_ref().map(|container| {
+                container.try_borrow().map(|body| body.kind.clone())
+                    .map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("main container"))
+            }).transpose(),
+            None => Ok(self.container.as_ref().and_then(|c| c.kind.clone())),
         }
     }
 

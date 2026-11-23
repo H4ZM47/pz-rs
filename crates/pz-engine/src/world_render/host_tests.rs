@@ -118,3 +118,27 @@ fn view3d_frame_makes_no_corpse_atlas_entry() {
     renderer.render_player(&view, &mut v, Some(&mut models), &[], &regions, None, &mut out);
     assert!(renderer.corpse_error.is_some());
 }
+
+#[test]
+fn surface_passes_read_current_lua_quality_settings() {
+    use pz_lua_api::{bind_core, bind_performance};
+    use std::rc::Rc;
+    let previous = bind_core::shared_core();
+    let core = Rc::new(RefCell::new(pz_core::core::Core::new()));
+    bind_core::install_core(core.clone());
+    let mut thread = pz_kahlua::Thread::new(pz_kahlua::TableRef::new());
+    pz_kahlua::stdlib::install(&mut thread, None).unwrap();
+    bind_performance::register(&mut thread, core.clone());
+    let script = pz_kahlua::stdlib::load_string(
+        "local p = getPerformance(); p:setWaterQuality(2); p:setPuddlesQuality(1)",
+        Some("surface options"), thread.globals().clone(),
+    ).unwrap();
+    thread.pcall(&script, &[]).unwrap();
+    core.borrow_mut().set_perf_puddles(3);
+    core.borrow_mut().set_option_blood_decals(7);
+    let (settings, _) = surface_values();
+    bind_core::install_core(previous);
+    assert_eq!((settings.water_quality, settings.puddles_quality, settings.perf_puddles), (2, 1, 3));
+    assert_eq!(settings.blood_decals, 7);
+    assert!(!settings.water_shader() && !settings.puddles_shader());
+}

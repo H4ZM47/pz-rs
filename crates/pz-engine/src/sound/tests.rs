@@ -162,3 +162,86 @@ fn held_game_fs_borrow_is_a_failure_and_does_not_become_a_negative_cache_entry()
     drop(held);
     assert_eq!(backend.load_sound("media/sound/borrow.wav", true), loaded);
 }
+
+pub(super) fn installed_sound(path: &str, name: &str) -> (pz_sound::system::SoundSystem, Arc<Mutex<Studio>>, usize) {
+    use pz_scripts::objects::models::game_sound::GameSoundScript;
+    use pz_scripts::{ScriptManager, ScriptObject};
+    use pz_sound::system::SoundSystem;
+
+    let game = PathBuf::from(std::env::var_os("PZ_GAME_DIR").expect("PZ_GAME_DIR"));
+    let script = std::fs::read_to_string(game.join(path)).unwrap();
+    let manager = ScriptManager::new();
+    let root = manager.parse(&script);
+    let sound = root.get_block("module", Some("Base")).unwrap().get_block("sound", Some(name)).unwrap();
+    let mut body = String::new();
+    sound.pretty_print(0, &mut body, "\n", "    ");
+    let mut clip = GameSoundScript::new();
+    clip.load(&manager, name, &body).unwrap();
+    let mut studio = Studio::new(SetupHeaders::from_game_dir(&game).unwrap());
+    for bank in pz_audio::startup_bank_paths(&game) {
+        studio.load_bank(&bank).unwrap();
+    }
+    let studio = Arc::new(Mutex::new(studio));
+    let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&game)));
+    let backend = backend_with_game_fs(studio.clone(), fs);
+    let count = backend.parameter_count();
+    let mut system = SoundSystem::new(Box::new(backend), Default::default(), count);
+    system.sounds.add_sound(Rc::new(RefCell::new(clip)), system.backend.as_mut());
+    (system, studio, count)
+}
+
+/// Run the installed sound script through the world emitter and Studio mixer.
+#[test]
+#[ignore = "requires PZ_GAME_DIR and installed sound banks"]
+fn installed_window_smash_renders_and_releases_world_audio() {
+    let (mut system, studio, _) = installed_sound("media/scripts/generated/sounds/objects/sounds_object_window.txt", "SmashWindow");
+    system.update_player_listener(0, [10695.5, 9383.5, 2.0], false);
+    let (emitter, handle) = system.play_world_clip("SmashWindow", [10696.5, 9383.5, 2.0], true);
+    assert_ne!(handle, 0);
+    system.with_world_emitters(|pool, ctx| pool.update(1, ctx));
+    let mut block = [0.0; 2048];
+    let mut peak = 0.0_f32;
+    for _ in 0..24 {
+        block.fill(0.0);
+        studio.lock().unwrap().mix(&mut block);
+        assert!(block.iter().all(|sample| sample.is_finite()));
+        peak = block.iter().fold(peak, |peak, sample| peak.max(sample.abs()));
+    }
+    assert!(peak > 0.001, "SmashWindow PCM peak {peak}");
+    system.with_world_emitters(|pool, ctx| drop(pool.stop_and_reset(ctx)));
+    assert!(emitter.borrow().is_empty());
+    block.fill(0.0);
+    studio.lock().unwrap().mix(&mut block);
+    assert!(block.iter().all(|sample| *sample == 0.0), "audio persisted after world exit");
+}
+
+
+#[test]
+#[ignore = "requires PZ_GAME_DIR and installed sound banks"]
+fn installed_electricity_marker_is_delivered_to_the_watched_instance() {
+    let (mut system, studio, _) = installed_sound(
+        "media/scripts/generated/sounds/sounds_ambience.txt", "WorldEventElectricityShutdown");
+    let backend = &mut system.backend;
+    let event = backend.event_description("event:/World/Event/ElectricityShutdown").unwrap();
+    let watched = backend.create_event_instance(&event);
+    let unwatched = backend.create_event_instance(&event);
+    backend.instance_watch_timeline_markers(watched);
+    backend.instance_start(watched);
+    backend.instance_start(unwatched);
+    let mut block = vec![0.0; 480 * 2];
+    for _ in 0..264 {
+        block.fill(0.0);
+        studio.lock().unwrap().mix(&mut block);
+    }
+    assert!(backend.take_timeline_markers().is_empty());
+    block.fill(0.0);
+    studio.lock().unwrap().mix(&mut block);
+    assert_eq!(backend.take_timeline_markers(), [(watched, "ElectricityOff".to_owned(), 2650)]);
+    block.fill(0.0);
+    studio.lock().unwrap().mix(&mut block);
+    assert!(backend.take_timeline_markers().is_empty());
+    backend.instance_stop(watched, true);
+    backend.instance_stop(unwatched, true);
+    backend.instance_release(watched);
+    backend.instance_release(unwatched);
+}

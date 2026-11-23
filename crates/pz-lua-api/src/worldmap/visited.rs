@@ -15,11 +15,15 @@ thread_local! {
 fn save_file() -> Option<PathBuf> {
     let fs = super::FS.with(|f| f.borrow().clone())?;
     let saves = crate::bind_save::save_dir(&fs);
+    let mode = crate::bind_save::game_mode_cache_name().ok()?;
     let core = crate::bind_core::shared_core();
     let core = core.borrow();
+    if !crate::savefile::is_save_directory_name(&mode) || !crate::savefile::is_save_directory_name(&core.game_save_world) {
+        return None;
+    }
     Some(
         PathBuf::from(saves)
-            .join(&core.game_mode)
+            .join(mode)
             .join(&core.game_save_world)
             .join("map_visited.bin"),
     )

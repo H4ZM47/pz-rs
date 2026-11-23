@@ -345,6 +345,16 @@ impl SaveSettings {
 /// Hooks into systems outside this crate. The defaults behave like a game
 /// with no animal or Lua definitions loaded and no animal zones.
 pub trait SaveHooks {
+    /// Native `IsoMannequin.wearItem(item, null)` during actual save.
+    /// A host without the item visual/owner capability must report it.
+    fn mannequin_wear_item(
+        &self,
+        _object: &crate::IsoObjectRef,
+        _item: &pz_inventory::shared::ItemRef,
+    ) -> SaveResult<()> {
+        err("Unsupported: mannequin wear item save host")
+    }
+
     /// Actual LoadSingleTexture outcome in IsoWorldInventoryObject.load.
     /// Unknown is not converted to a fabricated successful texture. The
     /// existing render projection does not supply a native Sprite allocation.

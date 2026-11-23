@@ -305,6 +305,35 @@ impl Waveform {
     }
 }
 
+/// A single range condition on a Studio parameter sheet instrument.
+#[derive(Debug, Clone, Copy)]
+pub struct ParameterRange {
+    pub parameter: Guid,
+    min: f32,
+    max: f32,
+    include_min: bool,
+    include_max: bool,
+}
+
+impl ParameterRange {
+    fn read(tail: &mut Reader<'_>) -> Option<Self> {
+        // Following the instrument output are four words and a byte-counted
+        // condition expression. One parameter-range expression occupies 32 bytes.
+        tail.bytes(16).ok()?;
+        if tail.u32().ok()? != 32 || tail.u32().ok()? != 0x11 { return None; }
+        let parameter = tail.guid().ok()?;
+        let op = tail.u32().ok()?;
+        if !matches!(op, 0x5020 | 0x5120 | 0x5220) { return None; }
+        Some(Self { parameter, min: tail.f32().ok()?, max: tail.f32().ok()?,
+            include_min: op & 0x100 == 0, include_max: op & 0x200 == 0 })
+    }
+
+    pub fn contains(self, value: f32) -> bool {
+        (value > self.min || self.include_min && value == self.min)
+            && (value < self.max || self.include_max && value == self.max)
+    }
+}
+
 /// Fields shared by every instrument (`INST`).
 #[derive(Debug, Clone)]
 pub struct InstrumentBase {
@@ -318,6 +347,7 @@ pub struct InstrumentBase {
     pub delay_min: f32,
     pub delay_max: f32,
     pub max_voices: u32,
+    pub parameter_range: Option<ParameterRange>,
     pub output: Option<Output>,
     pub raw: Vec<u8>,
 }
@@ -338,6 +368,7 @@ impl InstrumentBase {
         tail.pos = 0x50;
         let max_voices = tail.u32()?;
         let output = read_output(&mut tail).ok();
+        let parameter_range = ParameterRange::read(&mut tail);
         Ok(InstrumentBase {
             owner,
             volume_db,
@@ -349,6 +380,7 @@ impl InstrumentBase {
             delay_min,
             delay_max,
             max_voices,
+            parameter_range,
             output,
             raw: b.to_vec(),
         })

@@ -10,6 +10,7 @@ pub mod manager;
 pub mod math;
 pub mod module;
 pub mod native_item_keys;
+pub mod native_game_modes;
 pub mod objects;
 pub use pz_script_parser as parser;
 pub mod registry;

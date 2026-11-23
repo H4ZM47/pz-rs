@@ -29,6 +29,9 @@ use crate::config::{
     ConfigFile, ConfigObject, ConfigOption, OnChange,
 };
 use pz_kahlua::number::java_parse_int;
+use pz_scripts::native_game_modes::NativeGameModeStaticsRef;
+use pz_scripts::native_item_keys::ScriptAccessError;
+use pz_scripts::registry::RegistryKey;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -434,11 +437,11 @@ pub enum CoreRequest {
         height: i32,
         fullscreen: bool,
     },
-    /// `setVSyncEnabled`. TODO(render).
+    /// Apply `setVSyncEnabled` on the render thread.
     VSync(bool),
-    /// `TakeFullScreenshot(filename)`. TODO(render).
+    /// Save the next rendered frame to the cache screenshot directory.
     FullScreenshot(Option<String>),
-    /// `TakeScreenshot(...)` of the current save's thumbnail. TODO(render).
+    /// Write a crop of the rendered frame to the current save thumbnail.
     Screenshot {
         x: i32,
         y: i32,
@@ -452,6 +455,12 @@ pub enum CoreRequest {
 pub const GAME_VERSION: (i32, i32, &str) = (42, 21, "");
 /// The release git revision string baked into the build.
 pub const GIT_REVISION: &str = "4a0e9546ec";
+
+/// The installed Core.getGameMode signature determines the Lua value and setter semantics.
+enum CoreGameMode {
+    Name(Option<String>),
+    Registry { statics: NativeGameModeStaticsRef, mode: Option<Rc<RegistryKey>> },
+}
 
 /// `zombie.core.Core`.
 pub struct Core {
@@ -482,7 +491,7 @@ pub struct Core {
     pub initial_height: f32,
     pub max_juke_boxes_active: i32,
     pub num_juke_boxes_active: i32,
-    pub game_mode: String,
+    game_mode: CoreGameMode,
     pub add_zombie_on_cell_load: bool,
     pub preset: String,
     pub gl_version: Option<String>,
@@ -613,7 +622,13 @@ impl Default for Core {
 
 macro_rules! simple_accessors {
     ($( $kind:ident $ty:ident $rust:ident $java:literal $opt:literal; )*) => {
-        impl Core { $( simple_accessors!(@m $kind $ty $rust $opt); )* }
+        impl Core {
+            $( simple_accessors!(@m $kind $ty $rust $opt); )*
+            pub fn option_accessors(&self) -> impl Iterator<Item = SimpleAccessor> + '_ {
+                SIMPLE_ACCESSORS.iter().copied().zip([$( $opt ),*])
+                    .filter_map(|(accessor, key)| self.option(key).map(|_| accessor))
+            }
+        }
         /// Option getters/setters whose Java body is a single
         /// `getValue()` / `setValue(v)` on one option.
         pub const SIMPLE_ACCESSORS: &[SimpleAccessor] = &[ $( simple_accessors!(@t $kind $ty $rust $java) ),* ];
@@ -721,6 +736,8 @@ simple_accessors! {
     get String get_option_screen_filter "getOptionScreenFilter" "screenFilter";
     get bool is_option_show_chat_timestamp "isOptionShowChatTimestamp" "showChatTimestamp";
     get bool is_option_show_chat_title "isOptionShowChatTitle" "showChatTitle";
+    get bool is_option_show_connection_info "isOptionShowConnectionInfo" "showConnectionInfo";
+    get bool is_option_show_server_info "isOptionShowServerInfo" "showServerInfo";
     get String get_option_chat_font_size "getOptionChatFontSize" "chatFontSize";
     get f32 get_option_min_chat_opaque "getOptionMinChatOpaque" "minChatOpaque";
     get f32 get_option_max_chat_opaque "getOptionMaxChatOpaque" "maxChatOpaque";
@@ -750,8 +767,8 @@ simple_accessors! {
     get bool get_option_simple_weapon_textures "getOptionSimpleWeaponTextures" "simpleWeaponTextures";
     get i32 get_option_ignore_prone_zombie_range "getOptionIgnoreProneZombieRange" "ignoreProneZombieRange";
     get bool is_tutorial_done "isTutorialDone" "tutorialDone";
-    get bool is_vehicles_warning_show "isVehiclesWarningShow" "vehiclesWarningShow";
     get bool is_done_new_save_folder "isDoneNewSaveFolder" "doneNewSaveFolder";
+    get bool is_vehicles_warning_show "isVehiclesWarningShow" "vehiclesWarningShow";
     get bool get_content_translations_enabled "getContentTranslationsEnabled" "contentTranslationsEnabled";
     get bool is_show_your_username "isShowYourUsername" "showYourUsername";
     get bool is_populate_server_list_on_start "isPopulateServerListOnStart" "populateServerListOnStart";
@@ -838,6 +855,8 @@ simple_accessors! {
     set bool set_option_show_chat_timestamp "setOptionShowChatTimestamp" "showChatTimestamp";
     set String set_option_chat_font_size "setOptionChatFontSize" "chatFontSize";
     set bool set_option_show_chat_title "setOptionShowChatTitle" "showChatTitle";
+    set bool set_option_show_connection_info "setOptionShowConnectionInfo" "showConnectionInfo";
+    set bool set_option_show_server_info "setOptionShowServerInfo" "showServerInfo";
     set f32 set_option_min_chat_opaque "setOptionMinChatOpaque" "minChatOpaque";
     set f32 set_option_max_chat_opaque "setOptionMaxChatOpaque" "maxChatOpaque";
     set f32 set_option_chat_fade_time "setOptionChatFadeTime" "chatFadeTime";
@@ -864,8 +883,8 @@ simple_accessors! {
     set bool set_option_simple_weapon_textures "setOptionSimpleWeaponTextures" "simpleWeaponTextures";
     set i32 set_option_ignore_prone_zombie_range "setOptionIgnoreProneZombieRange" "ignoreProneZombieRange";
     set bool set_tutorial_done "setTutorialDone" "tutorialDone";
-    set bool set_vehicles_warning_show "setVehiclesWarningShow" "vehiclesWarningShow";
     set bool set_done_new_save_folder "setDoneNewSaveFolder" "doneNewSaveFolder";
+    set bool set_vehicles_warning_show "setVehiclesWarningShow" "vehiclesWarningShow";
     set bool set_content_translations_enabled "setContentTranslationsEnabled" "contentTranslationsEnabled";
     set bool set_show_your_username "setShowYourUsername" "showYourUsername";
     set bool set_populate_server_list_on_start "setPopulateServerListOnStart" "populateServerListOnStart";
@@ -948,7 +967,7 @@ impl Core {
             initial_height: 720.0,
             max_juke_boxes_active: 10,
             num_juke_boxes_active: 0,
-            game_mode: "Sandbox".into(),
+            game_mode: CoreGameMode::Name(Some("Sandbox".to_owned())),
             add_zombie_on_cell_load: true,
             preset: "Apocalypse".into(),
             gl_version: None,
@@ -1226,7 +1245,9 @@ impl Core {
         self.add(false, ConfigOption::boolean("lockCursorToWindow", false));
         self.add(false, ConfigOption::boolean("textureCompression", false));
         self.add(false, ConfigOption::boolean("modelTextureMipmaps", false));
-        self.add(false, ConfigOption::boolean("texture2x", true));
+        if self.uses_named_game_mode() {
+            self.add(false, ConfigOption::boolean("texture2x", true));
+        }
         self.add(false, ConfigOption::boolean("highResPlacedItems", true));
         self.add(false, ConfigOption::integer("maxTextureSize", 1, 4, 1));
         self.add(
@@ -1237,15 +1258,10 @@ impl Core {
             false,
             ConfigOption::string_values("screenFilter", "nearest", &["nearest", "linear"]),
         );
-        self.add(
-            false,
-            ConfigOption::array(
-                "zoomLevels1x",
-                ConfigOption::integer("element", 25, 250, 100),
-                ";",
-                "",
-            ),
-        );
+        if self.uses_named_game_mode() {
+            self.add(false, ConfigOption::array("zoomLevels1x",
+                ConfigOption::integer("element", 25, 250, 100), ";", ""));
+        }
         self.add(
             false,
             ConfigOption::array(
@@ -1265,6 +1281,10 @@ impl Core {
         self.add(false, ConfigOption::boolean("reloadRadialInstant", false));
         self.add(false, ConfigOption::boolean("panCameraWhileAiming", true));
         self.add(false, ConfigOption::boolean("panCameraWhileDriving", false));
+        if !self.uses_named_game_mode() {
+            self.add(false, ConfigOption::boolean("showConnectionInfo", false));
+            self.add(false, ConfigOption::boolean("showServerInfo", false));
+        }
         self.add(false, ConfigOption::boolean("showChatTimestamp", false));
         self.add(false, ConfigOption::boolean("showChatTitle", false));
         self.add(
@@ -1421,7 +1441,9 @@ impl Core {
             )
             .multi_line(true),
         );
-        self.add(true, ConfigOption::boolean("doneNewSaveFolder", false));
+        if self.uses_named_game_mode() {
+            self.add(true, ConfigOption::boolean("doneNewSaveFolder", false));
+        }
         self.add(true, ConfigOption::integer("fogQuality", 0, 2, 0));
         self.add(true, ConfigOption::integer("viewConeOpacity", 0, 5, 3));
         self.add(true, ConfigOption::boolean("gotNewBelt", false));
@@ -1531,6 +1553,33 @@ impl Core {
     /// Drain the engine requests queued since the last call.
     pub fn take_requests(&mut self) -> Vec<CoreRequest> {
         std::mem::take(&mut self.pending_requests)
+    }
+
+    /// Core.quit() selected the no-player process exit path.
+    pub fn process_exit_requested(&self) -> bool {
+        self.pending_requests.contains(&CoreRequest::Exit)
+    }
+
+    pub fn screenshot_requested(&self) -> bool {
+        self.pending_requests.iter().any(|r| matches!(r, CoreRequest::FullScreenshot(_) | CoreRequest::Screenshot { .. }))
+    }
+
+    pub fn take_screenshot_requests(&mut self) -> Vec<CoreRequest> {
+        self.pending_requests.extract_if(.., |r| matches!(r, CoreRequest::FullScreenshot(_) | CoreRequest::Screenshot { .. })).collect()
+    }
+
+    /// Render-context VSync calls, in request order. The other requests
+    /// stay queued for their respective consumers.
+    pub fn take_vsync_requests(&mut self) -> Vec<bool> {
+        let mut changes = Vec::new();
+        self.pending_requests.retain(|request| match request {
+            CoreRequest::VSync(enabled) => {
+                changes.push(*enabled);
+                false
+            }
+            _ => true,
+        });
+        changes
     }
 
     fn trigger_event(&mut self, name: &'static str, args: Vec<EventArg>) {
@@ -1717,13 +1766,111 @@ impl Core {
     /// TODO(render): `SceneShaderStore.initShaders()`, puddles, water.
     pub fn init_shaders(&mut self) {}
 
-    pub fn get_game_mode(&self) -> String {
-        self.game_mode.clone()
+    pub fn uses_named_game_mode(&self) -> bool {
+        matches!(self.game_mode, CoreGameMode::Name(_))
     }
 
-    pub fn set_game_mode(&mut self, game_mode: &str) {
-        self.game_mode = game_mode.to_string();
-        self.add_zombie_on_cell_load = game_mode != "Tutorial" && game_mode != "LastStand";
+    pub fn get_game_mode_ref(&self) -> Option<Rc<RegistryKey>> {
+        match &self.game_mode {
+            CoreGameMode::Name(_) => None,
+            CoreGameMode::Registry { mode, .. } => mode.clone(),
+        }
+    }
+
+    pub fn install_game_mode_statics(&mut self, statics: NativeGameModeStaticsRef) -> Result<(), ScriptAccessError> {
+        if let CoreGameMode::Registry { statics: current, .. } = &self.game_mode {
+            if Rc::ptr_eq(current, &statics) { return Ok(()); }
+            return Err(ScriptAccessError::Unsupported("different live Core GameMode authority"));
+        }
+        let sandbox = statics.constant("SANDBOX").cloned()
+            .ok_or(ScriptAccessError::Unsupported("Core constructor GameMode.SANDBOX"))?;
+        self.game_mode = CoreGameMode::Registry { statics, mode: Some(sandbox) };
+        // Class discovery can follow construction of Core and local option changes.
+        // Keep the same values and change flags for options shared by both builds.
+        let options = std::mem::take(&mut self.options);
+        let fake_options = std::mem::take(&mut self.fake_options);
+        self.option_by_name.clear();
+        self.fake_option_by_name.clear();
+        self.register_options();
+        for previous in options.into_iter().chain(fake_options) {
+            if let Some(current) = self.option_mut(previous.name()) {
+                *current = previous;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn game_mode_name(&self) -> Option<&str> {
+        match &self.game_mode {
+            CoreGameMode::Name(name) => name.as_deref(),
+            CoreGameMode::Registry { mode, .. } => mode.as_ref().map(|mode| mode.name.as_str()),
+        }
+    }
+
+    pub fn game_mode_sandbox_ref(&self) -> Result<Rc<RegistryKey>, ScriptAccessError> {
+        let CoreGameMode::Registry { statics, .. } = &self.game_mode else {
+            return Err(ScriptAccessError::Unsupported("Core has a String game mode"));
+        };
+        statics.constant("SANDBOX").cloned()
+            .ok_or(ScriptAccessError::Unsupported("Core GameMode.SANDBOX authority unavailable"))
+    }
+
+    pub fn is_tutorial(&self) -> Result<bool, ScriptAccessError> {
+        self.is_game_mode_constant("TUTORIAL")
+    }
+
+    pub fn skips_world_save_for_mode(&self) -> bool {
+        match &self.game_mode {
+            CoreGameMode::Name(name) => matches!(name.as_deref(), Some("Tutorial" | "LastStand")),
+            CoreGameMode::Registry { statics, mode } => mode.as_ref().zip(statics.constant("TUTORIAL"))
+                .is_some_and(|(current, tutorial)| Rc::ptr_eq(current, tutorial)),
+        }
+    }
+
+    pub fn is_game_mode_constant(&self, field: &str) -> Result<bool, ScriptAccessError> {
+        match &self.game_mode {
+            CoreGameMode::Name(name) => {
+                let literal = match field {
+                    "TUTORIAL" => "Tutorial",
+                    "MULTIPLAYER" => "Multiplayer",
+                    "WINTER_IS_COMING" => "Winter is Coming",
+                    _ => return Err(ScriptAccessError::Unsupported("unknown String game mode comparison")),
+                };
+                Ok(name.as_deref() == Some(literal))
+            }
+            CoreGameMode::Registry { statics, mode } => {
+                let constant = statics.constant(field)
+                    .ok_or(ScriptAccessError::Unsupported("Core GameMode static unavailable"))?;
+                Ok(mode.as_ref().is_some_and(|mode| Rc::ptr_eq(mode, constant)))
+            }
+        }
+    }
+
+    pub fn set_game_mode(&mut self, id: &str) -> Result<(), ScriptAccessError> {
+        match &self.game_mode {
+            CoreGameMode::Name(_) => self.set_game_mode_name(Some(id)),
+            CoreGameMode::Registry { statics, .. } => self.set_game_mode_ref(statics.get_id(id)?),
+        }
+    }
+
+    /// Build 42.21 publishes the String field before calling equals on it.
+    pub fn set_game_mode_name(&mut self, id: Option<&str>) -> Result<(), ScriptAccessError> {
+        let CoreGameMode::Name(name) = &mut self.game_mode else {
+            return Err(ScriptAccessError::Unsupported("Core has a registry game mode"));
+        };
+        *name = id.map(str::to_owned);
+        let id = id.ok_or_else(|| ScriptAccessError::Native(pz_scripts::ScriptError::new("java.lang.NullPointerException: gameMode is null")))?;
+        self.add_zombie_on_cell_load = id != "Tutorial" && id != "LastStand";
+        Ok(())
+    }
+
+    pub fn set_game_mode_ref(&mut self, value: Option<Rc<RegistryKey>>) -> Result<(), ScriptAccessError> {
+        let CoreGameMode::Registry { mode, .. } = &mut self.game_mode else {
+            return Err(ScriptAccessError::Unsupported("Core has a String game mode"));
+        };
+        *mode = value;
+        self.add_zombie_on_cell_load = !self.is_tutorial()?;
+        Ok(())
     }
 
     pub fn get_debug(&self) -> bool {
@@ -1752,7 +1899,7 @@ impl Core {
         self.take_screenshot_at(x, y, w, h, read_buffer);
     }
 
-    /// `TakeScreenshot(x, y, width, height, readBuffer)`. TODO(render).
+    /// Queue a thumbnail capture using bottom-left framebuffer coordinates.
     pub fn take_screenshot_at(
         &mut self,
         x: i32,
@@ -1808,10 +1955,10 @@ impl Core {
     }
 
     fn zoom_levels_option_string(&self) -> String {
-        if self.tile_scale == 2 {
-            self.opt("zoomLevels2x").get_value_as_string()
+        if self.tile_scale != 2 && self.uses_named_game_mode() {
+            self.get_option_zoom_levels1x()
         } else {
-            self.opt("zoomLevels1x").get_value_as_string()
+            self.get_option_zoom_levels2x()
         }
     }
 
@@ -3280,9 +3427,9 @@ impl Core {
             let lang = self.system_language.clone();
             self.opt_mut("language").set_string(Some(&lang));
         }
-        if !self.opt("doneNewSaveFolder").get_bool() {
+        if self.uses_named_game_mode() && !self.is_done_new_save_folder() {
             self.handle_new_save_folder_format();
-            self.opt_mut("doneNewSaveFolder").set_bool(true);
+            self.set_done_new_save_folder(true);
         }
         self.collect_option_changes();
         self.save_options()?;
@@ -3333,7 +3480,9 @@ impl Core {
             self.height = h;
         }
         self.set_option_zoom_levels2x(Some("50;75;125;150;175;200"));
-        self.set_option_zoom_levels1x(Some("50;75;125;150;175;200"));
+        if self.uses_named_game_mode() {
+            self.set_option_zoom_levels1x(Some("50;75;125;150;175;200"));
+        }
         self.save_options()
     }
 

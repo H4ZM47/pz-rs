@@ -1,6 +1,16 @@
 use super::*;
 use std::path::PathBuf;
 
+fn mode_statics() -> NativeGameModeStaticsRef {
+    let declarations = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial")].map(|(field, id)| pz_classfile::StaticInit {
+        class: "zombie/core/GameMode".into(), field: field.into(), value: pz_classfile::Value::Call {
+            class: "zombie/core/GameMode".into(), name: "registerBase".into(), descriptor: String::new(),
+            args: vec![pz_classfile::Value::Str(id.into())],
+        },
+    });
+    Rc::new(pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&declarations).unwrap())
+}
+
 /// Check Java's native line separators before comparing option contents.
 fn option_contents(text: &str) -> String {
     let contents = text.replace("\r\n", "\n");
@@ -69,16 +79,17 @@ fn core_in(dir: &Path) -> Core {
 #[test]
 fn defaults() {
     let mut c = Core::new();
+    c.install_game_mode_statics(mode_statics()).unwrap();
     assert_eq!(c.get_screen_width(), 1280);
     assert_eq!(c.get_screen_height(), 720);
-    assert_eq!(c.get_game_mode(), "Sandbox");
+    assert_eq!(c.game_mode_name(), Some("Sandbox"));
     assert!(!c.get_debug());
     assert_eq!(c.get_tile_scale(), 2);
     assert_eq!(c.get_version(), "42.21.0 4a0e9546ec");
     assert_eq!(c.get_version_number(), "42.21");
     assert_eq!(c.get_git_sha(), "4a0e9546ec");
     assert_eq!(c.get_option_count(), 136);
-    assert_eq!(c.fake_options().len(), 22);
+    assert_eq!(c.fake_options().len(), 21);
     assert_eq!(c.get_option_font_size(), 6);
     assert_eq!(c.get_option_moodle_size(), 7);
     assert_eq!(c.get_option_ambient_volume(), 5);
@@ -98,7 +109,9 @@ fn defaults() {
     assert_eq!(c.get_iso_cursor_visibility(), 5);
     assert_eq!(c.get_iso_cursor_alpha(), 0.5);
     assert_eq!(c.get_terms_of_service_version(), -1);
-    assert_eq!(c.get_option_zoom_levels1x(), "");
+    assert!(c.option("zoomLevels1x").is_none());
+    assert!(!c.is_option_show_connection_info());
+    assert!(!c.is_option_show_server_info());
     assert_eq!(
         c.get_default_zoom_levels(),
         vec![250, 225, 200, 175, 150, 125, 100, 75, 50, 25]
@@ -145,10 +158,13 @@ fn no_options_path_writes_nothing() {
 fn first_run_creates_options_ini() {
     let dir = temp_dir("first");
     let mut c = core_in(&dir);
+    c.install_game_mode_statics(mode_statics()).unwrap();
     assert!(!c.load_options().unwrap());
     let text = option_contents(&std::fs::read_to_string(dir.join("options.ini")).unwrap());
     assert!(text.starts_with("version=8\n3DGroundItem=true\n"), "{text}");
-    assert!(text.contains("\nzoomLevels1x=50;75;125;150;175;200\n"));
+    assert!(!text.contains("zoomLevels1x="));
+    assert!(text.contains("\nshowConnectionInfo=false\n"));
+    assert!(text.contains("\nshowServerInfo=false\n"));
     assert!(text.contains("\nlanguage=EN\n"));
     assert!(text.contains("\nwidth=1280\n"));
     assert!(text.ends_with("zoomLevels2x=50;75;125;150;175;200"));
@@ -166,6 +182,7 @@ fn round_trip_sample() {
     let dir = temp_dir("roundtrip");
     std::fs::write(dir.join("options.ini"), SAMPLE).unwrap();
     let mut c = core_in(&dir);
+    c.install_game_mode_statics(mode_statics()).unwrap();
     assert!(c.load_options().unwrap());
     assert!(!c.is_default_options());
     assert_eq!(c.version, 8);
@@ -222,8 +239,11 @@ fn round_trip_sample() {
         contents.contains("\nmpTextColor=0.6980392336845398,0.6549019813537598,0.6627451181411743\n")
     );
     assert!(contents.contains("\ncontroller=030000004c050000e60c000000010000\n"));
-    assert!(contents.contains("\ndoneNewSaveFolder=true\n"));
+    for retired in ["doneNewSaveFolder", "texture2x", "zoomLevels1x"] {
+        assert!(!contents.contains(&format!("\n{retired}=")));
+    }
     let mut c2 = core_in(&dir);
+    c2.install_game_mode_statics(mode_statics()).unwrap();
     assert!(c2.load_options().unwrap());
     let second = std::fs::read_to_string(dir.join("options.ini")).unwrap();
     assert_eq!(first, second);
@@ -243,6 +263,7 @@ fn round_trip_sample() {
     c2.set_screen_size(1600, 900);
     c2.save_options().unwrap();
     let mut c3 = core_in(&dir);
+    c3.install_game_mode_statics(mode_statics()).unwrap();
     c3.load_options().unwrap();
     assert_eq!(c3.get_option_ambient_volume(), 9);
     assert_eq!(c3.get_option_min_chat_opaque(), 0.25);
@@ -300,14 +321,68 @@ fn real_options_ini_round_trips() {
     let dir = temp_dir("real");
     std::fs::write(dir.join("options.ini"), &original).unwrap();
     let mut c = core_in(&dir);
+    // This optional fixture may have been written by either supported game.
+    if original.lines().any(|line| line.starts_with("showConnectionInfo=")) {
+        c.install_game_mode_statics(mode_statics()).unwrap();
+    }
     if let Some(lang) = original.lines().find_map(|l| l.strip_prefix("language=")) {
         c.system_language = lang.to_string();
     }
     c.load_options().unwrap();
     let saved = std::fs::read_to_string(dir.join("options.ini")).unwrap();
     if cfg!(target_os = "macos") {
-        assert_eq!(saved, original);
+        // Native loadOptions caps an uncapped configuration at 60 FPS before saving.
+        let uncapped = original.lines().any(|line| line == "uncappedFPS=true");
+        let mut expected = String::new();
+        for line in original.split_inclusive('\n') {
+            let key_value = line.trim_end_matches(['\r', '\n']);
+            let normalized = if uncapped && key_value.starts_with("frameRate=") {
+                "frameRate=60"
+            } else if uncapped && key_value == "uncappedFPS=true" {
+                "uncappedFPS=false"
+            } else {
+                key_value
+            };
+            expected.push_str(normalized);
+            expected.push_str(&line[key_value.len()..]);
+        }
+        assert_eq!(saved, expected);
+        c.load_options().unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("options.ini")).unwrap(), saved);
     }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn current_options_persist_information_flags_and_retire_removed_keys() {
+    let dir = temp_dir("current-schema");
+    std::fs::write(
+        dir.join("options.ini"),
+        "version=8\nshowConnectionInfo=true\nshowServerInfo=true\ntexture2x=false\nzoomLevels1x=50\ndoneNewSaveFolder=false",
+    ).unwrap();
+    let old_save = dir.join("Sandbox").join("fixture-world");
+    std::fs::create_dir_all(&old_save).unwrap();
+    let mut core = core_in(&dir);
+    core.install_game_mode_statics(mode_statics()).unwrap();
+    core.load_options().unwrap();
+    assert!(core.is_option_show_connection_info());
+    assert!(core.is_option_show_server_info());
+    assert!(old_save.exists(), "current loadOptions does not migrate legacy save folders");
+    let text = option_contents(&std::fs::read_to_string(dir.join("options.ini")).unwrap());
+    assert!(text.contains("\nshowConnectionInfo=true\n"));
+    assert!(text.contains("\nshowServerInfo=true\n"));
+    for retired in ["texture2x", "zoomLevels1x", "doneNewSaveFolder"] {
+        assert!(core.option(retired).is_none());
+        assert!(!text.contains(&format!("\n{retired}=")));
+    }
+    core.set_option_show_connection_info(false);
+    core.set_option_show_server_info(false);
+    core.save_options().unwrap();
+    let mut reloaded = core_in(&dir);
+    reloaded.install_game_mode_statics(mode_statics()).unwrap();
+    reloaded.load_options().unwrap();
+    assert!(!reloaded.is_option_show_connection_info());
+    assert!(!reloaded.is_option_show_server_info());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -387,6 +462,7 @@ fn zoom_and_screen() {
 #[test]
 fn setters_validate_like_java() {
     let mut c = Core::new();
+    c.install_game_mode_statics(mode_statics()).unwrap();
     c.set_option_ambient_volume(11);
     assert_eq!(c.get_option_ambient_volume(), 5);
     c.set_option_context_menu_font(Some("Huge"));
@@ -412,7 +488,7 @@ fn setters_validate_like_java() {
         c.option("mpTextColor").unwrap().get_value_as_string(),
         "0.5,0.25,1.0"
     );
-    c.set_game_mode("LastStand");
+    c.set_game_mode("Tutorial").unwrap();
     assert!(!c.add_zombie_on_cell_load);
     c.set_console_dot_txt_size_kb(1);
     assert_eq!(c.get_console_dot_txt_size_kb(), 512);
@@ -421,4 +497,85 @@ fn setters_validate_like_java() {
     c.set_framerate(5);
     assert_eq!(c.performance.lock_fps, 144);
     assert!(c.take_full_screenshot(Some("../x.png")).is_err());
+}
+
+#[test]
+fn game_mode_field_preserves_identity_null_and_constructor_authority() {
+    let statics = mode_statics();
+    let mut core = Core::new();
+    assert!(core.uses_named_game_mode());
+    assert!(!core.is_tutorial().unwrap());
+    core.install_game_mode_statics(statics.clone()).unwrap();
+    assert!(Rc::ptr_eq(&core.get_game_mode_ref().unwrap(), statics.constant("SANDBOX").unwrap()));
+    core.set_game_mode("base:TUTORIAL").unwrap();
+    assert!(core.is_tutorial().unwrap());
+    assert!(core.skips_world_save_for_mode());
+    assert!(!core.add_zombie_on_cell_load);
+    let tutorial = statics.constant("TUTORIAL").unwrap();
+    let same_name = Rc::new(RegistryKey { location: tutorial.location.clone(), name: tutorial.name.clone(), item_key: None });
+    core.set_game_mode_ref(Some(same_name.clone())).unwrap();
+    assert!(Rc::ptr_eq(&core.get_game_mode_ref().unwrap(), &same_name));
+    assert!(!core.is_tutorial().unwrap());
+    assert!(!core.skips_world_save_for_mode());
+    assert!(core.add_zombie_on_cell_load);
+    core.set_game_mode_ref(None).unwrap();
+    assert!(core.get_game_mode_ref().is_none());
+    assert!(!core.is_tutorial().unwrap());
+    core.install_game_mode_statics(statics).unwrap();
+    assert!(core.get_game_mode_ref().is_none());
+    assert!(core.install_game_mode_statics(mode_statics()).is_err());
+    core.set_game_mode("fixture:unknown").unwrap();
+    assert!(core.get_game_mode_ref().is_none());
+    let sandbox = core.game_mode_sandbox_ref().unwrap();
+    core.set_game_mode_ref(Some(sandbox)).unwrap();
+    assert!(core.set_game_mode("").is_err());
+    assert_eq!(core.game_mode_name(), Some("Sandbox"));
+}
+
+#[test]
+fn build_42_21_options_keep_zoom_settings_and_migrate_old_save_directories() {
+    let dir = temp_dir("legacy-options");
+    std::fs::write(dir.join("options.ini"), "version=8\ntexture2x=false\nzoomLevels1x=50;100\ndoneNewSaveFolder=false\n").unwrap();
+    let save = dir.join("Sandbox/fixture-world");
+    std::fs::create_dir_all(&save).unwrap();
+    std::fs::write(save.join("map_ver.bin"), b"world").unwrap();
+    let mut core = core_in(&dir);
+    core.load_options().unwrap();
+    assert!(core.is_done_new_save_folder());
+    assert_eq!(core.get_option_zoom_levels1x(), "50;100");
+    assert_eq!(core.opt("texture2x").get_bool(), false);
+    assert!(core.option("showConnectionInfo").is_none());
+    assert_eq!(std::fs::read(dir.join("Saves/Sandbox/fixture-world/map_ver.bin")).unwrap(), b"world");
+    assert!(!save.exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn render_context_receives_vsync_changes_without_consuming_other_core_requests() {
+    let mut core = Core::new();
+    core.pending_requests.push(CoreRequest::Exit);
+    core.set_option_vsync(false);
+    core.pending_requests.push(CoreRequest::FullScreenshot(None));
+    core.set_option_vsync(true);
+    core.set_option_vsync(true);
+    assert!(core.get_option_v_sync());
+    assert_eq!(core.take_vsync_requests(), [false, true, true]);
+    assert!(core.take_vsync_requests().is_empty());
+    assert_eq!(core.take_requests(), [CoreRequest::Exit, CoreRequest::FullScreenshot(None)]);
+}
+
+#[test]
+fn frame_capture_only_drains_screenshots_in_call_order() {
+    let mut core = Core::new();
+    core.set_option_vsync(false);
+    core.take_full_screenshot(Some("winter.png")).unwrap();
+    core.pending_requests.push(CoreRequest::Exit);
+    core.take_screenshot_at(-1, 2, 3, 4, 1028);
+    assert!(core.screenshot_requested());
+    assert_eq!(core.take_screenshot_requests(), [
+        CoreRequest::FullScreenshot(Some("winter.png".into())),
+        CoreRequest::Screenshot { x: -1, y: 2, width: 3, height: 4, read_buffer: 1028 },
+    ]);
+    assert!(!core.screenshot_requested());
+    assert_eq!(core.take_requests(), [CoreRequest::VSync(false), CoreRequest::Exit]);
 }

@@ -220,6 +220,16 @@ pub enum LuaEvent {
     ContainerUpdate,
 }
 
+/// Owned state held across the synchronous OnObjectAboutToBeRemoved callback.
+pub struct PendingTileRemoval {
+    pub square: SquareRef,
+    pos:SquarePos,
+    id:ObjectId,
+    pub receiver:Option<IsoObjectRef>,
+    pub actual_index:Option<usize>,
+    index:i32,
+}
+
 /// The world systems outside this crate the mutations call.
 pub trait SquareMutationHooks {
     /// `LuaEventManager.triggerEvent(name, args)`.
@@ -553,6 +563,12 @@ impl MutationEnv<'_> {
     /// recalculates both squares' properties), then the four corner pairs
     /// around it.
     pub fn recalc_all_with_neighbours(&mut self, pos: SquarePos) {
+        self.recalc_neighbours(pos, true);
+    }
+
+    /// The boolean overload only controls reverse updates between the
+    /// receiver and its neighbours. The four corner pairs update both ways.
+    pub fn recalc_neighbours(&mut self, pos: SquarePos, reverse: bool) {
         let Some(sq_owner) = self.sq(pos) else {
             return;
         };
@@ -569,7 +585,7 @@ impl MutationEnv<'_> {
                     if (x, y, z) == pos || self.sq((x, y, z)).is_none() {
                         continue;
                     }
-                    self.recalculate_all(pos, (x, y, z), true);
+                    self.recalculate_all(pos, (x, y, z), reverse);
                 }
             }
         }
@@ -1205,15 +1221,29 @@ impl MutationEnv<'_> {
         id: ObjectId,
         receiver: Option<IsoObjectRef>,
     ) -> HostResult<(i32, Option<ObjectSlot>)> {
+        let Some(pending) = self.prepare_tile_removal(pos,id,receiver)? else {return Ok((-1,None))};
+        if let Some(index)=pending.actual_index {
+            self.world.lua_event(pending.square.clone(),LuaEvent::ObjectAboutToBeRemoved { index, object:pending.receiver.as_ref().unwrap().clone() });
+        }
+        let receiver=pending.receiver.clone();
+        let square=pending.square.clone();
+        let result=self.detach_removing_tile(pending)?;
+        self.world.lua_event(square,LuaEvent::TileRemoved {object:receiver});
+        self.finish_tile_removal(pos);
+        Ok(result)
+    }
+
+    /// Complete table-top and occlusion adjustments before Lua sees the tile.
+    pub fn prepare_tile_removal(&mut self,pos:SquarePos,id:ObjectId,receiver:Option<IsoObjectRef>) -> HostResult<Option<PendingTileRemoval>> {
         if let Some(object) = &receiver {
             self.cell.retire_object(ObjectSlot::retain(object));
         }
         if self.sq(pos).is_none() {
-            return Ok((-1, None));
+            return Ok(None);
         }
         self.regions_set_previous_flags(pos);
         let sq_owner = self.sq(pos).unwrap();
-        let (actual_index, mut index, table_adjustments) = {
+        let (actual_index, index, table_adjustments) = {
             let sq = sq_owner
                 .try_borrow()
                 .map_err(|_| RuntimeHostError::Borrowed("remove tile square"))?;
@@ -1221,6 +1251,11 @@ impl MutationEnv<'_> {
                 .as_ref()
                 .and_then(|r| sq.objects.iter().position(|o| o.ptr_eq_ref(r)));
             let index = actual_index.map(|i| i as i32).unwrap_or_else(|| {
+                // The sparse special list stores ids of objects in this
+                // square. A foreign receiver can carry the same numeric id.
+                if receiver.is_some() && sq.objects.iter().any(|o| o.borrow().id == id) {
+                    return -1;
+                }
                 sq.special_objects
                     .iter()
                     .position(|&s| s == id)
@@ -1260,8 +1295,7 @@ impl MutationEnv<'_> {
             }
             (actual_index, index, adjustments)
         };
-        let mut removed = None;
-        if let Some(i) = actual_index {
+        if actual_index.is_some() {
             for (object, offset) in table_adjustments {
                 let mut object = object
                     .try_borrow_mut()
@@ -1272,15 +1306,16 @@ impl MutationEnv<'_> {
             if self.player_built_floor(pos) == Some(id) {
                 self.render.grid_occlusion_square_changed();
             }
-            let receiver = receiver.as_ref().unwrap().clone();
-            let sq_owner = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2).unwrap();
-            self.world.lua_event(
-                sq_owner,
-                LuaEvent::ObjectAboutToBeRemoved {
-                    index: i,
-                    object: receiver.clone(),
-                },
-            );
+        }
+        Ok(Some(PendingTileRemoval { square:sq_owner,pos,id,receiver,actual_index,index }))
+    }
+
+    /// Recheck physical membership after Lua returns, then detach the object.
+    pub fn detach_removing_tile(&mut self,pending:PendingTileRemoval) -> HostResult<(i32,Option<ObjectSlot>)> {
+        let PendingTileRemoval {pos,id,receiver,actual_index,mut index,..}=pending;
+        let mut removed=None;
+        if actual_index.is_some() {
+            let receiver=receiver.unwrap();
             let sq_owner = self.sq(pos).ok_or(RuntimeHostError::InvalidHostState(
                 "remove tile square unloaded during callback",
             ))?;
@@ -1322,12 +1357,12 @@ impl MutationEnv<'_> {
             }
         }
         self.map_collision_square_changed(pos);
-        let sq_owner = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2).unwrap();
-        self.world
-            .lua_event(sq_owner, LuaEvent::TileRemoved { object: receiver });
+        Ok((index,removed))
+    }
+
+    pub fn finish_tile_removal(&mut self,pos:SquarePos) {
         self.polygonal_map2_square_changed(pos);
-        self.regions_square_changed(pos, true);
-        Ok((index, removed))
+        self.regions_square_changed(pos,true);
     }
 
     /// `RemoveTileObjectErosionNoRecalc(obj)`: the object leaves the world
@@ -1385,7 +1420,7 @@ impl MutationEnv<'_> {
             .map(ObjectSlot::ref_handle)
     }
 
-    fn try_object_handle(&self, r: ObjectRef) -> HostResult<Option<IsoObjectRef>> {
+    pub fn try_object_handle(&self, r: ObjectRef) -> HostResult<Option<IsoObjectRef>> {
         let Some(square) = self.sq(r.pos) else {
             return Ok(None);
         };

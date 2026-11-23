@@ -23,11 +23,14 @@ use pz_world::java::fastfloor;
 use pz_world::{BuildingDef, BuildingIdx, IsoCell, IsoMetaGrid, RoomDef, RoomIdx, RoomRect};
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::{Rc, Weak};
 
 mod cell_drag;
+mod runtime_rooms;
 pub mod lua_world;
+pub mod snow;
+pub use snow::set_snow_target;
 mod reachability;
 mod player_vehicles;
 mod square_walk;
@@ -37,14 +40,69 @@ pub mod power;
 #[cfg(test)]
 mod collection_deferral_tests;
 
+/// Square changes from live objects. Pathfinding needs every intermediate
+/// snapshot. Rendering reads the most recent sprite once per drawn square.
+#[derive(Default)]
+pub struct GeometryChanges {
+    pub pathfind: Option<pz_pathfind::service::SquareChanges>,
+    render: RefCell<Option<BTreeSet<(i32, i32, i32)>>>,
+}
+
+impl GeometryChanges {
+    pub fn notify(&self, cell: &IsoCell, meta: &IsoMetaGrid, sprites: &pz_world::IsoSpriteManager,
+        pos: (i32, i32, i32)) {
+        if let Some(pending) = self.render.borrow_mut().as_mut() {
+            pending.insert(pos);
+        }
+        if let Some(queue) = &self.pathfind {
+            queue.notify(sprites, meta, cell, &pz_world::ObjectHooks::new(cell, sprites), pos);
+        }
+    }
+
+    /// The first render builds the current scene and starts tracking subsequent edits.
+    pub fn take_render_changes(&mut self) -> BTreeSet<(i32, i32, i32)> {
+        self.render.get_mut().replace(BTreeSet::new()).unwrap_or_default()
+    }
+}
+
 /// `IsoWorld.instance.metaGrid` and `IsoWorld.instance.currentCell`.
 #[derive(Default)]
 pub struct WorldState {
     pub meta_grid: Option<IsoMetaGrid>,
     pub cell: Option<IsoCell>,
+    pub geometry: GeometryChanges,
+    pub object_names: HashMap<i8, String>,
+    pub sprite_names: Rc<HashMap<i32, String>>,
+    pub script_dictionary: Rc<pz_entity::ScriptDictionary>,
+    pub hutches: Vec<pz_world::IsoObjectRef>,
+    /// Region graph for player-built rooms, shared with the engine renderer.
+    pub regions: Option<Rc<RefCell<pz_world::isoregion::IsoRegions>>>,
+    pub population_sounds: Vec<(pz_audio::world_sound::WorldSound, f32)>,
+    pub meta_tracker: Option<Rc<RefCell<pz_core::save_trackers::MetaTracker>>>,
     /// `currentCell.weatherFx`, initialized by `initWeatherFx` and retired
     /// with the cell. The simulation exists independently of GPU drawing.
     pub weather_fx: Option<Rc<RefCell<pz_iso_render::weather_fx::IsoWeatherFx>>>,
+}
+
+impl WorldState {
+    pub(crate) fn square_in_room(&self, sq: &pz_world::IsoGridSquare) -> pz_entity::runtime_load::HostResult<bool> {
+        use pz_entity::runtime_load::RuntimeHostError;
+        if self.meta_grid
+            .as_ref()
+            .is_some_and(|m| sq.room_def(m).is_some())
+        {
+            return Ok(true);
+        }
+        let Some(regions) = &self.regions else {
+            return Ok(false);
+        };
+        let regions = regions
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("IsoRegions"))?;
+        Ok(sq
+            .get_iso_world_region(&regions)
+            .is_some_and(|id| regions.is_player_room(id)))
+    }
 }
 
 thread_local! {
@@ -71,11 +129,20 @@ pub fn set_meta_grid(grid: Option<IsoMetaGrid>) {
 
 /// Install (or clear) `IsoWorld.instance.currentCell`.
 pub fn set_cell(cell: Option<IsoCell>) {
+    crate::bind_map_objects::install_tile_placement(None);
+    if cell.is_none() { power::set_hydro_power_on(false); }
     let retired = with_world_state_cell(|w| {
         let mut w = w.borrow_mut();
+        w.meta_tracker = None;
+        w.object_names.clear();
+        w.sprite_names = Rc::default();
+        w.script_dictionary = Rc::default();
+        w.regions = None;
+        w.geometry = GeometryChanges::default();
+        w.population_sounds.clear();
         let weather = w.weather_fx.take();
         let cell = std::mem::replace(&mut w.cell, cell);
-        (weather, cell)
+        (weather, cell, std::mem::take(&mut w.hutches))
     });
     CELL_GEN.with(|g| g.set(g.get() + 1));
     HANDLES.with(|h| {
@@ -162,7 +229,8 @@ enum Key {
     MetaChunk(i32, i32),
     Room(u32),
     /// The runtime `IsoRoom` of a room id (what `IsoGridSquare.getRoom` returns).
-    IsoRoom(i64),
+    IsoRoom(RoomIdx),
+    IsoBuilding(BuildingIdx),
     Building(u32),
     /// Room, index in `objects`.
     MetaObject(u32, u32),
@@ -215,6 +283,7 @@ impl Key {
                 | Key::MetaChunk(..)
                 | Key::Room(_)
                 | Key::IsoRoom(_)
+                | Key::IsoBuilding(_)
                 | Key::Building(_)
                 | Key::MetaObject(..)
                 | Key::RoomRect(..)
@@ -237,6 +306,7 @@ impl Key {
             Key::MetaChunk(..) => "zombie.iso.IsoMetaChunk",
             Key::Room(_) => "zombie.iso.RoomDef",
             Key::IsoRoom(_) => "zombie.iso.areas.IsoRoom",
+            Key::IsoBuilding(_) => "zombie.iso.areas.IsoBuilding",
             Key::Building(_) => "zombie.iso.BuildingDef",
             Key::MetaObject(..) => "zombie.iso.MetaObject",
             Key::RoomRect(..) => RECT_CLASS,
@@ -519,6 +589,7 @@ fn register_world(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::even
     player_vehicles::register(thread);
     register_array_list(thread);
     register_room_def(thread);
+    runtime_rooms::register(thread);
     register_room_rect(thread);
     register_meta_object(thread);
     register_building_def(thread);
@@ -530,6 +601,11 @@ fn register_world(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::even
     register_grid_square(thread);
     register_iso_world(thread);
     crate::expose::global(thread, "getCell", |c| Ok(c.push(current_cell())));
+    crate::expose::global(thread, "getSquare", |c| {
+        if current_cell().is_nil() { return Err(crate::world_menu_logic::null_pointer()); }
+        let [x, y, z] = [0, 1, 2].map(|i| fastfloor_d(num_arg(c, i)));
+        Ok(c.push(square_value(x, y, z)))
+    });
     lua_world::register_zone(thread);
 }
 
@@ -1816,6 +1892,19 @@ fn register_iso_cell(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::e
         self_cell(c)?;
         Ok(32.into())
     });
+    get(&b, "getSnowTarget", |c| {
+        self_cell(c)?;
+        Ok(Value::from(with_world(|w| w.cell.as_ref().map_or(0, |cell| cell.snow_target))))
+    });
+    b.method("setSnowTarget", |c| {
+        self_cell(c)?;
+        set_snow_target(int_arg(c, 1));
+        Ok(0)
+    });
+    get(&b, "gridSquareIsSnow", |c| {
+        self_cell(c)?;
+        Ok(Value::Bool(snow::square_is_snow(int_arg(c, 1), int_arg(c, 2), int_arg(c, 3))?))
+    });
     get(&b, "getGridSquare", |c| {
         self_cell(c)?;
         let (x, y, z) = (
@@ -1977,10 +2066,48 @@ fn square_building(x: i32, y: i32, z: i32) -> LuaResult<Option<usize>> {
 
 fn register_grid_square(thread: &mut Thread) {
     let b = expose_class(thread, "zombie.iso.IsoGridSquare", Some("java.lang.Object"));
+    get(&b, "getPuddlesInGround", |c| {
+        let pos = self_square(c)?;
+        Ok(Value::from(f64::from(crate::bind_puddles::ground_level(pos)?)))
+    });
     reachability::register(&b);
     square_walk::register(&b);
+    get(&b, "addTileObject", |c| {
+        let pos = self_square(c)?;
+        crate::bind_map_objects::place_tile(c, pos, None)
+    });
+    for (method, special) in [("AddTileObject", false), ("AddSpecialObject", true)] {
+        void(&b, method, move |c| {
+            let pos = self_square(c)?;
+            crate::bind_map_objects::place_tile(c, pos, Some(special))?;
+            Ok(())
+        });
+    }
+    void(&b, "RecalcAllWithNeighbours", |c| {
+        let pos = self_square(c)?;
+        let reverse = bool_arg(c, 1);
+        crate::bind_map_objects::apply_tile(c.thread, pos, crate::bind_map_objects::PlacedTile::RecalcNeighbours { reverse })?;
+        Ok(())
+    });
+    for (method, transmit) in [("RemoveTileObject", false), ("transmitRemoveItemFromSquare", true)] {
+        get(&b, method, move |c| {
+            let pos=self_square(c)?;
+            crate::bind_map_objects::remove_tile(c,pos,transmit)
+        });
+    }
     square_queries::register(&b);
     power::register(&b);
+    for (method, local) in [("playSound", false), ("playSoundLocal", true)] {
+        get(&b, method, move |c| {
+            let (x, y, z) = self_square(c)?;
+            let name = str_arg(c, 1).unwrap_or_default();
+            let system = crate::bind_audio::sound_system();
+            let mut system = system.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound system"))?;
+            let (_, handle) = system.play_world_clip(&name, [x as f32 + 0.5, y as f32 + 0.5,
+                z as f32 + if local { 0.5 } else { 0.0 }], local);
+            Ok(Value::Num(handle as f64))
+        });
+    }
     static_get(&b, "getMatrixBit", |c| {
         let bit = |i| int_arg(c, i) as i8 as i32;
         let n = bit(1) + bit(2) * 3 + bit(3) * 9;
@@ -2006,6 +2133,22 @@ fn register_grid_square(thread: &mut Thread) {
     get(&b, "getCenterY", |c| {
         Ok(Value::Num((self_square(c)?.1 as f32 + 0.5) as f64))
     });
+    for method in ["isInARoom", "getRoomSize"] {
+        get(&b, method, move |c| {
+            let (x, y, z) = self_square(c)?;
+            try_with_world_read(|w| {
+                use pz_entity::runtime_load::RuntimeHostError;
+                let cell = w.cell.as_ref().ok_or(RuntimeHostError::InvalidHostState("no current cell"))?;
+                let owner = cell.get_grid_square(x, y, z)
+                    .ok_or(RuntimeHostError::InvalidHostState("IsoGridSquare is no longer loaded"))?;
+                let sq = owner.try_borrow().map_err(|_| RuntimeHostError::Borrowed("IsoGridSquare"))?;
+                if method == "isInARoom" { return Ok(w.square_in_room(&sq)?.into()); }
+                let regions = w.regions.as_ref().map(|r| r.try_borrow()).transpose()
+                    .map_err(|_| RuntimeHostError::Borrowed("IsoRegions"))?;
+                Ok(sq.room_size(cell, w.meta_grid.as_ref(), regions.as_deref())?.into())
+            }).map_err(crate::bind_world_object::host_error)
+        });
+    }
     get(&b, "getRoomID", |c| {
         let (x, y, z) = self_square(c)?;
         Ok(long(square_room_id(x, y, z)?))
@@ -2014,12 +2157,9 @@ fn register_grid_square(thread: &mut Thread) {
         let (x, y, z) = self_square(c)?;
         Ok(square_room_id(x, y, z)?.to_string().into())
     });
-    // `getRoom()`: the room of the square, `nil` outside. Rooms of the same id
-    // are one Lua object, so `==` compares them as Java does.
     get(&b, "getRoom", |c| {
         let (x, y, z) = self_square(c)?;
-        let id = square_room_id(x, y, z)?;
-        Ok(if id == -1 { Value::Nil } else { obj(Key::IsoRoom(id)) })
+        Ok(opt(runtime_rooms::square_room(x, y, z)?.map(Key::IsoRoom)))
     });
     get(&b, "getRoomDef", |c| {
         let (x, y, z) = self_square(c)?;
@@ -2108,6 +2248,19 @@ fn self_world(c: &NativeCall<'_>) -> LuaResult<()> {
 fn register_iso_world(thread: &mut Thread) {
     let b = expose_class(thread, "zombie.iso.IsoWorld", Some("java.lang.Object"));
     b.field("instance", obj(Key::World));
+    get(&b, "isHydroPowerOn", |c| {
+        self_world(c)?;
+        Ok(power::hydro_power_on().into())
+    });
+    b.method("setHydroPowerOn", |c| {
+        self_world(c)?;
+        power::set_hydro_power_on(bool_arg(c, 1));
+        Ok(0)
+    });
+    get(&b, "getWorldAgeDays", |c| {
+        self_world(c)?;
+        Ok(Value::Num(crate::bind_climate::world_age_days_since_begin() as f32 as f64))
+    });
     get(&b, "getCell", |c| {
         self_world(c)?;
         Ok(current_cell())
@@ -2334,6 +2487,34 @@ mod tests {
     }
 
     #[test]
+    fn indoor_loot_resolves_the_runtime_building_and_its_named_rooms() {
+        let _dir = load_world("runtime-rooms");
+        let mut t = thread();
+        run(&mut t, r#"
+            local cell = IsoWorld.instance:getCell()
+            local sq = cell:getGridSquare(259, 260, 0)
+            local room, building = sq:getRoom(), sq:getBuilding()
+            check(room:getName() == "kitchen" and building == room:getBuilding())
+            check(room:getRoomDef() == sq:getRoomDef() and building:getDef() == sq:getBuildingDef())
+            check(building:getRandomRoom("kitchen") == room)
+            local bedroom = building:getRandomRoom("bedroom")
+            check(bedroom:getBuilding() == building and bedroom:getName() == "bedroom")
+            check(building:getRandomRoom("BEDROOM") == nil and building:getRandomRoom("absent") == nil)
+            check(building:getRandomRoom():getBuilding() == building)
+            local outside = cell:getGridSquare(260, 260, 0)
+            check(outside:getRoom() == nil and outside:getBuilding() == nil)
+            savedRoom, savedBuilding = room, building
+        "#);
+        with_world(|world| {
+            world.cell.as_mut().unwrap().get_grid_square_mut(259, 260, 0)
+                .unwrap().borrow_mut().room_id = 12345;
+        });
+        run(&mut t, "local sq = getCell():getGridSquare(259,260,0) check(sq:getRoom() == nil and sq:getBuilding() == nil)");
+        set_meta_grid(None);
+        run(&mut t, "check(not pcall(function() return savedRoom:getName() end)) check(not pcall(function() return savedBuilding:getDef() end))");
+    }
+
+    #[test]
     fn cell_chunks_and_squares() {
         let _dir = load_world("squares");
         let mut t = thread();
@@ -2350,6 +2531,8 @@ mod tests {
             check(sq:getBuildingDef() == k:getBuilding() and not sq:isUserDefinedRoom())
             local e = sq:getE()
             check(e:getX() == 260 and e:getW() == sq and e:getRoomDef() == nil and e:getRoomID() == -1)
+            check(sq:isInARoom() and not e:isInARoom())
+            check(sq:getRoomSize() == 1 and e:getRoomSize() == -1)
             check(sq:getN() == nil and sq:getSquareAbove():getZ() == 1 and sq:getSquareBelow() == nil)
             check(e:isEastOf(sq) and sq:isWestOf(e) and not sq:isDiagonalTo(e))
             check(sq:isInsideRectangle(259, 260, 1, 1) and sq:getCenterX() == 259.5)
@@ -2401,6 +2584,15 @@ mod tests {
 
     #[test]
     fn get_world_and_zone_registration() {
+        use pz_classfile::{StaticInit, Value as ClassValue};
+        let initializers = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial")].into_iter().map(|(field, id)| StaticInit {
+            class: "zombie/core/GameMode".into(), field: field.into(),
+            value: ClassValue::Call { class: "zombie/core/GameMode".into(), name: "registerBase".into(), descriptor: String::new(), args: vec![ClassValue::Str(id.into())] },
+        }).collect::<Vec<_>>();
+        let modes = Rc::new(pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&initializers).unwrap());
+        let mut core = pz_core::core::Core::default();
+        core.install_game_mode_statics(modes.clone()).unwrap();
+        crate::bind_core::install_core(Rc::new(RefCell::new(core)));
         let dir = load_world("lua-world");
         let maps = dir.0.join("media/maps/Test");
         std::fs::write(
@@ -2421,6 +2613,7 @@ mod tests {
         crate::bind_java_util::register(&mut t);
         register(&mut t);
         lua_world::register(&mut t, fs);
+        t.globals().set_str("tutorialMode", crate::bind_registry::key_value(crate::bind_registry::GAME_MODE_CLASS, modes.constant("TUTORIAL")));
         run(
             &mut t,
             r#"
@@ -2449,13 +2642,15 @@ mod tests {
             w:setLuaPosX(300); w:setLuaPosY(-5)
             check(w:getLuaPosX() == 300 and w:getLuaSpawnCellX() == 44 and w:getLuaSpawnCellY() == 251)
             w:setWorld("  save  "); check(w:getWorld() == "save")
-            w:setGameMode("LastStand"); check(w:getGameMode() == "LastStand")
+            w:setGameMode("Tutorial"); check(w:getGameMode() == tutorialMode)
+            w:setGameMode("Sandbox"); check(w:getGameMode() ~= tutorialMode)
+            w:setGameMode(tutorialMode); check(w:getGameMode() == tutorialMode)
             "#,
         );
         assert_eq!(lua_world::take_spawn_origins(), vec![(1, 2, 3, 4)]);
         assert!(lua_world::take_spawn_origins().is_empty());
         assert_eq!(lua_world::shared_water_flow().borrow().zones.len(), 1);
-        assert!(crate::bind_core::shared_core().borrow().last_stand);
+        assert!(crate::bind_core::shared_core().borrow().is_tutorial().unwrap());
         with_world(|w| {
             let g = w.meta_grid.as_ref().unwrap();
             let nav: Vec<_> = g

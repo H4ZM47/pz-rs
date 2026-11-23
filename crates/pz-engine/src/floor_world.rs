@@ -530,6 +530,7 @@ impl IsoWorld {
         let floor: pz_lua_api::bind_character_sim::FloorWorldRef = service.clone();
         let old = install_floor_world(Some(floor));
         self.floor_session = Some(session_owner);
+        self.install_tile_placement(&service);
         self.floor_world = Some(service);
         let mut retired = pz_entity::RetiredComponents::new();
         retired.push_payload(Box::new(old));
@@ -537,6 +538,9 @@ impl IsoWorld {
         Ok(())
     }
 }
+
+mod tile_hooks;
+mod tiles;
 
 #[cfg(test)]
 mod tests;

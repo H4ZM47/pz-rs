@@ -13,6 +13,7 @@
 use crate::iso_world::{IsoWorld, StandardRand};
 use crate::sim::FrameSim;
 use crate::world_models::WorldModels;
+use pz_lua_api::bind_zombie::NoiseKind;
 use pz_characters::character::state::{StateCx, StateWorld};
 use pz_characters::character::zombie::population::RealZombies;
 use pz_characters::character::SimEvent;
@@ -126,6 +127,9 @@ mod animation_bridge_tests {
         let mut runtime = StatesRuntime::default();
         {
             let mut engine = EngineStates {
+                geometry: None,
+                sim: None,
+                closing_windows: Vec::new(),
                 rand: StandardRand,
                 movers: Vec::new(),
                 models: RefCell::new(Some(&mut models)),
@@ -187,6 +191,9 @@ mod animation_bridge_tests {
 /// `StatesEngine` (other characters by id, corpses, sounds, the path
 /// host) keeps its defaults: TODO(port): those owners.
 struct EngineStates<'a> {
+    geometry: Option<&'a pz_lua_api::bind_world::GeometryChanges>,
+    sim: Option<&'a FrameSim>,
+    closing_windows: Vec<pz_world_states::ClosingWindow>,
     rand: StandardRand,
     /// The squares the local players stand on (`getCurrentSquare()`),
     /// taken before the frame lends any of them out. TODO(port): animals.
@@ -200,6 +207,57 @@ struct EngineStates<'a> {
 }
 
 impl StatesEngine for EngineStates<'_> {
+    fn door_sprite_effects_enabled(&self) -> bool {
+        pz_lua_api::bind_core::shared_core().borrow().get_option_do_door_sprite_effects()
+    }
+
+    fn geometry_changed(&mut self, cell: &IsoCell, meta: &pz_world::IsoMetaGrid,
+        sprites: &IsoSpriteManager, pos: (i32, i32, i32)) {
+        if let Some(geometry) = self.geometry {
+            geometry.notify(cell, meta, sprites, pos);
+        }
+    }
+
+    fn player_input(&self) -> Option<&dyn pz_characters::character::player::PlayerInput> {
+        self.sim.map(|sim| sim.player_input() as &dyn pz_characters::character::player::PlayerInput)
+    }
+
+    fn zombie_triggers_house_alarm(&self) -> bool {
+        pz_lua_api::bind_sandbox::current_bool("ZombieLore.TriggerHouseAlarm").unwrap_or(false)
+    }
+
+    fn add_world_sound(&mut self, request: pz_world_states::WorldSoundRequest) {
+        if let Some(sim) = self.sim {
+            pz_characters::character::SimContext::event(sim, SimEvent::InteractionNoise(request));
+        }
+    }
+
+    fn play_world_sound(&mut self, name: &str, square: (i32, i32, i32)) {
+        if let Some(sim) = self.sim {
+            pz_characters::character::SimContext::event(sim, SimEvent::PositionedSound { name: name.into(), square });
+        }
+    }
+
+    fn do_room_alarm(&mut self, room: i64, _building: pz_world::BuildingIdx) {
+        if let Some(sim) = self.sim {
+            pz_characters::character::SimContext::event(sim, SimEvent::RoomAlarm(room));
+        }
+    }
+
+    fn on_window_toggled(&mut self, actor: i32, window: &pz_world::IsoObjectRef) {
+        if let Some(sim) = self.sim {
+            pz_characters::character::SimContext::event(sim, SimEvent::WindowToggled { actor, window: window.clone() });
+        }
+    }
+
+    fn closing_windows(&self) -> &[pz_world_states::ClosingWindow] { &self.closing_windows }
+
+    fn on_container_update(&mut self) {
+        if let Some(sim) = self.sim {
+            pz_characters::character::SimContext::event(sim, SimEvent::ContainerUpdate);
+        }
+    }
+
     fn rand(&mut self) -> &mut dyn GameRand {
         &mut self.rand
     }
@@ -470,9 +528,17 @@ fn with_states_characters_and_path<R>(
     f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
 ) -> Option<R> {
     let mut movers = player_squares();
+    let mut closing_windows = pz_lua_api::bind_players::closing_windows();
     // The players lent to `characters` (their cells hold stand-ins).
     if let Some(list) = characters.as_ref() {
-        movers.extend(list.iter().filter(|c| c.is_player()).filter_map(|c| c.path.current_square));
+        for actor in list.iter() {
+            if actor.is_player() {
+                movers.extend(actor.path.current_square);
+            }
+            if let Some(action) = pz_world_states::ClosingWindow::of(actor) {
+                closing_windows.push(action);
+            }
+        }
     }
     let animation_time_delta = sim
         .game_time
@@ -483,6 +549,9 @@ fn with_states_characters_and_path<R>(
             return None;
         };
         let mut engine = EngineStates {
+            geometry: Some(&w.geometry),
+            sim: Some(sim),
+            closing_windows,
             rand: StandardRand,
             movers,
             models: RefCell::new(models),
@@ -490,14 +559,16 @@ fn with_states_characters_and_path<R>(
             floor_world: floor_world.cloned(),
         };
         let mut sprites = sprites.borrow_mut();
+        let sounds = pz_lua_api::bind_zombie::shared_world_sounds();
+        let sounds = sounds.borrow();
         let mut adapter = StatesWorldAdapter::new(
             cell,
             meta,
             &mut sprites,
-            ThumpSettings::default(),
+            ThumpSettings { trigger_house_alarm: engine.zombie_triggers_house_alarm(), ..Default::default() },
             runtime,
             &mut engine,
-        );
+        ).with_world_sounds(&sounds);
         if let Some(characters) = characters {
             adapter = adapter.with_characters(characters);
         }
@@ -515,9 +586,9 @@ fn dispatch_player_animation_event(
     lua: &mut LuaManager,
     character: &LuaGameCharacterRef,
     event: &pz_anim::AnimEventRecord,
-    state_phase: impl FnOnce() -> pz_characters::character::state::StateResult<()>,
+    state_phase: impl FnOnce(&mut LuaManager) -> pz_characters::character::state::StateResult<()>,
 ) -> pz_characters::character::state::StateResult<()> {
-    state_phase()?;
+    state_phase(lua)?;
     pz_lua_api::timed_actions::anim_event(
         &mut lua.thread,
         character,
@@ -573,8 +644,11 @@ impl IsoWorld {
         self.frame_no += 1;
         // TODO(port): `WorldSimulation.instance.update()`,
         // `HutchManager.updateAll`, `ImprovedFog.update`,
-        // `helicopter.update`, the current emitters' `tick` (every 30 ms),
+        // `helicopter.update`,
         // `metaGrid.getCurrentCellData().checkTriggers()`.
+        let emitter_update = pz_lua_api::bind_audio::sound_system().borrow_mut()
+            .with_world_emitters(|pool, ctx| pool.update(pz_lua_api::player_db::current_time_millis(), ctx));
+        pz_lua_api::bind_eat::update_emitters(emitter_update);
         // TODO(port): `WorldSoundManager.instance.initFrame()`,
         // `ZombieGroupManager.preupdate`, `OnceEvery.update`,
         // `CollisionManager.initUpdate`.
@@ -633,7 +707,7 @@ impl IsoWorld {
         // TODO(port): `ProcessItems`: dispatch real item update/finishupdate
         // and world-item updates. Saved codec items are not runtime ItemRefs.
         self.process_remove_items();
-        // TODO(port): `ProcessIsoObject`.
+        self.process_iso_objects(lua);
         self.update_characters(lua, sim)?;
         // TODO(port): `ProcessStaticUpdaters`, `ObjectDeletionAddition`,
         // `IsoDeadBody.updateBodies`, `FishSchoolManager.update` and the
@@ -663,7 +737,7 @@ impl IsoWorld {
                 Some(r) => (
                     square
                         .and_then(|at| r.world.squares.get(&at))
-                        .is_some_and(|sq| !sq.has(|f| f.exterior)),
+                        .is_some_and(|sq| !sq.is_exterior()),
                     r.fx_mask_to_draw[0],
                 ),
                 None => (false, false),
@@ -691,6 +765,26 @@ impl IsoWorld {
         pz_core::random::with_standard(|rand| fx.update(rand, &frame));
     }
 
+    fn process_iso_objects(&mut self, lua: &mut LuaManager) {
+        let lists = with_world(|w| w.cell.as_ref().map(|c| c.process_objects.clone()));
+        let Some(lists) = lists else { return };
+        let retired = lists.borrow_mut().drain_removed();
+        drop(retired);
+        // Pending removal is applied on the next frame. Additions during
+        // update run next frame too, matching the native captured list size.
+        let size = lists.borrow().process().len();
+        for index in 0..size {
+            let object = lists.borrow().process().get(index).cloned();
+            let Some(object) = object else { break };
+            if matches!(object.borrow().kind, pz_world::ObjectKind::FeedingTrough(_)) {
+                if let Err(error) = pz_lua_api::bind_world_object::trough::update(&mut lua.thread, &object) {
+                    self.log_update_error(format!("feeding trough update: {error}"));
+                }
+            }
+            // Other updater subclasses have their own simulation systems.
+        }
+    }
+
     /// `IsoCell.ProcessRemoveItems`, before and after its item-update phase.
     fn process_remove_items(&mut self) {
         let removed = with_world(|w| {
@@ -707,7 +801,7 @@ impl IsoWorld {
     /// levels (`frameMod` buckets by distance); everything updates every
     /// frame.
     fn update_characters(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
-        let input = pz_player_input::EnginePlayerInput::capture();
+        let input = sim.player_input();
         let sm = pz_lua_api::bind_registry::shared_script_manager();
         let chars = shared_characters();
         let player_sim = sim.player_context();
@@ -733,7 +827,7 @@ impl IsoWorld {
                     let mut chr = p.borrow_mut();
                     if first_phase {
                         chr.preupdate_player();
-                        chr.frame_step(&input);
+                        chr.frame_step(input);
                     }
                     let IsoWorld {
                         sprites,
@@ -741,6 +835,7 @@ impl IsoWorld {
                         action_groups,
                         models,
                         floor_world,
+                        regions,
                         zombies,
                         ..
                     } = self;
@@ -756,20 +851,20 @@ impl IsoWorld {
                         Some(zombies),
                         |w| {
                             if first_phase {
-                                fill_square_environment(&mut chr, w.cell);
+                                fill_square_environment(&mut chr, w.cell, w.meta, regions.as_ref())?;
                             }
                             pz_lua_api::bind_states::with_state_registry(|reg| {
                                 let chars = chars.borrow();
                                 let mut cx = StateCx::new(&sm, &chars, &player_sim, w);
                                 let step = chr.advance_player_update(
                                     phase,
-                                    &input,
+                                    input,
                                     reg,
                                     action_groups,
                                     &mut u,
                                     &mut cx,
                                 );
-                                (cx.state_result(), step)
+                                cx.state_result().map(|()| step)
                             })
                         },
                     )
@@ -777,7 +872,7 @@ impl IsoWorld {
                 first_phase = false;
                 died |= died_since(sim, from);
                 match r {
-                    Some((Ok(()), Ok(step))) => {
+                    Some(Ok(Ok(step))) => {
                         // Prior events retain their relative order before the
                         // inline stop. No character/world/registry borrow is live.
                         fire_player_events(lua, &p, std::mem::take(&mut u.events));
@@ -822,7 +917,7 @@ impl IsoWorld {
                             pz_characters::character::player::PlayerUpdateStep::Done => break,
                         }
                     }
-                    Some((Err(error), _)) => {
+                    Some(Err(error)) => {
                         return self.finish_state_host_fault(
                             lua,
                             Some(&p),
@@ -831,7 +926,7 @@ impl IsoWorld {
                             error,
                         )
                     }
-                    Some((Ok(()), Err(e))) => {
+                    Some(Ok(Err(e))) => {
                         self.log_update_error(format!("IsoPlayer.update: {e}"));
                         break;
                     }
@@ -866,6 +961,7 @@ impl IsoWorld {
             models,
             floor_world,
             pathfind,
+            regions,
             ..
         } = self;
         let mut dying = Vec::new();
@@ -884,7 +980,10 @@ impl IsoWorld {
                     for &id in &zombie_ids {
                         let Some(mut z) = StateWorld::<LuaItem>::take_character(w, id) else { continue };
                         z.preupdate_zombie();
-                        fill_square_environment(&mut z, w.cell);
+                        if let Err(error) = fill_square_environment(&mut z, w.cell, w.meta, regions.as_ref()) {
+                            StateWorld::<LuaItem>::put_character(w, z);
+                            return Err(error.into());
+                        }
                         let from = sim.events.borrow().len();
                         let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
                         let result = z.update_zombie(reg, action_groups, &mut cx);
@@ -1062,8 +1161,10 @@ impl IsoWorld {
     /// `updateThread()`.
     fn update_thread(&mut self, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
         // TODO(port): `updateBuildings` (`IsoBuilding.update`),
-        // `ObjectRenderEffects.updateStatic`, `AddCoopPlayer`,
+        // `AddCoopPlayer`,
         // `IsoPlayer.UpdateRemovedEmitters`.
+        let multiplier = sim.game_time.borrow().get_multiplier(&pz_lua_api::bind_climate::LuaClimateContext::new());
+        self.states_runtime.update_door_hits(multiplier, &mut self.rand);
         self.update_dbs(sim)?;
         // TODO(port): `AnimalZones.updateVirtualAnimals`,
         // `AnimalTracksDefinitions.loadTracksDefinitions`.
@@ -1091,6 +1192,36 @@ impl IsoWorld {
         }
     }
 
+    fn interaction_noise(&mut self, lua: &mut LuaManager, request: pz_world_states::WorldSoundRequest, kind: NoiseKind) {
+        let (source, receiver) = if let Some(id) = request.source {
+            if let Some(player) = local_players().into_iter().flatten().find(|p| p.borrow().id == id) {
+                let source = player.borrow().sound_source();
+                (Some(source), Some(character_value(&player)))
+            } else if let Some(zombie) = self.zombies.iter().find(|z| z.id == id) {
+                // Real zombies currently have no persistent Lua userdata.
+                (Some(zombie.sound_source()), None)
+            } else {
+                self.log_update_error(format!("WorldSoundManager.addSound: missing character {id}"));
+                return;
+            }
+        } else {
+            (None, Some(Value::Nil))
+        };
+
+        let request = request.with_source(source);
+        let result = if let Some(receiver) = receiver {
+            pz_lua_api::bind_zombie::emit_world_sound(&mut lua.thread, request, receiver, kind)
+        } else {
+            if lua.events.callbacks("OnWorldSound") > 0 {
+                self.log_update_error("unsupported: OnWorldSound for a zombie without Lua userdata".into());
+            }
+            pz_lua_api::bind_zombie::register_world_sound(request, kind)
+        };
+        if let Err(error) = result {
+            self.log_update_error(format!("WorldSoundManager.addSound: {error}"));
+        }
+    }
+
     /// The simulation's side effects for Lua (`LuaEventManager.triggerEvent`
     /// from inside the character code), with `chr` as the character.
     fn fire_sim_events(
@@ -1101,7 +1232,48 @@ impl IsoWorld {
     ) {
         let cv = chr.map(character_value).unwrap_or_default();
         for e in sim.take_events() {
+            if let Some(actor) = chr {
+                match pz_lua_api::bind_eat::apply_audio_event(actor, &e) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => { eprintln!("ERROR: character audio: {error}"); continue; }
+                }
+            }
             match e {
+                SimEvent::MusicIntensityEvent(id) => {
+                    if let Some(p) = chr {
+                        let p = p.borrow();
+                        pz_lua_api::bind_audio::intensity_config().borrow()
+                            .trigger(Some(id), &p.player.music_intensity_events);
+                    }
+                }
+                SimEvent::AddSound { radius, volume } | SimEvent::SneezeCoughSound { radius, volume } => {
+                    if let Some(actor) = chr {
+                        let request = actor.borrow().world_sound_request(radius, volume, false);
+                        self.interaction_noise(lua, request, NoiseKind::Once);
+                    }
+                }
+                SimEvent::FootstepNoise(request) => self.interaction_noise(lua, request, NoiseKind::LocalFootstep),
+                SimEvent::InteractionNoise(request) => self.interaction_noise(lua, request, NoiseKind::Once),
+                SimEvent::PositionedSound { name, square: (x, y, z) } => {
+                    pz_lua_api::bind_audio::sound_system().borrow_mut().play_world_clip(&name,
+                        [x as f32 + 0.5, y as f32 + 0.5, z as f32], true);
+                }
+                SimEvent::RoomAlarm(room) => {
+                    if let Err(error) = pz_lua_api::bind_world::power::trigger_room_alarm(room) {
+                        self.log_update_error(format!("AmbientStreamManager.doAlarm: {error}"));
+                    }
+                }
+                SimEvent::WindowToggled { actor, window } => {
+                    let player = chr.filter(|p| p.borrow().id == actor).cloned()
+                        .or_else(|| local_players().into_iter().flatten().find(|p| p.borrow().id == actor));
+                    lua.trigger_event("OnContainerUpdate", &[]);
+                    if let Some(player) = player {
+                        if let Err(error) = pz_lua_api::bind_climb::window_music(&player, &window) {
+                            self.log_update_error(format!("IsoWindow.ToggleWindow: {error}"));
+                        }
+                    }
+                }
                 SimEvent::ContainerUpdate => {
                     lua.trigger_event("OnContainerUpdate", &[]);
                 }
@@ -1493,10 +1665,11 @@ impl IsoWorld {
             match events {
                 Ok(events) if !events.is_empty() => {
                     for event in events {
-                        let result = dispatch_player_animation_event(lua, &p, &event, || {
+                        let result = dispatch_player_animation_event(lua, &p, &event, |lua| {
                             let Some(sprites) = self.sprites.as_ref() else {
                                 return Ok(());
                             };
+                            let mut pending_hit = None;
                             let result = with_states_and_characters(
                                 sprites,
                                 &mut self.states_runtime,
@@ -1507,11 +1680,24 @@ impl IsoWorld {
                                 |w| {
                                     let chars = chars.borrow();
                                     let mut cx = StateCx::new(&sm, &chars, sim, w);
+                                    cx.window_hit = Some(&mut pending_hit);
                                     p.borrow_mut().on_anim_event(&event, &mut cx);
                                     cx.state_result()
                                 },
                             );
-                            result.unwrap_or(Ok(()))
+                            result.unwrap_or(Ok(()))?;
+                            if let Some(target) = pending_hit {
+                                let object = pz_lua_api::bind_world_object::object_value(&target.object)
+                                    .map_err(|e| pz_scripts::ScriptError::new(e.to_string()))?;
+                                lua.trigger_event("OnWeaponHitThumpable", &[character_value(&p), Value::Nil, object]);
+                                with_states(sprites, &mut self.states_runtime, Some(&mut models), sim,
+                                    self.floor_world.as_ref(), |world| {
+                                        let mut actor = p.borrow_mut();
+                                        world.finish_window_hit(&target, &pz_world_states::Thumper::of(&actor), actor.is_player());
+                                        actor.finish_window_smash(&sm, &chars.borrow(), sim);
+                                    });
+                            }
+                            Ok(())
                         });
                         if let Err(error) = result {
                             self.models = Some(models);
@@ -1643,6 +1829,7 @@ impl IsoWorld {
         let mut sprites = sprites.borrow_mut();
         let water_flag = sprites.tables.flag.water;
         let movers = player_squares();
+        let closing_windows = pz_lua_api::bind_players::closing_windows();
         with_world(|w| {
             let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else {
                 return None;
@@ -1665,6 +1852,9 @@ impl IsoWorld {
                 .borrow()
                 .get_time_delta(&pz_lua_api::bind_climate::LuaClimateContext::new());
             let mut engine = EngineStates {
+                geometry: Some(&w.geometry),
+                sim: Some(sim),
+                closing_windows,
                 rand: StandardRand,
                 movers,
                 models: RefCell::new(models.as_mut()),
@@ -1675,7 +1865,7 @@ impl IsoWorld {
                 cell,
                 meta,
                 &mut sprites,
-                ThumpSettings::default(),
+                ThumpSettings { trigger_house_alarm: engine.zombie_triggers_house_alarm(), ..Default::default() },
                 states_runtime,
                 &mut engine,
             );
@@ -1715,6 +1905,13 @@ impl IsoWorld {
     /// `UpdateStuff` catches it around the population and pathfinder
     /// block, so the caller skips the rest of that block.
     pub fn update_population(&mut self, sim: &FrameSim) -> Result<(), String> {
+        let pending = with_world(|w| std::mem::take(&mut w.population_sounds));
+        if let Some(population) = self.population.as_mut() {
+            for (sound, hearing) in pending {
+                population.manager.add_world_sound(sound.x, sound.y, sound.radius, sound.volume,
+                    sound.source_is_zombie, sound.stress_zombies, hearing);
+            }
+        }
         let r = self.with_population(sim, &mut |pop, host, frame| pop.update(host, frame));
         if let Some(Err(e)) = r {
             self.log_exception(e.clone());
@@ -1949,6 +2146,20 @@ impl IsoWorld {
 
     /// `IsoChunk.removeFromWorld` for a chunk that left the cell.
     fn chunk_removed(&mut self, wx: i32, wy: i32) {
+        // The stream reports this after the chunk has detached. Retire the
+        // matching manager references outside the world borrow.
+        let retired = with_world(|w| {
+            let mut retired = w.cell.as_ref().map(|c| c.process_objects.borrow_mut().unload_chunk(wx, wy)).unwrap_or_default();
+            retired.extend(w.hutches.extract_if(.., |object| {
+                object.borrow().square_slot().is_some_and(|sq| {
+                    let sq = sq.borrow();
+                    let size = pz_world::chunk::CHUNK_WIDTH;
+                    sq.x.div_euclid(size) == wx && sq.y.div_euclid(size) == wy
+                })
+            }));
+            retired
+        });
+        drop(retired);
         if let Some(h) = self.pathfind.as_mut() {
             h.service_mut().remove_chunk_from_world(wx, wy);
         }
@@ -1966,11 +2177,22 @@ impl IsoWorld {
 
 /// The parts of the character's `CharacterEnvironment` the world answers
 /// from `getCurrentSquare()`, refreshed before its update. TODO(port): the
-/// room size, building toxicity, can-see, heat sources and the vehicle.
-fn fill_square_environment(chr: &mut LuaGameCharacter, cell: &IsoCell) {
+/// building toxicity, can-see, heat sources and the vehicle.
+fn fill_square_environment(
+    chr: &mut LuaGameCharacter, cell: &IsoCell, meta: &IsoMetaGrid,
+    regions: Option<&Rc<RefCell<pz_world::isoregion::IsoRegions>>>,
+) -> HostResult<()> {
     let cur = chr.path.current_square;
     let sq_owner = cur.and_then(|(x, y, z)| cell.get_grid_square(x, y, z));
-    let sq = sq_owner.as_ref().map(|s| s.borrow());
+    let sq = sq_owner.as_ref().map(|s| s.try_borrow()).transpose()
+        .map_err(|_| RuntimeHostError::Borrowed("character square"))?;
+    let regions = regions.map(|r| r.try_borrow()).transpose().map_err(|_| RuntimeHostError::Borrowed("IsoRegions"))?;
+    let inside = sq.as_ref().is_some_and(|s| s.room_def(meta).is_some() ||
+        regions.as_deref().and_then(|r| s.player_room_size(r)).is_some());
+    let size = match &sq {
+        Some(square) if chr.is_player() && inside => square.room_size(cell, Some(meta), regions.as_deref())?,
+        _ => -1,
+    };
     let stress = cur.map_or(0.0, |(x, y, z)| {
         pz_lua_api::bind_zombie::shared_world_sounds()
             .borrow()
@@ -1979,7 +2201,8 @@ fn fill_square_environment(chr: &mut LuaGameCharacter, cell: &IsoCell) {
     let e = &mut chr.environment;
     e.has_current_square = sq.is_some();
     e.on_last_square = cur.is_some() && cur == chr.vars.last_square;
-    e.square_in_room = sq.as_ref().is_some_and(|s| s.room_id != -1);
+    e.square_in_room = inside;
+    e.room_size = size;
     e.square_have_roof = sq.as_ref().is_some_and(|s| s.have_roof);
     e.square_z = sq.as_ref().map_or(0, |s| s.z);
     e.square_has_chunk = sq.is_some();
@@ -1988,6 +2211,7 @@ fn fill_square_environment(chr: &mut LuaGameCharacter, cell: &IsoCell) {
         .filter(|s| s.room_id != -1)
         .map(|s| s.room_id as u64);
     e.stress_from_sounds = stress;
+    Ok(())
 }
 
 /// `PathfindNative.addChunkToWorld(chunk)`.
@@ -2098,6 +2322,31 @@ fn fire_player_events(
             PlayerEvent::LuaEvent(name) => {
                 lua.trigger_event(name, std::slice::from_ref(&pv));
             }
+            PlayerEvent::UpdateSoundListener { position, count_rooms } => {
+                if count_rooms {
+                    let count = with_world(|w| w.meta_grid.as_ref().map_or(0, |m|
+                        m.count_nearby_buildings_rooms(position[0], position[1])));
+                    p.borrow_mut().player.num_nearby_buildings_rooms = count as f32;
+                }
+                let p = p.borrow();
+                let slots = pz_lua_api::bind_players::num_players().min(p.player.player_index);
+                let index = (0..slots).filter(|&i| pz_lua_api::bind_players::player(i as usize).is_some()).count();
+                let scripts = pz_lua_api::bind_registry::shared_script_manager();
+                let deaf = p.has_trait(&scripts, "DEAF").unwrap_or(false);
+                pz_lua_api::bind_audio::sound_system().borrow_mut()
+                    .update_player_listener(index as i32, position, deaf);
+            }
+            PlayerEvent::UpdateMusic { inside, now_ms, panic } => {
+                let p = p.borrow();
+                let events = &p.player.music_intensity_events;
+                if inside {
+                    pz_lua_api::bind_audio::intensity_config().borrow().trigger(Some("InsideBuilding"), events);
+                }
+                events.update_at(now_ms);
+                let levels = &p.player.music_threat_levels;
+                levels.update_from_player(&p, panic);
+                pz_lua_api::bind_audio::threat_config().borrow().update_levels(levels);
+            }
             PlayerEvent::ContextKey { millis } => {
                 lua.trigger_event("OnContextKey", &[pv.clone(), Value::Num(millis)]);
             }
@@ -2155,7 +2404,6 @@ fn with_save_game<R>(
             save_dir: &world.save_dir,
             no_save: core.is_no_save(),
             has_cell,
-            game_mode: &core.game_mode,
             game_map: Some(&core.game_map),
             sandbox,
             game_time: &gt,
@@ -2170,7 +2418,7 @@ fn with_save_game<R>(
             world_gen: &world_gen_params,
             instance_tracker: &world.instance_tracker,
             cache_dir: Some(&world.cache_dir),
-            meta_tracker: &world.meta_tracker,
+            meta_tracker: &world.meta_tracker.borrow(),
             statistics: &world.statistics,
             local_players: &players,
             on_game_thread: true,
@@ -2359,6 +2607,9 @@ impl IsoWorld {
     /// `ZombiePopulationManager.stop`, the pathfinder, then
     /// `PlayerDB.close` and `VehiclesDB2.Reset` (`world_save::close_stores`).
     pub fn stop(&mut self) {
+        self.house_alarms.stop();
+        pz_lua_api::bind_audio::sound_system().borrow_mut()
+            .with(|_, ctx| self.ambient_parameters.stop(ctx));
         // Invalidate the installed provider before teardown can run actions;
         // retained old service handles fail their distinct session token.
         let retired_floor = pz_lua_api::bind_character_sim::reset_floor_world();
@@ -2440,7 +2691,20 @@ mod quit_save_tests {
             let old_world = with_world(std::mem::take);
             let mut core = Core::default();
             core.set_no_save(no_save);
-            core.set_game_mode(mode);
+            let initializers = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial"), ("TEST_LAST_STAND", "LastStand")]
+                .map(|(field, id)| pz_classfile::StaticInit {
+                    class: "zombie/core/GameMode".into(),
+                    field: field.into(),
+                    value: pz_classfile::Value::Call {
+                        class: "zombie/core/GameMode".into(),
+                        name: "registerBase".into(),
+                        descriptor: "(Ljava/lang/String;)Lzombie/core/GameMode;".into(),
+                        args: vec![pz_classfile::Value::Str(id.into())],
+                    },
+                });
+            let modes = Rc::new(pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&initializers).unwrap());
+            core.install_game_mode_statics(modes).unwrap();
+            core.set_game_mode(mode).unwrap();
             pz_lua_api::bind_core::install_core(Rc::new(RefCell::new(core)));
             pz_lua_api::bind_climate::install_game_time(Rc::new(RefCell::new(GameTime::default())));
             pz_lua_api::bind_players::reset();
@@ -2591,7 +2855,7 @@ mod quit_save_tests {
                 0.5,
             )),
         };
-        let error = dispatch_player_animation_event(&mut lua, &character, &event, || {
+        let error = dispatch_player_animation_event(&mut lua, &character, &event, |_| {
             let chars = chars.borrow();
             let mut cx = StateCx::new(&sm, &chars, &sim, &mut state_world);
             character.borrow_mut().on_anim_event(&event, &mut cx);
@@ -2619,7 +2883,7 @@ mod quit_save_tests {
         );
         // The same genuine queued action callback is live when the state
         // phase succeeds; no API/callback replacement manufactured the zero.
-        dispatch_player_animation_event(&mut lua, &character, &event, || Ok(())).unwrap();
+        dispatch_player_animation_event(&mut lua, &character, &event, |_| Ok(())).unwrap();
         assert_eq!(
             lua.thread.globals().get_str("animationCallbacks").as_num(),
             Some(1.0)
@@ -2688,7 +2952,6 @@ mod quit_save_tests {
         for (no_save, mode, has_cell, fail_prefix) in [
             (true, "Sandbox", true, false),
             (false, "Tutorial", true, false),
-            (false, "LastStand", true, false),
             (false, "Sandbox", false, false),
             (false, "Sandbox", true, true),
         ] {

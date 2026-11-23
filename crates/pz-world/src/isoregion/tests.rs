@@ -464,6 +464,7 @@ fn square_changes_read_the_surrounding_chunks() {
     assert!(r.is_fog_mask(room));
     assert!(sq.is_in_a_room(&crate::IsoMetaGrid::empty(), &r));
     assert_eq!(sq.player_room_size(&r), Some(12));
+    assert_eq!(sq.room_size(&cell, None, Some(&r)).unwrap(), 12);
     let out_owner = cell.get_grid_square(12, 3, 0).unwrap();
     let out = out_owner.borrow();
     assert!(!r.is_fog_mask(out.get_iso_world_region(&r).unwrap()));

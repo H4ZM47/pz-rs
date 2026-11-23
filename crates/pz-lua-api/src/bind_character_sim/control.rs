@@ -380,6 +380,29 @@ fn has_input_component(kind: CharacterKind) -> bool {
 
 /// The methods only `IsoPlayer` (and `IsoAnimal`) declares.
 pub(super) fn register_player(b: &ClassBuilder) {
+    b.method("getMusicThreatStatuses", |c| {
+        let chr = chr_of(c)?;
+        let player = chr.try_borrow().map_err(|_| crate::bind_world_object::borrowed("player music threat"))?;
+        let levels = player.player.music_threat_levels.clone();
+        drop(player);
+        let key = (super::Handle::MusicThreatStatuses, std::rc::Rc::as_ptr(&chr) as usize, 0);
+        let value = super::canonical(key, || Value::Object(std::rc::Rc::new(
+            crate::bind_audio::MusicThreatStatuses::for_player(chr, levels)
+        )));
+        Ok(c.push(value))
+    });
+    b.method("getMusicIntensityEvents", |c| {
+        let chr = chr_of(c)?;
+        let player = chr.try_borrow().map_err(|_| crate::bind_world_object::borrowed("player music events"))?;
+        Ok(c.push(Value::Object(player.player.music_intensity_events.clone())))
+    });
+    b.method("triggerMusicIntensityEvent", |c| {
+        let id = crate::expose::str_arg(c, 1);
+        let chr = chr_of(c)?;
+        let player = chr.try_borrow().map_err(|_| crate::bind_world_object::borrowed("player music events"))?;
+        crate::bind_audio::intensity_config().borrow().trigger(id.as_deref(), &player.player.music_intensity_events);
+        Ok(0)
+    });
     b.method("setBlockMovement", |c| {
         let v = bool_arg(c, 1);
         chr_of(c)?.borrow_mut().vars.block_movement = v;

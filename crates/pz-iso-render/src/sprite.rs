@@ -424,6 +424,12 @@ fn render_inst(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, inst_scale: Option<f
         tex.flip = !tex.flip;
     }
     let Some(mut draw) = TexDraw::new(&tex, tx + tex.offset_x, ty + tex.offset_y, w, h, Rgba(info.r, info.g, info.b, info.a)) else { return };
+    if let Some(corners) = d.obj.and_then(|obj| obj.render_effect.as_deref()) {
+        for (i, offset) in corners.iter().enumerate() {
+            draw.sprite.x[i] += offset[0] * w;
+            draw.sprite.y[i] += offset[1] * h;
+        }
+    }
     let shader = match depth {
         Some((dt, front, far, sc)) => {
             texd::tile_depth_modifier(&mut draw, &dt, (s.soff_x, s.soff_y), sc);

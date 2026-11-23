@@ -421,6 +421,8 @@ pub struct ChunkStreamer {
     job_list: Vec<ChunkId>,
     /// `IsoChunk.loadGridSquare`: served chunks waiting for the main thread.
     load_grid_square: VecDeque<(ChunkId, IsoChunk)>,
+    /// Initial chunks already exposed by IsoWorld.init before gameplay activation.
+    initial_load_grid_square: VecDeque<(i32, i32)>,
     /// Opt-in host coordinator: preparation stays in the cell, while the
     /// engine performs activation/observers outside world and sprite guards.
     deferred_world_activation: bool,
@@ -456,6 +458,7 @@ impl ChunkStreamer {
             job_queue: VecDeque::new(),
             job_list: Vec::new(),
             load_grid_square: VecDeque::new(),
+            initial_load_grid_square: VecDeque::new(),
             deferred_world_activation: false,
             pending_world_activation: VecDeque::new(),
             deferred_activation_in_flight: false,
@@ -519,16 +522,14 @@ impl ChunkStreamer {
             return false;
         };
         while remaining != 0 {
-            let Some((id, chunk)) = self.load_grid_square.pop_front() else {
-                break;
-            };
             if remaining != usize::MAX {
                 remaining -= 1;
             }
             self.deferred_handoff_budget = Some(remaining);
-            if self.hand_off(id, chunk, cell, ctx) {
+            if self.activate_next(cell, ctx) {
                 return true;
             }
+            if self.load_grid_square.is_empty() && self.initial_load_grid_square.is_empty() { break; }
         }
         self.deferred_handoff_budget = None;
         for player in 0..self.maps.len() {
@@ -1188,16 +1189,9 @@ impl ChunkStreamer {
         true
     }
 
-    /// Give a served chunk to every chunk map that covers it, then put it
-    /// in the cell and finish loading it (`doLoadGridsquare`), or drop it.
-    /// Returns whether it was taken.
-    fn hand_off(
-        &mut self,
-        id: ChunkId,
-        chunk: IsoChunk,
-        cell: &mut IsoCell,
-        ctx: &mut StreamCtx<'_>,
-    ) -> bool {
+    /// Set the map entries and expose this exact chunk in the cell. Object
+    /// activation has a separate entry point in the initial loading sequence.
+    fn install_served_chunk(&mut self, id: ChunkId, chunk: IsoChunk, cell: &mut IsoCell) -> bool {
         let mut loaded = false;
         for n in 0..self.maps.len() {
             if self.maps[n].ignore || !self.set_chunk_direct(n, id) {
@@ -1217,6 +1211,26 @@ impl ChunkStreamer {
         if let Some(replaced) = cell.chunks.insert((wx, wy), chunk) {
             self.retired_chunks.push(replaced);
         }
+        true
+    }
+
+    fn hand_off(&mut self, id: ChunkId, chunk: IsoChunk, cell: &mut IsoCell, ctx: &mut StreamCtx<'_>) -> bool {
+        let (wx, wy) = (chunk.wx, chunk.wy);
+        if !self.install_served_chunk(id, chunk, cell) { return false; }
+        self.activate_resident_chunk(wx, wy, cell, ctx);
+        true
+    }
+
+    fn activate_next(&mut self, cell: &mut IsoCell, ctx: &mut StreamCtx<'_>) -> bool {
+        if let Some((wx, wy)) = self.initial_load_grid_square.pop_front() {
+            self.activate_resident_chunk(wx, wy, cell, ctx);
+            return true;
+        }
+        let Some((id, chunk)) = self.load_grid_square.pop_front() else { return false };
+        self.hand_off(id, chunk, cell, ctx)
+    }
+
+    fn activate_resident_chunk(&mut self, wx: i32, wy: i32, cell: &mut IsoCell, ctx: &mut StreamCtx<'_>) {
         if self.deferred_world_activation {
             if let Some(cursor) = prepare_chunk_load(cell, wx, wy, ctx.meta, ctx.sprites) {
                 self.pending_world_activation.push_back(cursor);
@@ -1233,7 +1247,6 @@ impl ChunkStreamer {
             );
             self.publish_hand_off(wx, wy, ctx);
         }
-        true
     }
 
     fn publish_hand_off(&mut self, wx: i32, wy: i32, ctx: &mut StreamCtx<'_>) {
@@ -1254,7 +1267,7 @@ impl ChunkStreamer {
             if self.deferred_activation_in_flight || self.deferred_handoff_budget.is_some() {
                 return;
             }
-            let count = self.load_grid_square.len();
+            let count = self.load_grid_square.len() + self.initial_load_grid_square.len();
             if count != 0 {
                 self.deferred_handoff_budget = Some(1 + count * 3 / self.width as usize);
                 self.process_next_pending_load_grid_square(cell, ctx);
@@ -1262,18 +1275,12 @@ impl ChunkStreamer {
             return;
         }
         let mut changed = false;
-        let mut count = self.load_grid_square.len() as i32;
+        let mut count = (self.load_grid_square.len() + self.initial_load_grid_square.len()) as i32;
         if count != 0 {
             count = 1 + count * 3 / self.width;
         }
         while count > 0 {
-            if let Some((id, chunk)) = self.load_grid_square.pop_front() {
-                if !self.hand_off(id, chunk, cell, ctx) {
-                    count -= 1;
-                    continue;
-                }
-                changed = true;
-            }
+            changed |= self.activate_next(cell, ctx);
             count -= 1;
         }
         if changed {
@@ -1291,8 +1298,8 @@ impl ChunkStreamer {
             }
             return;
         }
-        while let Some((id, chunk)) = self.load_grid_square.pop_front() {
-            self.hand_off(id, chunk, cell, ctx);
+        while !self.initial_load_grid_square.is_empty() || !self.load_grid_square.is_empty() {
+            self.activate_next(cell, ctx);
         }
     }
 
@@ -1318,6 +1325,26 @@ impl ChunkStreamer {
     /// sorts, so the comparator ties everything and the last request is
     /// served first.
     pub fn load_world(&mut self, wx: i32, wy: i32, cell: &mut IsoCell, ctx: &mut StreamCtx<'_>) {
+        self.request_initial_chunks(wx, wy, ctx);
+        self.process_all_load_grid_square(cell, ctx);
+        self.calculate_z_extents(0, cell);
+        self.chunk_map_update(0, cell, ctx);
+    }
+
+    /// IsoWorld.init makes the map accessible to player loading and global
+    /// system initialization. IngameState.enter later runs doLoadGridsquare.
+    pub fn stage_initial_world(&mut self, wx: i32, wy: i32, cell: &mut IsoCell, ctx: &mut StreamCtx<'_>) {
+        self.request_initial_chunks(wx, wy, ctx);
+        while let Some((id, chunk)) = self.load_grid_square.pop_front() {
+            let pos = (chunk.wx, chunk.wy);
+            if self.install_served_chunk(id, chunk, cell) {
+                self.initial_load_grid_square.push_back(pos);
+            }
+        }
+        self.calculate_z_extents(0, cell);
+    }
+
+    fn request_initial_chunks(&mut self, wx: i32, wy: i32, ctx: &mut StreamCtx<'_>) {
         self.set_initial_pos(0, wx, wy);
         let half = self.width / 2;
         let (minwx, minwy) = (wx - half, wy - half);
@@ -1329,9 +1356,6 @@ impl ChunkStreamer {
             }
         }
         self.serve(&[], Serve::UntilIdle, ctx);
-        self.process_all_load_grid_square(cell, ctx);
-        self.calculate_z_extents(0, cell);
-        self.chunk_map_update(0, cell, ctx);
     }
 
     /// One game frame: `ProcessChunkPos` for each player (`players[n]` is

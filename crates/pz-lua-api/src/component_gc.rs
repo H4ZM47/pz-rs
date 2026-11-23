@@ -364,6 +364,15 @@ impl TraceDescriptor<IsoObject> for ObjectDescriptor {
         for container in object.runtime_containers.iter().flat_map(|r| r.iter()) {
             visitor.owner(container);
         }
+        if let ObjectKind::Thumpable(thumpable) = &object.kind {
+            for data in [&thumpable.table, &thumpable.mod_data, &thumpable.build_materials].into_iter().flatten() {
+                if let Some(table) = data.as_live_slot() { visitor.table(table); }
+            }
+        }
+        if let Some(table) = &object.trough_definition { visitor.table(&table.0); }
+        if let Some(table) = object.hutch_runtime.as_ref().and_then(|h| h.definition.as_ref()) {
+            visitor.table(&table.0);
+        }
         if let Some(table) = &object.runtime_mod_data {
             visitor.table(&table.0);
         }
@@ -374,6 +383,10 @@ impl TraceDescriptor<IsoObject> for ObjectDescriptor {
             ObjectKind::WorldInventory(floor) => floor.take_payload_for_gc(),
             _ => None,
         };
+        let thumpable_tables = match &mut object.kind {
+            ObjectKind::Thumpable(t) => Some((t.table.take(), t.mod_data.take(), t.build_materials.take())),
+            _ => None,
+        };
         let sprite = std::mem::replace(&mut object.sprite, pz_world::objects::ObjectSprite::None);
         Some(Box::new((
             object.components.take_entries(),
@@ -382,6 +395,9 @@ impl TraceDescriptor<IsoObject> for ObjectDescriptor {
             sprite,
             object.runtime_containers.take(),
             object.runtime_mod_data.take(),
+            thumpable_tables,
+            object.hutch_runtime.take(),
+            object.trough_definition.take(),
         )))
     }
 }

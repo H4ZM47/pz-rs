@@ -128,6 +128,33 @@ mod tests {
         })
     }
 
+    #[test]
+    fn object_render_effect_offsets_each_drawn_corner_by_texture_size() {
+        let mut sq = RenderSquare::new(10, 10, 0);
+        let mut board = RenderObject::new(ObjectKind::Plain, Some(sprite("board", 7, SpriteFlags::default())));
+        board.highlight = Some(ObjectHighlight { color: ColorInfo::new(1.0, 1.0, 1.0, 1.0), alpha_scale: 1.0 });
+        sq.objects.push(board);
+        let cam = Camera::centred(10.0, 10.0, 0.0, 800, 600, 1.0);
+        let r = ChunkRenderer::new(cam, &Maps, (800, 600));
+        let draw = |sq: &RenderSquare| {
+            let mut out = Vec::new();
+            render(&r, &HighlightFrame::default(), &[sq], &mut out);
+            out.into_iter().find_map(|cmd| match cmd {
+                DrawCmd::WorldSprite(sprite, _) => Some(sprite), _ => None,
+            }).unwrap()
+        };
+        let base = draw(&sq);
+        let offsets = [[0.0, 0.125], [0.0, 0.125], [0.25, 0.125], [0.25, 0.125]];
+        sq.objects[0].render_effect = Some(Box::new(offsets));
+        let actual = draw(&sq);
+        for i in 0..4 {
+            assert_eq!(actual.x[i], base.x[i] + offsets[i][0] * (base.x[1] - base.x[0]));
+            assert_eq!(actual.y[i], base.y[i] + offsets[i][1] * (base.y[2] - base.y[0]));
+        }
+        assert_eq!(actual.u, base.u);
+        assert_eq!(actual.v, base.v);
+    }
+
     /// A highlighted crate on a floor: the pass draws the crate (and not
     /// the floor below it) mixed towards the highlight colour, in front of
     /// its chunk copy; the chunk recording draws it plainly.

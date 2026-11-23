@@ -21,7 +21,7 @@ use pz_world::fix2x::Fix2xTable;
 use pz_world::isoregion::IsoRegions;
 use pz_world::meta_save::{DefaultMetaEnv, MetaWorld, NetRole};
 use pz_world::save::items::AllItems;
-use pz_world::save::{NoSaveHooks, SaveSettings, SaveTables};
+use pz_world::save::{SaveHooks, SaveSettings, SaveTables};
 use pz_world::streamer::{calc_chunk_width, ChunkStreamer, StreamCtx};
 use pz_world::zone_save::{ClockUuids, SpawnedZombieZones};
 use pz_world::{
@@ -31,6 +31,54 @@ use pz_world::{
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
+struct EngineSaveHooks<'a> {
+    globals: Option<&'a pz_kahlua::TableRef>,
+    render: &'a Rc<RefCell<Option<crate::world_render::WorldRender>>>,
+}
+impl SaveHooks for EngineSaveHooks<'_> {
+    fn hutch_max_nest_box(&self, sprite: &str) -> Option<i32> {
+        let def = pz_lua_api::farm_definitions::hutch(self.globals?, sprite)?;
+        Some(def.get_str("maxNestBox").as_num().unwrap_or(0.0) as i32)
+    }
+    fn hutch_max_animals(&self, sprite: &str) -> Option<i32> {
+        let def = pz_lua_api::farm_definitions::hutch(self.globals?, sprite)?;
+        Some(def.get_str("maxAnimals").as_num().unwrap_or(0.0) as i32)
+    }
+    fn feeding_trough_def(&self, sprite: &str) -> Option<(f32, i32)> {
+        let def = pz_lua_api::farm_definitions::trough(self.globals?, sprite)?;
+        Some((def.get_str("maxWater").as_num().unwrap_or(0.0) as f32, def.get_str("maxFeed").as_num().unwrap_or(0.0) as i32))
+    }
+    fn rand_next(&self, min: i32, max: i32) -> i32 {
+        pz_core::random::next_range(min, max)
+    }
+    fn rand_next_float(&self, min: f32, max: f32) -> f32 {
+        pz_core::random::next_float(min, max)
+    }
+    fn mannequin_wear_item(&self, object: &pz_world::IsoObjectRef, item: &pz_inventory::shared::ItemRef) -> pz_inventory::io::SaveResult<()> {
+        use pz_inventory::io::SaveError;
+        if !pz_lua_api::world_mannequins::wear_item_for_save(object, item)? {
+            return Ok(());
+        }
+        let square = object.try_borrow()
+            .map_err(|_| SaveError("mannequin render invalidation: BorrowedObject".into()))?
+            .square_slot().cloned();
+        let Some(square) = square else { return Ok(()) };
+        let (x, y, z) = {
+            let square = square.try_borrow()
+                .map_err(|_| SaveError("mannequin render invalidation: BorrowedSquare".into()))?;
+            (square.x, square.y, square.z)
+        };
+        let mut render = self.render.try_borrow_mut()
+            .map_err(|_| SaveError("mannequin render invalidation: BorrowedRenderer".into()))?;
+        if let Some(render) = render.as_mut() {
+            render.invalidate_floor_chunk(x.div_euclid(8), y.div_euclid(8), z, u64::MAX);
+        }
+        // TODO(port): the actual renderSquareOverride, mannequin atlas and
+        // AnimatedModel owners are not yet wired into the renderer.
+        Ok(())
+    }
+}
 
 /// `IsoWorld.WorldVersion` in this build (the save format the port reads).
 pub const WORLD_VERSION: i32 = 249;
@@ -102,8 +150,6 @@ pub struct IsoWorld {
     pub lua_traits: Vec<Option<Rc<pz_scripts::registry::RegistryKey>>>,
     /// The development stand-in for the menu's `OnInitWorld` handler.
     pub new_game_setup: Option<NewGameSetup>,
-    /// `hydroPowerOn`.
-    pub hydro_power_on: bool,
     /// `IsoWorld.worldX/worldY`: the chunk player 0's map starts on.
     pub world_x: i32,
     pub world_y: i32,
@@ -154,7 +200,9 @@ pub struct IsoWorld {
     /// `ErosionMain.getInstance()`, shared with its Lua object.
     pub erosion: Option<Rc<RefCell<pz_erosion::erosion_main::ErosionMain>>>,
     pub instance_tracker: InstanceTracker,
-    pub meta_tracker: MetaTracker,
+    pub(crate) ambient_parameters: crate::sound::ambient::AmbientParameters,
+    pub(crate) house_alarms: crate::sound::house_alarms::HouseAlarms,
+    pub meta_tracker: Rc<RefCell<MetaTracker>>,
     pub statistics: Statistics,
     /// The sandbox preset `map_sand.bin` named.
     pub preset: String,
@@ -187,6 +235,7 @@ pub struct IsoWorld {
     pub render_chunks: RenderChunkEvents,
     /// The world renderer (`IsoCell.render`'s state), made on the first
     /// rendered frame.
+    farm_globals: Option<pz_kahlua::TableRef>,
     pub render: Rc<RefCell<Option<crate::world_render::WorldRender>>>,
     /// The same live floor service installed for Lua and borrowed states.
     pub(crate) floor_world: Option<Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
@@ -242,6 +291,15 @@ pub(crate) fn drain_retired_world_objects() {
 }
 
 impl IsoWorld {
+    pub(crate) fn apply_snow_effects(&self, effects: pz_lua_api::bind_climate::SnowEffects) {
+        if let Some(target) = effects.target {
+            pz_lua_api::bind_world::set_snow_target(target);
+        }
+        if let (Some(snow), Some(erosion), Some(sprites)) = (effects.ice_queen, &self.erosion, &self.sprites) {
+            erosion.borrow_mut().ice_queen.set_snow(&sprites.borrow(), snow);
+        }
+    }
+
     /// `new IsoWorld()` for the save `<cache>/Saves/<Core.gameMode>/<Core.gameSaveWorld>`.
     pub fn new(game_dir: &Path, cache_dir: &Path, save_dir: PathBuf) -> Self {
         IsoWorld {
@@ -254,7 +312,6 @@ impl IsoWorld {
             lua_player_desc: None,
             lua_traits: Vec::new(),
             new_game_setup: None,
-            hydro_power_on: false,
             world_x: 0,
             world_y: 0,
             world_xa: (0, 0, 0),
@@ -282,7 +339,9 @@ impl IsoWorld {
             pathfind: None,
             erosion: None,
             instance_tracker: InstanceTracker::default(),
-            meta_tracker: MetaTracker::default(),
+            ambient_parameters: Default::default(),
+            house_alarms: Default::default(),
+            meta_tracker: Default::default(),
             statistics: Statistics::default(),
             preset: String::new(),
             zombies: Vec::new(),
@@ -300,6 +359,7 @@ impl IsoWorld {
             chunk_load_id: 0,
             key_spawn_chance_d100: 0.0,
             render_chunks: RenderChunkEvents::default(),
+            farm_globals: None,
             render: Rc::new(RefCell::new(None)),
             floor_world: None,
             floor_session: None,
@@ -343,6 +403,7 @@ impl IsoWorld {
             world_gen,
             items,
             erosion,
+            render, farm_globals,
             ..
         } = self;
         // `GameTime.getWorldAgeHours()` as the item loads read it.
@@ -392,6 +453,10 @@ impl IsoWorld {
                     return (None, pz_world::RetiredWorldOwners::default(), Vec::new());
                 };
                 let mut object_hooks = NoHooks;
+                let sounds = pz_lua_api::bind_zombie::shared_world_sounds();
+                let mut sounds = sounds.borrow_mut();
+                let mut chunk_hook = pz_world_sound::ClearSoundsOnUnload::new(&mut sounds,
+                    erosion_hook.as_mut().map(|h| h as &mut dyn pz_world::save::chunk_file::ChunkLoadHook));
                 let mut ctx = StreamCtx {
                     save_dir,
                     meta,
@@ -406,15 +471,11 @@ impl IsoWorld {
                     // The save's `WorldDictionary`; without one (a new game, see
                     // `world_dictionary::init`) items load raw.
                     items,
-                    save_hooks: &NoSaveHooks,
+                    save_hooks: &EngineSaveHooks { render, globals: farm_globals.as_ref() },
                     brand_new: world_gen
                         .as_mut()
                         .map(|h| h as &mut dyn pz_world::chunk::BrandNewHook),
-                    // TODO(port): wrap it in `ClearSoundsOnUnload` (world
-                    // sounds of unloaded chunks).
-                    chunk_hook: erosion_hook
-                        .as_mut()
-                        .map(|h| h as &mut dyn pz_world::save::chunk_file::ChunkLoadHook),
+                    chunk_hook: Some(&mut chunk_hook),
                     no_save,
                     vehicles_db: vehicles.conn.as_mut(),
                     // TODO(port): the vehicle runtime's savers, meta and ids
@@ -470,6 +531,7 @@ impl IsoWorld {
     /// `OnGameTimeLoaded`). Returns `Err` where the original throws out of
     /// the loader (`unexpectedError`).
     pub fn init(&mut self, lua: &mut LuaManager) -> Result<(), String> {
+        self.farm_globals = Some(lua.thread.globals().clone());
         // Server-system registration loads gos_*.bin from this actual world.
         pz_lua_api::global_objects_save::set_save_dir(Some(self.save_dir.clone()));
         let core_rc = pz_lua_api::bind_core::shared_core();
@@ -479,7 +541,7 @@ impl IsoWorld {
                 c.tutorial,
                 c.is_no_save(),
                 c.is_last_stand(),
-                c.game_mode.clone(),
+                c.game_mode_name().unwrap_or("null").to_owned(),
             )
         };
         if !tutorial {
@@ -584,11 +646,12 @@ impl IsoWorld {
         // which the original runs a few steps later from the same
         // options).
         pz_lua_api::bind_item_picker::parse(&lua.thread, sb.clone());
-        self.hydro_power_on = {
+        {
             let gt = pz_lua_api::bind_climate::shared_game_time();
-            let days = gt.borrow().world_age_hours() as f32 / 24.0;
-            sb.borrow().does_power_grid_exist(days, 0)
-        };
+            let options = sb.borrow();
+            let days = gt.borrow().world_age_days_since_begin(options.time_since_apo()) as f32;
+            pz_lua_api::bind_world::power::set_hydro_power_on(options.does_power_grid_exist(days, 0));
+        }
         // TODO(port): `ZomboidGlobals.toLua()`, `survivorDescriptors.clear()`.
         // `LoadTileDefinitions*` (property strings, custom values, lookup
         // tables, the definitions), `PostTileDefinitions`, then
@@ -610,14 +673,13 @@ impl IsoWorld {
             &entity_names,
         )?;
         sprites.post_tile_definitions(&pz_world::sprite::EntitySpriteConfig::from_scripts(&sm));
-        println!("triggerEvent OnLoadedTileDefinitions");
-        // TODO(port): the `IsoSpriteManager` Lua object (no binding yet).
-        lua.trigger_event("OnLoadedTileDefinitions", &[Value::Nil]);
-        // `!IsoSprite.hasNoTextures()`: a client has every tile's textures.
-        // TODO(port): the world tile packs are not loaded at boot yet.
-        sprites.loaded_tile_definitions(&|_| true)?;
         let sprites = Rc::new(RefCell::new(sprites));
         pz_lua_api::bind_sprites::install_sprite_manager(Some(sprites.clone()));
+        println!("triggerEvent OnLoadedTileDefinitions");
+        lua.trigger_event("OnLoadedTileDefinitions", &[pz_lua_api::bind_sprites::instance_value()]);
+        // `!IsoSprite.hasNoTextures()`: a client has every tile's textures.
+        // TODO(port): the world tile packs are not loaded at boot yet.
+        sprites.borrow_mut().loaded_tile_definitions(&|_| true)?;
         self.sprites = Some(sprites);
         self.object_tables = Some(ObjectTables::from_game_jar(&self.jar())?);
         self.save_tables = Some(SaveTables::from_game_jar(&self.jar())?);
@@ -726,7 +788,7 @@ impl IsoWorld {
             let s = sb.borrow();
             let alarm = opt_int(&s, "Alarm");
             let alarm_decay = opt_int(&s, "AlarmDecay");
-            let power = self.hydro_power_on;
+            let power = pz_lua_api::bind_world::power::hydro_power_on();
             let rand = &mut self.rand;
             with_world(|w| {
                 if let Some(g) = w.meta_grid.as_mut() {
@@ -818,20 +880,27 @@ impl IsoWorld {
             .unwrap()
             .set_deferred_world_activation(true);
         set_cell(Some(IsoCell::default()));
+        with_world(|w| {
+            if let Some(items) = &self.items {
+                w.object_names = items.dictionary.object_names.clone();
+                w.sprite_names = Rc::new(items.dictionary.sprite_names.clone());
+                w.script_dictionary = Rc::new(crate::world_dictionary::runtime_dictionary(
+                    &items.dictionary, &pz_lua_api::bind_registry::shared_script_manager(),
+                ));
+            }
+            w.meta_tracker = Some(self.meta_tracker.clone());
+            w.regions = self.regions.clone();
+            w.geometry.pathfind = self.pathfind.as_ref().map(|path| path.service().square_changes());
+        });
         self.install_floor_world()?;
         let (wx, wy) = (self.world_x, self.world_y);
-        self.with_stream(|s, cell, ctx| s.load_world(wx, wy, cell, ctx));
-        self.activate_streamed_chunks(lua)?;
-        self.hand_off_events();
+        self.with_stream(|s, cell, ctx| s.stage_initial_world(wx, wy, cell, ctx));
         // `ClimateManager.postCellLoadSetSnow()`.
         let snow = pz_lua_api::bind_climate::post_cell_load_set_snow(&mut lua.thread);
-        // TODO(port): `IsoCell.setSnowTarget` and `ErosionIceQueen.setSnow`
-        // from the returned effects.
-        let _ = snow;
+        self.apply_snow_effects(snow);
         // TODO(port): `MapCollisionData.instance.start()` (the worker
         // thread starts in `startGame`); `MapItem.LoadWorldMap()`.
-        // The streamer ran until idle and every chunk was handed off
-        // (`setChunkDirect`, `calculateZExtentsForChunkMap`) in `load_world`.
+        // The initial chunks are visible here. IngameState.enter activates their objects.
         if load_character {
             // `currentCell.LoadPlayer(savedWorldVersion)`.
             self.load_player(&save_dir)?;
@@ -868,11 +937,12 @@ impl IsoWorld {
         }
         // TODO(port): `PopulateCellWithSurvivors`, the cell's object list,
         // `LightingThread.instance.create()`.
-        if let Err(e) = self.meta_tracker.load_file(
+        let loaded_meta = self.meta_tracker.borrow_mut().load_file(
             &self.save_dir,
             no_save,
             pz_lua_api::bind_players::player(0).is_some(),
-        ) {
+        );
+        if let Err(e) = loaded_meta {
             self.log_error(format!("MetaTracker.load: {e}"));
         }
         if let Err(e) = self.statistics.load_file(&self.save_dir, no_save) {
@@ -1094,7 +1164,8 @@ end
         s.reset_to_default();
         // `updateFromLua()`.
         let mut g = gt.borrow_mut();
-        if pz_lua_api::bind_core::shared_core().borrow().game_mode == "LastStand" {
+        // Legacy name-based approximation; the installed caller still needs verification.
+        if pz_lua_api::bind_core::shared_core().borrow().game_mode_name() == Some("LastStand") {
             g.multiplier_bias = 1.2;
         }
         if let Some(v) = &vars {

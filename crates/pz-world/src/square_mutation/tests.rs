@@ -2232,7 +2232,9 @@ fn add_object_host_failure_keeps_inserted_prefix_and_stops_restack_and_lighting(
     let manager = Rc::new(RefCell::new(IsoSpriteManager::new(test_tables())));
     let mut retired = pz_entity::RetiredComponents::new();
     let sprite = runtime::create_runtime_sprite(&manager, &test_tables(), &mut retired).unwrap();
-    let mut value = IsoObject::new(0, ObjectKind::Object, None);
+    // Plain map objects now complete native base activation. This subclass
+    // still requires its own native addToWorld path.
+    let mut value = IsoObject::new(0, ObjectKind::Thumpable(Box::default()), None);
     value.sprite = ObjectSprite::Native(sprite.clone());
     let slot = ObjectSlot::new(value);
     let actual = slot.ref_handle();

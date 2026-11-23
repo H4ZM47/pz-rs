@@ -17,6 +17,31 @@ use pz_scripts::registry::RegistryKey;
 
 use crate::skills::PerkRef;
 
+/// `WorldSoundManager.instance.addSound(source, x, y, z, radius, volume,
+/// stressHumans, zombieIgnoreDist, stressMod)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorldSoundRequest<S = i32> {
+    /// The source character or object, or `None` for `null`.
+    pub source: Option<S>,
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub radius: i32,
+    pub volume: i32,
+    pub stress_humans: bool,
+    pub zombie_ignore_dist: f32,
+    pub stress_mod: f32,
+}
+
+impl<S> WorldSoundRequest<S> {
+    /// Resolve the simulation's character ID to the live sound owner's identity.
+    pub fn with_source<T>(self, source: Option<T>) -> WorldSoundRequest<T> {
+        WorldSoundRequest { source, x: self.x, y: self.y, z: self.z,
+            radius: self.radius, volume: self.volume, stress_humans: self.stress_humans,
+            zombie_ignore_dist: self.zombie_ignore_dist, stress_mod: self.stress_mod }
+    }
+}
+
 /// `ZomboidGlobals`' statics. All of them except the ones its static
 /// initializer sets come from the Lua table `ZomboidGlobals`
 /// (`ZomboidGlobals.Load`), so they default to 0 until loaded.
@@ -172,6 +197,10 @@ pub enum SimEvent {
     AddHoleFromZombieAttacks { part: i32, scratch_or_bite: bool },
     /// `playSound(name)` / `getEmitter().playSoundImpl(name, null)`.
     PlaySound(String),
+    /// A gameplay noise emitted by a native object interaction.
+    InteractionNoise(WorldSoundRequest),
+    /// SoundManager.PlayWorldSound on a retained square position.
+    PositionedSound { name: String, square: (i32, i32, i32) },
     /// `getEmitter().stopOrTriggerSoundByName(name)`.
     StopSound(&'static str),
     /// `LuaEventManager.triggerEvent("OnZombieDead", zombie)`.
@@ -206,6 +235,10 @@ pub enum SimEvent {
     },
     /// `DoFootstepSound(type)`.
     Footstep(String),
+    /// HumanFootstepsCombined on the player's dedicated footstep emitter.
+    PlayerFootstep,
+    /// A footstep alerts nearby zombies without a network send.
+    FootstepNoise(WorldSoundRequest),
     /// `IsoPlayer.playerVoiceSound(name)` with a name from data.
     PlayerVoiceSoundNamed(String),
     /// `Kill(killer)` from the `KilledByAttacker` animation event (the
@@ -274,6 +307,8 @@ pub enum SimEvent {
     /// `LuaEventManager.triggerEvent("OnContainerUpdate")` (an item fell
     /// out of the character's hands to the floor).
     ContainerUpdate,
+    RoomAlarm(i64),
+    WindowToggled { actor: i32, window: pz_world::IsoObjectRef },
     /// `LuaEventManager.triggerEvent("onItemFall", item)`.
     ItemFall(pz_inventory::shared::ItemRef),
     /// `IsoPlayer.triggerMusicIntensityEvent(name)` (a local player).

@@ -2,13 +2,14 @@
 //! Studio banks through the pz-audio studio, played on the system's
 //! audio device.
 
+pub(crate) mod ambient;
+mod grid_power;
+pub(crate) mod house_alarms;
+
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-
-/// The banks `FMODManager.init` loads, in order (`media/sound/banks/Desktop`).
-const BANKS: [&str; 4] = ["ZomboidSound.strings", "ZomboidSound", "ZomboidSoundMP", "ZomboidMusic"];
 
 /// The same backend construction used by install, without starting a device.
 /// Resolve each load against the live GameFs, including subsequent mod overrides.
@@ -29,9 +30,11 @@ pub fn install(game_dir: &Path, cache_dir: &Path, fs: Rc<RefCell<pz_fs::GameFs>>
     }
     let setups = pz_audio::vorbis_setup::SetupHeaders::from_game_dir(game_dir).map_err(|e| format!("vorbis setup headers: {e}"))?;
     let mut studio = pz_audio::studio::Studio::new(setups);
-    let banks = game_dir.join("media").join("sound").join("banks").join("Desktop");
-    for b in BANKS {
-        studio.load_bank(&banks.join(format!("{b}.bank"))).map_err(|e| format!("bank {b}: {e}"))?;
+    for path in pz_audio::startup_bank_paths(game_dir) {
+        // A single bank failure does not disable the other native banks.
+        if let Err(error) = studio.load_bank(&path) {
+            eprintln!("sound bank {}: {error}", path.display());
+        }
     }
     let studio = Arc::new(Mutex::new(studio));
     let output = pz_audio::output::Output::start(studio.clone())?;
@@ -46,10 +49,38 @@ pub fn install(game_dir: &Path, cache_dir: &Path, fs: Rc<RefCell<pz_fs::GameFs>>
         cache_dir: cache_dir.to_path_buf(),
     };
     let mut system = pz_sound::system::SoundSystem::new(Box::new(backend), env, count);
+    system.world = Box::new(pz_lua_api::bind_audio::GameEmitterWorld);
     system.rand_next = Box::new(pz_core::random::next);
     system.media_file_exists = Box::new(move |p| fs.borrow().absolute_path(p).is_some());
     pz_lua_api::bind_audio::install_sound_system(Rc::new(RefCell::new(system)));
     Ok(output)
+}
+
+/// Inputs sampled by the global music parameters on SoundManager.Update.
+pub(super) fn music_inputs(core: &pz_core::core::Core) -> pz_sound::sound_manager::MusicInputs {
+    use pz_lua_api::bind_players::{player, MAX_PLAYERS};
+    use pz_sound::sound_manager::{MusicInputs, MusicPlayer};
+    let players = (0..MAX_PLAYERS).map(|i| player(i).map(|chr| {
+        let chr = chr.borrow();
+        let stats = &chr.stats;
+        MusicPlayer {
+            dead: chr.is_dead(),
+            asleep: chr.asleep,
+            intensity: chr.player.music_intensity_events.intensity(),
+            zombies_targeting: stats.music_zombies_targeting_nearby_moving
+                + stats.music_zombies_targeting_distant_moving
+                + stats.music_zombies_targeting_nearby_not_moving
+                + stats.music_zombies_targeting_distant_not_moving,
+            zombies_visible: stats.music_zombies_visible,
+            threat: chr.player.music_threat_levels.intensity(),
+        }
+    })).collect();
+    MusicInputs {
+        music_action_style: core.get_option_music_action_style(),
+        music_library: core.get_option_music_library(),
+        music_volume_option: core.get_option_music_volume(),
+        players,
+    }
 }
 
 #[cfg(test)]

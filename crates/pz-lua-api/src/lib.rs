@@ -90,6 +90,7 @@ pub mod bind_world;
 pub mod bind_basements;
 pub mod bind_bent_fences;
 pub mod bind_map_objects;
+pub mod farm_definitions;
 pub mod bind_tile_overlays;
 pub mod bind_broken_fences;
 pub mod bind_item_picker;
@@ -210,7 +211,6 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_players::register(&mut mgr.thread);
     bind_search_mode::register(&mut mgr.thread);
     // Core: binds the shared instance (`bind_core::install_core` before init).
-    bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
     bind_core::register(
         &mut mgr.thread,
         Some(mgr.events.clone()),
@@ -296,6 +296,7 @@ pub fn register_all(mgr: &mut LuaManager) {
         let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
         bind_randomized_world::register_from_jar(&mut mgr.thread, jar.as_ref());
         bind_items::on_create_data::register_from_jar(jar.as_ref());
+        world_mannequins::install_item_source(mgr.fs.borrow().base.clone(), jar.as_ref());
         bind_cheat_type::register_from_jar(&mut mgr.thread, jar.as_ref());
     }
     bind_sprites::register(&mut mgr.thread);

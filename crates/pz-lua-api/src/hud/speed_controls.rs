@@ -577,7 +577,7 @@ impl UIElementExt for SpeedControls {
 
     fn render(&self, el: &UIElement, t: &mut pz_kahlua::Thread) {
         el.render_base(t);
-        let tutorial = crate::bind_core::shared_core().borrow().game_mode == "Tutorial";
+        let tutorial = crate::bind_core::shared_core().borrow().is_tutorial().expect("GameMode class authority unavailable");
         if tutorial {
             if let Some(b) = self.buttons.borrow().as_ref() {
                 for e in b.all() {

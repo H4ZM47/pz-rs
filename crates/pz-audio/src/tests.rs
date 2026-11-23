@@ -192,9 +192,14 @@ fn decodes_every_game_bank() {
         "no Vorbis setup headers found in the FMOD library"
     );
     let mut banks = Vec::new();
-    for sub in ["media/sound/banks/Desktop", "media/sound/export/Desktop"] {
-        for e in std::fs::read_dir(dir.join(sub)).unwrap().flatten() {
-            let p = e.path();
+    let mut folders = vec![game_bank_dir(&dir)];
+    let exports = dir.join("media/sound/export/Desktop");
+    if exports.is_dir() {
+        folders.push(exports);
+    }
+    for folder in folders {
+        for entry in std::fs::read_dir(&folder).unwrap() {
+            let p = entry.unwrap().path();
             if p.extension().is_some_and(|x| x == "bank") {
                 banks.push(p);
             }
@@ -238,10 +243,13 @@ fn parses_every_game_bank_model() {
     let Some(dir) = std::env::var_os("PZ_GAME_DIR") else {
         return;
     };
-    let banks = std::path::PathBuf::from(dir).join("media/sound/banks/Desktop");
     let mut events = 0;
-    for name in ["ZomboidSound", "ZomboidMusic", "ZomboidSoundMP"] {
-        let bank = BankFile::open(&banks.join(format!("{name}.bank"))).unwrap();
+    for path in startup_bank_paths(std::path::Path::new(&dir)) {
+        let name = path.display();
+        let bank = BankFile::open(&path).unwrap();
+        if bank.strings().is_some() {
+            continue;
+        }
         let m = bank.model().unwrap();
         for e in m.events.values() {
             assert!(

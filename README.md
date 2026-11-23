@@ -6,9 +6,9 @@ Linux, with the game's own Lua scripts and assets running unmodified on a
 native engine: no JVM, no Java bridge and no C Lua at runtime.
 
 > [!IMPORTANT]
-> **Not yet playable.** The client boots, runs the game's main menu and can
-> create or load a single-player world, but an in-game session still stops on
-> Lua API methods that are not bound yet.
+> **Single-player development build.** The macOS client can start a world,
+> move the player, run a timed action, save, and reload into gameplay.
+> Missing Lua methods and unfinished world systems limit which activities work.
 >
 > **No game files are in this repository.** pz-rs reads `media/` (Lua,
 > scripts, textures, maps, sounds, translations) and some built-in constants
@@ -38,10 +38,9 @@ data; it is never executed. Details are in
 
 Most subsystems exist as ported libraries with their own tests. What remains
 is mostly wiring those libraries into the running game loop and binding the
-Lua-facing API that the shipped Lua calls. The workspace has 49 crates and
-about 2,900 unit tests.
+Lua-facing API that the shipped Lua calls. The workspace has 50 crates.
 
-Selected results, each with what it does and does not show:
+Selected comparisons and runtime checks follow.
 
 | Area | Result | Conditions |
 | --- | --- | --- |
@@ -49,28 +48,33 @@ Selected results, each with what it does and does not show:
 | Chunk saves | 14,850 of 14,894 real chunk re-saves byte-identical to the original's own re-save | Checked locally; the remainder differ in random key ids and one model name ([PROGRESS.md](PROGRESS.md)) |
 | World generation | Object lists match the game on all 167,232 squares of 24 regions | Checked locally; blending and foraging zones not ported |
 | Erosion, climate, zombie chase, body damage | Match the original bit for bit | Each library compared in isolation, not inside a running session |
-| Engine integration | 56 of 207 items in the integration checklist done | A checked item means the connection exists, not that runtime parity is verified ([ENGINE-WIRING.md](docs/ENGINE-WIRING.md)) |
-| Lua API | Largest open area; for example 1 of 58 `ItemCodeOnCreate` callbacks is implemented | The most recent recorded stop is in the inventory pane |
+| Engine integration | 85 of 216 items in the integration checklist done | A checked item means the connection exists, not that runtime parity is verified ([ENGINE-WIRING.md](docs/ENGINE-WIRING.md)) |
+| Item creation | All 58 Build 42.21 callback names are registered. The tested scarecrow and skeleton callbacks produce loadable moveable payloads | Installed stock scripts and a dressed scarecrow script override |
+| Installed Steam session | Created a world, moved, performed a timed action, saved and reloaded, and rewrote 169 resident chunks on return to menu | Apple Silicon, Build 42.22 assets, Rust save version 249 |
+| Menu and guide video | Not played yet: `pz-video` reads the Bink container and frame index, but this branch has no Bink video decoder, so the menu shows its still background | Bink 1 and Bink 2 decoding are both open |
 
 [docs/STATUS.md](docs/STATUS.md) has the per-workstream status and the full
 checklist of what remains.
 
 ## Limits
 
-* **Gameplay.** No in-game session runs to completion yet. Animals,
-  ragdolls, vehicles, ballistics, pathfinding, fire and radio exist as
-  libraries but are not connected to the frame loop.
-* **Mods.** The mod loader is ported as a library, but mods are not loaded
-  at boot yet.
-* **Saves.** Chunk files, `map_t.bin`, player load and quit-save exist. A full
-  game save, sandbox options on load and the vehicle database do not.
-* **Multiplayer.** Not started. There is no network protocol, client or
-  server.
-* **Platforms.** Sessions against an installed game have been run on macOS
-  only. Windows and Linux are covered by CI builds and unit tests, which run
-  without game assets.
-* **Game version.** Comparisons were made against Build 42.21. Other builds
-  may differ.
+* **Gameplay.** The single-player movement and save round-trip runs on macOS.
+  World simulation, player interactions, vehicle systems and the Lua API
+  still have open items in the integration checklist.
+* **Mods.** A cache-local Build 42 mod ran through normal startup and changed
+  frame-rate and VSync settings from the installed menu. Broader compatibility
+  requires testing additional mods.
+* **Saves.** The installed-session checks cover player state, nested inventory,
+  world data and worn mannequin items. The port writes save version 249.
+  Interchange with native Build 42.22 saves (version 251) remains unverified.
+* **Multiplayer.** The workspace includes a Rust RakNet transport, packet types
+  and account storage. Multiplayer gameplay remains unfinished.
+* **Platforms.** The Apple Silicon client and the Intel macOS client running
+  through Rosetta both created, saved and reloaded a world in separate
+  processes. Windows and Linux x64 clients linked locally. Both still need
+  an installed-game run on their native OS.
+* **Game version.** The parity target is Build 42.21. Installed-session
+  results here used Build 42.22.
 
 ## How results are checked
 
@@ -102,7 +106,8 @@ cargo run -p pz-client -- --load-game MODE/NAME         # skip the menu, load a 
 cargo run -p pz-client -- --new-game NAME --headless-frames 120   # no window
 ```
 
-`--game-mode`, `--map`, `--spawn X,Y,Z` and `--seed` shape a new game;
+`--game-mode`, `--map`, `--spawn X,Y,Z` and `--seed` shape a new game.
+Use `--headless-frames N --png OUT` to capture the last rendered frame.
 `--help` lists every option. Saves and settings go to `~/Zomboid-rs` (or
 `--cache-dir DIR`); the original game's `~/Zomboid` is never written.
 
@@ -111,10 +116,10 @@ cargo run -p pz-client -- --new-game NAME --headless-frames 120   # no window
 Grouped from [docs/STATUS.md](docs/STATUS.md#what-remains). The order is a
 suggested dependency order, not a schedule:
 
-1. Bind the Lua API methods the shipped client Lua reaches next, until an
-   in-game single-player session runs without stopping.
-2. Finish boot: mods, perks and body locations before Lua loads, scripts in
-   the windowed boot.
+1. Extend single-player interaction coverage beyond the tested inventory,
+   movement and timed-action paths. Bind missing methods used by the shipped Lua.
+2. Finish boot-time setup for the character simulation, world sounds and HUD
+   hosts.
 3. Connect the ported world systems to the frame loop: pathfinding,
    vehicles, fire, animals, ragdolls, square mutations.
 4. Full game save and load.
@@ -125,7 +130,7 @@ suggested dependency order, not a schedule:
 ## Layout
 
 <details>
-<summary>49 crates, grouped by area, with the original code each one replaces</summary>
+<summary>50 crates, grouped by area, with the original code each one replaces</summary>
 
 | Crate | Original counterpart |
 | --- | --- |
@@ -142,7 +147,7 @@ suggested dependency order, not a schedule:
 | `pz-player-input` | what `IsoPlayer.update` reads from keyboard, mouse and joypads |
 | `pz-sandbox` | `zombie.SandboxOptions` |
 | `pz-server-settings` | `zombie.network.ServerOptions`, `ServerSettings`, `SpawnRegions` |
-| `pz-network` | offline server list and accounts (`zombie.network.Server`, `Account`); no networking |
+| `pz-network` | offline server list and accounts (`zombie.network.Server`, `Account`), RakNet transport and packet types |
 | `pz-sqlite` | SQLite file reader/writer for `players.db` and `vehicles.db` |
 | `pz-joml` | the `org.joml.Matrix4f` operations the engine uses |
 | **Scripts, UI and text** | |
@@ -176,6 +181,7 @@ suggested dependency order, not a schedule:
 | `pz-gpu` | GPU backend on wgpu (the original's render thread) |
 | `pz-iso-render` | isometric world renderer (`FBORenderCell`, sprite render paths) |
 | `pz-world-render` | glue: world data → renderer and lighting inputs |
+| `pz-world3d` | optional first-person, third-person and free-camera rendering |
 | `pz-model` | models, skeletons and animation clips (`.X`, `.fbx`, `.txt` loaders) |
 | `pz-anim` | `zombie.core.skinnedmodel.animation` and `.advancedanimation` |
 | `pz-character-model` | character model tree, composited textures, per-frame lights |

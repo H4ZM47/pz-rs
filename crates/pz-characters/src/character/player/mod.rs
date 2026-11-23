@@ -13,8 +13,10 @@ pub mod aiming;
 pub mod attack;
 pub mod context;
 pub mod control;
+mod footsteps;
 pub mod input;
 pub mod los;
+pub mod music;
 pub mod update;
 pub mod vision;
 
@@ -29,6 +31,14 @@ pub use vision::PlayerRenderInputs;
 /// the player loop uses).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerControl {
+    /// ParameterCharacterMovementSpeed from the most recent footstep.
+    pub sound_movement_speed: u8,
+    /// ParameterEquippedBaggageContainer, refreshed during the local player update.
+    pub sound_baggage_container: u8,
+    pub check_nearby_rooms: f32,
+    pub num_nearby_buildings_rooms: f32,
+    pub music_threat_levels: std::rc::Rc<music::MusicThreatLevels>,
+    pub music_intensity_events: std::rc::Rc<music::MusicIntensityEvents>,
     /// IsoPlayer.isFarming; maintained by Lua farming/timed actions.
     pub is_farming: bool,
     /// `seeDesignationZone`: the designation zone panel is open. Read by
@@ -175,6 +185,10 @@ pub struct PlayerControl {
 impl Default for PlayerControl {
     fn default() -> Self {
         PlayerControl {
+            sound_movement_speed: 3,
+            sound_baggage_container: 0,
+            check_nearby_rooms: 0.0,
+            num_nearby_buildings_rooms: 0.0,
             next_rand_xp_check_times: std::collections::HashMap::new(),
             see_designation_zone: false,
             player_index: 0,
@@ -232,6 +246,8 @@ impl Default for PlayerControl {
             collidable: true,
             seen_this_frame: false,
             could_be_seen_this_frame: false,
+            music_threat_levels: Default::default(),
+            music_intensity_events: Default::default(),
             is_farming: false,
             inv_page_dirty: false,
             action_blocks_movement: false,
@@ -261,6 +277,10 @@ pub enum PlayerEvent {
     /// `LuaEventManager.triggerEvent(name, player)`: `OnPlayerMove`,
     /// `OnPlayerUpdate`.
     LuaEvent(&'static str),
+    /// IsoPlayer.updateSoundListener, before OnPlayerUpdate.
+    UpdateSoundListener { position: [f32; 3], count_rooms: bool },
+    /// Refresh the player's configured events after OnPlayerUpdate.
+    UpdateMusic { inside: bool, now_ms: i64, panic: i32 },
     /// `triggerEvent("OnContextKey", player, millis)`.
     ContextKey { millis: f64 },
     /// `triggerEvent("OnPressWalkTo", 0, 0, 0)`.

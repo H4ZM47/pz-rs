@@ -573,6 +573,13 @@ impl VehiclePart {
         self.item_type().is_none() || self.has_item()
     }
 
+    /// VehicleWindow.hit applies full-health damage and then forces condition to zero,
+    /// even when the window was open and the damage routine returned early.
+    pub fn hit_window(&self) {
+        self.window_damage(self.condition());
+        self.set_condition(0);
+    }
+
     /// `VehicleWindow.damage(amount)`.
     pub fn window_damage(&self, amount: i32) {
         if amount <= 0 || !self.window_is_hittable() {

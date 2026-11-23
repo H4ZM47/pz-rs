@@ -25,6 +25,7 @@ use pz_anim::AnimationVariableSource;
 pub enum PathMoverRequest {
     ClimbOverFence(IsoDirections),
     ClimbThroughWindow(ObjectRef),
+    ClimbThroughWindowAtFrame(ObjectRef),
     ClimbThroughWindowFrame(ObjectRef),
     ToggleDoor(ObjectRef),
     ClimbOverWall(IsoDirections),
@@ -100,6 +101,7 @@ impl<I: 'static> GameCharacter<I> {
                 r,
                 PathMoverRequest::ClimbOverFence(_)
                     | PathMoverRequest::ClimbThroughWindow(_)
+                    | PathMoverRequest::ClimbThroughWindowAtFrame(_)
                     | PathMoverRequest::ClimbThroughWindowFrame(_)
                     | PathMoverRequest::ClimbOverWall(_)
             )
@@ -113,6 +115,7 @@ impl<I: 'static> GameCharacter<I> {
             match r {
                 PathMoverRequest::ClimbOverFence(d) => self.do_climb_over_fence(d, cx),
                 PathMoverRequest::ClimbThroughWindow(w) => self.climb_through_window(w, cx),
+                PathMoverRequest::ClimbThroughWindowAtFrame(w) => self.climb_through_window_at_frame(w, cx),
                 PathMoverRequest::ClimbThroughWindowFrame(f) => self.climb_through_window_frame(f, cx),
                 PathMoverRequest::ClimbOverWall(d) => {
                     self.climb_over_wall(d, cx);
@@ -343,10 +346,21 @@ impl<I: 'static> PathMover for GameCharacter<I> {
     fn face_this_object(&mut self, target: FaceTarget) {
         self.path.requests.push(PathMoverRequest::FaceObject(target));
     }
-    /// `shouldBeTurning()`: the twist is not modelled (no animation
-    /// player), so only a blocked turn answers.
     fn should_be_turning(&self) -> bool {
-        false
+        if (self.is_player() && !self.vars.has_animation_tracks)
+            || (self.is_zombie() && self.is_current_state_id(super::states::ids::ZOMBIE_FALL_DOWN))
+            || self.vars.block_turning
+        {
+            return false;
+        }
+        let twisting = self.vars.target_twist.abs() > 1.0;
+        if self.current_state().is_some_and(|s| s.is_moving(self)) || self.player_moving {
+            return twisting;
+        }
+        if self.is_player() && !self.vars.attack_type.is_empty() {
+            return !self.vars.aim_at_floor;
+        }
+        self.vars.excess_twist.abs() > 1.0 || self.vars.turning && twisting
     }
     fn is_aiming(&self) -> bool {
         GameCharacter::is_aiming(self)

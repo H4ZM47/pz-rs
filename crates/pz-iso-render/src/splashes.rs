@@ -154,7 +154,7 @@ fn render_rain_splash(r: &ChunkRenderer<'_>, s: &Surfaces<'_>, sq: &RenderSquare
     if !sq.cut.could_see {
         return;
     }
-    if !sq.has(|f| f.exterior) || sq.has(|f| f.vegitation) || !sq.has(|f| f.solidfloor) {
+    if !sq.is_exterior() || sq.has(|f| f.vegitation) || !sq.has(|f| f.solidfloor) {
         return;
     }
     let Some(tex) = s.textures.texture(&format!("RainSplash_00_{f}")) else { return };

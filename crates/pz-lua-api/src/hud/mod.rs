@@ -50,7 +50,7 @@ pub fn init_ui(t: &mut Thread) {
     let (debug, game_mode) = {
         let core = crate::bind_core::shared_core();
         let c = core.borrow();
-        (c.debug, c.game_mode.clone())
+        (c.debug, c.is_last_stand())
     };
     let sc = SpeedControls::create(debug);
     with_ui(|m| m.speed_controls = Some(sc.clone()));
@@ -59,7 +59,7 @@ pub fn init_ui(t: &mut Thread) {
     if !with_host(|h| h.players.has_player_instance()) {
         return;
     }
-    if game_mode != "LastStand" && !with_host(|h| h.network.is_client()) {
+    if !game_mode && !with_host(|h| h.network.is_client()) {
         with_ui(|m| m.ui.push(sc.clone()));
     }
     if with_host(|h| h.network.is_server()) {
@@ -77,7 +77,7 @@ pub fn init_ui(t: &mut Thread) {
     };
     let clock = Clock::create(offscreen_w - if clock_size == 2 { 166 } else { 91 }, 10);
     with_ui(|m| m.clock = Some(clock.clone()));
-    if game_mode != "LastStand" {
+    if !game_mode {
         with_ui(|m| m.ui.push(clock.clone()));
     }
     with_ui(|m| m.ui.push(tip.clone()));
@@ -822,6 +822,15 @@ pub(crate) mod test_util {
     }
 
     pub fn thread() -> Thread {
+        use pz_classfile::{StaticInit, Value as ClassValue};
+        let initializers = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial")].into_iter().map(|(field, id)| StaticInit {
+            class: "zombie/core/GameMode".into(), field: field.into(),
+            value: ClassValue::Call { class: "zombie/core/GameMode".into(), name: "registerBase".into(), descriptor: String::new(), args: vec![ClassValue::Str(id.into())] },
+        }).collect::<Vec<_>>();
+        let modes = Rc::new(pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&initializers).unwrap());
+        let mut core = pz_core::core::Core::default();
+        core.install_game_mode_statics(modes.clone()).unwrap();
+        crate::bind_core::install_core(Rc::new(RefCell::new(core)));
         pz_ui::UIManager::reset();
         pz_ui::with_ui(|m| m.time_override_ms = Some(1_000_000));
         let mut t = Thread::new(TableRef::new());

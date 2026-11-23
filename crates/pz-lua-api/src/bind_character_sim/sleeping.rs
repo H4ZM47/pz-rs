@@ -139,11 +139,12 @@ fn try_update_asleep_player(t: &mut Thread, chr: &LuaGameCharacterRef) -> LuaRes
         .borrow_mut()
         .sleeping_event_update(|| Ok(exposed.unwrap_or(false)), raining, &chars, &ctx)
         .map_err(super::java_error)?;
+    drop(chars);
     for e in ctx.events.into_inner() {
+        if crate::bind_zombie::character_noise(t, chr, &e)? { continue; }
         if let SimEvent::SleepingEventWakeUp { fast_wakeup } = e {
             wake_up_ui(chr, fast_wakeup);
         }
-        // SimEvent::AddSound: WorldSoundManager, TODO(sound).
     }
     if r == SleepingUpdate::ZombieIntruders {
         return Err(unsupported("SleepingEvent.update: spawnZombieIntruders"));

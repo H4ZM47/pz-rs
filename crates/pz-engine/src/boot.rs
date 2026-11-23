@@ -1,5 +1,7 @@
 //! Pieces of `GameWindow.init` shared by every client mode.
 
+mod debug_catalog;
+
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
@@ -93,6 +95,26 @@ pub fn mod_script_dirs(fs: &mut pz_fs::GameFs) -> Vec<pz_scripts::ModScriptDirs>
         .collect()
 }
 
+/// Load the Core API before reading options or registering Lua methods.
+pub(crate) fn install_game_mode_class(jar: &pz_classfile::Jar, core: &mut pz_core::core::Core)
+    -> Result<Option<pz_scripts::native_game_modes::NativeGameModeStaticsRef>, String>
+{
+    let class = pz_classfile::load_class(jar, "zombie/core/Core")
+        .map_err(|e| format!("read Core game mode signature: {e}"))?;
+    match class.method("getGameMode").map(|method| method.descriptor.as_str()) {
+        Some("()Ljava/lang/String;") if core.uses_named_game_mode() => Ok(None),
+        Some("()Ljava/lang/String;") => Err("cannot switch the running Core to a different game mode type".into()),
+        Some("()Lzombie/core/GameMode;") => {
+            let modes = pz_scripts::native_game_modes::native_game_mode_statics(jar)
+                .map_err(|e| format!("native game mode statics: {e}"))?;
+            core.install_game_mode_statics(modes.clone())
+                .map_err(|e| format!("install native game mode statics: {e}"))?;
+            Ok(Some(modes))
+        }
+        other => Err(format!("unsupported Core.getGameMode signature: {other:?}")),
+    }
+}
+
 /// The `Registries` bootstrap, `PerkFactory.init()`,
 /// `ScriptManager.instance.Load()` and the clothing loads after it
 /// (`ClothingDecals`, `BeardStyles`, `HairStyles`, `OutfitManager`,
@@ -101,14 +123,23 @@ pub fn mod_script_dirs(fs: &mut pz_fs::GameFs) -> Vec<pz_scripts::ModScriptDirs>
 /// assets item visuals read, with the loaded mods' script folders.
 /// TODO: `CustomPerks`.
 pub fn load_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>) -> Result<(), String> {
+    load_session_scripts(game_dir, fs, true)
+}
+
+fn load_session_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>, initial_boot: bool) -> Result<(), String> {
     // Same real asset owner before any Item.DoParam. The immutable load
     // scope permits nested provider reads; population gets a later mut scope.
     pz_lua_api::bind_render::install_texture_capture(fs.clone());
     let jar=pz_classfile::Jar::open(game_dir.join("projectzomboid.jar"))
         .map_err(|error|format!("native item key registry jar: {error}"))?;
+    if initial_boot { debug_catalog::install(&jar, fs.borrow().cache_dir())?; }
     let native_keys=pz_scripts::native_item_keys::native_item_key_statics(&jar)
         .map_err(|error|format!("native item key statics: {error}"))?;
-    let sm=pz_scripts::ScriptManager::with_native_item_key_statics(&native_keys);
+    let modes = install_game_mode_class(&jar, &mut pz_lua_api::bind_core::shared_core().borrow_mut())?;
+    let sm = match modes {
+        Some(modes) => pz_scripts::ScriptManager::with_native_key_statics(&native_keys, &modes),
+        None => pz_scripts::ScriptManager::with_native_item_key_statics(&native_keys),
+    };
     sm.load_builtin_registries(&game_dir.join("projectzomboid.jar"))
         .map_err(|e| format!("built-in registries: {e}"))?;
     let mut chars = pz_characters::Characters::default();
@@ -180,7 +211,7 @@ pub fn reload_main_menu_environment(
     // Read the installation before retiring the current Lua/UI owners.
     // Later failures retain the LuaManager value but cannot roll back
     // every shared host registry changed during initialization.
-    load_scripts(&launch.game_dir, &fs)?;
+    load_session_scripts(&launch.game_dir, &fs, false)?;
     replace_menu_environment(lua, fs, |fresh| {
         pz_lua_api::bind_text::boot(
             &fresh.fs.borrow(),

@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+pz-audio.workspace = true
+pz-world-sound.workspace = true
+pz-core.workspace = true
 pz-world.workspace = true
 pz-characters.workspace = true
 pz-inventory.workspace = true

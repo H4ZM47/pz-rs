@@ -140,23 +140,17 @@ fn native_floor_dispatch_never_uses_tile_absence_for_nonempty_properties() {
 }
 
 #[test]
-fn other_native_sprite_class_stops_before_legacy_registration_or_flag() {
-    let (floor, sprite, _square, _chunk, mut retired) = fixture();
+fn plain_native_sprite_runs_base_entity_event_and_hot_save() {
+    let (floor, sprite, square, chunk, mut retired) = fixture();
     let mut body = IsoObject::new(2, ObjectKind::Object, None);
     body.sprite = ObjectSprite::Native(sprite.clone());
+    body.replace_square(Some(&square), &mut retired);
     let object = ObjectSlot::new(body).ref_handle();
-    assert_eq!(
-        try_native_add_to_world_dispatch(&object, &crate::sprite::test_tables(), &mut retired),
-        Err(RuntimeHostError::Unsupported {
-            operation: "actual native sprite subclass addToWorld",
-            kind: None,
-        })
-    );
-    assert!(!object.borrow().added_to_world_or_equipped);
+    assert_eq!(try_native_add_to_world_dispatch(&object, &crate::sprite::test_tables(), &mut retired), Ok(true));
+    assert!(object.borrow().added_to_world_or_equipped);
     assert!(!object.borrow().added_to_entity_manager);
-    assert!(pz_entity::runtime_event::entity_event_pool()
-        .is_empty()
-        .unwrap());
+    assert!(chunk.hot_save.borrow().requires_hot_save);
+    assert_eq!(pz_entity::runtime_event::entity_event_pool().len(), Ok(1));
     drop(floor);
     detach(&sprite);
 }

@@ -264,6 +264,12 @@ impl WorldSoundManager {
         }
     }
 
+    /// KillCell followed by IsoCell.Dispose drops the chunk-owned sound lists.
+    pub fn dispose_cell(&mut self) {
+        self.kill_cell();
+        self.chunk_lists.clear();
+    }
+
     /// `getHearingMultiplier(int)`.
     pub fn hearing_multiplier(hearing: i32) -> f32 {
         match hearing {
@@ -539,12 +545,12 @@ impl WorldSoundManager {
 
     /// The list a listener searches: its chunk's, or the global one on a
     /// server or when the square has no chunk.
-    fn list_for(&self, world: &dyn SoundWorld, l: Option<&Listener>) -> Vec<SoundId> {
+    fn list_for(&self, world: &dyn SoundWorld, l: Option<&Listener>) -> &[SoundId] {
         match l.map(|l| l.square) {
             Some(ListenerSquare::Chunk(cx, cy)) if !world.is_server() => {
-                self.chunk_sounds(cx, cy).to_vec()
+                self.chunk_sounds(cx, cy)
             }
-            _ => self.sound_list.clone(),
+            _ => &self.sound_list,
         }
     }
 
@@ -554,7 +560,7 @@ impl WorldSoundManager {
         if zombie.square == ListenerSquare::None {
             return None;
         }
-        self.list_for(world, Some(zombie)).into_iter().find(|id| {
+        self.list_for(world, Some(zombie)).iter().copied().find(|id| {
             let s = &self.pool[id.0];
             s.source.map(|src| src.id) == Some(target) && s.stress_zombies
         })
@@ -567,7 +573,7 @@ impl WorldSoundManager {
         }
         let mut loudest = None;
         let mut loudest_volume = 0.0f32;
-        for id in self.list_for(world, Some(animal)) {
+        for &id in self.list_for(world, Some(animal)) {
             let s = &self.pool[id.0];
             if !s.stress_humans && !s.stress_animals {
                 continue;
@@ -632,7 +638,7 @@ impl WorldSoundManager {
         let mut largest_sound = -1_000_000.0f32;
         let mut largest = None;
         let mult = Self::zombie_hearing_multiplier(zombie);
-        for id in self.list_for(world, zombie) {
+        for &id in self.list_for(world, zombie) {
             let s = &self.pool[id.0];
             if !s.stress_zombies || s.radius == 0 {
                 continue;
@@ -974,6 +980,18 @@ mod tests {
         assert!(m.chunk_sounds(1, 1).is_empty());
         // Released sounds are reused.
         assert_eq!(m.add_sound(&mut w, None, 5, 5, 0, 5, 10), Some(id));
+    }
+
+    #[test]
+    fn cell_disposal_drops_chunk_links_before_reusing_sound_ids() {
+        let mut world = TestWorld::default();
+        let mut manager = WorldSoundManager::new();
+        let id = manager.add_sound(&mut world, None, 5, 5, 0, 5, 10).unwrap();
+        assert!(manager.chunk_sounds(0, 0).contains(&id));
+        manager.dispose_cell();
+        assert!(manager.sound_list.is_empty());
+        assert_eq!(manager.add_sound(&mut world, None, 105, 105, 0, 5, 10), Some(id));
+        assert!(manager.chunk_sounds(0, 0).is_empty());
     }
 
     #[test]

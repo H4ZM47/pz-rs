@@ -46,7 +46,16 @@ impl<I: 'static> GameCharacter<I> {
             // TODO(anim): skipped while the layer blends in or out.
             cx.ctx.event(SimEvent::PlaySound(param.unwrap_or("").to_string()));
         } else if is("Footstep") {
-            cx.ctx.event(SimEvent::Footstep(param.unwrap_or("").to_string()));
+            let gait = param.unwrap_or("");
+            if self.is_player() {
+                let volume = self.player_footstep_gait(gait);
+                let in_room = self.path.current_square.and_then(|sq| cx.world.square_room(sq)).is_some();
+                if let Err(error) = self.player_footstep(volume, in_room, cx.sm, cx.chars, cx.ctx) {
+                    cx.record_state_error(error.into());
+                }
+            } else {
+                cx.ctx.event(SimEvent::Footstep(gait.to_string()));
+            }
         } else if is("DamageWhileInTrees") {
             // TODO(world): damageWhileInTrees needs the clothing and holes.
         } else if is("TurnAround") || is("TurnAround_FlipSkeleton") {

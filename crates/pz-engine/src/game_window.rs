@@ -1,6 +1,9 @@
 //! `zombie.GameWindow`: window, event loop and the per-frame
 //! logic/render sequence, rendering through `pz-gpu`.
 
+mod frame_pacer;
+use frame_pacer::FramePacer;
+
 use crate::game_loading::LoadingQueueState;
 use crate::game_state::{state, GameStateMachine, StateCx};
 use crate::iso_world::{IsoWorld, NewGameSetup};
@@ -89,6 +92,7 @@ struct App {
     error: Option<crate::failure::EngineError>,
     retired_models: Vec<crate::world_models::WorldModels>,
     last_frame: Instant,
+    frame_pacer: FramePacer,
     /// `Controllers` backend (gilrs); `None` when unavailable.
     gamepads: Option<pz_input::gamepads::Gamepads>,
     /// The audio device stream (windowed runs only).
@@ -97,17 +101,27 @@ struct App {
     ui_models: Option<Rc<RefCell<crate::ui_models::UiModels>>>,
 }
 
+fn launch_core(launch: &Launch) -> crate::failure::EngineResult<Rc<RefCell<Core>>> {
+    let core = pz_lua_api::bind_core::shared_core();
+    {
+        let mut c = core.borrow_mut();
+        let path = launch.game_dir.join("projectzomboid.jar");
+        if path.is_file() {
+            let jar = pz_classfile::Jar::open(path).map_err(|e| format!("open game JAR: {e}"))?;
+            crate::boot::install_game_mode_class(&jar, &mut c)?;
+        }
+        c.set_cache_dir(&launch.cache_dir);
+        let _ = c.load_options();
+    }
+    Ok(core)
+}
+
 /// Boot (`GameWindow.init`) and run the main menu until the window closes.
 pub fn run(launch: Launch) -> crate::failure::EngineResult<()> {
     let _retirement_boundary = HostRetirementBoundary;
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let core = pz_lua_api::bind_core::shared_core();
-    {
-        let mut c = core.borrow_mut();
-        c.set_cache_dir(&launch.cache_dir);
-        let _ = c.load_options();
-    }
+    let core = launch_core(&launch)?;
     let mut app = App {
         launch,
         window: None,
@@ -119,6 +133,7 @@ pub fn run(launch: Launch) -> crate::failure::EngineResult<()> {
         error: None,
         retired_models: Vec::new(),
         last_frame: Instant::now(),
+        frame_pacer: FramePacer::new(Instant::now()),
         gamepads: None,
         audio: None,
         ui_models: None,
@@ -143,7 +158,7 @@ impl App {
             drain_retired_host_owners();
             return;
         };
-        if in_game {
+        if in_game && !self.core.borrow().process_exit_requested() {
             if let Some(world) = self.world.as_mut() {
                 if let Err(error) = world.save_on_window_close(lua) {
                     crate::failure::record_first(&mut self.error, (format!("PlayerDB save host failure: {error}")).into());
@@ -180,6 +195,7 @@ impl App {
         // A close during loading does not pass through IngameState.KillCell.
         // Retire the in-process host's current cell after its owners stop.
         pz_lua_api::bind_world::set_cell(None);
+        pz_lua_api::bind_sprites::install_sprite_manager(None);
         pz_lua_api::bind_world::square_queries::install_square_light(None);
         for mut models in self.retired_models.drain(..) {
             models.clear();
@@ -255,7 +271,8 @@ impl App {
                 crate::boot::load_key_bindings(self.lua.as_mut().ok_or("no Lua")?)?;
                 {
                     let mut c = self.core.borrow_mut();
-                    c.set_game_mode(&g.game_mode);
+                    c.set_game_mode(&g.game_mode)
+                        .map_err(|error| format!("set game mode: {error}"))?;
                     c.game_save_world = g.world.clone();
                     if g.new_game.is_some() {
                         c.game_map = g.map.clone();
@@ -281,6 +298,46 @@ impl App {
     fn screen_size(&self) -> (i32, i32) {
         let c = self.core.borrow();
         (c.get_screen_width().max(1), c.get_screen_height().max(1))
+    }
+
+    fn schedule_window_frame(&mut self, el: &ActiveEventLoop, redraw: bool) {
+        let wake = self.frame_pacer.step(Instant::now(), &self.core.borrow().performance, redraw);
+        match wake {
+            Err(error) => {
+                crate::failure::record_first(&mut self.error, error.into());
+                el.exit();
+            }
+            Ok(Some(deadline)) => el.set_control_flow(ControlFlow::WaitUntil(deadline)),
+            Ok(None) if redraw => {
+                if !self.advance_frame() {
+                    el.exit();
+                }
+            }
+            Ok(None) => {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+                el.set_control_flow(ControlFlow::Wait);
+            }
+        }
+    }
+
+    fn desktop_exit_requested(&self) -> bool {
+        let core = self.core.borrow();
+        core.close_requested || core.process_exit_requested()
+    }
+
+    /// Both event loops service Lua exit requests at a frame boundary. A
+    /// startup script can request a close before the first frame is drawn.
+    fn advance_frame(&mut self) -> bool {
+        if !self.desktop_exit_requested() {
+            self.frame();
+        }
+        if self.desktop_exit_requested() {
+            self.close();
+            return false;
+        }
+        self.error.is_none()
     }
 
     fn frame(&mut self) {
@@ -400,7 +457,22 @@ impl App {
             && !pz_lua_api::bind_input::was_key_down_named("Toggle Music");
         pz_lua_api::bind_audio::sound_system()
             .borrow_mut()
-            .with(|m, ctx| m.update(toggle_music, ctx));
+            .with(|m, ctx| {
+                m.set_music_inputs(crate::sound::music_inputs(&self.core.borrow()));
+                let markers = m.update_with_ambient_context(toggle_music, ctx, |ctx, count| {
+                    if !game_paused {
+                        if let Some(world) = &mut self.world {
+                            world.ambient_parameters.update(ctx, count, &self.core.borrow());
+                        }
+                    }
+                });
+                if let Some(world) = &self.world {
+                    for (id, name, _) in markers {
+                        world.ambient_parameters.timeline_marker(id, &name);
+                    }
+                }
+            });
+        if let Some(world) = self.world.as_mut() { world.update_house_alarms(lua); }
         pz_ui::with_ui(|m| m.mouse.end_frame());
         // The avatars' texture jobs (ModelInstanceTextureCreator) before
         // the UI draws them.
@@ -442,13 +514,37 @@ impl App {
             drain_retired_host_owners();
             return;
         }
+        let vsync_changes = self.core.borrow_mut().take_vsync_requests();
         if let Some(gpu) = self.gpu.as_mut() {
+            for enabled in vsync_changes {
+                gpu.set_vsync(enabled);
+            }
             let tm = pz_lua_api::bind_render::textures();
             let params = pz_gpu::FrameParams {
                 clear: Some([0.0, 0.0, 0.0, 1.0]),
                 ..pz_gpu::FrameParams::ui(w as u32, h as u32)
             };
-            gpu.render_frame(&[(params, &dl)], &mut tm.borrow_mut());
+            let frame = [(params, &dl)];
+            if self.core.borrow().screenshot_requested() {
+                match gpu.render_frame_capture(&frame, &mut tm.borrow_mut()) {
+                    Ok(pixels) => {
+                        let save_dir = self.world.as_ref().map(|world| world.save_dir.as_path());
+                        for request in self.core.borrow_mut().take_screenshot_requests() {
+                            if let Err(error) = crate::screenshot::save(request, gpu.size(), &pixels, &self.launch.cache_dir, save_dir) {
+                                eprintln!("ERROR: saving screenshot: {error}");
+                            }
+                        }
+                    }
+                    Err(error) => eprintln!("ERROR: capturing screenshot: {error}"),
+                }
+            } else {
+                gpu.render_frame(&frame, &mut tm.borrow_mut());
+            }
+            if record_gpu_fault(&mut self.error, gpu.error()) {
+                drop(collection_deferral);
+                drain_retired_host_owners();
+                return;
+            }
         }
         // `if (doRenderEvent) onRender()`: OnRenderTick after the frame.
         if pz_lua_api::bind_game_window::render_event_enabled() {
@@ -460,6 +556,19 @@ impl App {
         // Only this outer boundary permits final host destructors to reenter.
         drop(collection_deferral);
         drain_retired_host_owners();
+    }
+}
+
+/// Stop the frame at the same first-failure boundary as other engine errors.
+fn record_gpu_fault(
+    slot: &mut Option<crate::failure::EngineError>,
+    fault: Option<pz_gpu::GpuError>,
+) -> bool {
+    if let Some(fault) = fault {
+        crate::failure::record_first(slot, format!("graphics frame failed: {fault}").into());
+        true
+    } else {
+        false
     }
 }
 
@@ -526,6 +635,8 @@ impl ApplicationHandler for App {
         if let Err(e) = self.boot() {
             crate::failure::record_first(&mut self.error, e);
             el.exit();
+        } else {
+            self.frame_pacer = FramePacer::new(Instant::now());
         }
     }
 
@@ -552,29 +663,15 @@ impl ApplicationHandler for App {
                     .set_screen_size(size.width.max(1) as i32, size.height.max(1) as i32);
             }
             WindowEvent::RedrawRequested => {
-                self.frame();
-                if self.error.is_some() {
-                    el.exit();
-                    return;
-                }
-                if let Some(w) = &self.window {
-                    w.request_redraw();
-                }
+                self.schedule_window_frame(el, true);
             }
             _ => {}
         }
     }
 
-    fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
-        if let Some(w) = &self.window {
-            w.request_redraw();
-        }
-        // PerformanceSettings.lockFPS pacing.
-        let fps = 60.0;
-        let target = Duration::from_secs_f64(1.0 / fps);
-        let elapsed = self.last_frame.elapsed();
-        if elapsed < target {
-            std::thread::sleep(target - elapsed);
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        if self.window.is_some() && !el.exiting() {
+            self.schedule_window_frame(el, false);
         }
     }
 }
@@ -617,8 +714,22 @@ fn apply_window_requests(w: &Window, requests: Vec<pz_input::WindowRequest>) {
 /// Boot headless, run `frames` frames and return the last frame as RGBA
 /// pixels (width, height, data).
 pub fn render_headless(launch: Launch, frames: u32) -> crate::failure::EngineResult<(u32, u32, Vec<u8>)> {
-    let (w, h, px) = headless(launch, frames, true)?;
-    Ok((w, h, px.unwrap_or_default()))
+    let _retirement_boundary = HostRetirementBoundary;
+    let mut app = headless_app(launch)?;
+    let (w, h) = app.screen_size();
+    app.gpu = Some(pz_gpu::Gpu::new_headless(w as u32, h as u32).map_err(|e| e.to_string())?);
+    app.boot()?;
+    run_headless_lua(&mut app)?;
+    let running = run_frames(&mut app, frames);
+    if let Some(error) = app.error.take() {
+        return Err(error);
+    }
+    let pixels = app.gpu.as_ref().ok_or_else(|| "missing offscreen GPU".to_owned())
+        .and_then(|gpu| gpu.try_read_pixels().map_err(|e| format!("offscreen readback: {e}")));
+    let shutdown = if running { close_headless(&mut app) } else { Ok(()) };
+    let pixels = pixels?;
+    shutdown?;
+    Ok((w as u32, h as u32, pixels))
 }
 
 /// Boot headless without a GPU and run `frames` frames (logic and the
@@ -628,12 +739,14 @@ pub fn run_headless(launch: Launch, frames: u32) -> crate::failure::EngineResult
     let mut app = headless_app(launch)?;
     app.boot()?;
     run_headless_lua(&mut app)?;
-    run_frames(&mut app, frames);
+    let running = run_frames(&mut app, frames);
     if let Some(error) = app.error.take() {
         return Err(error);
     }
     let state = app.current_state();
-    close_headless(&mut app)?;
+    if running {
+        close_headless(&mut app)?;
+    }
     Ok(state)
 }
 
@@ -648,12 +761,7 @@ fn close_headless(app: &mut App) -> crate::failure::EngineResult<()> {
 }
 
 fn headless_app(launch: Launch) -> crate::failure::EngineResult<App> {
-    let core = pz_lua_api::bind_core::shared_core();
-    {
-        let mut c = core.borrow_mut();
-        c.set_cache_dir(&launch.cache_dir);
-        let _ = c.load_options();
-    }
+    let core = launch_core(&launch)?;
     Ok(App {
         launch,
         window: None,
@@ -665,6 +773,7 @@ fn headless_app(launch: Launch) -> crate::failure::EngineResult<App> {
         error: None,
         retired_models: Vec::new(),
         last_frame: Instant::now(),
+        frame_pacer: FramePacer::new(Instant::now()),
         gamepads: None,
         audio: None,
         ui_models: None,
@@ -691,12 +800,13 @@ fn run_headless_source(lua: &mut LuaManager, source: &str) -> crate::failure::En
     Ok(())
 }
 
-fn run_frames(app: &mut App, frames: u32) {
+/// Returns true if the frame limit was reached with the session still open.
+fn run_frames(app: &mut App, frames: u32) -> bool {
     let script = headless_input_script();
     let trace = std::env::var("PZ_HEADLESS_TRACE").ok().and_then(|n| n.parse::<u32>().ok());
     for frame in 0..frames {
         if app.error.is_some() {
-            break;
+            return false;
         }
         for &(at, key, status) in &script {
             if at == frame {
@@ -704,11 +814,14 @@ fn run_frames(app: &mut App, frames: u32) {
             }
         }
         app.last_frame = Instant::now() - Duration::from_millis(33);
-        app.frame();
+        if !app.advance_frame() {
+            return false;
+        }
         if trace.is_some_and(|n| n > 0 && frame % n == 0) {
             trace_frame(app, frame);
         }
     }
+    true
 }
 
 /// Development harness: `PZ_HEADLESS_INPUT=<file>` feeds key events to the
@@ -762,24 +875,6 @@ fn trace_frame(app: &App, frame: u32) {
     );
 }
 
-fn headless(launch: Launch, frames: u32, gpu: bool) -> crate::failure::EngineResult<(u32, u32, Option<Vec<u8>>)> {
-    let _retirement_boundary = HostRetirementBoundary;
-    let mut app = headless_app(launch)?;
-    let (w, h) = app.screen_size();
-    if gpu {
-        app.gpu = Some(pz_gpu::Gpu::new_headless(w as u32, h as u32).map_err(|e| e.to_string())?);
-    }
-    app.boot()?;
-    run_headless_lua(&mut app)?;
-    run_frames(&mut app, frames);
-    if let Some(error) = app.error.take() {
-        return Err(error);
-    }
-    let px = app.gpu.as_ref().map(|g| g.read_pixels());
-    close_headless(&mut app)?;
-    Ok((w as u32, h as u32, px))
-}
-
 #[cfg(test)]
 mod retirement_tests;
 #[cfg(test)]
@@ -790,3 +885,34 @@ mod error_boundary_tests;
 
 #[cfg(test)]
 mod close_save_tests;
+
+#[cfg(test)]
+mod gpu_fault_tests {
+    use super::record_gpu_fault;
+    use pz_gpu::GpuError;
+
+    #[test]
+    fn gpu_fault_stops_frame_with_readable_cause() {
+        let mut error = None;
+        assert!(!record_gpu_fault(&mut error, None));
+        assert!(error.is_none());
+        assert!(record_gpu_fault(
+            &mut error,
+            Some(GpuError::DeviceLost("driver reset".into()))
+        ));
+        assert_eq!(
+            error.unwrap().to_string(),
+            "graphics frame failed: GPU device lost: driver reset"
+        );
+    }
+
+    #[test]
+    fn gpu_fault_preserves_first_engine_error() {
+        let mut error = Some("earlier failure".into());
+        assert!(record_gpu_fault(
+            &mut error,
+            Some(GpuError::Allocation("atlas".into()))
+        ));
+        assert_eq!(error.unwrap().to_string(), "earlier failure");
+    }
+}

@@ -114,7 +114,11 @@ fn init_script(m: &mut IsoMannequin, scripts: &ScriptManager) {
     }
 }
 
-fn promote_loaded_inventory(object: &IsoObjectRef, scripts: &ScriptManager) -> ScriptResult {
+fn promote_loaded_inventory(
+    object: &IsoObjectRef,
+    scripts: &ScriptManager,
+    env: Option<&dyn pz_inventory::ItemEnv>,
+) -> ScriptResult {
     let registry = scripts
         .registries
         .get("item_body_location")
@@ -123,38 +127,37 @@ fn promote_loaded_inventory(object: &IsoObjectRef, scripts: &ScriptManager) -> S
         .borrow_mut()
         .body_locations
         .get_group("Human")?;
-    let saved = {
-        let mut object = object
-            .try_borrow_mut()
-            .map_err(|_| borrowed("IsoMannequin"))?;
-        let ObjectKind::Mannequin(m) = &mut object.kind else {
-            return Ok(());
-        };
-        if m.runtime_container.is_some() {
-            return Ok(());
+    let record = {
+        let body = object.try_borrow().map_err(|_| borrowed("IsoMannequin"))?;
+        let ObjectKind::Mannequin(m) = &body.kind else { return Ok(()) };
+        if m.runtime_container.is_some() { return Ok(()) }
+        m.pending_inventory.as_ref().zip(m.container.as_ref())
+            .map(|(record, saved)| (record.clone(), saved.id))
+    };
+    let (container, saved_items, worn) = if let Some((record, id)) = record {
+        let env = env.ok_or_else(|| ScriptError::new("mannequin load requires the world item factory"))?;
+        let container = SharedContainer::new(id, "mannequin").into_ref();
+        let mut reader = pz_inventory::io::Reader::new(&record.bytes);
+        let items = pz_inventory::shared_load::load_container_ref(&container, &mut reader, record.world_version, env)
+            .map_err(|failure| ScriptError::new(format!("mannequin container load: {failure:?}")))?;
+        if reader.remaining() != 0 {
+            return Err(ScriptError::new("mannequin container load left unread item bytes"));
         }
-        m.container
-            .take()
-            .map(|c| (c, std::mem::take(&mut m.worn_items)))
+        (container, items, record.worn.clone())
+    } else {
+        let mut body = object.try_borrow_mut().map_err(|_| borrowed("IsoMannequin"))?;
+        let ObjectKind::Mannequin(m) = &mut body.kind else { return Ok(()) };
+        let Some(saved) = m.container.take() else { return Ok(()) };
+        let known: Vec<_> = saved.items.iter()
+            .map(|item| matches!(item, pz_inventory::SavedItem::Item(_))).collect();
+        let container = SharedContainer::from_container(saved);
+        let saved_items = {
+            let body = container.borrow();
+            let mut items = body.items.iter().cloned();
+            known.into_iter().map(|present| if present { items.next() } else { None }).collect()
+        };
+        (container, saved_items, std::mem::take(&mut m.worn_items))
     };
-    let Some((saved, worn)) = saved else {
-        return Ok(());
-    };
-    let mut decoded = 0;
-    let input_to_decoded: Vec<_> = saved
-        .items
-        .iter()
-        .map(|item| {
-            if matches!(item, pz_inventory::SavedItem::Item(_)) {
-                let index = decoded;
-                decoded += 1;
-                Some(index)
-            } else {
-                None
-            }
-        })
-        .collect();
-    let container = SharedContainer::from_container(saved);
     let members = Rc::new(RefCell::new(WornItems::new(group.clone())));
     let retired = {
         let mut object = object
@@ -173,8 +176,7 @@ fn promote_loaded_inventory(object: &IsoObjectRef, scripts: &ScriptManager) -> S
             let key = registry.borrow().get_id(&location)?;
             let item = usize::try_from(index)
                 .ok()
-                .and_then(|i| input_to_decoded.get(i).copied().flatten())
-                .and_then(|i| container.borrow().items.get(i).cloned());
+                .and_then(|i| saved_items.get(i)).cloned().flatten();
             let Some(item) = item else { continue };
             if group.borrow().location(key.as_ref())?.is_none() {
                 continue;
@@ -189,6 +191,79 @@ fn promote_loaded_inventory(object: &IsoObjectRef, scripts: &ScriptManager) -> S
         eprintln!("IsoMannequin.load worn items: {error}");
     }
     Ok(())
+}
+
+/// An item provider may detach a container or replace a worn collection.
+/// Keep captured owners alive until the engine releases its world/sprite guards,
+/// including on an early return from a failed visual provider.
+#[derive(Default)]
+struct VisualPins(pz_entity::RetiredComponents);
+
+impl Drop for VisualPins {
+    fn drop(&mut self) {
+        pz_inventory::component_host::retire_components(std::mem::take(&mut self.0));
+    }
+}
+
+/// The actual `IsoMannequin.wearItem(item, null)` step used by save.
+/// The receiver and container guards end before item visual providers run.
+pub fn wear_item_for_save(object: &IsoObjectRef, item: &ItemRef) -> pz_inventory::io::SaveResult<bool> {
+    use pz_inventory::io::SaveError;
+    use pz_inventory::ItemKind;
+    let error = |what: &str| SaveError(format!("host borrow conflict: {what}"));
+    let mut pins = VisualPins::default();
+    pins.0.push_erased(object.clone());
+    pins.0.push_erased(item.clone());
+    let container = {
+        let object = object.try_borrow().map_err(|_| error("IsoMannequin"))?;
+        let ObjectKind::Mannequin(m) = &object.kind else {
+            return Err(SaveError("expected IsoMannequin".into()));
+        };
+        m.runtime_container.clone().ok_or_else(|| SaveError("java.lang.NullPointerException: mannequin container".into()))?
+    };
+    pins.0.push_erased(container.clone());
+    let contains = container.try_borrow().map_err(|_| error("mannequin container"))?
+        .items.iter().any(|candidate| Rc::ptr_eq(candidate, item));
+    if !contains { return Ok(false); }
+
+    let env = crate::bind_items::item_env();
+    let owner = env.owner(item);
+    pins.0.push_payload(Box::new(owner.clone()));
+    if env.context().assets().is_some() {
+        pz_inventory::moddata::prepare_clothing_mod_data_ref(item).map_err(|e| SaveError(e.to_string()))?;
+    }
+    let location = {
+        let mut body = item.try_borrow_mut().map_err(|_| error("InventoryItem"))?;
+        if body.try_get_visual(env.context().assets(), owner.as_ref(), env.visual_rng())
+            .map_err(|e| SaveError(e.to_string()))?.is_none() { return Ok(false); }
+        match &body.kind {
+            ItemKind::Clothing(_) | ItemKind::AlarmClockClothing(..) => {
+                let script = body.template.script.as_ref().ok_or_else(|| SaveError("java.lang.NullPointerException: script item".into()))?;
+                let script = script.0.try_borrow().map_err(|_| error("script item"))?;
+                script.body_location.clone()
+            }
+            ItemKind::Container(_) => body.can_be_equipped(),
+            _ => None,
+        }
+    };
+    if let Some(location) = location {
+        let worn = {
+            let object = object.try_borrow().map_err(|_| error("IsoMannequin"))?;
+            let ObjectKind::Mannequin(m) = &object.kind else { return Err(SaveError("expected IsoMannequin".into())); };
+            m.runtime_worn_items.clone().ok_or_else(|| SaveError("java.lang.NullPointerException: mannequin worn items".into()))?
+        };
+        pins.0.push_erased(worn.clone());
+        {
+            let mut worn = worn.try_borrow_mut().map_err(|_| error("mannequin worn items"))?;
+            for entry in worn.items() {
+                pins.0.push_erased(entry.item.clone());
+            }
+            worn.set_item(Some(location), Some(item.clone())).map_err(|e| SaveError(e.to_string()))?;
+        }
+        sync_visuals(object).map_err(|e| SaveError(e.to_string()))?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 struct VisualOwner {
@@ -309,9 +384,26 @@ pub fn activate(
     zone: Option<&MannequinZoneData>,
     game_dir: &Path,
     no_black_clothes: bool,
+    item_env: Option<&dyn pz_inventory::ItemEnv>,
+) -> WornInventoryResult {
+    initialize(thread, object, InitialSettings::Square { sprite_name, zone }, game_dir, no_black_clothes, item_env)
+}
+
+enum InitialSettings<'a> {
+    Square { sprite_name: Option<&'a str>, zone: Option<&'a MannequinZoneData> },
+    Script(&'a str),
+}
+
+fn initialize(
+    thread: &mut Thread,
+    object: &IsoObjectRef,
+    settings: InitialSettings<'_>,
+    game_dir: &Path,
+    no_black_clothes: bool,
+    item_env: Option<&dyn pz_inventory::ItemEnv>,
 ) -> WornInventoryResult {
     let scripts = crate::bind_registry::shared_script_manager();
-    promote_loaded_inventory(object, &scripts)?;
+    promote_loaded_inventory(object, &scripts, item_env)?;
     let group = crate::bind_characters::shared_characters()
         .borrow_mut()
         .body_locations
@@ -340,14 +432,17 @@ pub fn activate(
         let first = !m.init;
         if first {
             m.init = true;
-            if sprite_name.is_none() {
-                return Err(
-                    ScriptError::new("java.lang.NullPointerException: mannequin sprite").into(),
-                );
-            }
-            properties_from_sprite(m, sprite_name);
-            if let Some(zone) = zone {
-                properties_from_zone(m, zone);
+            match settings {
+                InitialSettings::Square { sprite_name: Some(sprite), zone } => {
+                    properties_from_sprite(m, Some(sprite));
+                    if let Some(zone) = zone {
+                        properties_from_zone(m, zone);
+                    }
+                }
+                InitialSettings::Square { sprite_name: None, .. } => {
+                    return Err(ScriptError::new("java.lang.NullPointerException: mannequin sprite").into());
+                }
+                InitialSettings::Script(name) => m.mannequin_script_name = Some(name.to_owned()),
             }
         }
         init_script(m, &scripts);
@@ -466,44 +561,59 @@ pub fn activate(
         }
         _ => {}
     }
-    m.human_visual.force_model_script = m.model_script_name.clone();
-    m.human_visual
-        .set_skin_texture_name(m.texture_name.as_deref());
-    let items: Vec<_> = m
-        .runtime_worn_items
-        .as_ref()
-        .map(|worn| {
-            worn.borrow()
-                .items()
-                .iter()
-                .map(|entry| entry.item.clone())
-                .collect()
-        })
-        .unwrap_or_default();
     drop(receiver);
+    sync_visuals(object)?;
+    Ok(())
+}
+
+mod moveable;
+pub(crate) use moveable::{create_moveable, install_item_source};
+
+/// Synchronize the visual state from the live worn owner, retaining completed
+/// visual entries if a later visual provider fails.
+fn sync_visuals(object: &IsoObjectRef) -> ScriptResult {
+    let mut pins = VisualPins::default();
+    pins.0.push_erased(object.clone());
+    {
+        let mut receiver = object.try_borrow_mut().map_err(|_| borrowed("IsoMannequin"))?;
+        let ObjectKind::Mannequin(m) = &mut receiver.kind else { return Ok(()); };
+        // TODO(render): syncModel also sets the actual ModelManager force model,
+        // clears per-player atlas textures, and configures AnimatedModel when
+        // animated. Those native owners are not yet represented here.
+        m.human_visual.force_model_script = m.model_script_name.clone();
+        m.human_visual.set_skin_texture_name(m.texture_name.as_deref());
+        m.item_visuals.clear();
+    }
     let env = crate::bind_items::item_env();
-    let mut visuals = Vec::new();
-    for item in items {
+    let mut index = 0;
+    loop {
+        let worn = {
+            let receiver = object.try_borrow().map_err(|_| borrowed("IsoMannequin"))?;
+            let ObjectKind::Mannequin(m) = &receiver.kind else { return Ok(()); };
+            m.runtime_worn_items.clone().ok_or_else(|| ScriptError::new("java.lang.NullPointerException: mannequin worn items"))?
+        };
+        pins.0.push_erased(worn.clone());
+        let item = {
+            let worn = worn.try_borrow().map_err(|_| borrowed("mannequin worn items"))?;
+            worn.items().get(index).map(|entry| entry.item.clone())
+        };
+        let Some(item) = item else { break; };
+        pins.0.push_erased(item.clone());
         let owner = env.owner(&item);
+        pins.0.push_payload(Box::new(owner.clone()));
         if env.context().assets().is_some() {
             pz_inventory::moddata::prepare_clothing_mod_data_ref(&item)
                 .map_err(|error| ScriptError::new(error.to_string()))?;
         }
-        let mut item = item
-            .try_borrow_mut()
-            .map_err(|_| borrowed("InventoryItem"))?;
-        if let Some(visual) = item
+        let visual = item.try_borrow_mut().map_err(|_| borrowed("InventoryItem"))?
             .try_get_visual(env.context().assets(), owner.as_ref(), env.visual_rng())
-            .map_err(|error| ScriptError::new(error.to_string()))?
-        {
-            visuals.push(visual.clone());
+            .map_err(|error| ScriptError::new(error.to_string()))?.cloned();
+        if let Some(visual) = visual {
+            let mut receiver = object.try_borrow_mut().map_err(|_| borrowed("IsoMannequin"))?;
+            let ObjectKind::Mannequin(m) = &mut receiver.kind else { return Ok(()); };
+            m.item_visuals.push(visual);
         }
-    }
-    let mut receiver = object
-        .try_borrow_mut()
-        .map_err(|_| borrowed("IsoMannequin"))?;
-    if let ObjectKind::Mannequin(m) = &mut receiver.kind {
-        m.item_visuals = visuals;
+        index += 1;
     }
     Ok(())
 }

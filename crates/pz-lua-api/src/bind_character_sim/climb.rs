@@ -23,7 +23,151 @@ fn object_arg(c: &pz_kahlua::NativeCall<'_>, i: usize) -> LuaResult<pz_pathfind:
     }
 }
 
+fn aim_at_object(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<()> {
+    use pz_world::IsoDirections::{E, N, S, W};
+    use crate::bind_world_object::borrowed;
+    let value = c.arg(1);
+    if matches!(value, Value::Nil) { return Ok(()) }
+    let actor = chr_of(c)?;
+    let (x, y, z, current) = {
+        let actor = actor.try_borrow().map_err(|_| borrowed("facing character"))?;
+        (actor.vars.x, actor.vars.y, actor.vars.z, actor.current_square_xyz())
+    };
+    if let Value::Object(value) = &value {
+        if let Some(other) = value.as_any().downcast_ref::<super::CharacterObject>() {
+            let other = other.0.try_borrow().map_err(|_| borrowed("character facing target"))?;
+            let (dx, dy) = (other.vars.x - x, other.vars.y - y);
+            drop(other);
+            if dx != 0.0 || dy != 0.0 {
+                actor.try_borrow_mut().map_err(|_| borrowed("facing character"))?.set_forward_direction(dx, dy);
+            }
+            return Ok(());
+        }
+    }
+    if let Some(vehicle) = pz_vehicles::lua::vehicle_from_value(&value) {
+        if vehicle.st().added_to_world && vehicle.st().current.is_some() {
+            let point = vehicle.facing_position(x, y, z);
+            actor.try_borrow_mut().map_err(|_| borrowed("facing character"))?
+                .set_forward_direction(point.x - x, point.y - y);
+        }
+        return Ok(());
+    }
+    crate::bind_climb::with_live_object(&value, |adapter, square, object, _| {
+        let mut actor = actor.try_borrow_mut().map_err(|_| borrowed("facing character"))?;
+        if let Some(north) = pz_world::world_state::barricade_able_north(object) {
+            let pos = (square.x, square.y, square.z);
+            let opposite = (square.x - i32::from(!north), square.y - i32::from(north), square.z);
+            if current == Some(pos) {
+                actor.set_forward_iso_direction(if north { N } else { W });
+                return Ok(());
+            }
+            if current == Some(opposite) {
+                actor.set_forward_iso_direction(if north { S } else { E });
+                return Ok(());
+            }
+        }
+        let (fx, fy) = adapter.try_closest_facing_position(square, object, x, y)
+            .map_err(crate::bind_world_object::host_error)?
+            .ok_or_else(|| LuaError::Runtime { class: "java.lang.NullPointerException", message: String::new() })?;
+        let (dx, dy) = (fx - x, fy - y);
+        if dx == 0.0 && dy == 0.0 {
+            PathMover::direction_from_vector(&mut *actor, dx, dy);
+        } else {
+            actor.set_forward_direction(dx, dy);
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// The timed action asks whether to wait in the same Lua call that changes
+/// its facing. Use the last published body angle until the model next ticks.
+fn face_this_object(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<()> {
+    let actor = chr_of(c)?;
+    let before = {
+        let actor = actor.try_borrow().map_err(|_| crate::bind_world_object::borrowed("facing character"))?;
+        (actor.vars.forward_x, actor.vars.forward_y)
+    };
+    aim_at_object(c)?;
+    let mut actor = actor.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("facing character"))?;
+    let v = &mut actor.vars;
+    let after = (v.forward_x, v.forward_y);
+    if v.has_animation_tracks && before != after {
+        let target = pz_anim::AnimationPlayer::calculate_anim_player_angle(after.0, after.1);
+        let (twist, excess) = pz_anim::AnimationPlayer::facing_twist(
+            v.anim_angle.to_radians(), target, v.max_twist.to_radians()
+        );
+        v.target_twist = twist.to_degrees();
+        v.excess_twist = excess.to_degrees();
+    }
+    Ok(())
+}
+
+/// The original state keeps the part and its vehicle alive until the next
+/// request replaces its parameters. A recycled VehicleManager ID may name
+/// a different vehicle by the time the animation delivers its hit.
+struct SmashVehiclePart {
+    vehicle: pz_vehicles::vehicle::VehicleRef,
+    part: pz_vehicles::part::PartRef,
+}
+
+impl pz_characters::character::states::window::VehicleWindowTarget for SmashVehiclePart {
+    fn facing_position(&self, x: f32, y: f32, z: f32) -> Option<(f32, f32)> {
+        let v = self.vehicle.st();
+        if !v.added_to_world || v.current.is_none() { return None }
+        drop(v);
+        let point = self.vehicle.facing_position(x, y, z);
+        Some((point.x, point.y))
+    }
+    fn destroyed(&self) -> Option<bool> {
+        let part = self.part.st();
+        part.window.map(|_| part.condition == 0)
+    }
+    fn hit(&self) { self.part.hit_window(); }
+}
+
 pub(super) fn register(b: &ClassBuilder) {
+    use pz_characters::character::states::window::WindowAction;
+    b.method("faceThisObject", |c| {
+        face_this_object(c)?;
+        Ok(0)
+    });
+    for (name, action) in [("openWindow", WindowAction::Open), ("closeWindow", WindowAction::Close), ("smashWindow", WindowAction::Smash)] {
+        b.method(name, move |c| {
+            let actor = chr_of(c)?;
+            let value = c.arg(1);
+            if matches!(value, Value::Nil) {
+                return Err(LuaError::Runtime { class: "java.lang.NullPointerException", message: String::new() });
+            }
+            crate::bind_climb::with_live_object(&value, |world, _, object, target| {
+                if !matches!(object.kind, pz_world::objects::ObjectKind::Window(_)) {
+                    return Err(crate::bind_java_util::class_cast(&value, "zombie.iso.objects.IsoWindow"));
+                }
+                if let Some(info) = world.window_info_of(target) {
+                    actor.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("window action character"))?
+                        .request_window_action(target, info, action);
+                }
+                Ok(())
+            })?;
+            Ok(0)
+        });
+    }
+    b.method("smashCarWindow", |c| {
+        let value = c.arg(1);
+        if value.is_nil() {
+            return Err(LuaError::Runtime { class: "java.lang.NullPointerException", message: String::new() });
+        }
+        let part = pz_vehicles::lua::part_from_value(&value)
+            .ok_or_else(|| crate::bind_java_util::class_cast(&value, pz_vehicles::lua::VEHICLE_PART_CLASS))?;
+        let vehicle = part.vehicle_weak().upgrade()
+            .ok_or_else(|| crate::bind_world_object::unsupported("vehicle part has no owner"))?;
+        let target = pz_characters::character::states::window::VehicleWindowRef::Retained(
+            std::rc::Rc::new(SmashVehiclePart { vehicle, part })
+        );
+        chr_of(c)?.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("smashing character"))?
+            .request_vehicle_window_smash(target);
+        Ok(0)
+    });
     // `climbOverFence(dir)`.
     b.method("climbOverFence", |c| {
         let dir = direction_arg(c, 1)?;
@@ -40,7 +184,17 @@ pub(super) fn register(b: &ClassBuilder) {
     // `(IsoWindow, Integer)` form.
     b.method("climbThroughWindow", |c| {
         let window = object_arg(c, 1)?;
-        PathMover::climb_through_window(&mut *chr_of(c)?.borrow_mut(), window);
+        let actor = chr_of(c)?;
+        let mut actor = actor.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("climbing character"))?;
+        if c.nargs() > 2 {
+            let frame = c.arg(2);
+            if !matches!(frame, Value::Nil | Value::Num(_)) {
+                return Err(crate::bind_java_util::class_cast(&frame, "java.lang.Integer"));
+            }
+            actor.path.requests.push(pz_characters::character::path_mover::PathMoverRequest::ClimbThroughWindowAtFrame(window));
+        } else {
+            PathMover::climb_through_window(&mut *actor, window);
+        }
         Ok(0)
     });
     // `climbThroughWindowFrame(IsoWindowFrame)`.
@@ -48,6 +202,11 @@ pub(super) fn register(b: &ClassBuilder) {
         let frame = object_arg(c, 1)?;
         PathMover::climb_through_window_frame(&mut *chr_of(c)?.borrow_mut(), frame);
         Ok(0)
+    });
+    b.method("isTurning", |c| {
+        let actor = chr_of(c)?;
+        let actor = actor.try_borrow().map_err(|_| crate::bind_world_object::borrowed("turning character"))?;
+        Ok(c.push(actor.vars.turning))
     });
     // `shouldBeTurning()`.
     b.method("shouldBeTurning", |c| {

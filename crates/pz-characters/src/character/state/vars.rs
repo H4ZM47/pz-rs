@@ -84,6 +84,7 @@ pub struct CharacterVars {
     /// `getAnimAngleStepDelta()`, `getAnimAngleTwistDelta()` (from the
     /// animation player).
     pub anim_angle: f32,
+    pub has_animation_tracks: bool,
     pub twist: f32,
     pub target_twist: f32,
     pub shoulder_twist: f32,
@@ -353,6 +354,7 @@ impl Default for CharacterVars {
             turn_delta_sprinting: 0.75,
             max_twist: 15.0,
             anim_angle: 0.0,
+            has_animation_tracks: false,
             twist: 0.0,
             target_twist: 0.0,
             shoulder_twist: 0.0,

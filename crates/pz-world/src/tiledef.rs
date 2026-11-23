@@ -5,7 +5,7 @@
 //! (tile types, flags, movable groups, sprite grids) builds on this.
 
 use std::io::{self, BufRead, BufReader, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const TDEF_FILE_MAGIC: [u8; 4] = *b"tdef";
 
@@ -20,6 +20,18 @@ pub const TILE_DEFINITION_FILES: [(&str, i32); 7] = [
     ("jumbo_trees_big.tiles", 6),
     ("jumbo_trees.tiles", 8),
 ];
+
+/// Resolve the base game's tile-definition directory. Newer installations
+/// group these files under `tile_definitions`; older ones put them in media.
+/// Select one layout for the whole load so missing files are still reported.
+pub(crate) fn tile_definition_dir(media_dir: &Path) -> PathBuf {
+    let grouped = media_dir.join("tile_definitions");
+    if grouped.is_dir() {
+        grouped
+    } else {
+        media_dir.to_path_buf()
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct TileDef {
@@ -179,6 +191,27 @@ impl TileDefFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_grouped_and_legacy_tile_definition_layouts() {
+        let root = std::env::temp_dir().join(format!(
+            "pz-tile-layout-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let name = TILE_DEFINITION_FILES[0].0;
+        std::fs::write(root.join(name), b"legacy").unwrap();
+        assert_eq!(std::fs::read(tile_definition_dir(&root).join(name)).unwrap(), b"legacy");
+        let grouped = root.join("tile_definitions");
+        std::fs::create_dir(&grouped).unwrap();
+        std::fs::write(grouped.join(name), b"grouped").unwrap();
+        assert_eq!(std::fs::read(tile_definition_dir(&root).join(name)).unwrap(), b"grouped");
+        // A missing grouped file must not silently mix in a legacy file.
+        std::fs::remove_file(grouped.join(name)).unwrap();
+        assert!(!tile_definition_dir(&root).join(name).exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn int(v: &mut Vec<u8>, i: i32) {
         v.extend(i.to_le_bytes());

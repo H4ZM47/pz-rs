@@ -41,11 +41,11 @@ fn setup() -> Thread {
     sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
     std::fs::remove_dir_all(dir).unwrap();
     crate::bind_registry::install_script_manager(Rc::new(sm));
-    crate::bind_colors::register_with(&mut Thread::new(TableRef::new()), crate::bind_colors::Colors::default());
     let mut t = Thread::new(TableRef::new());
     pz_kahlua::stdlib::install(&mut t, None).unwrap();
     crate::bind_java_util::register(&mut t);
     crate::bind_misc_classes::register(&mut t, None);
+    crate::bind_colors::register_with(&mut t, crate::bind_colors::Colors::default());
     crate::bind_globals::register(&mut t);
     let fonts: Vec<&'static str> = UIFont::ALL.iter().map(|f| f.name()).collect();
     expose_enum(&mut t, "zombie.ui.UIFont", &fonts);
@@ -64,7 +64,9 @@ fn default_skin_styles_read_like_xui_skin_build() {
         r#"
         local n = 0
         local function a(v) n = n + 1 if not v then error('check ' .. n) end return v end
+        a(Colors.GetColorByName("C_Back") ~= nil)
         local skin = XuiManager.GetDefaultSkin()
+        a(not skin:isInvalidated())
         a(instanceof(skin, "XuiSkin"))
         a(skin:getName() == "default")
         local d = skin:getDefault("ISButton")
@@ -101,4 +103,12 @@ fn default_skin_styles_read_like_xui_skin_build() {
         "#,
     );
     assert!(matches!(r[0], Value::Bool(true)));
+    run(&mut t, "oldSkin = XuiManager.GetDefaultSkin()");
+    let previous = crate::bind_registry::shared_script_manager();
+    crate::bind_registry::install_script_manager(previous.clone());
+    run(&mut t, "assert(not oldSkin:isInvalidated())");
+    crate::bind_registry::install_script_manager(Rc::new(ScriptManager::new()));
+    run(&mut t, "assert(oldSkin:isInvalidated() and XuiManager.GetDefaultSkin() == nil)");
+    crate::bind_registry::install_script_manager(previous);
+    run(&mut t, "assert(XuiManager.GetDefaultSkin() ~= oldSkin and not XuiManager.GetDefaultSkin():isInvalidated())");
 }

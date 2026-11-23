@@ -13,13 +13,18 @@
 //! shared [`pz_sound::system::SoundSystem`]: call [`install_sound_system`]
 //! with the engine's before Lua starts; without one a silent system is used
 //! (the original's `DummySoundManager` when sound is off). Methods that need
-//! the world (`PlaySound`, `PlayWorldSound*`) return nil until it is ported.
+//! the world use the shared pool of positioned emitters.
 //! `getUIEmitter()` returns the manager's `fmod.fmod.FMODSoundEmitter`, the
 //! same one `playUISound` plays on, with the `BaseSoundEmitter` methods.
 //!
-//! Character-dependent parts (`checkHealthPanelVisible`,
-//! `restoreToFullHealth`, `MusicThreatStatuses.update`) only act on an
-//! `IsoPlayer`, which is not ported yet, so they do nothing for now.
+//! The health-panel event uses the character's saved mod data to remember
+//! whether the player has already seen their bite.
+
+pub use pz_characters::character::player::music::{MusicIntensityEvent, MusicIntensityEvents, INTENSITY_EVENT_CLASS, INTENSITY_EVENTS_CLASS};
+pub use pz_characters::character::player::music::{MusicThreatLevels, MusicThreatStatus, THREAT_STATUS_CLASS};
+mod environment;
+pub use environment::{GameEmitterWorld, HearingPlayers};
+mod world;
 
 use crate::expose::{expose_class, num_arg, str_arg};
 use pz_kahlua::value::LuaObject;
@@ -29,10 +34,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 pub const INTENSITY_CONFIG_CLASS: &str = "zombie.audio.MusicIntensityConfig";
-pub const INTENSITY_EVENT_CLASS: &str = "zombie.audio.MusicIntensityEvent";
-pub const INTENSITY_EVENTS_CLASS: &str = "zombie.audio.MusicIntensityEvents";
 pub const THREAT_CONFIG_CLASS: &str = "zombie.audio.MusicThreatConfig";
-pub const THREAT_STATUS_CLASS: &str = "zombie.audio.MusicThreatStatus";
 pub const THREAT_STATUSES_CLASS: &str = "zombie.audio.MusicThreatStatuses";
 pub const SOUND_MANAGER_CLASS: &str = "zombie.SoundManager";
 pub const BASE_SOUND_MANAGER_CLASS: &str = "zombie.BaseSoundManager";
@@ -163,16 +165,6 @@ fn key_string(k: &Value) -> String {
     pz_kahlua::exec::java_value_of(k)
 }
 
-/// Java `String.equalsIgnoreCase` (`StringUtils.equalsIgnoreCase` is
-/// null-safe; both null compare equal).
-fn eq_ignore_case(a: Option<&str>, b: Option<&str>) -> bool {
-    match (a, b) {
-        (Some(a), Some(b)) => a.chars().count() == b.chars().count() && a.to_lowercase() == b.to_lowercase(),
-        (None, None) => true,
-        _ => false,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // MusicIntensityConfig
 // ---------------------------------------------------------------------------
@@ -195,6 +187,11 @@ impl MusicIntensityConfig {
         let id = id?;
         // HashMap lookup: exact match; a later duplicate replaced the earlier.
         self.events.iter().find(|e| &*e.id == id)
+    }
+
+    pub fn trigger(&self, id: Option<&str>, events: &MusicIntensityEvents) -> Option<Rc<MusicIntensityEvent>> {
+        let def = self.by_id(id)?;
+        Some(events.add_event(Some(def.id.clone()), def.intensity, def.duration, def.multiple))
     }
 
     pub fn init_events(&mut self, table: &TableRef) -> LuaResult<()> {
@@ -251,88 +248,6 @@ impl LuaObject for IntensityConfigObject {
 // ---------------------------------------------------------------------------
 // MusicIntensityEvent(s)
 // ---------------------------------------------------------------------------
-
-pub struct MusicIntensityEvent {
-    id: Option<Rc<str>>,
-    intensity: f32,
-    duration_ms: i64,
-    elapsed_ms: Cell<i64>,
-}
-
-impl LuaObject for MusicIntensityEvent {
-    fn class_name(&self) -> &str {
-        INTENSITY_EVENT_CLASS
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-#[derive(Default)]
-pub struct MusicIntensityEvents {
-    events: RefCell<Vec<Rc<MusicIntensityEvent>>>,
-    update_time_ms: Cell<i64>,
-    intensity: Cell<f32>,
-}
-
-impl MusicIntensityEvents {
-    pub fn new() -> Self {
-        MusicIntensityEvents { update_time_ms: Cell::new(-1), ..Default::default() }
-    }
-
-    pub fn add_event(
-        &self,
-        id: Option<Rc<str>>,
-        intensity: f32,
-        duration_ms: i64,
-        multiple: bool,
-    ) -> Rc<MusicIntensityEvent> {
-        if !multiple {
-            if let Some(e) = self.find_event_by_id(id.as_deref()) {
-                e.elapsed_ms.set(0);
-                return e;
-            }
-        }
-        let e = Rc::new(MusicIntensityEvent { id, intensity, duration_ms, elapsed_ms: Cell::new(0) });
-        self.events.borrow_mut().push(e.clone());
-        e
-    }
-
-    pub fn find_event_by_id(&self, id: Option<&str>) -> Option<Rc<MusicIntensityEvent>> {
-        self.events.borrow().iter().find(|e| eq_ignore_case(e.id.as_deref(), id)).cloned()
-    }
-
-    fn calculate_intensity(&self) -> f32 {
-        let mut i = 50.0f32;
-        for e in self.events.borrow().iter() {
-            i += e.intensity;
-        }
-        i.clamp(0.0, 100.0)
-    }
-
-    /// `update()` with `System.currentTimeMillis()` passed in.
-    pub fn update_at(&self, now_ms: i64) {
-        let elapsed = now_ms - self.update_time_ms.get();
-        self.update_time_ms.set(now_ms);
-        self.events.borrow_mut().retain(|e| {
-            if e.duration_ms <= 0 && e.elapsed_ms.get() > 0 {
-                return false;
-            }
-            e.elapsed_ms.set(e.elapsed_ms.get() + elapsed);
-            !(e.duration_ms > 0 && e.elapsed_ms.get() >= e.duration_ms)
-        });
-        self.intensity.set(self.calculate_intensity());
-    }
-}
-
-impl LuaObject for MusicIntensityEvents {
-    fn class_name(&self) -> &str {
-        INTENSITY_EVENTS_CLASS
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
@@ -402,61 +317,25 @@ impl LuaObject for ThreatConfigObject {
     }
 }
 
-pub struct MusicThreatStatus {
-    id: Option<Rc<str>>,
-    intensity: Cell<f32>,
-}
-
-impl MusicThreatStatus {
-    pub fn intensity(&self) -> f32 {
-        let cfg = threat_config();
-        let cfg = cfg.borrow();
-        if cfg.is_overridden(self.id.as_deref()) {
-            cfg.status_intensity_override(self.id.as_deref())
-        } else {
-            self.intensity.get()
-        }
-    }
-}
-
-impl LuaObject for MusicThreatStatus {
-    fn class_name(&self) -> &str {
-        THREAT_STATUS_CLASS
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-#[derive(Default)]
 pub struct MusicThreatStatuses {
-    statuses: RefCell<Vec<Rc<MusicThreatStatus>>>,
-    intensity: Cell<f32>,
+    player: Option<crate::bind_character_sim::LuaGameCharacterRef>,
+    levels: Rc<MusicThreatLevels>,
 }
 
 impl MusicThreatStatuses {
-    pub fn set_status(&self, id: Option<Rc<str>>, intensity: f32) -> Rc<MusicThreatStatus> {
-        if let Some(s) = self.find_status_by_id(id.as_deref()) {
-            s.intensity.set(intensity);
-            return s;
-        }
-        let s = Rc::new(MusicThreatStatus { id, intensity: Cell::new(intensity) });
-        self.statuses.borrow_mut().push(s.clone());
-        s
+    pub(crate) fn for_player(player: crate::bind_character_sim::LuaGameCharacterRef, levels: Rc<MusicThreatLevels>) -> Self {
+        Self { player: Some(player), levels }
+    }
+}
+
+impl MusicThreatConfig {
+    fn effective_intensity(&self, status: &MusicThreatStatus) -> f32 {
+        let id = status.id.as_deref();
+        if self.is_overridden(id) { self.status_intensity_override(id) } else { status.intensity.get() }
     }
 
-    pub fn find_status_by_id(&self, id: Option<&str>) -> Option<Rc<MusicThreatStatus>> {
-        self.statuses.borrow().iter().find(|s| eq_ignore_case(s.id.as_deref(), id)).cloned()
-    }
-
-    fn calculate_intensity(&self) -> f32 {
-        let cfg = threat_config();
-        let mut total = 0.0f32;
-        for s in self.statuses.borrow().iter() {
-            let weight = cfg.borrow().status_intensity(s.id.as_deref());
-            total += s.intensity() * weight;
-        }
-        total
+    pub fn update_levels(&self, levels: &MusicThreatLevels) {
+        levels.calculate_intensity(|s| self.effective_intensity(s) * self.status_intensity(s.id.as_deref()));
     }
 }
 
@@ -472,6 +351,13 @@ impl LuaObject for MusicThreatStatuses {
 // ---------------------------------------------------------------------------
 // Lua glue
 // ---------------------------------------------------------------------------
+
+fn player_arg(c: &NativeCall<'_>, index: usize) -> Option<crate::bind_character_sim::LuaGameCharacterRef> {
+    let Value::Object(object) = c.arg(index) else { return None };
+    let class = crate::bind_character_sim::ISO_PLAYER_CLASS;
+    if object.class_name() != class && !object.super_classes().contains(&class) { return None }
+    object.as_any().downcast_ref::<crate::bind_character_sim::CharacterObject>().map(|player| player.0.clone())
+}
 
 fn obj<T: 'static>(c: &NativeCall<'_>, i: usize) -> LuaResult<Rc<dyn LuaObject>> {
     match c.arg(i) {
@@ -522,6 +408,11 @@ fn register_sound_manager(thread: &mut Thread) {
     crate::expose::global(thread, "getSoundManager", |c| {
         let h: Rc<dyn LuaObject> = SOUND_HANDLE.with(|h| h.clone());
         Ok(c.push(Value::Object(h)))
+    });
+    b.method("isListenerInRange", |c| {
+        sm_this(c)?;
+        let in_range = HearingPlayers::capture().in_range(num_arg(c, 1) as f32, num_arg(c, 2) as f32, num_arg(c, 3) as f32);
+        Ok(c.push(in_range))
     });
     b.method("getUIEmitter", |c| {
         sm_this(c)?;
@@ -661,14 +552,7 @@ fn register_sound_manager(thread: &mut Thread) {
         sm_this(c)?;
         Ok(c.push(crate::bind_java_util::list_value(Vec::new())))
     });
-    // World sounds need IsoWorld's free emitters (not ported yet): the
-    // original returns null when there is no world.
-    for name in ["PlaySound", "PlayWorldSound", "PlayWorldSoundImpl", "PlayWorldSoundWav", "PlayWorldSoundWavImpl"] {
-        b.method(name, |c| {
-            sm_this(c)?;
-            Ok(c.push(Value::Nil))
-        });
-    }
+    world::register_manager(&b);
 }
 
 /// Run `f` on the emitter `self` (argument 0) refers to.
@@ -871,6 +755,7 @@ fn register_sound_emitter(thread: &mut Thread) {
 }
 
 pub fn register(thread: &mut Thread) {
+    world::register_audio(thread);
     register_sound_manager(thread);
     register_sound_emitter(thread);
     let b = expose_class(thread, INTENSITY_CONFIG_CLASS, None);
@@ -887,24 +772,36 @@ pub fn register(thread: &mut Thread) {
     b.method("triggerEvent", |c| {
         obj::<IntensityConfigObject>(c, 0)?;
         let id = str_arg(c, 1);
-        let def = intensity_config().borrow().by_id(id.as_deref()).cloned();
-        let Some(def) = def else {
+        let config = intensity_config();
+        let config = config.borrow();
+        if config.by_id(id.as_deref()).is_none() {
             return Ok(c.push(Value::Nil));
         };
         let mie = match c.arg(2) {
             Value::Nil => return Err(npe("zombie.audio.MusicIntensityEvents.addEvent(String, float, long, boolean)")),
             _ => obj::<MusicIntensityEvents>(c, 2)?,
         };
-        let e = down::<MusicIntensityEvents>(&mie).add_event(Some(def.id), def.intensity, def.duration, def.multiple);
-        Ok(c.push(Value::Object(e)))
+        Ok(push_obj(c, config.trigger(id.as_deref(), down::<MusicIntensityEvents>(&mie))))
     });
-    // Both only act on an IsoPlayer (not ported yet).
     b.method("checkHealthPanelVisible", |c| {
         obj::<IntensityConfigObject>(c, 0)?;
+        if let Some(chr) = player_arg(c, 1) {
+            let mut p = chr.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("health panel player"))?;
+            let id = "HealthPanel_SeeBite";
+            if p.music_intensity_event_data(id).is_nil() && p.body_damage.parts.iter().any(|part| part.bitten) {
+                let age = crate::bind_climate::shared_game_time().borrow().world_age_hours();
+                p.set_music_intensity_event_data(id, Value::Num(age));
+                intensity_config().borrow().trigger(Some(id), &p.player.music_intensity_events);
+            }
+        }
         Ok(0)
     });
     b.method("restoreToFullHealth", |c| {
         obj::<IntensityConfigObject>(c, 0)?;
+        if let Some(chr) = player_arg(c, 1) {
+            chr.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("health panel player"))?
+                .clear_health_panel_bite_event();
+        }
         Ok(0)
     });
 
@@ -955,23 +852,22 @@ pub fn register(thread: &mut Thread) {
     });
     b.method("clear", |c| {
         let o = obj::<MusicIntensityEvents>(c, 0)?;
-        down::<MusicIntensityEvents>(&o).events.borrow_mut().clear();
+        down::<MusicIntensityEvents>(&o).clear();
         Ok(0)
     });
     b.method("getEventCount", |c| {
         let o = obj::<MusicIntensityEvents>(c, 0)?;
-        let n = down::<MusicIntensityEvents>(&o).events.borrow().len();
+        let n = down::<MusicIntensityEvents>(&o).count();
         Ok(c.push(n as f64))
     });
     b.method("getEventByIndex", |c| {
         let o = obj::<MusicIntensityEvents>(c, 0)?;
         let i = idx_arg(c, 1);
-        let events = down::<MusicIntensityEvents>(&o).events.borrow();
+        let events = down::<MusicIntensityEvents>(&o);
         let e = usize::try_from(i)
             .ok()
-            .and_then(|i| events.get(i).cloned())
-            .ok_or_else(|| out_of_bounds(i, events.len()))?;
-        drop(events);
+            .and_then(|i| events.event(i))
+            .ok_or_else(|| out_of_bounds(i, events.count()))?;
         Ok(c.push(Value::Object(e)))
     });
     b.method("findEventById", |c| {
@@ -986,7 +882,7 @@ pub fn register(thread: &mut Thread) {
     });
     b.method("getIntensity", |c| {
         let o = obj::<MusicIntensityEvents>(c, 0)?;
-        Ok(c.push(down::<MusicIntensityEvents>(&o).intensity.get() as f64))
+        Ok(c.push(down::<MusicIntensityEvents>(&o).intensity() as f64))
     });
 
     let b = expose_class(thread, THREAT_CONFIG_CLASS, None);
@@ -1071,7 +967,7 @@ pub fn register(thread: &mut Thread) {
     });
     b.method("getIntensity", |c| {
         let o = obj::<MusicThreatStatus>(c, 0)?;
-        Ok(c.push(down::<MusicThreatStatus>(&o).intensity() as f64))
+        Ok(c.push(threat_config().borrow().effective_intensity(down::<MusicThreatStatus>(&o)) as f64))
     });
     b.method("setIntensity", |c| {
         let o = obj::<MusicThreatStatus>(c, 0)?;
@@ -1081,47 +977,57 @@ pub fn register(thread: &mut Thread) {
 
     let b = expose_class(thread, THREAT_STATUSES_CLASS, None);
     // The constructor takes an IsoPlayer; only `update` reads it.
-    b.ctor(|c| Ok(c.push(Value::Object(Rc::new(MusicThreatStatuses::default())))));
+    b.ctor(|c| {
+        let owner = player_arg(c, 0);
+        if owner.is_none() && !c.arg(0).is_nil() {
+            return Err(crate::bind_java_util::class_cast(&c.arg(0), crate::bind_character_sim::ISO_PLAYER_CLASS));
+        }
+        let statuses = MusicThreatStatuses { player: owner, levels: Rc::default() };
+        Ok(c.push(Value::Object(Rc::new(statuses))))
+    });
     b.method("setStatus", |c| {
         let o = obj::<MusicThreatStatuses>(c, 0)?;
-        let s = down::<MusicThreatStatuses>(&o).set_status(str_arg(c, 1), num_arg(c, 2) as f32);
+        let s = down::<MusicThreatStatuses>(&o).levels.set_status(str_arg(c, 1), num_arg(c, 2) as f32);
         Ok(c.push(Value::Object(s)))
     });
     b.method("clear", |c| {
         let o = obj::<MusicThreatStatuses>(c, 0)?;
-        down::<MusicThreatStatuses>(&o).statuses.borrow_mut().clear();
+        down::<MusicThreatStatuses>(&o).levels.clear();
         Ok(0)
     });
     b.method("getStatusCount", |c| {
         let o = obj::<MusicThreatStatuses>(c, 0)?;
-        let n = down::<MusicThreatStatuses>(&o).statuses.borrow().len();
+        let n = down::<MusicThreatStatuses>(&o).levels.count();
         Ok(c.push(n as f64))
     });
     b.method("getStatusByIndex", |c| {
         let o = obj::<MusicThreatStatuses>(c, 0)?;
         let i = idx_arg(c, 1);
-        let list = down::<MusicThreatStatuses>(&o).statuses.borrow();
+        let list = &down::<MusicThreatStatuses>(&o).levels;
         let s =
-            usize::try_from(i).ok().and_then(|i| list.get(i).cloned()).ok_or_else(|| out_of_bounds(i, list.len()))?;
-        drop(list);
+            usize::try_from(i).ok().and_then(|i| list.status(i)).ok_or_else(|| out_of_bounds(i, list.count()))?;
         Ok(c.push(Value::Object(s)))
     });
     b.method("findStatusById", |c| {
         let o = obj::<MusicThreatStatuses>(c, 0)?;
-        let s = down::<MusicThreatStatuses>(&o).find_status_by_id(str_arg(c, 1).as_deref());
+        let s = down::<MusicThreatStatuses>(&o).levels.find_status_by_id(str_arg(c, 1).as_deref());
         Ok(push_obj(c, s))
     });
     b.method("update", |c| {
-        // Reads the player's moodles and stats (IsoPlayer is not ported yet);
-        // the intensity is still recomputed from the current statuses.
         let o = obj::<MusicThreatStatuses>(c, 0)?;
         let s = down::<MusicThreatStatuses>(&o);
-        s.intensity.set(s.calculate_intensity());
+        if let Some(player) = &s.player {
+            let player = player.try_borrow().map_err(|_| crate::bind_world_object::borrowed("player music threat"))?;
+            let panic = player.moodles.moodle_level_of(&crate::bind_registry::shared_script_manager(), "PANIC")
+                .map_err(|e| LuaError::runtime(e.to_string()))?;
+            s.levels.update_from_player(&player, panic);
+        }
+        threat_config().borrow().update_levels(&s.levels);
         Ok(0)
     });
     b.method("getIntensity", |c| {
         let o = obj::<MusicThreatStatuses>(c, 0)?;
-        Ok(c.push(down::<MusicThreatStatuses>(&o).intensity.get() as f64))
+        Ok(c.push(down::<MusicThreatStatuses>(&o).levels.intensity() as f64))
     });
 }
 
@@ -1173,7 +1079,7 @@ mod tests {
 
     impl pz_sound::backend::AudioBackend for VoiceBackend {
         fn event_description(&mut self, path: &str) -> Option<Rc<pz_sound::backend::EventDescription>> {
-            (path == "event:/VoiceMaleShoutHey").then(|| {
+            matches!(path, "event:/VoiceMaleShoutHey" | "event:/TraversalFixture" | "event:/HumanFootstepsCombined").then(|| {
                 Rc::new(pz_sound::backend::EventDescription {
                     address: 1,
                     path: path.into(),
@@ -1182,23 +1088,43 @@ mod tests {
                     is_oneshot: true,
                     has_sustain_points: false,
                     max_distance: 20.0,
-                    parameters: vec![self.parameter_description("CharacterVoicePitch").unwrap()],
+                    parameters: if path == "event:/TraversalFixture" {
+                        ["TripObstacleType", "CharacterMovementSpeed"].map(|p| self.parameter_description(p).unwrap()).to_vec()
+                    } else if path == "event:/HumanFootstepsCombined" {
+                        ["FootstepMaterial", "FootstepMaterial2", "ShoeType", "CharacterMovementSpeed"]
+                            .map(|p| self.parameter_description(p).unwrap()).to_vec()
+                    } else { vec![self.parameter_description("CharacterVoicePitch").unwrap()] },
                 })
             })
         }
         fn parameter_description(&mut self, name: &str) -> Option<pz_sound::backend::ParameterDescription> {
-            (name == "CharacterVoicePitch").then(|| pz_sound::backend::ParameterDescription {
+            let (id, index) = match name {
+                "CharacterVoicePitch" => ((7, 9), 0),
+                "TripObstacleType" => ((11, 12), 1),
+                "FootstepMaterial" => ((15, 16), 3),
+                "FootstepMaterial2" => ((17, 18), 4),
+                "ShoeType" => ((19, 20), 5),
+                "CharacterMovementSpeed" => ((13, 14), 2),
+                _ => return None,
+            };
+            Some(pz_sound::backend::ParameterDescription {
                 name: name.into(),
-                id: (7, 9),
+                id,
                 minimum: 0.0,
                 maximum: 2.0,
                 default: 1.0,
                 kind: 0,
                 flags: 0,
-                global_index: 0,
+                global_index: index,
             })
         }
-        fn create_event_instance(&mut self, _desc: &pz_sound::backend::EventDescription) -> i64 {
+        fn create_event_instance(&mut self, desc: &pz_sound::backend::EventDescription) -> i64 {
+            if desc.path == "event:/HumanFootstepsCombined" {
+                let mut calls = self.0.borrow_mut();
+                let handle = 50 + calls.iter().filter(|s| *s == "create footstep").count() as i64;
+                calls.push("create footstep".into());
+                return handle;
+            }
             self.0.borrow_mut().push("create".into());
             42
         }
@@ -1213,9 +1139,14 @@ mod tests {
         fn instance_stop(&mut self, inst: i64, _immediate: bool) {
             self.0.borrow_mut().push(format!("stop {inst}"));
         }
-        fn instance_release(&mut self, _inst: i64) {}
+        fn instance_release(&mut self, inst: i64) { self.0.borrow_mut().push(format!("release {inst}")); }
         fn instance_playback_state(&mut self, _inst: i64) -> pz_sound::backend::PlaybackState {
             pz_sound::backend::PlaybackState::Playing
+        }
+        fn instance_set_3d_position(&mut self, inst: i64, x: f32, y: f32, z: f32) {
+            if x != 0.0 || y != 0.0 || z != 0.0 {
+                self.0.borrow_mut().push(format!("pos {inst} {x} {y} {z}"));
+            }
         }
         fn listener_3d(&mut self, _i: i32, _p: [f32; 3], _v: [f32; 3], _f: [f32; 3], _u: [f32; 3]) {}
         fn load_sound(&mut self, _path: &str, _looped: bool) -> u64 {
@@ -1270,6 +1201,92 @@ mod tests {
     }
 
     #[test]
+    fn positioned_audio_handles_follow_playback_and_world_disposal() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let system = Rc::new(RefCell::new(pz_sound::system::SoundSystem::new(
+            Box::new(VoiceBackend(log.clone())), Default::default(), 1,
+        )));
+        let previous = sound_system();
+        install_sound_system(system.clone());
+        let mut t = setup();
+        let result = run(&mut t, r#"
+            local sm = getSoundManager()
+            kept = sm:PlayWorldSoundImpl("VoiceMaleShoutHey", false, 7, 9, 2, 0, 10, 1, false)
+            kept:setVolume(0.25)
+            kept:pause()
+            kept:start()
+            return kept:isPlaying(), kept:getName(), sm:PlaySound("Missing", false, 1)
+        "#).unwrap();
+        assert_eq!(strs(&result), ["true", "null", "null"]);
+        system.borrow_mut().with_world_emitters(|pool, ctx| {
+            let owner = pool.current()[0].borrow();
+            assert_eq!([owner.x, owner.y, owner.z], [7.5, 9.5, 2.0]);
+            drop(owner);
+            pool.update(1, ctx);
+        });
+        assert!(log.borrow().contains(&"start 42".into()));
+        let result = run(&mut t, r#"
+            local sm = getSoundManager()
+            sm:StopSound(kept)
+            queued = sm:PlaySound("VoiceMaleShoutHey", false, 1)
+            return kept:isPlaying(), queued:isPlaying()
+        "#).unwrap();
+        assert_eq!(strs(&result), ["false", "true"]);
+        drop(system.borrow_mut().with_world_emitters(|pool, ctx| pool.stop_and_reset(ctx)));
+        assert_eq!(strs(&run(&mut t, "return queued:isPlaying()").unwrap()), ["false"]);
+        assert_eq!(log.borrow().iter().filter(|s| *s == "release 42").count(), 2);
+        install_sound_system(previous);
+    }
+
+    #[test]
+    fn traversal_audio_uses_character_identity_parameters_and_live_position() {
+        use crate::{bind_eat, bind_players};
+        use pz_characters::character::SimEvent;
+        let (mut thread, character, _) = crate::bind_character_sim::tests::setup_with(pz_scripts::ScriptManager::new());
+        let previous = sound_system();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        install_sound_system(Rc::new(RefCell::new(pz_sound::system::SoundSystem::new(
+            Box::new(VoiceBackend(log.clone())), Default::default(), 3,
+        ))));
+        bind_eat::register_shared(&mut thread);
+        assert_eq!(strs(&run(&mut thread, "return player:getEmitter() == player:getEmitter()").unwrap()), ["true"]);
+        let original = bind_players::player(0);
+        bind_players::set_player(0, Some(character.clone()));
+        {
+            let mut p = character.borrow_mut();
+            p.vars.x = 10.0;
+            p.vars.y = 20.0;
+            p.player.sound_movement_speed = 4;
+        }
+        assert!(!HearingPlayers::capture().in_range(13.0, 24.0, 5.0));
+        assert!(HearingPlayers::capture().in_range(13.0, 24.0, 6.0));
+        bind_eat::apply_audio_event(&character, &SimEvent::ObstacleSound {
+            name: "TraversalFixture".into(), parameter: "TripObstacleType", value: 9.0, movement_speed: true,
+        }).unwrap();
+        for gait in [3, 3, 5] {
+            character.borrow_mut().player.sound_movement_speed = gait;
+            bind_eat::apply_audio_event(&character, &SimEvent::PlayerFootstep).unwrap();
+        }
+        assert_eq!(strs(&run(&mut thread, "return player:getEmitter():isPlaying('HumanFootstepsCombined')").unwrap()), ["true"]);
+        character.borrow_mut().vars.z = 2.0;
+        bind_eat::update_emitters(true);
+        bind_eat::reset_emitters();
+        let calls = log.borrow();
+        for expected in ["param 42 (11, 12) 9", "param 42 (13, 14) 4", "start 42", "pos 42 10 20 6", "stop 42", "release 42"] {
+            assert!(calls.iter().any(|s| s == expected), "missing {expected} in {calls:?}");
+        }
+        let steps: Vec<_> = calls.iter().map(String::as_str).filter(|s|
+            matches!(*s, "create footstep" | "start 50" | "start 51")).collect();
+        assert_eq!(steps, ["create footstep", "start 50", "create footstep", "start 51", "start 50"]);
+        for expected in ["param 50 (15, 16) 2", "param 50 (17, 18) 0", "param 50 (19, 20) 0",
+            "param 50 (13, 14) 5", "pos 50 10 20 6", "stop 50", "stop 51"] {
+            assert!(calls.iter().any(|s| s == expected), "missing {expected} in {calls:?}");
+        }
+        bind_players::set_player(0, original);
+        install_sound_system(previous);
+    }
+
+    #[test]
     fn hud_sound_defaults_to_the_shared_sound_manager() {
         crate::hud::host::with_host(|h| h.sound.set_music_state("InGame"));
         assert_eq!(sound_system().borrow().manager.music_state(), pz_sound::sound_manager::MusicState::InGame);
@@ -1313,12 +1330,12 @@ mod tests {
         ev.add_event(Some("y".into()), 5.0, 0, true);
         ev.update_at(1_000);
         // First update: elapsed is huge (from -1), "x" expires; "y" gets elapsed time.
-        assert_eq!(ev.events.borrow().len(), 1);
-        assert_eq!(ev.intensity.get(), 55.0);
+        assert_eq!(ev.count(), 1);
+        assert_eq!(ev.intensity(), 55.0);
         ev.update_at(1_010);
         // A zero-duration event lives for exactly one update.
-        assert_eq!(ev.events.borrow().len(), 0);
-        assert_eq!(ev.intensity.get(), 50.0);
+        assert_eq!(ev.count(), 0);
+        assert_eq!(ev.intensity(), 50.0);
     }
 
     #[test]

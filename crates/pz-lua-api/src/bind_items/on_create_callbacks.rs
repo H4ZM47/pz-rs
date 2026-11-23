@@ -126,6 +126,16 @@ fn invoke(
     body: Body,
 ) -> LuaResult<usize> {
     let Some(item) = typed_argument(call, param)? else {
+        // These two bodies construct the mannequin before checking instanceof Moveable.
+        let script = match name {
+            "onCreateScarecrow" => Some("MannequinScarecrow02"),
+            "onCreateSkeletonDisplay" => Some("MannequinSkeleton01"),
+            _ => None,
+        };
+        if let Some(script) = script {
+            crate::world_mannequins::create_moveable(call.thread, None, script)?;
+            return Ok(0);
+        }
         return Err(unsupported(format!(
             "MethodCaller null-receiver NPE diagnostic state for {name}"
         )));
@@ -1175,22 +1185,13 @@ fn scratch_ticket_winner(_: &mut NativeCall<'_>, item: &ItemRef) -> LuaResult<()
     set_world_static_model(item, "SCRATCH_TICKET_WINNER")
 }
 
-macro_rules! not_ported {
-    ($fn:ident, $why:literal) => {
-        fn $fn(_: &mut NativeCall<'_>, _: &ItemRef) -> LuaResult<()> {
-            Err(unsupported($why))
-        }
-    };
+fn scarecrow(call: &mut NativeCall<'_>, item: &ItemRef) -> LuaResult<()> {
+    crate::world_mannequins::create_moveable(call.thread, Some(item), "MannequinScarecrow02")
 }
 
-not_ported!(
-    scarecrow,
-    "ItemCodeOnCreate.onCreateScarecrow: IsoMannequin construction and setCustomSettingsToItem"
-);
-not_ported!(
-    skeleton_display,
-    "ItemCodeOnCreate.onCreateSkeletonDisplay: IsoMannequin construction and setCustomSettingsToItem"
-);
+fn skeleton_display(call: &mut NativeCall<'_>, item: &ItemRef) -> LuaResult<()> {
+    crate::world_mannequins::create_moveable(call.thread, Some(item), "MannequinSkeleton01")
+}
 
 const CALLBACKS: &[(&str, Param, Body)] = &[
     (

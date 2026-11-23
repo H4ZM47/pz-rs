@@ -360,6 +360,7 @@ pub struct ScriptManager {
     /// `Registries` (the original's static registries).
     pub registries: crate::registry::Registries,
     native_item_keys: Option<crate::native_item_keys::NativeItemKeyStaticsRef>,
+    native_game_modes: Option<crate::native_game_modes::NativeGameModeStaticsRef>,
     /// Built-in name tables (perks, ragdoll bones, vehicle enums).
     pub builtin_tables: RefCell<crate::registry::builtin::BuiltinTables>,
 }
@@ -399,6 +400,7 @@ impl ScriptManager {
             statics: Default::default(),
             registries: Default::default(),
             native_item_keys: None,
+            native_game_modes: None,
             builtin_tables: Default::default(),
         }
     }
@@ -416,6 +418,27 @@ impl ScriptManager {
         self.native_item_keys.as_ref()
     }
 
+    pub fn with_native_key_statics(
+        keys: &crate::native_item_keys::NativeItemKeyStaticsRef,
+        modes: &crate::native_game_modes::NativeGameModeStaticsRef,
+    ) -> Self {
+        let mut sm = Self::with_native_item_key_statics(keys);
+        sm.registries.replace_ref("game_mode", modes.registry());
+        sm.native_game_modes = Some(modes.clone());
+        sm
+    }
+
+    pub fn with_native_game_mode_statics(modes: &crate::native_game_modes::NativeGameModeStaticsRef) -> Self {
+        let mut sm = Self::new();
+        sm.registries.replace_ref("game_mode", modes.registry());
+        sm.native_game_modes = Some(modes.clone());
+        sm
+    }
+
+    pub fn native_game_mode_statics(&self) -> Option<&crate::native_game_modes::NativeGameModeStaticsRef> {
+        self.native_game_modes.as_ref()
+    }
+
     /// Only the genuine RegistryReset.resetAll callers invoke this, before
     /// ScriptManager.Reset. Ordinary script loads do not reset class globals.
     pub fn try_reset_native_item_key_registries(&self) -> Result<(), crate::native_item_keys::ScriptAccessError> {
@@ -427,8 +450,10 @@ impl ScriptManager {
     /// `projectzomboid.jar` (the `Registries` bootstrap).
     pub fn load_builtin_registries(&self, jar_path: &Path) -> ScriptResult {
         let jar = pz_classfile::Jar::open(jar_path).map_err(|e| ScriptError::new(format!("{}: {e}", jar_path.display())))?;
-        crate::registry::builtin::register_builtin_except(&self.registries, &jar,
-            if self.native_item_keys.is_some() { &["item_tag", "item_type"] } else { &[] })?;
+        let mut skip = Vec::new();
+        if self.native_item_keys.is_some() { skip.extend(["item_tag", "item_type"]); }
+        if self.native_game_modes.is_some() { skip.push("game_mode"); }
+        crate::registry::builtin::register_builtin_except(&self.registries, &jar, &skip)?;
         *self.builtin_tables.borrow_mut() = crate::registry::builtin::BuiltinTables::load(&jar)?;
         crate::objects::items::load_builtin_constants(self, jar_path)
     }

@@ -3,7 +3,8 @@
 A contributor-oriented summary of where pz-rs stands and what is left. It is
 derived from [ENGINE-WIRING.md](ENGINE-WIRING.md), [WORKSTREAMS.md](WORKSTREAMS.md)
 and [../PROGRESS.md](../PROGRESS.md) as of 2026-11-10 (commit `94e0a27`). Those
-files remain the detailed record; this one is the map. Where they disagree with
+files remain the detailed record; this one is the map. Boot entries were
+rechecked against source and GPU fault handling added on 2026-11-13. Where they disagree with
 this file, `ENGINE-WIRING.md` is the more current source.
 
 ## What the project replaces
@@ -29,26 +30,69 @@ legally installed copy of the game, and the jar must remain on disk because
 Most subsystems exist as **ported libraries with their own tests**; the
 remaining work is dominated by **wiring those libraries into the running game
 loop** and by **filling in the Lua-facing API** that the game's shipped Lua
-calls. The workspace has 49 crates and roughly 650,000 lines of Rust with about
-2,900 unit tests. The client boots, runs the real main-menu Lua, and can create
+calls. The workspace has 50 crates. The client boots, runs the real main-menu Lua, and can create
 or load a single-player world (`pz-client --new-game NAME` /
 `--load-game MODE/NAME`, optionally `--headless-frames N`). It is not yet
-playable: the in-game session still stops on unbound API methods (the most
-recently recorded stop is `isFavouriteRecipeInput` at
-`ISInventoryPane.renderdetails:2338`), and many world systems are not yet
-connected to the frame loop.
+playable: sessions still encounter unbound API methods, and many world systems
+are not yet connected to the frame loop. An earlier inventory-drawing stop was
+`isFavouriteRecipeInput` at `ISInventoryPane.renderdetails:2338`.
 
-The integration checklist in `ENGINE-WIRING.md` currently reads:
+On November 22, 2026, the macOS installed-session regression passed with Steam
+Build 42.22 assets. It created a fresh world, exercised keyboard movement,
+animation and a timed action, saved on window close, and reloaded the world
+in a fresh engine. It checked player position, nested inventory and mod data,
+global systems, every expected chunk, and the pose, skin, worn membership and
+item visuals of three mannequins. The first tests reached the main menu while
+logging a failed chunk rewrite. The regression now puts the first-close files
+aside and checks that quitting to menu recreates every resident chunk.
+This run used the port's version 249 save format. Native Build 42.22 writes
+version 251. Native-save interchange and installed Windows/Linux sessions
+still need separate tests.
+
+The installed engine regression also covers the transition from household
+mains water to a local reserve, a rooftop fixture switching between two
+collectors, and persistence of the collector's construction and material
+tables. It checks a placed pump's fuel after shutdown and restart. The
+installed hen-hutch definition creates six linked tiles in four squares.
+The test opens the front door and egg hatch, then checks the door sprites,
+the linked master, the two dirt values and the definition limits after restart.
+The installed hutch run passed all 100 engine checks at `556c2f9c`.
+Animal behavior inside the hutch and native save interchange remain open.
+
+Both the development and release builds on Apple Silicon exercised the ordinary
+windowed `--new-game` and `--load-game` paths in separate processes.
+Each ran twelve gameplay ticks, saved,
+returned to the menu, and exited. The second process recovered the first
+process's player mod-data marker and position. On both loads a Lua mod
+received the live tile-definition manager and retrieved the same tile by name
+and by numeric ID.
+
+The x64 Windows and Linux client binaries linked locally. The Intel macOS
+binary ran under Rosetta, rendered the installed menu, and passed the same
+two-process, windowed save and reload check. The macOS menu
+opens the installed audio banks. Menu and guide videos are not played: `pz-video`
+reads the Bink container and frame index, but there is no Bink video decoder on this
+branch, so the title screen draws its still background. Bink 1 and Bink 2 video
+decoding and video audio tracks are open.
+
+The loader supports both tile-definition directory layouts. Core uses the
+installed getter signature to select Build 42.21's string game modes or
+42.22's registry objects. The option schema, Lua bindings and save-mode
+checks follow that selection. The component serializer writes to inventory
+compression's bounded buffer, and live mannequin saves serialize actual item
+references and map the worn items to their saved indices.
+
+The November 22 combined integration branch has these entries in `ENGINE-WIRING.md`.
 
 | Section | Done | Open |
 | --- | ---: | ---: |
-| Boot (`GameWindow.init`) | 9 | 16 |
-| Per frame (`GameWindow.logic` / `render`) | 11 | 2 |
-| World (`GameLoadingState` / `IngameState`) | 31 | 99 |
-| World render pass | 4 | 27 |
-| World map | 1 | 5 |
-| Cleanups | 0 | 2 |
-| **Total** | **56** | **151** |
+| Boot (`GameWindow.init`) | 16 | 9 |
+| Per frame (`GameWindow.logic` / `render`) | 16 | 1 |
+| World (`GameLoadingState` / `IngameState`) | 43 | 91 |
+| World render pass | 5 | 26 |
+| World map | 4 | 3 |
+| Cleanups | 1 | 1 |
+| **Total** | **85** | **131** |
 
 A checked box means the connection is implemented, not that runtime parity
 with the original has been verified.
@@ -60,42 +104,41 @@ Numbering follows [WORKSTREAMS.md](WORKSTREAMS.md).
 | # | Workstream | Crates | Status |
 | --- | --- | --- | --- |
 | 1 | Kahlua compiler, VM, stdlib | `pz-kahlua` | **Largely done.** All 1,395 shipped Lua files compile to bytecode byte-identical to the original compiler; VM, coroutines and the standard libraries are ported. Ongoing work is GC/ownership behaviour at host boundaries. |
-| 2 | Lua API bindings | `pz-lua-api` | **In progress; the largest open area.** The biggest crate (~120k lines) and still the usual place a session stops. Example of scale: 1 of 58 `ItemCodeOnCreate` callbacks is implemented. |
-| 3 | File system and mods | `pz-fs` | **Library done.** Mod loading at boot is not wired. |
+| 2 | Lua API bindings | `pz-lua-api` | **In progress; the largest open area.** The biggest crate (~120k lines) and still the usual place a session stops. The port registers all 58 public Build 42.21 item-creation callback names. Installed-session tests cover stock and dressed moveable mannequin payloads. |
+| 3 | File system and mods | `pz-fs` | Boot loads the selected mods when Core enables mods. Lua map groups use the active game filesystem. |
 | 4 | Textures, packs, draw list | `pz-render`, `pz-gpu` | **Done for UI and chunk rendering.** GPU readback tests are part of the four-platform CI run (they may skip where a runner has no suitable graphics adapter). |
 | 5 | Fonts and translations | `pz-text` | **Done.** |
 | 6 | UI layer | `pz-ui` | **Working** (main menu and HUD run); HUD inputs partly wired. |
 | 7 | Game loop, Core, game states | `pz-engine`, `pz-client` | **In progress; the integration bottleneck.** State machine, loading and in-game states exist; most open checklist items land here. |
 | 8 | Script parser | `pz-scripts`, `pz-script-parser` | **Done as a library** and loaded at boot. |
 | 9 | Maps, chunks, world | `pz-world`, `pz-worldgen`, `pz-erosion`, `pz-lighting`, `pz-worldmap` | **Libraries ported**, chunk load/save works. Square mutations, erosion, fire, regions and the world map are only partly wired. |
-| 10 | Characters, animation, models | `pz-characters`, `pz-anim`, `pz-model`, `pz-character-model`, `pz-ragdoll`, `pz-animals`, `pz-vehicles`, `pz-pathfind`, `pz-popman` | **Libraries ported**, several checked bit-for-bit against the original in isolation (e.g. zombie chase, body damage). Players and zombies update in the loop; animals, ragdolls, vehicles, ballistics and pathfinding are not yet wired. |
+| 10 | Characters, animation, models | `pz-characters`, `pz-anim`, `pz-model`, `pz-character-model`, `pz-ragdoll`, `pz-animals`, `pz-vehicles`, `pz-pathfind`, `pz-popman` | **Libraries ported**, several checked bit-for-bit against the original in isolation (e.g. zombie chase, body damage). Players and zombies update in the loop; pathfinding runs its thread and main updates. Animal, ragdoll, vehicle and ballistics integration remains incomplete. |
 | 11 | Audio | `pz-audio`, `pz-sound`, `pz-world-sound`, `pz-radio` | **Decoding done** (FSB5/Vorbis from FMOD banks). Sound manager ticks per frame; positioned world sounds, fire sounds and radio are not wired. |
-| 12 | Saves | in `pz-world::save`, `pz-core`, `pz-sqlite`, `pz-inventory` (no separate `pz-save` crate) | **Partial.** Chunk files, `map_t.bin`, player load and quit-save exist. Vehicle DB, sandbox load, basements, reanimated players and the full `GameWindow.save` path are open. |
-| 13 | Multiplayer | `pz-network` | **Not started.** The crate only holds the offline server list and account database; there is no RakNet protocol, `GameClient` or `GameServer`. |
+| 12 | Saves | in `pz-world::save`, `pz-core`, `pz-sqlite`, `pz-inventory` (no separate `pz-save` crate) | **Partial.** Chunk files, `map_t.bin`, player load and quit-save exist. Saved worlds load sandbox settings and basement placements. Vehicle persistence, reanimated players and hot saves still have open work. |
+| 13 | Multiplayer | `pz-network` | Offline server and account data, packet types and RakNet transport code exist. The gameplay client and server remain unfinished. |
 
 ## What remains
 
-Grouped from the 151 open items in `ENGINE-WIRING.md`. Each bullet names the
+Grouped from the open items in `ENGINE-WIRING.md`. Each bullet names the
 section to search there for exact hook names and call order.
 
 ### 1. Lua API coverage (workstream 2)
 - [ ] Bind the methods the shipped client Lua hits next, starting from the
       recorded stop in the inventory pane (`isFavouriteRecipeInput`).
-- [ ] Remaining 57 `ItemCodeOnCreate` callbacks.
+- [x] `ItemCodeOnCreate.onCreateScarecrow` and `onCreateSkeletonDisplay` create a detached mannequin and save it into the moveable item. Installed tests read both stock payloads back and verify a costume override including its inventory, worn indices and added weight.
 - [ ] Wire the new actual-reference `ArrayList` foundation to script,
       literature and character recipe-list fields.
-- [ ] Event and hook names read from the jar via `pz-classfile` instead of a
-      hand-kept list.
-- [ ] Fold `bind_vehicles`' item subset into the full item bindings (#86).
+- [x] Event and hook names load from the installed jar through `pz-classfile`.
+- [x] Vehicles use the shared inventory-item and radio device bindings.
 
 ### 2. Boot
-- [ ] Mods (when Core's mods option is on) and the real `MapGroupsHost`.
-- [ ] `PerkFactory::init` and `BodyLocations.lua` before Lua loads.
+- [x] Boot loads enabled mods and installs the filesystem-backed `MapGroupsHost`.
+- [x] `PerkFactory::init` before Lua initialization; `BodyLocations.lua`
+      through the shared-Lua load before client Lua.
 - [ ] Character simulation context, world sounds and states world installed
       at boot.
-- [ ] `ScriptManager` loading in the windowed engine boot (per the
-      checklist, only the client's `--png`/`--headless-frames` paths load
-      scripts).
+- [x] `ScriptManager` loading through `boot::load_scripts` in windowed
+      and headless engine startup.
 - [ ] HUD hosts for local/current player.
 
 ### 3. World simulation
@@ -138,8 +181,8 @@ section to search there for exact hook names and call order.
 - [ ] Full game save (`GameWindow.save(true)`: sleep, menu save, quit) and
       hot save.
 - [ ] Session save, characters side; reanimated players.
-- [ ] `SandboxOptions` from `map_sand.bin` on load.
-- [ ] `Basements` save file.
+- [x] `IsoWorld::load_sandbox` reads `map_sand.bin` during world initialization.
+- [x] World initialization reads or writes `map_basements.bin` for procedural placements.
 - [ ] `WorldDictionary`: string/script register population and version
       hashing.
 - [ ] Route the older value-container floor save through the
@@ -155,7 +198,9 @@ section to search there for exact hook names and call order.
 - [ ] Character lights, outlines, held/attached item textures.
 - [ ] Frame extras: highlights, markers, area highlights, vision cone, fog.
 - [ ] Split screen.
-- [ ] GPU fault handling; vsync and frame size from Core options.
+- [x] GPU faults stop the frame and report the cause through the engine's
+      error exit. Actual device-loss testing remains open.
+- [x] VSync updates on the active render surface. Core supplies the frame dimensions.
 
 ### 7. World map
 - [ ] Map host inputs, live `MapFilesInfo`, image frame hooks, visited
@@ -164,9 +209,7 @@ section to search there for exact hook names and call order.
 ### 8. Multiplayer
 - [x] Packet type table (`PacketTypes`: wire ids, send settings, handling
       sides, anti-cheat lists) and role `Capability` in `pz-network`.
-- [ ] Everything else: RakNet transport, `GameClient`, `GameServer`, network
-      character states. Global-object command delivery exists for single
-      player only.
+- [ ] Integrate the RakNet transport into `GameClient` and `GameServer` and implement network character states. Global-object command delivery currently runs in single player.
 
 ### 9. Verification
 - [ ] Parity runs for subsystems only unit-tested so far (ragdolls, vehicles,

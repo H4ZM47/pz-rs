@@ -128,7 +128,18 @@ impl ItemModData {
             Self::Live(table) => Ok(Self::Live(copy_table_graph(table)?)),
         }
     }
-    pub(crate) fn save(&self, writer: &mut Writer) -> ModDataResult<()> {
+    /// Adopt saved entries once and retain the table returned to Lua.
+    pub fn live_table(&mut self) -> ModDataResult<TableRef> {
+        if let Self::Archive(archive) = self {
+            *self = Self::Live(adopt_archive(archive)?);
+        }
+        match self {
+            Self::Live(table) => Ok(table.clone()),
+            Self::Archive(_) => unreachable!(),
+        }
+    }
+
+    pub fn save(&self, writer: &mut Writer) -> ModDataResult<()> {
         match self {
             Self::Archive(table) => {
                 table.save(writer);

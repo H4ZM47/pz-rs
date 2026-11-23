@@ -21,6 +21,15 @@ const GAME_ENTITY: &str = "zombie.entity.GameEntity";
 const ISO_BARBECUE: &str = "zombie.iso.objects.IsoBarbecue";
 const ISO_FIREPLACE: &str = "zombie.iso.objects.IsoFireplace";
 
+pub(crate) fn resolve_sprite_name(
+    name: &pz_world::objects::SpriteName,
+    sprites: &pz_world::IsoSpriteManager,
+) -> LuaResult<Option<String>> {
+    crate::bind_world::try_with_world_read(|world| {
+        Ok(name.resolve(Some(&world.sprite_names), sprites).map(str::to_owned))
+    }).map_err(host_error)
+}
+
 pub struct LuaWorldObject {
     pub(crate) object: IsoObjectRef,
     class: &'static str,
@@ -99,7 +108,7 @@ thread_local! {
 
 /// Weak metadata is pruned only before capacity growth, not on every world
 /// allocation or cache hit. Surviving live entries reserve geometrically.
-fn prune_for_insert<V>(cache: &mut HashMap<usize, V>, alive: impl Fn(&V) -> bool) -> bool {
+pub(crate) fn prune_for_insert<K: Eq + std::hash::Hash, V>(cache: &mut HashMap<K, V>, alive: impl Fn(&V) -> bool) -> bool {
     if cache.len() != cache.capacity() {
         return false;
     }
@@ -375,33 +384,47 @@ pub(crate) fn register_classes(thread: &mut Thread) {
             .map_err(|e| LuaError::runtime(e.0))?;
         Ok(c.push(Value::Bool(has)))
     });
-    // getSprite(). STUB: a runtime or unmanaged archive sprite has no Lua
-    // object yet.
     object.method("getSprite", |c| {
         let object = receiver_object(c)?;
         let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
-        match &body.sprite {
-            pz_world::objects::ObjectSprite::None => Ok(c.push(Value::Nil)),
-            pz_world::objects::ObjectSprite::Tile(idx) => {
-                Ok(c.push(crate::bind_sprites::sprite_value(Some(*idx), false)))
-            }
-            _ => Err(unsupported("IsoObject.getSprite: the sprite has no Lua object")),
-        }
+        let value = crate::bind_sprites::object_sprite_value(&body.sprite, false)?;
+        Ok(c.push(value))
     });
-    // getOverlaySprite(): `overlaySprite`. STUB: a `WorldDictionary` name
-    // id is not resolved.
+    sprite_edit::register(&object);
+    thumpable::register(thread);
+    construction::register(thread);
+    map_entity::register(thread);
+    compost::register(thread);
+    hutch::register(thread);
+    trough::register(thread);
     object.method("getOverlaySprite", |c| {
         let object = receiver_object(c)?;
-        let name = match &object.try_borrow().map_err(|_| borrowed("IsoObject body"))?.overlay_sprite {
-            Some(pz_world::objects::OverlaySprite { name: pz_world::objects::SpriteName::Str(n), .. }) => n.clone(),
-            Some(_) => return Err(unsupported("IsoObject.getOverlaySprite: dictionary sprite name")),
-            None => return Ok(c.push(Value::Nil)),
-        };
-        let sprites = crate::bind_sprites::manager()?;
-        let idx = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?.named_map.get(name.as_str()).copied();
+        let overlay = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?.overlay_sprite.clone();
+        let Some(overlay) = overlay else { return Ok(c.push(Value::Nil)); };
+        let manager = crate::bind_sprites::manager()?;
+        let mut manager = manager.try_borrow_mut().map_err(|_| borrowed("IsoSpriteManager"))?;
+        let name = resolve_sprite_name(&overlay.name, &manager)?;
+        let idx = name.filter(|name| !name.is_empty()).map(|name| {
+            manager.named_map.get(&name).copied().unwrap_or_else(|| manager.add_sprite_named(&name))
+        });
         Ok(c.push(crate::bind_sprites::sprite_value(idx, false)))
     });
-    // getName(): `name`. STUB: a `WorldDictionary` name id is not resolved.
+    object.method("setSpecialTooltip", |c| {
+        let flag = crate::expose::bool_arg(c, 1);
+        receiver_object(c)?.try_borrow_mut().map_err(|_| borrowed("IsoObject"))?.special_tooltip = flag;
+        Ok(0)
+    });
+    object.method("haveSpecialTooltip", |c| {
+        let flag = receiver_object(c)?.try_borrow().map_err(|_| borrowed("IsoObject"))?.special_tooltip;
+        Ok(c.push(flag))
+    });
+    object.method("setName", |c| {
+        let object = receiver_object(c)?;
+        let name = crate::expose::str_arg(c, 1).map(|s| ObjectName::Str(s.to_string()));
+        object.try_borrow_mut().map_err(|_| borrowed("IsoObject body"))?.name = name;
+        Ok(0)
+    });
+    // Saved objects may store the original name by its WorldDictionary id.
     object.method("getName", |c| {
         let object = receiver_object(c)?;
         let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
@@ -409,8 +432,11 @@ pub(crate) fn register_classes(thread: &mut Thread) {
             None => return Ok(c.push(Value::Nil)),
             Some(ObjectName::Grass) => "Grass",
             Some(ObjectName::Str(name)) => name.as_str(),
-            Some(ObjectName::Dict(_)) => {
-                return Err(unsupported("IsoObject.getName: WorldDictionary names are not resolved"))
+            Some(ObjectName::Dict(id)) => {
+                let value = crate::bind_world::try_with_world_read(|world| {
+                    Ok(world.object_names.get(id).map_or(Value::Nil, |name| Value::str(name)))
+                }).map_err(host_error)?;
+                return Ok(c.push(value));
             }
         };
         Ok(c.push(Value::str(name)))
@@ -531,6 +557,10 @@ fn containers(
 ) -> LuaResult<(Option<ContainerRef>, Vec<ContainerRef>)> {
     let this = c.arg(0);
     let object = receiver_object(c)?;
+    object_containers(&this, &object)
+}
+
+fn object_containers(this: &Value, object: &IsoObjectRef) -> LuaResult<(Option<ContainerRef>, Vec<ContainerRef>)> {
     let square = {
         let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
         match body.square_slot() {
@@ -599,21 +629,18 @@ pub(crate) fn adopt_square(this: &Value, object: &IsoObjectRef, square: &Value) 
 }
 
 /// `isPropaneBBQ()`: an IsoBarbecue whose sprite has `propaneTank`.
-/// STUB: a runtime or unmanaged archive sprite is not read.
 fn is_propane_bbq(object: &IsoObjectRef) -> LuaResult<bool> {
     let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
     if !matches!(body.kind, ObjectKind::Barbecue(_)) {
         return Ok(false);
     }
-    match &body.sprite {
-        pz_world::objects::ObjectSprite::None => Ok(false),
-        pz_world::objects::ObjectSprite::Tile(idx) => {
-            let sprites = crate::bind_sprites::manager()?;
-            let sprites = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
-            Ok(sprites.has_prop(&sprites.sprites[*idx], "propaneTank"))
-        }
-        _ => Err(unsupported("IsoObject.isPropaneBBQ: the sprite is not read")),
+    if body.sprite.is_none() {
+        return Ok(false);
     }
+    let sprites = crate::bind_sprites::manager()?;
+    let sprites = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
+    let sprite = body.sprite.try_read(&sprites).map_err(host_error)?;
+    Ok(sprite.as_deref().is_some_and(|s| sprites.has_prop(s, "propaneTank")))
 }
 
 fn receiver_object(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<IsoObjectRef> {
@@ -663,7 +690,7 @@ fn register_special_tooltip(object: &crate::expose::ClassBuilder) {
     });
 }
 
-pub(crate) fn object_value(object: &IsoObjectRef) -> LuaResult<Value> {
+pub fn object_value(object: &IsoObjectRef) -> LuaResult<Value> {
     let class = class_of(object)?;
     let userdata = USERDATA
         .try_with(|cache| -> LuaResult<Rc<LuaWorldObject>> {
@@ -811,3 +838,11 @@ mod position;
 mod master_object;
 #[cfg(test)]
 mod tests;
+
+mod sprite_edit;
+mod thumpable;
+mod construction;
+pub mod map_entity;
+mod compost;
+pub mod hutch;
+pub mod trough;

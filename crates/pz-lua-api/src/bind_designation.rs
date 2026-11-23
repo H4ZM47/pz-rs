@@ -61,6 +61,25 @@ fn registry(context: &Option<DesignationContext>) -> LuaResult<DesignationRegist
         .and_then(|context| context.registry.upgrade())
         .ok_or_else(|| unsupported("actual Designation registry unavailable"))
 }
+pub(crate) fn animal_zone_at((x, y, z): (i32, i32, i32)) -> LuaResult<Option<DesignationZoneRef>> {
+    let registry = registry(&capture_context()?)?;
+    designation::try_get_zone(&registry, x, y, z).map_err(host_error)
+}
+
+pub(crate) fn register_farm_object(pos: (i32,i32,i32), object: &pz_world::IsoObjectRef, hutch: bool) -> LuaResult<()> {
+    let Some(zone) = animal_zone_at(pos)? else { return Ok(()) };
+    let list = {
+        let zone = zone.try_borrow().map_err(|_| borrowed("animal zone"))?;
+        if hutch { &zone.hutchs } else { &zone.troughs }.clone()
+    };
+    let Some(list) = list else { return Err(unsupported("animal zone farm object list")); };
+    let mut list = list.try_borrow_mut().map_err(|_| borrowed("animal zone farm objects"))?;
+    let designation::DesignationList::Owners(owners) = &mut *list else { return Err(unsupported("animal zone farm object list type")); };
+    let owner = pz_entity::EntityOwner::from_ref(object);
+    if !owners.iter().any(|other| other.ptr_eq(&owner)) { owners.push(owner); }
+    Ok(())
+}
+
 fn pin<T: 'static>(owner: &Rc<T>) {
     let mut retired = RetiredComponents::new();
     retired.push_erased(owner.clone());
@@ -623,8 +642,13 @@ pub fn register(thread: &mut Thread) {
             "DesignationZoneAnimal connected-zone traversal",
         ))
     });
+    animal.static_fn("getZoneF", |call| {
+        nargs(call, 3)?;
+        let coord = |at| number(call, at).map(|n| pz_world::java::fastfloor(n as f32));
+        let zone = animal_zone_at((coord(0)?, coord(1)?, coord(2)?))?;
+        Ok(call.push(optional_zone(zone)?))
+    });
     for name in [
-        "getZoneF",
         "isItemFood",
         "isItemDung",
         "isItemFeather",

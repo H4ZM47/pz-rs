@@ -59,3 +59,11 @@ quick-xml = "0.41"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Convert full-resolution YUV video frames within the display deadline in dev builds.
+[profile.dev.package.pz-video]
+opt-level = 2
+
+# Decode world tile sheets during the first rendered frame in development builds.
+[profile.dev.package.pz-render]
+opt-level = 3

@@ -70,6 +70,33 @@ impl SoundSystem {
         f(manager, &mut ctx)
     }
 
+    /// SoundListener.tick uses the isometric forward vector and triples the
+    /// map floor for FMOD. A deaf local player listens far outside the map.
+    pub fn update_player_listener(&mut self, index: i32, position: [f32; 3], deaf: bool) {
+        if self.sounds.env.sound_disabled || self.sounds.env.server
+            || (self.sounds.env.client && self.manager.sound_volume <= 0.0) { return; }
+        let [x, y, z] = position;
+        let at = if deaf { [-1000.0, -1000.0, 0.0] } else { [x, y, z * 3.0] };
+        let d = -std::f32::consts::FRAC_1_SQRT_2;
+        self.backend.listener_3d(index, at, [0.0; 3], [d, d, 0.0], [0.0, 0.0, 1.0]);
+    }
+
+    /// A positioned IsoWorld emitter remains on the world's update list.
+    /// Local playback uses playSoundImpl and bypasses network forwarding.
+    pub fn play_world_clip(&mut self, name: &str, pos: [f32; 3], local: bool)
+        -> (crate::world_emitters::EmitterRef, i64) {
+        self.with_world_emitters(|pool, ctx| {
+            let owner = pool.get_free();
+            let handle = {
+                let mut e = owner.borrow_mut();
+                e.set_pos(pos[0], pos[1], pos[2]);
+                if local { e.play_sound_impl(name, crate::emitter::ParentObject::None, ctx) }
+                else { e.play_sound(name, ctx) }
+            };
+            (owner, handle)
+        })
+    }
+
     /// Run world/item emitter work against the same real backend and sound
     /// catalog as SoundManager, without borrowing or reusing its UI emitter.
     pub fn with_world_emitters<R>(

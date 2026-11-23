@@ -1588,3 +1588,100 @@ fn corpse_live_inventory_save_maps_worn_items_through_saved_order() {
     // The live container is still the corpse's.
     assert!(Rc::ptr_eq(&body.runtime.as_ref().unwrap().container, &live));
 }
+
+#[test]
+fn live_mannequin_saves_actual_texture_and_rereads_worn_after_wear_callback() {
+    use pz_inventory::worn_items::{BodyLocationGroup, WornItems};
+    use pz_inventory::{shared, ItemClass, ItemTemplate};
+    use pz_scripts::registry::{RegistryKey, ResourceLocation};
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    struct Env(Rc<ItemTemplate>);
+    impl ItemRegistry for Env {
+        fn template(&self, id: i16) -> Option<Rc<ItemTemplate>> {
+            (id == 1).then(|| self.0.clone())
+        }
+    }
+    struct Wear {
+        worn: pz_inventory::worn_items::InventoryWornItemsRef,
+        container: shared::ContainerRef,
+        key: Rc<RegistryKey>,
+        calls: Cell<usize>,
+    }
+    impl SaveHooks for Wear {
+        fn mannequin_wear_item(&self, object: &crate::IsoObjectRef, item: &shared::ItemRef) -> SaveResult<()> {
+            assert!(object.try_borrow_mut().is_ok());
+            assert!(self.container.try_borrow_mut().is_ok());
+            assert!(item.try_borrow_mut().is_ok());
+            self.calls.set(self.calls.get() + 1);
+            self.worn.borrow_mut().set_item(Some(self.key.clone()), Some(item.clone()))
+                .map_err(|error| io::SaveError(error.to_string()))?;
+            Ok(())
+        }
+    }
+    use pz_scripts::ScriptObject;
+    let texture = Rc::new(pz_render::LuaTexture::new(pz_render::Texture::empty("Item_LiveMannequinTest")));
+    let captured = texture.clone();
+    let previous_loader = pz_render::install_texture_ref_loader(Some(Rc::new(move |_, name| {
+        Ok((name == "Item_LiveMannequinTest").then(|| captured.clone()))
+    })));
+    struct RestoreLoader(Option<pz_render::TextureRefLoader>);
+    impl Drop for RestoreLoader {
+        fn drop(&mut self) { drop(pz_render::install_texture_ref_loader(self.0.take())); }
+    }
+    let _restore = RestoreLoader(previous_loader);
+    let manager = pz_scripts::ScriptManager::new();
+    manager.parse_script(pz_scripts::ScriptLoadMode::Init, "module Base {}").unwrap();
+    manager.enable_texture_capture();
+    let module = manager.get_module("Base").unwrap();
+    let mut script = pz_scripts::objects::items::Item::new();
+    script.set_module(&module);
+    script.init_load_pp(&manager, "LiveMannequinTest");
+    script.load(&manager, "LiveMannequinTest", "item LiveMannequinTest { Icon = LiveMannequinTest, }").unwrap();
+    let mut template = ItemTemplate::new(ItemClass::Normal, "Base", "LiveMannequinTest");
+    template.script = Some(pz_inventory::template::ScriptItemRef(Rc::new(RefCell::new(script))));
+    template.texture_capture = Some(pz_inventory::item_texture::CapturedScriptTextures::new(Some(texture), Vec::new()));
+    let env = Env(Rc::new(template));
+    let item = pz_inventory::env::create_from_template_ref(&env, env.0.clone(), 1).unwrap();
+    item.borrow_mut().id = 93;
+    let container = shared::SharedContainer::new(18, "mannequin").into_ref();
+    shared::add_item(&container, &item);
+    let key = Rc::new(RegistryKey { location: ResourceLocation::of("base:test").unwrap(), name: "base:test".into(), item_key: None });
+    let group = Rc::new(RefCell::new(BodyLocationGroup::new("test").unwrap()));
+    group.borrow_mut().get_or_create_location(Some(key.clone())).unwrap();
+    let worn = Rc::new(RefCell::new(WornItems::new(group)));
+    let mut mannequin = IsoMannequin::new(7);
+    drop(mannequin.install_runtime_inventory(container.clone(), worn.clone()));
+    let object = ObjectSlot::new(IsoObject::new(1, ObjectKind::Mannequin(Box::new(mannequin)), None)).ref_handle();
+    let hooks = Wear { worn, container, key, calls: Cell::new(0) };
+    let sprites = sprites();
+    let tables = SaveTables::for_tests();
+    let settings = SaveSettings::default();
+    let ctx = SaveCtx { sprites: &sprites, tables: &tables, settings: &settings, items: &env, hooks: &hooks, meta: None };
+    // Native clears its container before base save and only restores after
+    // that phase succeeds; a base failure must retain the null field.
+    let mut failed = IsoMannequin::new(7);
+    drop(failed.install_runtime_inventory(hooks.container.clone(), hooks.worn.clone()));
+    let failed = ObjectSlot::new(IsoObject::new(2, ObjectKind::Mannequin(Box::new(failed)), None)).ref_handle();
+    let mut empty_tables = SaveTables::for_tests();
+    empty_tables.factory.clear();
+    let bad_ctx = SaveCtx { sprites: &sprites, tables: &empty_tables, settings: &settings, items: &env, hooks: &hooks, meta: None };
+    assert!(super::object_io::save_object_ref(&mut Writer::new(), &bad_ctx, &failed).is_err());
+    let failed_body = failed.borrow();
+    let ObjectKind::Mannequin(failed_mannequin) = &failed_body.kind else { panic!("mannequin") };
+    assert!(failed_mannequin.runtime_container.is_none());
+    drop(failed_body);
+
+    let mut writer = Writer::new();
+    super::object_io::save_object_ref(&mut writer, &ctx, &object).unwrap();
+    assert_eq!(hooks.calls.get(), 1);
+    let mut reader = Reader::new(&writer.buf);
+    let loaded = load_object(&mut reader, &ctx, WORLD_VERSION, 2).unwrap().unwrap();
+    assert_eq!(reader.pos, writer.buf.len());
+    let ObjectKind::Mannequin(loaded) = loaded.kind else { panic!("mannequin") };
+    let saved = loaded.container.unwrap();
+    assert_eq!(saved.id, 18);
+    assert_eq!(saved.items[0].id(), 93);
+    assert_eq!(loaded.worn_items, [("base:test".into(), 0)]);
+}

@@ -53,7 +53,20 @@ impl Fixture {
         let old_world = with_world(std::mem::take);
         let mut core = Core::default();
         core.set_no_save(no_save);
-        core.set_game_mode("Sandbox");
+        let initializers = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial"), ("TEST_LAST_STAND", "LastStand")]
+            .map(|(field, id)| pz_classfile::StaticInit {
+                class: "zombie/core/GameMode".into(),
+                field: field.into(),
+                value: pz_classfile::Value::Call {
+                    class: "zombie/core/GameMode".into(),
+                    name: "registerBase".into(),
+                    descriptor: "(Ljava/lang/String;)Lzombie/core/GameMode;".into(),
+                    args: vec![pz_classfile::Value::Str(id.into())],
+                },
+            });
+        let modes = Rc::new(pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&initializers).unwrap());
+        core.install_game_mode_statics(modes).unwrap();
+        core.set_game_mode("Sandbox").unwrap();
         let core = Rc::new(RefCell::new(core));
         pz_lua_api::bind_core::install_core(core.clone());
         pz_lua_api::bind_climate::install_game_time(Rc::new(RefCell::new(GameTime::default())));
@@ -86,6 +99,7 @@ impl Fixture {
             error: None,
             retired_models: Vec::new(),
             last_frame: Instant::now(),
+            frame_pacer: FramePacer::new(Instant::now()),
             gamepads: None,
             audio: None,
             ui_models: None,

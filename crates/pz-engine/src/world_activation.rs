@@ -30,6 +30,40 @@ impl SquareMutationHooks for Calls {
     }
 }
 
+/// The byte reader records an unresolved base sprite until the active manager
+/// and its texture source are available. IsoObject.load creates a fresh sprite
+/// in this case, even when the stored name does not resolve to a texture.
+fn restore_map_sprite(
+    object: &IsoObjectRef,
+    manager: &pz_world::sprite::runtime::SpriteManagerRef,
+    saved_names: Option<&std::collections::HashMap<i32, String>>,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_world::sprite::runtime::{create_runtime_sprite, load_single_texture, ObjectSprite};
+    use pz_world::save::object_io::UNREGISTERED_SPRITE_ID;
+    let (tables, name) = {
+        let body = object.borrow();
+        if !matches!(body.kind, pz_world::ObjectKind::Object)
+            || !matches!(body.sprite, ObjectSprite::ArchiveUnmanaged(UNREGISTERED_SPRITE_ID))
+        {
+            return Ok(());
+        }
+        let sprites = manager.borrow();
+        let name = body.sprite_name.as_ref().and_then(|name| name.resolve(saved_names, &sprites));
+        (sprites.tables.clone(), name.map(str::to_owned))
+    };
+    let mut retired = pz_entity::RetiredComponents::new();
+    let result = (|| {
+        let sprite = create_runtime_sprite(manager, &tables, &mut retired)?;
+        object.borrow_mut().sprite = ObjectSprite::Native(sprite.clone());
+        if let Some(name) = name {
+            load_single_texture(&sprite, &name, &mut retired)?;
+        }
+        Ok(())
+    })();
+    pz_inventory::component_host::retire_components(retired);
+    result
+}
+
 impl IsoWorld {
     /// Drain prepared chunks before subsequent world observers. No arbitrary
     /// callback is invoked inside with_stream or the WORLD/sprite guards.
@@ -62,6 +96,22 @@ impl IsoWorld {
                             ) else {
                                 return Err("object activation requires sprites, regions and native door tables".into());
                             };
+                            // IsoGridSquare.load assigns obj.square before invoking the
+                            // subclass load hooks. The archive decoder has no owning
+                            // square allocation yet. Bind it before the first live call.
+                            {
+                                let mut body = object.try_borrow_mut().map_err(|_| "map object is in use")?;
+                                if body.square_slot().is_none() {
+                                    body.replace_square(Some(&square), &mut pz_entity::RetiredComponents::new());
+                                }
+                            }
+                            if matches!(object.borrow().kind, pz_world::ObjectKind::FeedingTrough(_) | pz_world::ObjectKind::Thumpable(_)) {
+                                let ctx = self.items.as_ref().and_then(|items| items.components.entity_context());
+                                pz_lua_api::bind_world_object::map_entity::restore_components(&object, ctx)
+                                    .map_err(|e| format!("restoring map furniture at {pos:?}: {e}"))?;
+                            }
+                            restore_map_sprite(&object, sprites, self.items.as_ref().map(|items| &items.dictionary.sprite_names))
+                                .map_err(|e| format!("restoring object sprite at {pos:?}: {e:?}"))?;
                             {
                                 let mut regions = regions.borrow_mut();
                                 let mut sprites = sprites.borrow_mut();
@@ -101,6 +151,26 @@ impl IsoWorld {
                             }
                             for (receiver, call) in calls.0 {
                                 match call {
+                                    WorldCall::ProcessIsoObjectAdd | WorldCall::StaticUpdater { add: true } => {
+                                        with_world(|w| {
+                                            if let Some(cell) = w.cell.as_ref() {
+                                                let mut lists = cell.process_objects.borrow_mut();
+                                                if call == WorldCall::ProcessIsoObjectAdd {
+                                                    lists.add(&receiver);
+                                                } else {
+                                                    lists.static_updater(&receiver, true);
+                                                }
+                                            }
+                                        });
+                                    }
+                                    WorldCall::FeedingTroughCheck => {
+                                        pz_lua_api::bind_world_object::trough::added_to_world(&mut lua.thread, &receiver)
+                                            .map_err(|e| format!("placing trough at {pos:?}: {e}"))?;
+                                    }
+                                    WorldCall::HutchManager { add: true } => {
+                                        pz_lua_api::bind_world_object::hutch::register_master(&receiver, pos)
+                                            .map_err(|e| format!("adding hutch at {pos:?}: {e}"))?;
+                                    }
                                     WorldCall::MannequinInit => {
                                         let sandbox = sandbox(lua).ok_or(
                                             "mannequin activation requires sandbox options",
@@ -162,6 +232,7 @@ impl IsoWorld {
                                             zone.as_ref(),
                                             &self.game_dir,
                                             no_black_clothes,
+                                            self.items.as_ref().map(|env| env as &dyn pz_inventory::ItemEnv),
                                         )
                                         .map_err(
                                             |error| {
@@ -179,12 +250,29 @@ impl IsoWorld {
                                     _ => {}
                                 }
                             }
+                            // doLoadGridsquare initializes a pump immediately after addToWorld.
+                            let pump = {
+                                let sprites = sprites.borrow();
+                                let body = object.borrow();
+                                match &body.sprite {
+                                    pz_world::objects::ObjectSprite::ArchiveUnmanaged(id) =>
+                                        sprites.by_id(*id).is_some_and(|s| s.properties.has_name(&sprites.alias, "fuelAmount")),
+                                    sprite => sprite.try_read(&sprites).map_err(|e| format!("{e:?}"))?
+                                        .is_some_and(|s| s.properties.has_name(&sprites.alias, "fuelAmount")),
+                                }
+                            };
+                            if pump {
+                                let value = pz_lua_api::bind_world::square_queries::square_object_value(&object, pos)
+                                    .map_err(|e| e.to_string())?;
+                                let getter = lua.thread.table_get(&value, &pz_kahlua::Value::str("getPipedFuelAmount"))
+                                    .map_err(|e| e.to_string())?;
+                                lua.thread.call1(&getter, &[value]).map_err(|e| e.to_string())?;
+                            }
                         }
                         ChunkActivationStep::SquareReady { square, x, y, z } => {
                             let (wx, wy) = (cursor.wx, cursor.wy);
                             let result = self.with_stream(|_, cell, ctx| {
-                                // `ErosionMain.LoadGridsquare`. TODO(port): the
-                                // MapObjects/Lua observer adapter after it.
+                                // Erosion precedes the two MapObjects phases.
                                 let hook: Option<
                                     &mut dyn pz_world::save::chunk_file::ChunkLoadHook,
                                 > = match &mut ctx.chunk_hook {
@@ -206,6 +294,24 @@ impl IsoWorld {
                             result
                                 .ok_or("chunk erosion requires streaming state")?
                                 .map_err(|e| e.to_string())?;
+                            let new_objects = with_world(|world| world.cell.as_ref()
+                                .and_then(|cell| cell.chunks.get(&(wx, wy)))
+                                .is_some_and(|chunk| chunk.add_zombies));
+                            let sprites = self.sprites.as_ref().ok_or("MapObjects requires loaded sprites")?;
+                            let dictionary = self.items.as_ref().map(|items| &items.dictionary.sprite_names);
+                            for first_load in [true, false] {
+                                if first_load && !new_objects { continue; }
+                                pz_lua_api::bind_map_objects::dispatch_square(
+                                    &mut lua.thread, &square, sprites, dictionary, first_load,
+                                ).map_err(|e| e.to_string())?;
+                            }
+                            if lua.events.callbacks("LoadGridsquare") != 0 {
+                                let value = {
+                                    let sq = square.borrow();
+                                    pz_lua_api::bind_world::square_value(sq.x, sq.y, sq.z)
+                                };
+                                lua.trigger_event("LoadGridsquare", &[value]);
+                            }
                         }
                         ChunkActivationStep::Complete => {
                             let result = self.with_stream(|streamer, cell, ctx| {

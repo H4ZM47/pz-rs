@@ -16,9 +16,8 @@ fn plays_game_events_through_the_backend() {
     };
     let dir = std::path::PathBuf::from(dir);
     let mut studio = Studio::new(SetupHeaders::from_game_dir(&dir).unwrap());
-    let banks = dir.join("media/sound/banks/Desktop");
-    for name in ["ZomboidSound.strings", "ZomboidSound", "ZomboidMusic"] {
-        studio.load_bank(&banks.join(format!("{name}.bank"))).unwrap();
+    for path in pz_audio::startup_bank_paths(&dir) {
+        studio.load_bank(&path).unwrap();
     }
     let mut b = StudioBackend::new(Arc::new(Mutex::new(studio)));
     let paths = b.event_paths();

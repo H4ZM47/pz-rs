@@ -1738,6 +1738,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn square_sound_starts_between_world_ticks_and_recycles_after_stopping() {
+        let mut pool = crate::world_emitters::WorldEmitters::new(8);
+        let mut b = Mock::default();
+        let mut g = sounds(&[("RemoveBrokenGlass", Some("RemoveBrokenGlass"), None)], &mut b);
+        pool.update(100, &mut ctx!(b, g));
+        let emitter = pool.get_free();
+        emitter.borrow_mut().set_pos(12.5, 13.5, 1.0);
+        let handle = emitter.borrow_mut().play_sound("RemoveBrokenGlass", &mut ctx!(b, g));
+        pool.update(101, &mut ctx!(b, g));
+        assert!(b.calls.iter().any(|c| c == &format!("start {handle}")));
+        assert!(b.calls.iter().any(|c| c == &format!("pos {handle} 12.5 13.5 3")));
+        b.state = PlaybackState::Stopped;
+        pool.update(129, &mut ctx!(b, g));
+        assert_eq!(pool.current().len(), 1);
+        pool.update(130, &mut ctx!(b, g));
+        assert!(pool.current().is_empty());
+        assert!(b.calls.iter().any(|c| c == &format!("release {handle}")));
+        assert!(Rc::ptr_eq(&emitter, &pool.get_free()));
+    }
+
+    #[test]
     fn event_sound_lifecycle() {
         let mut b = Mock::default();
         let mut g = sounds(&[("Step", Some("Foot/Step"), None)], &mut b);

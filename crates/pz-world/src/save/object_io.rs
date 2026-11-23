@@ -4,7 +4,8 @@
 use super::animal::IsoAnimal;
 use super::io::{err, has, BitHeaderWrite, Reader, SaveResult, Writer};
 use super::items::ItemBlob;
-use super::lua_table::{present, LuaKey, LuaTable, LuaValue};
+use pz_inventory::moddata::ItemModData;
+use super::lua_table::{ LuaKey, LuaTable, LuaValue};
 use super::visual::{load_container, save_container, HumanVisual};
 use super::SaveCtx;
 use crate::objects::*;
@@ -1319,17 +1320,25 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
                 container
             });
             container.items.clear();
+            let mut pending_inventory = None;
             let mut worn_items = Vec::new();
             if r.bool()? {
                 let id = r.i32()?;
                 let mut c = ItemContainer::new(None);
+                let start = r.pos;
                 let saved_items = c.load_saved(r, wv, ctx.items)?;
+                let mut record = crate::mannequin::MannequinInventoryRecord {
+                    world_version: wv,
+                    bytes: r.buf[start..r.pos].to_vec(),
+                    worn: Vec::new(),
+                };
                 c.id = id;
                 container = c;
                 let n = r.i8()?;
                 for _ in 0..n.max(0) {
                     let location = r.string()?;
                     let index = r.i16()?;
+                    record.worn.push((location.clone(), index));
                     if let Some(index) = usize::try_from(index)
                         .ok()
                         .and_then(|i| saved_items.get(i))
@@ -1339,6 +1348,7 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
                         worn_items.push((location, index as i16));
                     }
                 }
+                pending_inventory = Some(std::rc::Rc::new(record));
             }
             *slot = Box::new(IsoMannequin {
                 dir,
@@ -1351,6 +1361,7 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
                 human_visual,
                 texture_name,
                 pending_loaded_skin_resolution,
+                pending_inventory,
                 container: Some(container),
                 worn_items,
                 ..IsoMannequin::new(ctx.tables.blood_body_parts)
@@ -1408,10 +1419,10 @@ fn load_thumpable(
             t.cross_speed = r.f32()?;
         }
         if has(bits, 0x200000) {
-            t.table = Some(LuaTable::load(r, wv)?);
+            t.table = Some(LuaTable::load(r, wv)?.into());
         }
         if has(bits, 0x400000) {
-            t.mod_data = Some(LuaTable::load(r, wv)?);
+            t.mod_data = Some(LuaTable::load(r, wv)?.into());
         }
         t.block_all_the_square = has(bits, 0x800000);
         t.is_thumpable = has(bits, 0x1000000);
@@ -1467,11 +1478,11 @@ fn load_thumpable(
             t.light_source_on = true;
         }
         if has(bits, 0x40000000000) {
-            t.build_materials = Some(LuaTable::load(r, wv)?);
+            t.build_materials = Some(LuaTable::load(r, wv)?.into());
         }
     }
     if wv < 248 {
-        if let Some(md) = &mut t.mod_data {
+        if let Some(ItemModData::Archive(md)) = &mut t.mod_data {
             let mut migrated = Vec::new();
             for (k, v) in &md.entries {
                 if let LuaKey::Str(s) = k {
@@ -1481,9 +1492,9 @@ fn load_thumpable(
                 }
             }
             for (key, rest, v) in migrated {
-                t.build_materials
-                    .get_or_insert_with(LuaTable::default)
-                    .rawset(LuaKey::Str(rest), Some(v));
+                let materials = t.build_materials.get_or_insert_with(|| LuaTable::default().into());
+                let ItemModData::Archive(materials) = materials else { return err("expected freshly loaded build materials"); };
+                materials.rawset(LuaKey::Str(rest), Some(v));
                 md.rawset(LuaKey::Str(key), None);
             }
         }
@@ -1492,7 +1503,7 @@ fn load_thumpable(
 }
 
 /// `IsoThumpable.save`. `key_id` is the `IsoObject.keyId` field.
-fn save_thumpable(w: &mut Writer, ctx: &SaveCtx<'_>, t: &IsoThumpable, key_id: i32) {
+fn save_thumpable(w: &mut Writer, ctx: &SaveCtx<'_>, t: &IsoThumpable, key_id: i32) -> SaveResult<()> {
     let mut bits = BitHeaderWrite::alloc(w, 8);
     let mut flag = |b: bool, f: u64| {
         if b {
@@ -1543,13 +1554,17 @@ fn save_thumpable(w: &mut Writer, ctx: &SaveCtx<'_>, t: &IsoThumpable, key_id: i
         bits.add(0x100000);
         w.f32(t.cross_speed);
     }
-    if let Some(tb) = present(&t.table) {
-        bits.add(0x200000);
-        tb.save(w);
+    if let Some(tb) = &t.table {
+        if !tb.try_is_empty()? {
+            bits.add(0x200000);
+            tb.save(w)?;
+        }
     }
-    if let Some(tb) = present(&t.mod_data) {
-        bits.add(0x400000);
-        tb.save(w);
+    if let Some(tb) = &t.mod_data {
+        if !tb.try_is_empty()? {
+            bits.add(0x400000);
+            tb.save(w)?;
+        }
     }
     for (b, f) in [
         (t.block_all_the_square, 0x800000),
@@ -1621,11 +1636,14 @@ fn save_thumpable(w: &mut Writer, ctx: &SaveCtx<'_>, t: &IsoThumpable, key_id: i
     if t.light_source_on {
         bits.add(0x20000000000);
     }
-    if let Some(tb) = present(&t.build_materials) {
-        bits.add(0x40000000000);
-        tb.save(w);
+    if let Some(tb) = &t.build_materials {
+        if !tb.try_is_empty()? {
+            bits.add(0x40000000000);
+            tb.save(w)?;
+        }
     }
     bits.write(w);
+    Ok(())
 }
 
 fn opt_item(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32) -> SaveResult<Option<ItemBlob>> {
@@ -2032,6 +2050,98 @@ fn load_special(
     Ok(())
 }
 
+/// Actual object owner entry point. A mannequin's container serializer and
+/// wear callbacks run after the object guard has ended.
+pub fn save_object_ref(
+    w: &mut Writer,
+    ctx: &SaveCtx<'_>,
+    object: &crate::IsoObjectRef,
+) -> SaveResult<()> {
+    {
+        let body = object.try_borrow().map_err(|_| super::io::SaveError("Borrowed object during save".into()))?;
+        if !matches!(&body.kind, ObjectKind::Mannequin(m) if m.runtime_container.is_some()) {
+            return save_object(w, ctx, &body);
+        }
+    }
+    let mut pins = pz_entity::RetiredComponents::new();
+    pins.push_erased(object.clone());
+    pz_inventory::component_host::retire_components(pins);
+    let container = {
+        let mut o = object.try_borrow_mut().map_err(|_| super::io::SaveError("Borrowed mannequin object".into()))?;
+        let ObjectKind::Mannequin(m) = &mut o.kind else {
+            return save_object(w, ctx, &o);
+        };
+        let Some(container) = m.runtime_container.take() else {
+            return save_object(w, ctx, &o);
+        };
+        // Native clears the container before super.save and restores it only
+        // after success. Keep the captured owner alive even on failure.
+        let mut pins = pz_entity::RetiredComponents::new();
+        pins.push_erased(container.clone());
+        pz_inventory::component_host::retire_components(pins);
+        save_base(w, ctx, &o, false, true, o.mod_data.as_ref())?;
+        let ObjectKind::Mannequin(m) = &mut o.kind else {
+            return err("mannequin changed class during base save");
+        };
+        let displaced = m.runtime_container.replace(container.clone());
+        let mut pins = pz_entity::RetiredComponents::new();
+        if let Some(displaced) = displaced { pins.push_erased(displaced); }
+        pz_inventory::component_host::retire_components(pins);
+        w.i8(m.dir);
+        w.bool(m.init);
+        w.bool(m.female);
+        w.bool(m.zombie);
+        w.bool(m.skeleton);
+        w.string(m.mannequin_script_name.as_deref().unwrap_or(""));
+        w.string(m.pose.as_deref().unwrap_or(""));
+        m.human_visual.save(w);
+        container
+    };
+    w.i8(1);
+    // Native walks the captured container's Java iterator. This Vec-backed
+    // host cannot expose its modCount: reject changed membership explicitly
+    // instead of silently traversing an altered list.
+    let members = container.try_borrow()
+        .map_err(|_| super::io::SaveError("Borrowed mannequin container".into()))?.items.clone();
+    let mut pins = pz_entity::RetiredComponents::new();
+    for item in &members { pins.push_erased(item.clone()); }
+    pz_inventory::component_host::retire_components(pins);
+    for item in &members {
+        ctx.hooks.mannequin_wear_item(object, item)?;
+        let current = container.try_borrow()
+            .map_err(|_| super::io::SaveError("Borrowed mannequin container".into()))?;
+        if current.items.len() != members.len() || current.items.iter().zip(&members)
+            .any(|(a, b)| !std::rc::Rc::ptr_eq(a, b)) {
+            return err("Unsupported: mannequin inventory changed during save iterator");
+        }
+    }
+    let id = container.try_borrow().map_err(|_| super::io::SaveError("Borrowed mannequin container".into()))?.id;
+    w.i32(id);
+    let saved = pz_inventory::shared_save::save_container_ref(&container, w, ctx.items)?;
+    let worn = {
+        let o = object.try_borrow().map_err(|_| super::io::SaveError("Borrowed mannequin object".into()))?;
+        let ObjectKind::Mannequin(m) = &o.kind else {
+            return err("mannequin changed class during save");
+        };
+        m.runtime_worn_items.clone().ok_or_else(|| super::io::SaveError("mannequin has no actual worn owner".into()))?
+    };
+    let mut pins = pz_entity::RetiredComponents::new();
+    pins.push_erased(worn.clone());
+    pz_inventory::component_host::retire_components(pins);
+    let worn = worn.try_borrow().map_err(|_| super::io::SaveError("Borrowed mannequin worn items".into()))?;
+    if worn.items().len() > i8::MAX as usize {
+        return err("too many worn items");
+    }
+    w.i8(worn.items().len() as i8);
+    for entry in worn.items() {
+        let location = entry.location.as_ref().ok_or_else(|| super::io::SaveError("mannequin worn location: java.lang.NullPointerException".into()))?;
+        w.string(&location.location.id());
+        let index = saved.iter().position(|item| std::rc::Rc::ptr_eq(item, &entry.item));
+        w.i16(index.map_or(-1, |i| i as i16));
+    }
+    Ok(())
+}
+
 /// `IsoObject.save` of `o` with its class's override.
 pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResult<()> {
     match &o.kind {
@@ -2230,7 +2340,7 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
             w.i8(1);
             save_device(w, d);
         }
-        ObjectKind::Thumpable(t) => save_thumpable(w, ctx, t, o.key_id),
+        ObjectKind::Thumpable(t) => save_thumpable(w, ctx, t, o.key_id)?,
         ObjectKind::Mannequin(m) => {
             w.i8(m.dir);
             w.bool(m.init);

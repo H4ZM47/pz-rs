@@ -717,6 +717,19 @@ impl<I: 'static> GameCharacter<I> {
     pub fn is_ghost_mode(&self, ctx: &dyn SimContext) -> bool {
         self.cheats.is_set(ctx, "INVISIBLE")
     }
+    /// Capture the source square when the character makes the noise.
+    pub fn world_sound_request(&self, radius: i32, volume: i32, stress_humans: bool) -> context::WorldSoundRequest {
+        context::WorldSoundRequest { source: Some(self.id), x: self.xi(), y: self.yi(), z: self.zi(),
+            radius, volume, stress_humans, zombie_ignore_dist: 0.0, stress_mod: 1.0 }
+    }
+
+    /// `IsoGameCharacter.addWorldSoundUnlessInvisible`.
+    pub fn add_world_sound_unless_invisible(&self, ctx: &dyn SimContext, radius: i32, volume: i32, stress: bool) {
+        if radius > 0 && !self.is_ghost_mode(ctx) {
+            ctx.event(SimEvent::InteractionNoise(self.world_sound_request(radius, volume, stress)));
+        }
+    }
+
     /// `getHoursSurvived`.
     pub fn hours_survived(&self, ctx: &dyn SimContext) -> f64 {
         if self.is_player() {

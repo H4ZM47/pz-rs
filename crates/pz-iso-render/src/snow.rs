@@ -87,6 +87,12 @@ impl Noise2D {
         self.layers.push(NoiseLayer { freq, amp, p });
     }
 
+    /// The full tile test used by SnowGrid.init and gridSquareIsSnow. The
+    /// second grid pass adds edge decorations and never adds a full tile.
+    pub fn full_snow_tile(&self, x: i32, y: i32, fraction: i32) -> bool {
+        self.layered_noise(x.rem_euclid(256) as f32 / 10.0, y.rem_euclid(256) as f32 / 10.0) <= fraction as f32 / 100.0
+    }
+
     /// The snow noise: `initSnowGrid`'s three layers.
     pub fn snow() -> Self {
         let mut n = Noise2D::default();
@@ -192,9 +198,7 @@ impl SnowGrid {
                         continue;
                     }
                 }
-                let nx = (world_x + x).rem_euclid(256);
-                let ny = (world_y + y).rem_euclid(256);
-                if noise.layered_noise(nx as f32 / 10.0, ny as f32 / 10.0) <= frac as f32 / 100.0 {
+                if noise.full_snow_tile(world_x + x, world_y + y, frac) {
                     g.grid[x as usize][y as usize][0] = Some((SQUARE.get_at(world_x + x, world_y + y, min_x), SQUARE.id));
                 }
             }
@@ -343,7 +347,7 @@ pub fn render_snow(s: &Surfaces<'_>, tex: ChunkTexture, level: i32, floors: &[&R
     let (xoff, yoff) = tex.record_offset();
     let mut d = SnowDraw { s, out, z: 0.0 };
     for sq in floors {
-        if sq.cut.room.is_some() || !has(sq, |f| f.exterior) || !has(sq, |f| f.solidfloor) {
+        if sq.cut.room.is_some() || !sq.is_exterior() || !has(sq, |f| f.solidfloor) {
             continue;
         }
         let shore = if has(sq, |f| f.water) || water_valid(sq) {
@@ -455,10 +459,9 @@ fn render_snow_tile(s: &Surfaces<'_>, d: &mut SnowDraw<'_, '_>, grid: &SnowGrid,
         _ => return,
     }
     if let Some(t) = t1 {
-        let var = ((sq.x + sq.y) % t.len as i32) as usize;
-        d.tile(t.tiles[var], sx, sy, *cols, square);
+        d.tile(t.get_at(sq.x, sq.y, 0), sx, sy, *cols, square);
         if let Some(t2) = t2 {
-            d.tile(t2.tiles[var], sx, sy, *cols, false);
+            d.tile(t2.get_at(sq.x, sq.y, 0), sx, sy, *cols, false);
         }
     }
 }
@@ -468,7 +471,7 @@ pub fn square_is_snow(s: &Surfaces<'_>, sq: &RenderSquare) -> bool {
     if s.climate.snow_target <= 0 {
         return false;
     }
-    if !has(sq, |f| f.solidfloor) || has(sq, |f| f.water) || water_valid(sq) || !has(sq, |f| f.exterior) || sq.cut.room.is_some() {
+    if !has(sq, |f| f.solidfloor) || has(sq, |f| f.water) || water_valid(sq) || !sq.is_exterior() || sq.cut.room.is_some() {
         return false;
     }
     let (wx, wy) = (sq.x.div_euclid(8), sq.y.div_euclid(8));

@@ -312,9 +312,9 @@ draws in the same order. Their tables (`Brochure`, `Flier`, `Newspaper`,
 `Book`, `Magazine`, `ComicBook`, `Photo`, `Job`, the `ItemGenerationConstants`
 lists and the `ModelKey` / `ItemKey` / `FluidKey` / `ItemTag` ids they use) are
 read from the installed jar's static initialisers (`on_create_data`), so
-nothing is hard-coded. The exceptions are `onCreateScarecrow` and
-`onCreateSkeletonDisplay`, which build an `IsoMannequin` and fail as
-`pz.host.Unsupported`. `scratchTicketWinner` draws from the weighted
+the installed tables supply their values. `onCreateScarecrow` and
+`onCreateSkeletonDisplay` initialize a detached mannequin from its script
+and serialize it into the moveable item with its clothing and worn indices. `scratchTicketWinner` draws from the weighted
 `ticketWinnings` map in declaration order: the JDK shuffles that immutable
 map's iteration order per run, so no order is the original's.
 Constructor/private helpers, successful resolver cache and native factory
@@ -668,16 +668,18 @@ all installed assets, render paths or foreign platforms.
       `bind_popman::install_population` (#73).
 - [ ] World sounds: `bind_zombie::install_world_sounds` (#75).
 - [ ] States world: `bind_states::install_state_world` (#74).
-- [ ] Perks: `PerkFactory::init` before Lua runs (#26).
+- [x] Perks: `boot::load_scripts` calls `PerkFactory::init` before
+      `LuaManager::init` and client Lua loading (#26).
 
-- [ ] Perks initialised before Lua loads (#26).
-- [ ] BodyLocations.lua runs at boot so the "Human" body-location group and
-      clothing hide/alt rules exist (#26).
+- [x] Perks initialised before Lua loads (same boot call as above) (#26).
+- [x] `BodyLocations.lua` is included in `LuaManager::load_all_client`'s
+      recursive shared-Lua load, before client Lua. Successful installed
+      execution of the clothing hide/alt rules still needs validation (#26).
 - [x] UI avatars: `pz_engine::ui_models::install(game_dir, fs)` before Lua
       loads (installs the `bind_ui3d::UIModelRenderer`); `TextManager` init
       (`bind_text::boot`) in the engine boot (#115).
-- [ ] ScriptManager loading in the windowed engine boot (only the client's
-      `--png`/`--headless-frames` paths load scripts) (#115).
+- [x] Windowed and headless `App::boot` call `boot::load_scripts` before
+      creating the Lua environment; this includes ScriptManager loading (#115).
 
 - [x] `UIManager.init()` is `pz_lua_api::hud::init_ui(&mut thread)` (builds
       `SpeedControls`; the in-game HUD when a player exists) — boot uses it
@@ -718,9 +720,13 @@ all installed assets, render paths or foreign platforms.
       `bind_input::after_ui_update(&mut mgr)`; apply
       `bind_input::take_window_requests()`; `gp.poll(c)` first (#30/#32).
 - [x] Sound: `SoundManager` update and emitter ticks through
-      `sound_system().with(..)`; listener from the active camera (#78/#83).
+      the shared sound system. The local player updates the Studio listener with
+      the isometric orientation, floor-height scale and deaf trait in IsoPlayer.update.
+      The Studio mixer currently consumes the first active listener.
 - [x] `UITransition.UpdateAll` → `bind_misc::ui_transition_update_all()` (#20).
-- [ ] Vsync from Core options; `FrameParams` size from Core screen size.
+- [x] The render surface uses Core's VSync setting at creation and applies
+      queued option changes before drawing the next frame. UI frame dimensions
+      come from Core's screen width and height.
 - [x] `GameTime::update` / `update_game_time(thread)` once per frame
       before the world (#49).
 - [ ] Pathfinding: PathHost `update_thread` then `update_main` before the
@@ -845,8 +851,9 @@ all installed assets, render paths or foreign platforms.
       the character's live current square and return the world's canonical
       handle; `getCell` returns the installed cell. `getJoypadBind` reads
       the player's input component. Unloaded squares/cells return `nil`.
-- [ ] `Basements.loadSavefile` / `writeSavefile` (`map_basements.bin`): a
-      loaded world recomputes its placements.
+- [x] `Basements.loadSavefile` and `writeSavefile` on the world-load path.
+      A saved world reads its recorded placements before meta-grid loading.
+      A new world writes its generated placements using the installed world version.
 - [x] `TileOverlays.updateTileOverlaySprite(obj)` when a square's objects
       are loaded: `bind_item_picker::load_gridsquare`
       (`LoadGridsquarePerformanceWorkaround.LoadGridsquare`) calls
@@ -1781,11 +1788,10 @@ registered):
       (`climbOverFence`, `climbThroughWindow`, ... in
       `bind_character_sim::climb`) and the player's update runs the queue with
       the states world (`GameCharacter::run_path_requests`). A short E press
-      opens or closes a window, a held E (0.5 s) climbs through it; the open
-      and close action still needs `faceThisObject` (the queued
-      `FaceObject` request is not handled), and the climb check of
-      `IsoThumpable` and `IsoWindowFrame` is not bound to Lua yet;
-      `SimContext::wet_ground_final_value`, `clothing_degradation`
+      opens or closes a window, and a held E (0.5 s) climbs through it.
+      The shipped actions use live facing, turning and climb eligibility for
+      windows, thumpables and frames. Remaining simulation inputs include
+      `SimContext::wet_ground_final_value` and `clothing_degradation`
       (#135).
 
 - [ ] Ragdolls, boot: after ScriptManager loads `media/scripts/ragdolls`,
@@ -1828,21 +1834,21 @@ registered):
       `unregister_device`; DeviceData preset generation takes the radio
       as its `ChannelLists` (#200).
 
-- [ ] Windows (#208): `StatesEngine::player_input` returns the local
-      player's frame `PlayerInput` (Open/Close/Smash window states read
-      `pressedMovement` / `pressedCancelAction` from it); `toggle_window`
-      must run `IsoWindow.ToggleWindow` (also used by `OpenWindowState`
-      and `CloseWindowState`); `weapon_hit_thumpable` fires Lua
-      `OnWeaponHitThumpable`; `vehicle_window_destroyed` /
-      `vehicle_window_hit` from pz-vehicles (`smashCarWindow`).
-      `window_closing_success` should answer from
-      `pz_characters::character::states::window::closing_window(chr)` of
-      the characters on the window's squares. `SimContext::easy_climbing`
-      = `SandboxOptions.easyClimbing`. Lua `ISOpenCloseWindow` and
-      `ISSmashWindow` call `GameCharacter::open_window`, `close_window`,
-      `smash_window`, `smash_car_window`. Not ported: the debug
-      window-unlock cheat, the `Hit_Door` render effect on a bare-handed
-      barricade hit.
+- [x] Regular window interactions (#208). Stock Lua open, climb, close and
+      smash actions run through the player animation states with real input,
+      including movement cancellation. A successful close blocks another
+      climb. Window toggles notify Lua and update local-player music. Bare-hand
+      impacts notify Lua before damage. Vehicle window smashes retain and
+      damage the selected vehicle part. The installed-session test exercises
+      world windows and save/reload. The vehicle-part regression uses a live
+      vehicle constructed in the binding test.
+- [x] Window navigation (#208). Opens, closes, smashes and glass removal
+      update the path service with the loaded chunk ID. Each edit captures
+      the eight neighboring squares and the pane before Lua can reverse it.
+      The next rendered frame refreshes the modified tile and its cutaways.
+- [x] Surviving barricades shake on impact (#208). The door sprite effect
+      option controls activation. Repeated hits reuse the active phase,
+      and the renderer applies the four corner offsets until expiry.
 
 - [ ] Radio devices: implement `pz_inventory::device_sim::DeviceEnv`
       per device (GameTime minutes stamp / multiplier, `Rand`, the
@@ -1978,9 +1984,11 @@ registered):
       actual item identity and compression order; loaded clothing is retained.
 - [ ] Remaining mannequin lifecycle: attach the canonical Human worn owner at
       constructor time; resolve loaded implicit skin at the exact file-load
-      phase; restore actual parent/source-grid userdata; execute ordinary
-      save's wearItem/syncModel reconciliation for externally edited containers;
-      retain native script/model objects and implement SoftReset's job gate.
+      phase; restore actual parent/source-grid userdata; retain native
+      script/model objects and implement SoftReset's job gate. Live saves now
+      re-equip container items, refresh their visual state, and use the compressed
+      item order when writing worn membership. Native atlas and AnimatedModel
+      updates still require the render work below.
       Production erosion, MapObjects/LoadGridsquare and other addToWorld
       subsystem registries still need their actual adapters. Cursor square
       replacement errors are explicit; chunks are not yet canonical owners.
@@ -2055,9 +2063,10 @@ registered):
       `OnClothingUpdated` for a player call `chr.update_vision_effects(sm)`
       (the blur target from glasses and `SHORT_SIGHTED`); the per-frame
       `updateVisionEffectTargets` already runs in `update_player`.
-- [ ] GPU faults: check `Gpu::error()` after `render_frame` (a lost
-      device stops drawing; out-of-memory chunk/atlas textures are left
-      out) and stop or rebuild the `Gpu` with a clear message (#120).
+- [x] GPU faults: `App::frame` checks `Gpu::error()` after `render_frame`,
+      retains the first engine error and stops before later frame callbacks.
+      The existing error exit reports the graphics cause; retirement cleanup
+      runs at the outer boundary. Actual device-loss testing remains open (#120).
 
 - [ ] Frame extras (#141): build the world frame with
       `frame::world_frame_extras(.., &mut FrameExtras { .. }, ..)`; a field

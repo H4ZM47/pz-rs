@@ -1072,7 +1072,9 @@ pub(crate) fn create_containers_from_sprite_properties(
     else {
         return Ok(());
     };
-    if o.container.is_some() {
+    // Linked trough parts never create a feed inventory from their sprite.
+    // The getMasterTrough scan returns another receiver or null for a slave.
+    if o.has_main_container() || matches!(&o.kind, ObjectKind::FeedingTrough(t) if t.linked_x>0 && t.linked_y>0) {
         return Ok(());
     }
     let sp = &sp;

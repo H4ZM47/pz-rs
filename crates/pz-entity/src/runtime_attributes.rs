@@ -735,8 +735,7 @@ impl RuntimeAttributes {
                     )));
                 };
                 *mask |= 1i64.wrapping_shl(slot.id as u32);
-                writer.buf[start + index * 8..start + index * 8 + 8]
-                    .copy_from_slice(&mask.to_be_bytes());
+                writer.patch_i64(start + index * 8, *mask);
                 slot.instance
                     .try_borrow()
                     .map_err(|_| RuntimeError::BorrowedTransient("AttributeInstance"))?

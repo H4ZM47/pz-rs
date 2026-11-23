@@ -99,7 +99,7 @@ fn window_lighting_does_not_read_an_unneeded_sprite_body() {
 }
 
 #[test]
-fn native_and_archive_unmanaged_sprites_are_never_plain_cached_tile_draws() {
+fn runtime_sprite_draws_use_its_own_fields_and_archive_ids_require_a_body() {
     let manager = Rc::new(RefCell::new(sprites()));
     let mut retired = RetiredComponents::new();
     let sprite = native(&manager, &mut retired);
@@ -114,13 +114,11 @@ fn native_and_archive_unmanaged_sprites_are_never_plain_cached_tile_draws() {
     let m = manager.borrow();
     let w = view(&cell, &meta, &m);
     let mut cache = SpriteCache::new();
-    assert!(matches!(
-        pz_world_render::render_square(&w, &square, &mut cache, &mut NoTextures),
-        Err(RuntimeHostError::Unsupported {
-            operation: "native runtime sprite render host",
-            ..
-        })
-    ));
+    pz_world::sprite::runtime::set_tint_mod(&sprite, [0.2, 0.5, 0.9, 1.0]).unwrap();
+    let rendered = pz_world_render::render_square(&w, &square, &mut cache, &mut NoTextures).unwrap();
+    let view = rendered.objects[0].sprite.as_ref().unwrap();
+    assert!(view.texture.is_none());
+    assert_eq!(view.tint_mod, [0.2, 0.5, 0.9]);
     assert!(Rc::ptr_eq(
         square.objects[0].borrow().sprite.native_slot().unwrap(),
         &sprite

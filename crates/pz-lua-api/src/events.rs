@@ -522,3 +522,32 @@ mod jar_name_tests {
         assert!(names_from_jar(&jar).is_err());
     }
 }
+
+#[cfg(test)]
+mod electricity_tests {
+    use super::*;
+
+    #[test]
+    fn registered_electricity_event_adds_dispatches_and_removes_callback() {
+        let env = TableRef::new();
+        let mut thread = Thread::new(env.clone());
+        pz_kahlua::stdlib::install(&mut thread, None).unwrap();
+        let events = EventManager::register(&env, "Events", &["OnElectricityChanged"]);
+        let script = pz_kahlua::stdlib::load_string(
+            "calls = 0; callback = function(value) calls = calls + value end; Events.OnElectricityChanged.Add(callback)",
+            Some("electricity-event"),
+            env.clone(),
+        ).unwrap();
+        thread.pcall(&script, &[]).unwrap();
+        assert_eq!(events.callbacks("OnElectricityChanged"), 1);
+        assert!(events.trigger(&mut thread, "OnElectricityChanged", &[Value::Num(3.0)]));
+        assert_eq!(env.get_str("calls").as_num(), Some(3.0));
+        let remove = pz_kahlua::stdlib::load_string(
+            "Events.OnElectricityChanged.Remove(callback)", Some("electricity-event-remove"), env.clone(),
+        ).unwrap();
+        thread.pcall(&remove, &[]).unwrap();
+        assert_eq!(events.callbacks("OnElectricityChanged"), 0);
+        assert!(!events.trigger(&mut thread, "OnElectricityChanged", &[Value::Num(3.0)]));
+        assert_eq!(env.get_str("calls").as_num(), Some(3.0));
+    }
+}

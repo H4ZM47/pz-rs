@@ -87,6 +87,7 @@ pub struct RenderView {
 /// The render side of the world: the tile depth tables, the render
 /// squares and their lighting, each player's chunk textures and cutaways.
 pub struct WorldRender {
+    drawn_door_hits: Vec<pz_pathfind::mover::ObjectRef>,
     depth: TileDepthTextureManager,
     assignments: TileDepthTextureAssignmentManager,
     geometry: TileGeometryManager,
@@ -96,7 +97,10 @@ pub struct WorldRender {
     drop_shadow: Option<Texture>,
     /// The `blood_floor_*` tiles (`Texture.getSharedTexture` in
     /// `renderOneLevel_Blood`).
-    blood_textures: BloodTextures,
+    surface_textures: GroundTextures,
+    surface_checks: [pz_iso_render::weather::SurfaceChecks; MAX_PLAYERS],
+    winter: [bool; MAX_PLAYERS],
+    puddle_geometry_settings: Option<(i32, bool)>,
     sprites: SpriteCache,
     pub world: RenderWorld,
     pub lighting: WorldLighting,
@@ -176,16 +180,23 @@ impl WorldRender {
         .filter_map(|p| tm.shared_texture_flags(fs, p, 3))
         .collect();
         WorldRender {
+            drawn_door_hits: Vec::new(),
             depth,
             assignments,
             geometry,
             seams,
             cutaway_stencils,
             drop_shadow: tm.shared_texture_flags(fs, "media/textures/NewShadow.png", 0),
-            blood_textures: BloodTextures(
+            surface_checks: Default::default(),
+            winter: Default::default(),
+            puddle_geometry_settings: None,
+            surface_textures: GroundTextures(
                 pz_iso_render::blood::FLOOR_BLOOD_TYPES
                     .iter()
-                    .filter_map(|&name| Some((name, tm.shared_texture(fs, name)?)))
+                    .map(|&name| name.to_owned())
+                    .chain(["media/textures/river_bottom.png", "media/textures/puddles_hm.png", "media/textures/CMVehicleReflection/ref_am.png"].map(str::to_owned))
+                    .chain((0..48).map(|index| format!("e_newsnow_ground_1_{index}")))
+                    .filter_map(|name| tm.shared_texture(fs, &name).map(|tex| (name, tex)))
                     .collect(),
             ),
             sprites: SpriteCache::new(),
@@ -338,6 +349,31 @@ impl WorldRender {
         }
     }
 
+    fn update_door_hits(&mut self, runtime: &pz_world_states::StatesRuntime, cell: &pz_world::IsoCell) -> HostResult<()> {
+        let active = runtime.visible_door_hits(cell)?;
+        let previous = std::mem::take(&mut self.drawn_door_hits);
+        for &pos in &previous {
+            if !active.iter().any(|(p, _)| *p == pos) { self.set_door_offsets(pos, None); }
+        }
+        for (pos, corners) in active {
+            self.set_door_offsets(pos, Some(corners));
+            self.drawn_door_hits.push(pos);
+        }
+        Ok(())
+    }
+
+    fn set_door_offsets(&mut self, pos: pz_pathfind::mover::ObjectRef, offsets: Option<[[f32; 2]; 4]>) {
+        let Some(object) = self.world.squares.get_mut(&(pos.x, pos.y, pos.z))
+            .and_then(|sq| sq.objects.iter_mut().find(|o| o.id == pos.id)) else { return };
+        if object.render_effect.as_deref() == offsets.as_ref() { return; }
+        match (&mut object.render_effect, offsets) {
+            (Some(old), Some(new)) => **old = new,
+            (slot, new) => *slot = new.map(Box::new),
+        }
+        self.invalidate_floor_chunk(pos.x.div_euclid(8), pos.y.div_euclid(8), pos.z,
+            pz_iso_render::chunk::dirty::OBJECT_MODIFY);
+    }
+
     /// The same actual chunk cache invalidation used by RenderInvalidation,
     /// without borrowing unrelated lighting/sprite inputs before Native PC20.
     pub(crate) fn invalidate_floor_chunk(&mut self, wx: i32, wy: i32, level: i32, flags: u64) {
@@ -380,9 +416,15 @@ impl WorldRender {
             assignments: &self.assignments,
             geometry: &self.geometry,
         };
-        let perf_puddles = pz_lua_api::bind_core::shared_core()
-            .borrow()
-            .get_perf_puddles();
+        let core = pz_lua_api::bind_core::shared_core();
+        let (perf_puddles, low_quality, shader) = {
+            let core = core.borrow();
+            (core.get_perf_puddles(), core.performance.puddles_quality == 2, core.performance.water_quality != 2)
+        };
+        if self.puddle_geometry_settings.replace((perf_puddles, low_quality)).is_some_and(|old| old != (perf_puddles, low_quality)) {
+            self.world.puddles_recalc.extend(self.world.squares.keys().copied());
+            for cache in &mut self.caches { cache.invalidate_all(dirty::REDRAW); }
+        }
         self.pending.apply(
             view,
             &mut self.world,
@@ -395,6 +437,11 @@ impl WorldRender {
                 perf_puddles,
             },
         )?;
+        let flow = pz_lua_api::bind_world::lua_world::shared_water_flow();
+        let flow = flow.try_borrow().map_err(|_| RuntimeHostError::Borrowed("IsoWaterFlow"))?;
+        for (wx, wy) in self.world.refresh_water(&flow, shader) {
+            for cache in &mut self.caches { cache.invalidate_chunk(wx, wy, dirty::REDRAW); }
+        }
         Ok(())
     }
 
@@ -674,9 +721,7 @@ impl WorldRender {
             });
             pz_input::set_world_mouse(hit);
         }
-        // TODO(port): world items, the water and sky surfaces
-        // (`SkyBox`, `SurfaceChecks`) and the
-        // `FrameExtras` (flies, highlights, markers, vision cone, fog).
+        // TODO(port): world items and the remaining FrameExtras passes.
         let mut objects = FrameObjects::default();
         // `DeadBodyAtlas.render()`'s jobs, drawn before the world.
         let mut corpse_jobs = Vec::new();
@@ -802,7 +847,8 @@ impl WorldRender {
             .collect();
         let inputs = self.world.chunk_inputs(&order);
         let mut cmds = corpse_jobs;
-        let chunks = plan_chunks(&mut self.caches[p], &cam, size, &inputs, &mut cmds);
+        let target = view.cell.snow_target;
+        let winter = target > 0 && pz_lua_api::bind_world::snow::winter();
         let maps = pz_iso_render::seam::WorldDepthMaps {
             tiles: &self.depth,
             seams: self.seams.clone(),
@@ -830,28 +876,40 @@ impl WorldRender {
             state: &state,
             world: &self.world,
         };
-        // TODO(port): the climate, water, puddles, sky reflection, rain
-        // and fish splash inputs; with their defaults only the floor blood
-        // draws.
-        let (blood_decals, world_age_hours) = surface_values();
+        // Sample the previous sky targets before the end-of-frame sky pass.
+        let (settings, world_age_hours) = surface_values();
+        let perf_skybox = pz_lua_api::bind_core::shared_core().borrow().get_perf_skybox();
+        let night = v.climate.climate.game_night;
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default().as_millis() as i64;
+        let (water, puddles, sky) = {
+            let shared = pz_lua_api::bind_puddles::shared_puddles();
+            let state = shared.borrow();
+            (state.water, state.state, state.sky.reflection(now_ms, settings.use_shaders, perf_skybox, night, &self.surface_textures))
+        };
         let surfaces = Surfaces {
-            settings: SurfaceSettings {
-                blood_decals,
-                lock_fps: pz_lua_api::bind_climate::climate_settings().lock_fps,
-                ..Default::default()
-            },
-            climate: Default::default(),
-            water: Default::default(),
-            puddles: Default::default(),
-            sky: Default::default(),
+            settings,
+            climate: pz_iso_render::weather::ClimateInputs { snow_target: target, winter, ..Default::default() },
+            water,
+            puddles,
+            sky,
             world_age_hours,
-            meta_grid_min_x: 0,
+            meta_grid_min_x: view.meta.min_x,
             world: &self.world,
-            textures: &self.blood_textures,
+            textures: &self.surface_textures,
             frame: Default::default(),
             rain: None,
             fish: None,
         };
+        let enable_snow = pz_lua_api::bind_sandbox::current_bool("EnableSnowOnGround").unwrap_or(true);
+        let changed = self.surface_checks[p].run(&surfaces, enable_snow, now_ms);
+        if changed.all || self.winter[p] != winter {
+            self.caches[p].invalidate_all(dirty::REDRAW);
+        } else if changed.level_zero {
+            for &(wx, wy) in &order { self.caches[p].invalidate(wx, wy, 0, dirty::REDRAW); }
+        }
+        self.winter[p] = winter;
+        let chunks = plan_chunks(&mut self.caches[p], &cam, size, &inputs, &mut cmds);
         let r = ChunkRenderer::new(cam, &maps, (v.width, v.height))
             .with_cutaways(Some(cv))
             .with_render_infos(&self.infos, p)
@@ -921,28 +979,39 @@ impl WorldRender {
             &mut late,
         );
         out.extend(cmds);
+        let effects = pz_lua_api::bind_puddles::shared_puddles();
+        let draw = effects.borrow_mut().sky.render(now_ms, v.multiplier, settings.use_shaders, perf_skybox);
+        out.extend(draw);
     }
 }
 
 /// The floor blood tiles by name.
-struct BloodTextures(std::collections::HashMap<&'static str, Texture>);
+struct GroundTextures(std::collections::HashMap<String, Texture>);
 
-impl SurfaceTextures for BloodTextures {
+impl SurfaceTextures for GroundTextures {
     fn texture(&self, name: &str) -> Option<Texture> {
         self.0.get(name).cloned()
     }
 }
 
-/// `Core.getOptionBloodDecals()` and `GameTime.getWorldAgeHours()`; a
-/// borrowed owner draws no blood this frame.
-fn surface_values() -> (i32, f32) {
-    let decals = pz_lua_api::bind_core::shared_core()
-        .try_borrow()
-        .map_or(0, |c| c.get_option_blood_decals());
+/// Snapshot the same Core options the native water, puddle and floor-blood
+/// passes read. A borrowed owner draws no blood this frame.
+fn surface_values() -> (SurfaceSettings, f32) {
+    let settings = pz_lua_api::bind_core::shared_core().try_borrow().map_or_else(
+        |_| SurfaceSettings { blood_decals: 0, ..Default::default() },
+        |core| SurfaceSettings {
+            water_quality: core.performance.water_quality,
+            puddles_quality: core.performance.puddles_quality,
+            perf_puddles: core.get_perf_puddles(),
+            blood_decals: core.get_option_blood_decals(),
+            lock_fps: core.performance.lock_fps,
+            use_shaders: core.get_use_shaders(),
+        },
+    );
     let age = pz_lua_api::bind_climate::shared_game_time()
         .try_borrow()
         .map_or(0.0, |t| t.world_age_hours() as f32);
-    (decals, age)
+    (settings, age)
 }
 
 impl IsoWorld {
@@ -969,6 +1038,7 @@ impl IsoWorld {
         let IsoWorld {
             render,
             render_chunks,
+            states_runtime,
             sprites,
             game_dir,
             regions,
@@ -1035,7 +1105,12 @@ impl IsoWorld {
                     .try_borrow_mut()
                     .map_err(|_| RuntimeHostError::Borrowed("actual render texture manager"))?;
                 r.sync_chunks(&wv, render_chunks, fs, &mut textures)?;
+                let mut invalidation = r.invalidation(sprites.tables.flag.water, num_players);
+                for pos in w.geometry.take_render_changes() {
+                    invalidation.object_geometry_changed(pos);
+                }
                 r.apply_pending(&wv, regions, fs, &mut textures)?;
+                r.update_door_hits(states_runtime, cell)?;
                 r.init_fx_sprites(&wv, fs, &mut textures);
             }
             // Character resources may lazily load hair or equipped-item
@@ -1054,7 +1129,7 @@ impl IsoWorld {
         })?;
         // TODO(port): `Gizmos.render`, `DrawIsoCursorHelper`, the
         // pathfinding/sound/vocals debug renders, `FBORenderAreaHighlights`,
-        // `LineDrawer.render`, `SkyBox.render`.
+        // `LineDrawer.render`.
         Ok(())
     }
 }

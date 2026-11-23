@@ -11,7 +11,8 @@ use pz_inventory::io::{SaveError, SaveResult};
 use pz_inventory::moddata::{adopt_archive, live_to_archive};
 use pz_kahlua::TableRef;
 
-use crate::objects::IsoObject;
+use crate::objects::{IsoObject, ObjectKind};
+use pz_inventory::moddata::ItemModData;
 use crate::save::lua_table::LuaTable;
 
 /// The live mod-data table. Equality is value equality of the saved form,
@@ -32,6 +33,9 @@ impl PartialEq for LiveModData {
 impl IsoObject {
     /// `getModData()`: the live table, made on first use.
     pub fn install_runtime_mod_data(&mut self) -> SaveResult<TableRef> {
+        if let ObjectKind::Thumpable(t) = &mut self.kind {
+            return Ok(t.mod_data.get_or_insert_with(|| ItemModData::Live(TableRef::new())).live_table()?);
+        }
         if let Some(LiveModData(table)) = &self.runtime_mod_data {
             return Ok(table.clone());
         }
@@ -46,6 +50,9 @@ impl IsoObject {
 
     /// `hasModData()`: a table that is not empty.
     pub fn has_mod_data(&self) -> SaveResult<bool> {
+        if let ObjectKind::Thumpable(t) = &self.kind {
+            return Ok(t.mod_data.as_ref().map(ItemModData::try_is_empty).transpose()? == Some(false));
+        }
         match &self.runtime_mod_data {
             Some(LiveModData(table)) => Ok(!table
                 .try_is_empty()

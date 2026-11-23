@@ -337,3 +337,20 @@ impl ComponentScript for SpriteOverlayConfigScript {
         self.check_scripts(sm)
     }
 }
+
+impl SpriteOverlayConfigScript {
+    /// SpriteOverlayConfigScript.getVersion adds styles in Java map order.
+    pub fn dictionary_version_text(&self, script_name: &str) -> Option<String> {
+        let mut text = format!("{script_name}{}", self.is_valid());
+        if self.is_valid() {
+            for style in self.styles().values() {
+                text.push_str(style.style_name()?);
+                text.push_str(&style.progress.to_string());
+                for face in style.faces.iter().flatten() {
+                    super::sprite_config_script::append_face_version(&mut text, &face.face_name, &face.layers);
+                }
+            }
+        }
+        Some(text)
+    }
+}

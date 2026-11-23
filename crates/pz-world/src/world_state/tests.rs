@@ -796,3 +796,48 @@ fn planks(object: &crate::IsoObjectRef) -> i32 {
     };
     b.num_planks()
 }
+
+#[test]
+fn window_house_alarm_selects_the_indoor_room_and_checks_power_at_its_origin() {
+    use crate::{BuildingDef, IsoMetaCell, RoomDef, RoomIdx, RoomRect};
+    struct Fixed;
+    impl crate::GameRand for Fixed {
+        fn next(&mut self, _: i32) -> i32 { 0 }
+    }
+    let mut w = World::new();
+    w.meta = IsoMetaGrid::with_bounds(0, 0, 0, 0);
+    let mut cell = IsoMetaCell::new(0, 0);
+    let mut building = BuildingDef::new(&mut Fixed);
+    building.alarm_decay = 7;
+    for i in 0..2 {
+        let mut room = RoomDef::new(i, "room".into());
+        room.building = Some(BuildingIdx(0));
+        room.rects.push(RoomRect::new(10, 10, 5, 3));
+        room.CalculateBounds();
+        let idx = RoomIdx(i as u32);
+        building.rooms.push(idx);
+        cell.rooms.insert(i, idx);
+        w.meta.room_defs.push(room);
+    }
+    w.meta.building_defs.push(building);
+    *w.meta.cell_slot(0, 0) = Some(cell);
+    w.put(10, 10, 0, true);
+    w.put(11, 10, 0, false);
+    w.sq(10, 10, 0).borrow_mut().room_id = 0;
+    for powered in [true, false] {
+        w.meta.building_defs[0].alarmed = true;
+        for room in &mut w.meta.room_defs { room.explored = false; }
+        assert_eq!(window_alarm_room(&w.cell, &w.meta, (11,10,0), false).unwrap(), Some((0, BuildingIdx(0))));
+        assert_eq!(trigger_room_alarm(&w.cell, &mut w.meta, 0, |decay| { assert_eq!(decay, 7); powered }).unwrap(), powered.then_some((12,11)));
+        assert!(w.meta.room_defs.iter().all(|r| r.explored));
+        assert!(!w.meta.building_defs[0].alarmed);
+        assert_eq!(trigger_room_alarm(&w.cell, &mut w.meta, 0, |_| panic!("disarmed")).unwrap(), None);
+    }
+    w.meta.register_zone("substation", "NoPowerOrWater", 10, 10, 0, 1, 1);
+    w.meta.building_defs[0].alarmed = true;
+    assert_eq!(trigger_room_alarm(&w.cell, &mut w.meta, 0, |_| panic!("unpowered zone")).unwrap(), None);
+    assert!(!w.meta.building_defs[0].alarmed);
+    w.sq(11,10,0).borrow_mut().room_id = 1;
+    w.meta.building_defs[0].alarmed = true;
+    assert_eq!(window_alarm_room(&w.cell, &w.meta, (11,10,0), false).unwrap(), Some((1, BuildingIdx(0))));
+}

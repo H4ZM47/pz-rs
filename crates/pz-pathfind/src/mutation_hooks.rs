@@ -19,6 +19,27 @@ use pz_world::{IsoMetaGrid, IsoSpriteManager};
 use crate::service::PathfindService;
 use crate::square_bits::{SquareBits, SquareBitsHooks};
 
+impl crate::service::SquareChanges {
+    /// Capture the path bits while the changed geometry is still current.
+    pub fn notify(
+        &self,
+        sprites: &IsoSpriteManager,
+        meta: &IsoMetaGrid,
+        cell: &IsoCell,
+        hooks: &dyn SquareBitsHooks,
+        sq: (i32, i32, i32),
+    ) {
+        let Some(square_owner) = cell.get_grid_square(sq.0, sq.1, sq.2) else {
+            return;
+        };
+        let square = square_owner.borrow();
+        let Ok(bits) = SquareBits::new(sprites, meta, cell, hooks) else {
+            return;
+        };
+        self.square_changed(&square, &bits);
+    }
+}
+
 /// What a square mutation tells the pathfinder.
 pub struct PathfindMutationHooks<'a> {
     pub service: &'a mut PathfindService,
@@ -35,14 +56,9 @@ impl PathfindMutationHooks<'_> {
     /// the cell. Squares of chunks the pathfinder was not given are
     /// skipped (`loadedBits & 2`).
     pub fn square_changed(&mut self, cell: &IsoCell, sq: (i32, i32, i32)) {
-        let Some(square_owner) = cell.get_grid_square(sq.0, sq.1, sq.2) else {
-            return;
-        };
-        let square = square_owner.borrow();
-        let Ok(bits) = SquareBits::new(self.sprites, self.meta, cell, self.bits_hooks) else {
-            return;
-        };
-        self.service.square_changed(&square, &bits);
+        self.service
+            .square_changes()
+            .notify(self.sprites, self.meta, cell, self.bits_hooks, sq);
     }
 
     /// `PathfindNative.addChunkToWorld(chunk)` after `IsoChunk.setSquare`

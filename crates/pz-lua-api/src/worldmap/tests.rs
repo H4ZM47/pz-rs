@@ -403,7 +403,7 @@ fn visited_instance_needs_meta_grid_then_loads_updates_and_saves() {
     let core = crate::bind_core::shared_core();
     {
         let mut c = core.borrow_mut();
-        c.game_mode = "Sandbox".into();
+        c.set_game_mode("Sandbox").unwrap();
         c.game_save_world = "visited-test".into();
         c.set_no_save(false);
     }

@@ -46,6 +46,8 @@ pub struct IsoGridSquare {
     /// capability is not a substitute for a complete chunk receiver.
     pub chunk_hot_save: Option<ChunkHotSaveRef>,
     pub room_id: i64,
+    /// IsoGridSquare.puddlesCacheSize and puddlesCacheLevel (runtime only).
+    pub puddles_cache: std::cell::Cell<(f32, f32)>,
     /// `roofHideBuilding`: the building of the `emptyoutside` room here.
     pub roof_hide_building: Option<BuildingIdx>,
     /// `associatedBuilding` (`IsoMetaGrid.getAssociatedBuildingAt`, set
@@ -138,6 +140,7 @@ impl IsoGridSquare {
             // Archive copies are detached until inserted into an actual chunk.
             chunk_hot_save: None,
             room_id: self.room_id,
+            puddles_cache: std::cell::Cell::new((-1.0, -1.0)),
             roof_hide_building: self.roof_hide_building,
             associated_building: self.associated_building,
             has_set_iso_world_region: self.has_set_iso_world_region.clone(),
@@ -182,6 +185,7 @@ impl IsoGridSquare {
             z,
             chunk_hot_save: None,
             room_id: -1,
+            puddles_cache: std::cell::Cell::new((-1.0, -1.0)),
             roof_hide_building: None,
             associated_building: None,
             has_set_iso_world_region: std::cell::Cell::new(false),
@@ -292,6 +296,28 @@ impl IsoGridSquare {
         regions
             .is_player_room(r)
             .then(|| regions.world_region(r).square_size())
+    }
+
+    /// Loaded square count from the room's current chunks, including rooms
+    /// which straddle the streaming boundary. Player rooms use the region graph.
+    pub fn room_size(
+        &self, cell: &IsoCell, meta: Option<&IsoMetaGrid>, regions: Option<&crate::isoregion::IsoRegions>,
+    ) -> pz_entity::runtime_load::HostResult<i32> {
+        let Some(room) = meta.and_then(|m| self.room_def(m)) else {
+            return Ok(regions.and_then(|r| self.player_room_size(r)).unwrap_or(-1));
+        };
+        let mut count = 0;
+        for (&(wx, wy), chunk) in &cell.chunks {
+            if !room.intersects(wx * 8, wy * 8, 8, 8) { continue; }
+            for y in 0..8 {
+                for x in 0..8 {
+                    let Some(owner) = chunk.get_grid_square(x, y, self.z) else { continue };
+                    let sq = owner.try_borrow().map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("room square"))?;
+                    if sq.room_id == self.room_id { count += 1; }
+                }
+            }
+        }
+        Ok(count)
     }
 
     /// `getRoom().def`: the room this square's `roomID` names.
@@ -1158,8 +1184,11 @@ pub fn load_cell_binary_chunk(
 /// `IsoCell`: loaded chunks keyed by chunk coordinates.
 #[derive(Default)]
 pub struct IsoCell {
+    /// IsoCell.snowFracTarget, set by ClimateManager.
+    pub snow_target: i32,
     pub chunks: HashMap<(i32, i32), IsoChunk>,
     pub drag: crate::cell_drag::CellDrag,
+    pub process_objects: std::rc::Rc<std::cell::RefCell<crate::process_objects::ProcessObjects>>,
     pub process_items: crate::process_items::ProcessItemQueues,
     cache: LotCache,
     retired_objects: Vec<crate::ObjectSlot>,

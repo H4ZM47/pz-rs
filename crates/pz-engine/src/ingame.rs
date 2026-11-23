@@ -94,9 +94,8 @@ impl IngameState {
         // `ClimateManager.update`. TODO(port): `allPlayersAsleep` (the
         // climate settings' `all_players_asleep`).
         pz_lua_api::bind_climate::update_game_time(&mut cx.lua.thread);
-        // TODO(port): apply `bind_climate::take_snow_effects()`
-        // (`IsoCell.setSnowTarget`, `ErosionIceQueen.setSnow`).
-        let _ = pz_lua_api::bind_climate::take_snow_effects();
+        let snow = pz_lua_api::bind_climate::take_snow_effects();
+        if let Some(w) = &cx.world { w.apply_snow_effects(snow); }
         let sim = FrameSim::capture();
         let (hearing, fire_spread) = match sandbox(cx.lua) {
             Some(sb) => {
@@ -359,7 +358,13 @@ impl GameState for IngameState {
             w.start_population(&FrameSim::capture());
         }
         // TODO(port): `currentCell.putInVehicle(player)`.
-        let tutorial = pz_lua_api::bind_core::shared_core().borrow().game_mode == "Tutorial";
+        let tutorial = match pz_lua_api::bind_core::shared_core().borrow().is_tutorial() {
+            Ok(value) => value,
+            Err(error) => {
+                crate::failure::record_first(cx.error, format!("IngameState tutorial mode: {error}").into());
+                return;
+            }
+        };
         set_music_state(if tutorial { "Tutorial" } else { "InGame" });
         // TODO(port): `ClimateManager.getInstance().update()` on its own,
         // `AmbientStreamManager.instance.checkHaveElectricity()`.
@@ -414,7 +419,9 @@ impl GameState for IngameState {
         // `VehicleIDMap`, `IsoChunk`, `ChunkChecksum`,
         // the atlases and `FBORenderChunkManager.Reset`.
         // `IsoWorld.instance.KillCell()`: the cell and the world's state go.
+        pz_lua_api::bind_zombie::shared_world_sounds().borrow_mut().dispose_cell();
         pz_lua_api::bind_world::set_cell(None);
+        pz_lua_api::bind_sprites::install_sprite_manager(None);
         pz_lua_api::bind_world::square_queries::install_square_light(None);
         // Native KillCell precedes DesignationZone.Reset/Animal.Reset. The
         // permanent class lists retain identity; reset only their contents.
@@ -429,10 +436,10 @@ impl GameState for IngameState {
         *cx.world = None;
         let retired_emitters = pz_lua_api::bind_audio::sound_system()
             .borrow_mut()
-            .world_emitters
-            .reset();
+            .with_world_emitters(|pool, ctx| pool.stop_and_reset(ctx));
         drop(retired_emitters);
         pz_lua_api::item_sound::reset();
+        pz_lua_api::bind_eat::reset_emitters();
         // `BaseSoundManager.stop`, before the new menu environment starts.
         pz_lua_api::bind_audio::sound_system()
             .borrow_mut()
@@ -530,6 +537,7 @@ impl GameState for IngameState {
             call_global(cx.lua, "SadisticMusicDirectorTick");
             // TODO(port): `ObjectAmbientEmitters.update`.
             self.number_ticks += 1;
+            pz_lua_api::bind_misc::set_ingame_tick(self.number_ticks);
         }
         // `GameWindow.save` that Lua (`save`) or `SleepingEvent.wakeUp`
         // asked for during this update.

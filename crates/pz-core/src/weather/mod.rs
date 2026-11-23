@@ -158,9 +158,9 @@ pub trait ClimateContext {
     fn weather_shader_active(&self) -> bool {
         false
     }
-    /// `IsoWorld.instance.getGameMode()` (`Core.gameMode`).
-    fn game_mode(&self) -> String {
-        "Sandbox".into()
+    /// Identity comparison with the canonical `GameMode.WINTER_IS_COMING`.
+    fn is_winter_is_coming(&self) -> bool {
+        false
     }
     /// `Core.getInstance().isForceSnow()`.
     fn is_force_snow(&self) -> bool {

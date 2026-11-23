@@ -4,9 +4,9 @@
 //! runtime `ISXuiSkin.build` reads styles from.
 //!
 //! The script objects (`XuiSkinScript`, `XuiConfigScript`, `XuiColorsScript`)
-//! come from `pz-scripts`. `XuiManager.ParseScripts` runs lazily on the first
-//! call from Lua (the original runs it as the XUI script buckets finish
-//! loading): it registers the style variables named in the `xuiConfig`
+//! come from `pz-scripts`. Once the script and colour registries are installed,
+//! XUI prepares the skin data before user Lua runs. It registers the style
+//! variables named in the `xuiConfig`
 //! scripts, adds the `xuiColors` to the game colours, creates one `XuiSkin`
 //! per `xuiSkin` script and loads them.
 //!
@@ -341,6 +341,7 @@ struct Skin {
     name: String,
     script: Rc<RefCell<XuiSkinScript>>,
     has_loaded: Cell<bool>,
+    invalidated: Cell<bool>,
     data: RefCell<SkinData>,
 }
 
@@ -502,13 +503,20 @@ fn report(r: Result<bool, String>, key: &str, value: Option<&str>) {
 #[derive(Default)]
 struct State {
     parsed: bool,
-    registry: HashMap<String, XuiVarType>,
     skins: HashMap<String, Rc<Skin>>,
     default_skin: Option<Rc<Skin>>,
 }
 
 thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
+}
+
+/// XuiManager.reset marks already-returned skins before clearing its maps.
+pub(crate) fn reset() {
+    let old = STATE.with(|state| std::mem::take(&mut *state.borrow_mut()));
+    for skin in old.skins.values() {
+        skin.invalidated.set(true);
+    }
 }
 
 /// `XuiLuaStyle.ReadConfigs`: the variable names each `xuiConfig` declares.
@@ -561,11 +569,11 @@ fn ensure_parsed() {
     }
     let sm = crate::bind_registry::shared_script_manager();
     let skin_scripts = sm.get_all::<XuiSkinScript>(ScriptType::XuiSkin);
+    register_global_colors(&sm);
     if skin_scripts.is_empty() {
         return;
     }
     let registry = read_configs(&sm.get_all::<XuiConfigScript>(ScriptType::XuiConfig));
-    register_global_colors(&sm);
     let mut skins: HashMap<String, Rc<Skin>> = HashMap::new();
     for script in skin_scripts {
         let (name, module) = {
@@ -576,7 +584,7 @@ fn ensure_parsed() {
             DebugType::General.warn(None, &format!("XuiSkin must be in module Base: {name}"));
             continue;
         }
-        let skin = Rc::new(Skin { name: name.clone(), script, has_loaded: Cell::new(false), data: RefCell::default() });
+        let skin = Rc::new(Skin { name: name.clone(), script, has_loaded: Cell::new(false), invalidated: Cell::new(false), data: RefCell::default() });
         skins.insert(name, skin);
     }
     let all: Vec<Rc<Skin>> = skins.values().cloned().collect();
@@ -584,7 +592,7 @@ fn ensure_parsed() {
         load_skin(skin, &skins, &sm, &registry);
     }
     let default_skin = skins.get(DEFAULT_SKIN).cloned();
-    STATE.with(|s| *s.borrow_mut() = State { parsed: true, registry, skins, default_skin });
+    STATE.with(|s| *s.borrow_mut() = State { parsed: true, skins, default_skin });
 }
 
 fn default_skin() -> Option<Rc<Skin>> {
@@ -733,6 +741,10 @@ fn unsupported_layouts(name: &str) -> pz_kahlua::LuaError {
 }
 
 pub fn register(thread: &mut Thread) {
+    // The new Lua environment has just installed its colour table. Bind skin
+    // colour references to that owner before startup scripts can query Colors.
+    reset();
+    ensure_parsed();
     expose_enum(thread, XUI_AUTO_APPLY, &AUTO_APPLY);
     let var_types: Vec<&'static str> = XuiVarType::ALL.iter().map(|t| t.name()).collect();
     expose_enum(thread, XUI_VAR_TYPE, &var_types);
@@ -763,6 +775,10 @@ pub fn register(thread: &mut Thread) {
     let s = expose_class(thread, XUI_SKIN, None);
     s.static_fn("Default", |c| Ok(c.push(skin_value(default_skin()))));
     s.static_fn("getDefaultSkinName", |c| Ok(c.push(DEFAULT_SKIN)));
+    s.method("isInvalidated", |c| {
+        let invalidated = with_this::<Skin, _>(c, |s| s.invalidated.get())?;
+        Ok(c.push(invalidated))
+    });
     s.method("getName", |c| {
         let v = with_this::<Skin, _>(c, |s| s.name.clone())?;
         Ok(c.push(v))

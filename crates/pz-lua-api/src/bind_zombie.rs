@@ -6,16 +6,15 @@
 //! `WorldSoundManager:addSound/addSoundRepeating/getStressFromSounds`)
 //! over `pz_audio::world_sound`.
 //!
-//! The sound manager is one shared instance with the cell installed by
-//! the world's owner ([`install_world_sounds`]); without one the cell is
-//! empty (`pz_audio::world_sound::NoWorld`).
+//! Sounds use the active cell, or the host supplied by [`install_world_sounds`].
 
 use crate::bind_character_sim::{chr_of, with_ctx, CharacterObject, ISO_GAME_CHARACTER_CLASS, ISO_ZOMBIE_CLASS};
 use crate::bind_states::with_state_cx;
 use crate::expose::{bool_arg, expose_class, global, int_arg, num_arg, str_arg};
+use pz_characters::character::context::WorldSoundRequest;
 use pz_audio::world_sound::{NoWorld, SoundId, SoundSource, SoundWorld, WorldSoundManager};
 use pz_kahlua::value::LuaObject;
-use pz_kahlua::{NativeCall, Thread, Value};
+use pz_kahlua::{LuaResult, NativeCall, Thread, Value};
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -28,13 +27,13 @@ type SharedSoundWorld = Rc<RefCell<dyn SoundWorld>>;
 
 thread_local! {
     static SOUNDS: RefCell<SharedSounds> = RefCell::new(Rc::new(RefCell::new(WorldSoundManager::new())));
-    static SOUND_WORLD: RefCell<SharedSoundWorld> = RefCell::new(Rc::new(RefCell::new(NoWorld)));
+    static SOUND_WORLD: RefCell<Option<SharedSoundWorld>> = const { RefCell::new(None) };
 }
 
 /// Installs the shared `WorldSoundManager.instance` and the cell it reads.
 pub fn install_world_sounds(sounds: SharedSounds, world: SharedSoundWorld) {
     SOUNDS.with(|s| *s.borrow_mut() = sounds);
-    SOUND_WORLD.with(|w| *w.borrow_mut() = world);
+    SOUND_WORLD.with(|w| *w.borrow_mut() = Some(world));
 }
 
 /// `WorldSoundManager.instance`.
@@ -72,16 +71,17 @@ thread_local! {
 
 /// A Lua value as a sound source: a character by its stable id; any other
 /// object by identity.
-fn source_of(v: &Value) -> Option<SoundSource> {
-    match v {
+fn source_of(v: &Value) -> LuaResult<Option<SoundSource>> {
+    Ok(match v {
         Value::Object(o) => {
             if let Some(c) = o.as_any().downcast_ref::<CharacterObject>() {
-                return Some(c.0.borrow().sound_source());
+                let character = c.0.try_borrow().map_err(|_| crate::bind_world_object::borrowed("world sound source"))?;
+                return Ok(Some(character.sound_source()));
             }
             Some(SoundSource { id: (Rc::as_ptr(o) as *const () as usize as u64) | (1 << 63), ..Default::default() })
         }
         _ => None,
-    }
+    })
 }
 
 fn sound_value(id: Option<SoundId>) -> Value {
@@ -90,23 +90,95 @@ fn sound_value(id: Option<SoundId>) -> Value {
 
 /// `addSound(source, x, y, z, radius, volume[, stressHumans[,
 /// zombieIgnoreDist, stressMod]])` starting at argument `a`.
-fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> Value {
-    let source = source_of(&c.arg(a));
+fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Value> {
+    let receiver = c.arg(a);
     let (x, y, z) = (int_arg(c, a + 1), int_arg(c, a + 2), int_arg(c, a + 3));
     let (radius, volume) = (int_arg(c, a + 4), int_arg(c, a + 5));
+    if radius <= 0 { return Ok(Value::Nil); }
     let n = c.nargs();
     let stress = n > a + 6 && bool_arg(c, a + 6);
     let (ignore, stress_mod) = if n > a + 8 { (num_arg(c, a + 7) as f32, num_arg(c, a + 8) as f32) } else { (0.0, 1.0) };
-    let sounds = shared_world_sounds();
-    let world = SOUND_WORLD.with(|w| w.borrow().clone());
-    let mut world = world.borrow_mut();
-    let mut m = sounds.borrow_mut();
-    let id = if repeating {
-        m.add_sound_repeating(&mut *world, source, x, y, z, radius, volume, stress, ignore, stress_mod)
-    } else {
-        m.add_sound_stress(&mut *world, source, x, y, z, radius, volume, stress, ignore, stress_mod)
+    let source = source_of(&receiver)?;
+    let request = WorldSoundRequest {
+        source, x, y, z, radius, volume, stress_humans: stress,
+        zombie_ignore_dist: ignore, stress_mod,
     };
-    sound_value(id)
+    let kind = if repeating { NoiseKind::Repeating } else { NoiseKind::Once };
+    Ok(sound_value(emit_world_sound(c.thread, request, receiver, kind)?))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NoiseKind {
+    Once,
+    Repeating,
+    LocalFootstep,
+}
+
+/// Fire the original callback with the live receiver before inserting into the
+/// sound list. The listener can safely raise a second sound or move the source.
+pub fn emit_world_sound(thread: &mut Thread, request: WorldSoundRequest<SoundSource>,
+    receiver: Value, kind: NoiseKind) -> LuaResult<Option<SoundId>> {
+    if request.radius <= 0 { return Ok(None); }
+    crate::bind_character_sim::fire_event(thread, "OnWorldSound", &[request.x.into(), request.y.into(),
+        request.z.into(), request.radius.into(), request.volume.into(), receiver]);
+    register_world_sound(request, kind)
+}
+
+/// Apply character noises from body damage, wake-up and Lua character actions.
+pub(crate) fn character_noise(thread: &mut Thread, actor: &crate::bind_character_sim::LuaGameCharacterRef,
+    event: &pz_characters::character::SimEvent) -> LuaResult<bool> {
+    use pz_characters::character::SimEvent;
+    if !matches!(event, SimEvent::InteractionNoise(_) | SimEvent::FootstepNoise(_) | SimEvent::AddSound { .. }
+        | SimEvent::SneezeCoughSound { .. } | SimEvent::WorldSound { .. }) { return Ok(false); }
+    let player = actor.try_borrow().map_err(|_| crate::bind_world_object::borrowed("character noise source"))?;
+    let request = match *event {
+        SimEvent::InteractionNoise(request) | SimEvent::FootstepNoise(request) if request.source == Some(player.id) => request,
+        SimEvent::AddSound { radius, volume } | SimEvent::SneezeCoughSound { radius, volume } =>
+            player.world_sound_request(radius, volume, false),
+        SimEvent::WorldSound { radius, volume } => {
+            if player.is_ghost_mode(&*crate::bind_character_sim::current_sim_context()) { return Ok(true); }
+            player.world_sound_request(radius, volume, false)
+        }
+        _ => return Ok(false),
+    };
+    let source = player.sound_source();
+    drop(player);
+    let kind = if matches!(event, SimEvent::FootstepNoise(_)) { NoiseKind::LocalFootstep } else { NoiseKind::Once };
+    emit_world_sound(thread, request.with_source(Some(source)), crate::bind_character_sim::character_value(actor), kind)?;
+    Ok(true)
+}
+
+/// Register the noise after its Lua callbacks have finished. Embedders may
+/// supply their own sound world, otherwise the active cell and population own it.
+pub fn register_world_sound(request: WorldSoundRequest<SoundSource>, kind: NoiseKind) -> LuaResult<Option<SoundId>> {
+    let WorldSoundRequest { source, x, y, z, radius, volume, stress_humans: stress,
+        zombie_ignore_dist: ignore, stress_mod } = request;
+    let sounds = shared_world_sounds();
+    let mut manager = sounds.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("WorldSoundManager"))?;
+    let add = |manager: &mut WorldSoundManager, world: &mut dyn SoundWorld| {
+        manager.add_sound_full(world, source, x, y, z, radius, volume, stress, ignore, stress_mod,
+            false, kind != NoiseKind::LocalFootstep, false, kind == NoiseKind::Repeating, false)
+    };
+    if let Some(world) = SOUND_WORLD.with(|w| w.borrow().clone()) {
+        let mut world = world.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound host"))?;
+        return Ok(add(&mut manager, &mut *world));
+    }
+    crate::bind_world::with_world_state_cell(|w| -> LuaResult<_> {
+        let mut state = w.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound cell"))?;
+        if let Some(cell) = state.cell.as_ref() {
+            let hearing = crate::bind_sandbox::current_double("ZombieLore.Hearing").unwrap_or(2.0) as i32;
+            let mut effects = pz_world_sound::NoEffects;
+            let mut adapter = pz_world_sound::WorldSoundAdapter::new(cell, hearing, &mut effects);
+            let id = add(&mut manager, &mut adapter);
+            if let Some(id) = id {
+                let hearing_multiplier = WorldSoundManager::hearing_multiplier(hearing);
+                state.population_sounds.push((manager.sound(id).clone(), hearing_multiplier));
+            }
+            Ok(id)
+        } else {
+            Ok(add(&mut manager, &mut NoWorld))
+        }
+    })
 }
 
 macro_rules! zfield {
@@ -361,15 +433,27 @@ pub fn register(thread: &mut Thread) {
         Ok(0)
     });
 
+    let character = expose_class(thread, ISO_GAME_CHARACTER_CLASS, None);
+    character.method("addWorldSoundUnlessInvisible", |c| {
+        let actor = chr_of(c)?;
+        let this = c.arg(0);
+        let (radius, volume, stress) = (int_arg(c, 1), int_arg(c, 2), bool_arg(c, 3));
+        with_ctx(c, &this, |ctx| {
+            actor.borrow().add_world_sound_unless_invisible(ctx, radius, volume, stress);
+            Ok(())
+        })?;
+        Ok(0)
+    });
+
     // WorldSoundManager.
     let m = expose_class(thread, WORLD_SOUND_MANAGER_CLASS, None);
     expose_class(thread, WORLD_SOUND_CLASS, None);
     m.method("addSound", |c| {
-        let v = add_sound(c, 1, false);
+        let v = add_sound(c, 1, false)?;
         Ok(c.push(v))
     });
     m.method("addSoundRepeating", |c| {
-        let v = add_sound(c, 1, true);
+        let v = add_sound(c, 1, true)?;
         Ok(c.push(v))
     });
     m.method("getStressFromSounds", |c| {
@@ -388,7 +472,7 @@ pub fn register(thread: &mut Thread) {
     });
     global(thread, "getWorldSoundManager", |c| Ok(c.push(MANAGER.with(|m| m.clone()))));
     global(thread, "addSound", |c| {
-        add_sound(c, 0, false);
+        add_sound(c, 0, false)?;
         Ok(0)
     });
 }

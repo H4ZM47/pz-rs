@@ -160,7 +160,14 @@ impl ImageData {
     /// `new ImageData(width, height)`: a blank (zeroed) image.
     pub fn new(width: i32, height: i32) -> Self {
         let (width_hw, height_hw) = (pow2(width), pow2(height));
-        ImageData { width, height, width_hw, height_hw, solid: true, data: MipLevel::new(width_hw, height_hw), mask: None, preserve_transparent_color: false }
+        Self::from_level(width, height, MipLevel::new(width_hw, height_hw))
+    }
+
+    fn from_level(width: i32, height: i32, data: MipLevel) -> Self {
+        ImageData {
+            width, height, width_hw: data.width, height_hw: data.height,
+            solid: true, data, mask: None, preserve_transparent_color: false,
+        }
     }
 
     /// `new ImageData(InputStream, doMask)`: decodes a PNG with the
@@ -181,10 +188,9 @@ impl ImageData {
 
     /// RGBA pixels already laid out `width_hw` wide.
     pub fn from_pixels(width: i32, height: i32, pixels: Vec<u8>) -> Self {
-        let mut img = ImageData::new(width, height);
-        assert_eq!(pixels.len(), img.data.pixels.len());
-        img.data.pixels = pixels;
-        img
+        let (width_hw, height_hw) = (pow2(width), pow2(height));
+        assert_eq!(pixels.len(), width_hw as usize * height_hw as usize * 4);
+        Self::from_level(width, height, MipLevel { width: width_hw, height: height_hw, pixels })
     }
 
     /// `calculateNumMips(widthHW, heightHW)`.

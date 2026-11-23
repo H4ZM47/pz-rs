@@ -147,6 +147,10 @@ pub fn set_climate_settings(s: ClimateSettings) {
     SETTINGS.with(|c| *c.borrow_mut() = s);
 }
 
+pub(crate) fn set_lock_fps(fps: i32) {
+    SETTINGS.with(|c| c.borrow_mut().lock_fps = fps);
+}
+
 pub fn climate_settings() -> ClimateSettings {
     SETTINGS.with(|c| c.borrow().clone())
 }
@@ -219,8 +223,9 @@ impl ClimateContext for LuaClimateContext {
     fn is_debug(&self) -> bool {
         crate::bind_core::shared_core().borrow().debug
     }
-    fn game_mode(&self) -> String {
-        crate::bind_core::shared_core().borrow().get_game_mode()
+    fn is_winter_is_coming(&self) -> bool {
+        crate::bind_core::shared_core().borrow().is_game_mode_constant("WINTER_IS_COMING")
+            .expect("GameMode class authority unavailable")
     }
     fn is_force_snow(&self) -> bool {
         crate::bind_core::shared_core().borrow().is_force_snow()
@@ -463,6 +468,12 @@ pub fn init_climate_manager(thread: &mut Thread, bounds: Option<(i32, i32, i32, 
     }
     fire_events(thread, ctx);
     true
+}
+
+/// Shared clock and sandbox offset used by GameTime and IsoWorld age queries.
+pub fn world_age_days_since_begin() -> f64 {
+    let months = crate::bind_sandbox::with_current(pz_sandbox::SandboxOptions::time_since_apo).unwrap_or(1);
+    shared_game_time().borrow().world_age_days_since_begin(months)
 }
 
 /// `GameTime.getInstance().getTimeDelta()` of the shared instance.
@@ -805,8 +816,7 @@ fn register_game_time(thread: &mut Thread) {
     getter!(b, "getMinutes", |g| g.minutes());
     getter!(b, "getWorldAgeHours", |g| g.world_age_hours());
     b.method("getWorldAgeDaysSinceBegin", |c| {
-        // TODO(SandboxOptions): `getTimeSinceApo()` (1 in a new game).
-        let v = with_gt(c, |g, _| g.world_age_days_since_begin(1))?;
+        let v = world_age_days_since_begin();
         Ok(c.push(v))
     });
     b.method("getMinutesStamp", |c| {

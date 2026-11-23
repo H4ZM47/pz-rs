@@ -310,6 +310,16 @@ pub fn install_event_sink(sink: EventSink) {
     SINK.with(|s| *s.borrow_mut() = Some(sink));
 }
 
+pub(crate) fn fire_container_update(thread: &mut Thread) {
+    fire_event(thread, "OnContainerUpdate", &[])
+}
+
+pub(crate) fn fire_event(thread: &mut Thread, name: &str, args: &[Value]) {
+    if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
+        sink(thread, name, args);
+    }
+}
+
 /// The installed context, collecting events for one call.
 struct CallContext {
     base: Rc<dyn SimContext>,
@@ -319,6 +329,8 @@ struct CallContext {
 }
 
 impl SimContext for CallContext {
+    fn lore_hearing(&self) -> i32 { self.base.lore_hearing() }
+    fn is_listener_in_range(&self, x: f32, y: f32, range: f32) -> bool { self.base.is_listener_in_range(x, y, range) }
     fn zomboid_globals(&self) -> &pz_characters::character::ZomboidGlobals {
         self.base.zomboid_globals()
     }
@@ -512,51 +524,57 @@ fn with_ctx_result<R, E>(
     };
     let r = f(c.thread, &ctx);
     let events = ctx.events.into_inner();
-    if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
-        for e in events {
-            let (name, args) = match e {
-                SimEvent::LevelPerk {
-                    perk,
-                    level,
-                    increased,
-                } => (
-                    "LevelPerk",
-                    vec![
-                        chr.clone(),
-                        perk_value(Some(&perk)),
-                        Value::from(level),
-                        Value::Bool(increased),
-                    ],
-                ),
-                SimEvent::LogLevelPerk { perk, level } => (
-                    "LogLevelPerk",
-                    vec![
-                        chr.clone(),
-                        perk_value(Some(&perk)),
-                        Value::from(level),
-                        Value::Bool(false),
-                    ],
-                ),
-                SimEvent::AddXp { perk, amount } => (
-                    "AddXP",
-                    vec![
-                        chr.clone(),
-                        perk_value(Some(&perk)),
-                        Value::Num(f64::from(amount)),
-                    ],
-                ),
-                SimEvent::PlayerGetDamage { kind, amount } => (
-                    "OnPlayerGetDamage",
-                    vec![chr.clone(), Value::str(kind), Value::Num(f64::from(amount))],
-                ),
-                SimEvent::ContainerUpdate => ("OnContainerUpdate", vec![]),
-                SimEvent::ItemFall(item) => {
-                    ("onItemFall", vec![crate::bind_items::item_value(&item)])
-                }
-                _ => continue,
-            };
-            sink(c.thread, name, &args);
+    let sink = SINK.with(|s| s.borrow().clone());
+    for e in events {
+        if let Value::Object(o) = chr {
+            if let Some(actor) = o.as_any().downcast_ref::<CharacterObject>() {
+                if crate::bind_eat::apply_audio_event(&actor.0, &e)?
+                    || crate::bind_zombie::character_noise(c.thread, &actor.0, &e)? { continue; }
+            }
         }
+        let Some(sink) = &sink else { continue };
+        let (name, args) = match e {
+            SimEvent::LevelPerk {
+                perk,
+                level,
+                increased,
+            } => (
+                "LevelPerk",
+                vec![
+                    chr.clone(),
+                    perk_value(Some(&perk)),
+                    Value::from(level),
+                    Value::Bool(increased),
+                ],
+            ),
+            SimEvent::LogLevelPerk { perk, level } => (
+                "LogLevelPerk",
+                vec![
+                    chr.clone(),
+                    perk_value(Some(&perk)),
+                    Value::from(level),
+                    Value::Bool(false),
+                ],
+            ),
+            SimEvent::AddXp { perk, amount } => (
+                "AddXP",
+                vec![
+                    chr.clone(),
+                    perk_value(Some(&perk)),
+                    Value::Num(f64::from(amount)),
+                ],
+            ),
+            SimEvent::PlayerGetDamage { kind, amount } => (
+                "OnPlayerGetDamage",
+                vec![chr.clone(), Value::str(kind), Value::Num(f64::from(amount))],
+            ),
+            SimEvent::ContainerUpdate => ("OnContainerUpdate", vec![]),
+            SimEvent::ItemFall(item) => {
+                ("onItemFall", vec![crate::bind_items::item_value(&item)])
+            }
+            _ => continue,
+        };
+        sink(c.thread, name, &args);
     }
     r.map_err(convert)
 }
@@ -626,6 +644,7 @@ impl LuaObject for CharacterObject {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Handle {
     Character,
+    MusicThreatStatuses,
     Stat,
     Stats,
     Moodles,
@@ -1913,7 +1932,9 @@ fn sprint_query(c: &mut NativeCall<'_>, can_sprint: bool) -> LuaResult<usize> {
             &self.0
         }
     }
-    let mode = SprintMode(crate::bind_core::shared_core().borrow().get_game_mode());
+    let tutorial = crate::bind_core::shared_core().borrow().is_tutorial()
+        .map_err(crate::bind_core::game_mode_error)?;
+    let mode = SprintMode(if tutorial { "Tutorial" } else { "" }.to_owned());
     let sm = shared_script_manager();
     let chr = chr_of(c)?;
     let chr = chr.borrow();
@@ -1976,6 +1997,20 @@ fn register_character(
     b.method("getModData", |c| {
         let table = chr_of(c)?.borrow_mut().get_mod_data();
         Ok(c.push(table))
+    });
+    b.method("getMusicIntensityEventModData", |c| {
+        let chr = chr_of(c)?;
+        let body = chr.try_borrow().map_err(|_| crate::bind_world_object::borrowed("character music data"))?;
+        let value = str_arg(c, 1).map_or(Value::Nil, |key| body.music_intensity_event_data(&key));
+        Ok(c.push(value))
+    });
+    b.method("setMusicIntensityEventModData", |c| {
+        let chr = chr_of(c)?;
+        if let Some(key) = str_arg(c, 1) {
+            chr.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("character music data"))?
+                .set_music_intensity_event_data(&key, c.arg(2));
+        }
+        Ok(0)
     });
     b.method("hasModData", |c| {
         let has_data = chr_of(c)?.borrow().has_mod_data();
@@ -2622,6 +2657,154 @@ pub(crate) mod tests {
             },
         ));
         (t, chr, log)
+    }
+
+    #[test]
+    fn smash_car_window_hits_the_retained_part_on_the_animation_event() {
+        use pz_characters::character::state::{StateCx, StateWorld};
+        use pz_vehicles::{part::{VehiclePart, VehicleWindow}, vehicle::BaseVehicle};
+        let (mut thread, player, _) = setup();
+        crate::bind_vehicles::register(&mut thread);
+        let vehicle = BaseVehicle::new();
+        let part = VehiclePart::new(&vehicle);
+        part.st_mut().window = Some(VehicleWindow::default());
+        part.set_condition(85);
+        thread.globals().set_str("panePart", pz_vehicles::lua::part_value(&part));
+        run(&mut thread, "player:smashCarWindow(panePart); assert(panePart:getWindow():getHealth() == 85)").unwrap();
+        let weak = Rc::downgrade(&vehicle);
+        drop(vehicle);
+        assert!(weak.upgrade().is_some());
+        struct World;
+        impl StateWorld<LuaItem> for World {}
+        let script = shared_script_manager();
+        let chars = shared_characters();
+        let chars = chars.borrow();
+        let sim = current_sim_context();
+        let mut world = World;
+        let mut cx = StateCx::new(&script, &chars, &*sim, &mut world);
+        let state = pz_characters::character::states::window::smash_window();
+        let event = pz_anim::AnimEventRecord {
+            state_name: None, layer_depth: -1, track: None,
+            event: Rc::new(pz_anim::AnimEvent { event_name: "AttackCollisionCheck".into(), ..Default::default() }),
+        };
+        state.anim_event(&mut player.borrow_mut(), &mut cx, &event);
+        run(&mut thread, r#"
+            local pane = panePart:getWindow()
+            assert(pane:isDestroyed())
+            panePart:setCondition(40)
+            pane:setOpen(true)
+            pane:hit(player)
+            assert(pane:isDestroyed())
+        "#).unwrap();
+    }
+
+    #[test]
+    fn music_events_belong_to_the_player_across_handles_and_frames() {
+        let (mut thread, player, _) = setup();
+        crate::bind_audio::register(&mut thread);
+        let other = Rc::new(RefCell::new(GameCharacter::new(&shared_script_manager(), CharacterKind::Player)));
+        thread.globals().set_str("otherPlayer", character_value(&other));
+        player.borrow().player.music_intensity_events.update_at(1000);
+        run(&mut thread, r#"
+            MusicIntensityConfig.getInstance():initEvents({
+                {id="SearchNewContainer", intensity=-10, duration=30000, multiple=false}
+            })
+            local events = player:getMusicIntensityEvents()
+            assert(events == player:getMusicIntensityEvents())
+            assert(events ~= otherPlayer:getMusicIntensityEvents())
+            player:triggerMusicIntensityEvent("missing")
+            player:triggerMusicIntensityEvent("SearchNewContainer")
+            local first = events:getEventByIndex(0)
+            player:triggerMusicIntensityEvent("SearchNewContainer")
+            assert(first == events:findEventById("SearchNewContainer") and events:getEventCount() == 1)
+            assert(otherPlayer:getMusicIntensityEvents():getEventCount() == 0)
+        "#).unwrap();
+        let events = player.borrow().player.music_intensity_events.clone();
+        events.update_at(1001);
+        assert_eq!(events.intensity(), 40.0);
+        events.update_at(31000);
+        assert_eq!(events.intensity(), 50.0);
+        assert_eq!(events.count(), 0);
+    }
+
+    #[test]
+    fn player_threat_tracks_live_stats_and_lua_overrides() {
+        let (mut thread, player, _) = setup();
+        crate::bind_audio::register(&mut thread);
+        {
+            let mut p = player.borrow_mut();
+            p.health = 0.5;
+            p.stats.music_zombies_visible = 25;
+            p.stats.music_zombies_targeting_nearby_moving = 110;
+        }
+        run(&mut thread, r#"
+            local cfg = MusicThreatConfig.getInstance()
+            cfg:initStatuses({
+                {id="PlayerHealth", intensity=2}, {id="ZombiesVisible", intensity=4},
+                {id="ZombiesTargeting.NearbyMoving", intensity=8}
+            })
+            local s = player:getMusicThreatStatuses()
+            assert(s == player:getMusicThreatStatuses())
+            s:update()
+            assert(s:getStatusCount() == 7 and s:getIntensity() == 10)
+            local visible = s:findStatusById("ZombiesVisible")
+            assert(visible:getIntensity() == 0.25)
+            cfg:setStatusIntensityOverride("ZombiesVisible", 0.5)
+            s:update()
+            assert(s:getIntensity() == 11 and visible == s:findStatusById("zombiesvisible"))
+            local separate = MusicThreatStatuses.new(player)
+            separate:update()
+            assert(separate ~= s and separate:getIntensity() == 11)
+            separate:clear()
+            assert(separate:getStatusCount() == 0 and s:getStatusCount() == 7)
+        "#).unwrap();
+        assert_eq!(player.borrow().player.music_threat_levels.intensity(), 11.0);
+    }
+
+    #[test]
+    fn seeing_a_bite_records_the_world_age_once_until_full_health() {
+        let (mut thread, player, _) = setup();
+        crate::bind_audio::register(&mut thread);
+        run(&mut thread, r#"
+            cfg = MusicIntensityConfig.getInstance()
+            cfg:initEvents({{id="HealthPanel_SeeBite", intensity=20, duration=1000}})
+            cfg:checkHealthPanelVisible(player)
+            assert(not player:hasModData())
+            player:setMusicIntensityEventModData("  ", true)
+            player:setMusicIntensityEventModData("missing", nil)
+            assert(not player:hasModData())
+            player:setMusicIntensityEventModData("Other", false)
+            assert(player:getMusicIntensityEventModData("Other") == false)
+        "#).unwrap();
+        let sm = shared_script_manager();
+        sm.builtin_tables.borrow_mut().body_parts = ["Torso_Upper", "MAX"].map(|field| {
+            pz_scripts::registry::builtin::BodyPartDecl { field: field.into(), ..Default::default() }
+        }).to_vec();
+        sm.builtin_tables.borrow_mut().metabolics.push(("Default".into(), 1.0));
+        let mut body = pz_characters::character::BodyDamage::new(&sm, true);
+        body.parts[0].bitten = true;
+        player.borrow_mut().body_damage = body;
+        run(&mut thread, r#"
+            cfg:checkHealthPanelVisible(player)
+            cfg:checkHealthPanelVisible(player)
+            assert(type(player:getMusicIntensityEventModData("HealthPanel_SeeBite")) == "number")
+            assert(player:getMusicIntensityEvents():getEventCount() == 1)
+        "#).unwrap();
+        let saved = player.borrow().saved_mod_data().unwrap().unwrap();
+        let reloaded = Rc::new(RefCell::new(GameCharacter::new(&shared_script_manager(), CharacterKind::Player)));
+        reloaded.borrow_mut().load_mod_data(&saved).unwrap();
+        thread.globals().set_str("reloaded", character_value(&reloaded));
+        run(&mut thread, r#"
+            assert(reloaded:getMusicIntensityEventModData("HealthPanel_SeeBite") ==
+                player:getMusicIntensityEventModData("HealthPanel_SeeBite"))
+            cfg:restoreToFullHealth(reloaded)
+            assert(reloaded:getMusicIntensityEventModData("HealthPanel_SeeBite") == nil)
+        "#).unwrap();
+        player.borrow_mut().restore_to_full_health(&shared_characters().borrow()).unwrap();
+        run(&mut thread, r#"
+            assert(player:getMusicIntensityEventModData("HealthPanel_SeeBite") == nil)
+            assert(player:getMusicIntensityEventModData("Other") == false)
+        "#).unwrap();
     }
 
     #[test]

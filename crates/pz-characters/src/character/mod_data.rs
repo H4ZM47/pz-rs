@@ -5,7 +5,7 @@ use super::GameCharacter;
 use pz_inventory::lua_table::LuaTable;
 use pz_kahlua::java_io::JavaReader;
 use pz_kahlua::table_save::{load_table, save_table, Flavor};
-use pz_kahlua::TableRef;
+use pz_kahlua::{TableRef, Value};
 use pz_scripts::{ScriptError, ScriptResult};
 
 // The modern table key/value format has been unchanged since version 25.
@@ -24,6 +24,33 @@ impl<I: 'static> GameCharacter<I> {
     /// `hasModData()`: allocating an empty table does not count.
     pub fn has_mod_data(&self) -> bool {
         self.mod_data.as_ref().is_some_and(|table| !table.is_empty())
+    }
+
+    pub fn music_intensity_event_data(&self, key: &str) -> Value {
+        self.mod_data.as_ref().and_then(|data| {
+            data.get_str("MusicIntensityEvent").as_table().map(|events| events.get_str(key))
+        }).unwrap_or_default()
+    }
+
+    pub fn set_music_intensity_event_data(&mut self, key: &str, value: Value) {
+        if key.trim().is_empty() { return }
+        let table = self.mod_data.as_ref().map(|data| data.get_str("MusicIntensityEvent"));
+        let events = match table {
+            Some(Value::Table(table)) => table,
+            _ if value.is_nil() => return,
+            _ => {
+                let events = TableRef::new();
+                self.get_mod_data().set_str("MusicIntensityEvent", events.clone());
+                events
+            }
+        };
+        events.set_str(key, value);
+    }
+
+    pub fn clear_health_panel_bite_event(&mut self) {
+        if self.is_player() || self.is_animal() {
+            self.set_music_intensity_event_data("HealthPanel_SeeBite", Value::Nil);
+        }
     }
 
     /// Import a detached save table into the current live table. Loading

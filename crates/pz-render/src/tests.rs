@@ -260,11 +260,21 @@ fn installed_game_packs() {
             let mut r = dec.read_info().unwrap();
             let mut buf = vec![0; r.output_buffer_size()];
             let info = r.next_frame(&mut buf).unwrap();
-            assert_eq!(info.color_type, ::png::ColorType::Rgba, "{pack}/{}", page.name);
-            for y in 0..img.height as usize {
-                let a = &img.data.pixels[y * img.width_hw as usize * 4..][..img.width as usize * 4];
-                let b = &buf[y * info.line_size..][..img.width as usize * 4];
-                assert!(a == b, "{pack}/{} row {y} differs", page.name);
+            assert_eq!((info.width, info.height), (img.width as u32, img.height as u32));
+            assert_eq!(info.bit_depth, ::png::BitDepth::Eight);
+            for (y, row) in buf[..info.buffer_size()].chunks_exact(info.line_size).enumerate() {
+                let actual = &img.data.pixels[y * img.width_hw as usize * 4..][..img.width as usize * 4];
+                let matches = match info.color_type {
+                    ::png::ColorType::Rgba => actual == row,
+                    ::png::ColorType::Rgb => actual.chunks_exact(4).zip(row.chunks_exact(3))
+                        .all(|(a, b)| a == [b[0], b[1], b[2], 255]),
+                    ::png::ColorType::GrayscaleAlpha => actual.chunks_exact(4).zip(row.chunks_exact(2))
+                        .all(|(a, b)| a == [b[0], b[0], b[0], b[1]]),
+                    ::png::ColorType::Grayscale => actual.chunks_exact(4).zip(row)
+                        .all(|(a, &g)| a == [g, g, g, 255]),
+                    ::png::ColorType::Indexed => panic!("reference decoder did not expand the palette"),
+                };
+                assert!(matches, "{pack}/{} row {y} differs", page.name);
             }
         }
     }

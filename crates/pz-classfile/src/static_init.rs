@@ -59,7 +59,7 @@ pub enum Effect {
     /// `putfield object.field = value` (`class` is the field's owner).
     PutField { object: Value, class: String, field: String, value: Value },
     /// A call whose result is unused: a `void` call, or one whose result is
-    /// popped. Always a [`Value::Call`].
+    /// popped. Constructor evaluation also emits the superclass initializer as [`Value::New`].
     Call(Value),
 }
 
@@ -131,7 +131,13 @@ pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
 /// Evaluates the body of `class`'s first method named `method`; empty if
 /// it has no such method or the method has no code.
 pub fn method_effects(class: &ClassFile, method: &str) -> Result<Vec<Effect>> {
-    Ok(eval(class, method, None)?.0)
+    Ok(eval(class, method, None, false)?.0)
+}
+
+/// Field assignments and constructor chaining with the supplied receiver and
+/// arguments occupying the corresponding JVM local slots.
+pub fn constructor_effects(class: &ClassFile, locals: &[Value]) -> Result<Vec<Effect>> {
+    Ok(eval(class, "<init>", Some(locals), true)?.0)
 }
 
 /// The value the static method `method` of `class` returns when called
@@ -140,13 +146,13 @@ pub fn method_effects(class: &ClassFile, method: &str) -> Result<Vec<Effect>> {
 /// has no such method or returns before the evaluator reaches an
 /// `areturn`.
 pub fn method_return(class: &ClassFile, method: &str, args: &[Value]) -> Result<Option<Value>> {
-    Ok(eval(class, method, Some(args))?.1)
+    Ok(eval(class, method, Some(args), false)?.1)
 }
 
 /// The evaluator. With `params`, local loads of parameter slots push the
 /// arguments and the first `areturn` ends the evaluation with its value;
 /// without, both clear the stack like any unmodelled instruction.
-fn eval(class: &ClassFile, method: &str, params: Option<&[Value]>) -> Result<(Vec<Effect>, Option<Value>)> {
+fn eval(class: &ClassFile, method: &str, params: Option<&[Value]>, constructor: bool) -> Result<(Vec<Effect>, Option<Value>)> {
     let Some(code) = class.method(method).and_then(|m| m.code.as_ref()) else {
         return Ok((Vec::new(), None));
     };
@@ -210,6 +216,12 @@ fn eval(class: &ClassFile, method: &str, params: Option<&[Value]>) -> Result<(Ve
                 let value = pop(&mut stack);
                 out.push(Effect::PutStatic(StaticInit { class: r.class, field: r.name, value }));
             }
+            0xb4 if constructor => {
+                // The field value is opaque, but values below its receiver
+                // (e.g. a newly allocated group) are still on the stack.
+                pop(&mut stack);
+                stack.push(Value::Unknown);
+            }
             0xb5 => {
                 let r = class.member_ref(u16_at(pc + 1)?)?;
                 let value = pop(&mut stack);
@@ -222,7 +234,10 @@ fn eval(class: &ClassFile, method: &str, params: Option<&[Value]>) -> Result<(Ve
                 let mut args: Vec<Value> = (0..n).map(|_| pop(&mut stack)).collect();
                 args.reverse();
                 if op == 0xb7 && r.name == "<init>" {
-                    pop(&mut stack);
+                    let receiver = pop(&mut stack);
+                    if constructor && class.super_class.as_ref() == Some(&r.class) && !matches!(receiver, Value::New { .. }) {
+                        out.push(Effect::Call(Value::New { class: r.class.clone(), args: args.clone() }));
+                    }
                     if let Some(Value::New { class, args: a }) = stack.last_mut() {
                         if *class == r.class && a.is_empty() {
                             *a = args;

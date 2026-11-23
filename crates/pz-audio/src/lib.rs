@@ -24,7 +24,34 @@ pub mod world_sound;
 #[cfg(test)]
 mod tests;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Locate the installed FMOD bank layout. The newer distribution stores the
+/// startup banks directly under banks; older distributions use banks/Desktop.
+pub fn game_bank_dir(game_dir: &Path) -> PathBuf {
+    let flat = game_dir.join("media/sound/banks");
+    let desktop = flat.join("Desktop");
+    if desktop.is_dir() && !flat.join("ZomboidSound.strings.bank").is_file() {
+        desktop
+    } else {
+        flat
+    }
+}
+
+/// Bank names and loading order from FMODManager.init in the two builds.
+pub fn startup_bank_paths(game_dir: &Path) -> impl Iterator<Item = PathBuf> {
+    let dir = game_bank_dir(game_dir);
+    let split: &[&str] = if dir.ends_with("Desktop") {
+        &["Animal", "Broadcast", "Character", "Object", "Vehicle", "Weapon", "World", "Zombie"]
+    } else {
+        &[]
+    };
+    ["ZomboidSound.strings", "ZomboidMusic", "ZomboidSound", "ZomboidSoundMP"]
+        .into_iter()
+        .chain(split.iter().copied())
+        .map(move |name| dir.join(format!("{name}.bank")))
+}
+
 
 /// A memory-mapped Studio bank file.
 pub struct BankFile {

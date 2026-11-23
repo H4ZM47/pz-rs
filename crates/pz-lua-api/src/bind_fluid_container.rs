@@ -145,7 +145,7 @@ fn runtime(error: RuntimeError) -> LuaError {
     LuaError::runtime(error.to_string())
 }
 
-fn capacity(component: &ComponentRef) -> LuaResult<f32> {
+pub(crate) fn capacity(component: &ComponentRef) -> LuaResult<f32> {
     let body = component
         .try_borrow()
         .map_err(|_| LuaError::runtime("FluidContainer is in use"))?;

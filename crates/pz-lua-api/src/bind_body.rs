@@ -646,10 +646,10 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
             b.method($name, move |$c| {
                 let chr = bd_chr($c)?;
                 let $sm: &ScriptManager = &s;
-                let chars_ref = k.borrow();
-                let $chars: &Characters = &chars_ref;
                 let $args: Vec<Value> = (0..$c.nargs()).map(|i| $c.arg(i)).collect();
                 let r = run($c, &chr, |$ch, $ctx| {
+                    let chars_ref = k.borrow();
+                    let $chars: &Characters = &chars_ref;
                     let _ = (&$sm, &$chars, &$ctx, &$args);
                     $body
                 })?;
@@ -733,9 +733,9 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
                 let $args: Vec<Value> = (0..c.nargs()).map(|i| c.arg(i)).collect();
                 let $item = item_of(&$args, 1, $class)?;
                 let $sm: &ScriptManager = &s;
-                let chars_ref = k.borrow();
-                let $chars: &Characters = &chars_ref;
                 run(c, &chr, |$ch, $ctx| {
+                    let chars_ref = k.borrow();
+                    let $chars: &Characters = &chars_ref;
                     let _ = (&$sm, &$chars, &$ctx, &$args);
                     $body
                 })?;

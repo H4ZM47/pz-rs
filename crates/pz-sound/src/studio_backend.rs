@@ -236,7 +236,7 @@ impl AudioBackend for StudioBackend {
         self.studio.lock().unwrap().channels.master_volume = Some(volume);
     }
     fn master_channel_group_stop(&mut self) {
-        self.studio.lock().unwrap().channels.stop_all();
+        self.studio.lock().unwrap().stop_all();
     }
     fn channel_set_non_bank_group(&mut self, ch: ChannelHandle) {
         self.channel(ch, |c, i| c.set_non_bank(i));
@@ -278,6 +278,17 @@ impl AudioBackend for StudioBackend {
             crate::backend::EVENT_PROPERTY_MAXIMUM_DISTANCE => s.set_distance_override(i, None, Some(value)),
             _ => {}
         }
+    }
+
+    fn instance_watch_timeline_markers(&mut self, handle: InstanceHandle) {
+        if let Some(id) = id(handle) {
+            self.studio.lock().unwrap().watch_timeline_markers(id);
+        }
+    }
+
+    fn take_timeline_markers(&mut self) -> Vec<(InstanceHandle, String, i32)> {
+        self.studio.lock().unwrap().take_timeline_markers().into_iter()
+            .map(|(id, name, ms)| (id as InstanceHandle + 1, name, ms)).collect()
     }
 
     fn instance_timeline_position(&mut self, inst: InstanceHandle) -> i64 {

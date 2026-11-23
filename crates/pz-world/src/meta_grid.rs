@@ -152,6 +152,12 @@ impl IsoMetaChunk {
     }
 }
 
+#[derive(Debug, Default)]
+struct RuntimeBuildingRooms {
+    created: std::collections::HashSet<RoomIdx>,
+    rooms: Vec<RoomIdx>,
+}
+
 /// `IsoMetaCell` (map-data fields).
 #[derive(Debug)]
 pub struct IsoMetaCell {
@@ -178,6 +184,7 @@ pub struct IsoMetaCell {
     /// Keys of `isoBuildings`: buildings whose runtime `IsoBuilding` has been
     /// created (by [`IsoMetaGrid::get_room_by_id`]).
     pub iso_buildings: std::cell::RefCell<std::collections::HashSet<i64>>,
+    runtime_rooms: std::cell::RefCell<HashMap<BuildingIdx, RuntimeBuildingRooms>>,
 }
 
 impl IsoMetaCell {
@@ -199,8 +206,14 @@ impl IsoMetaCell {
             animal_zones_generated: Default::default(),
             room_tones: Vec::new(),
             iso_buildings: Default::default(),
+            runtime_rooms: Default::default(),
         }
     }
+    pub(crate) fn remove_runtime_building(&mut self, id: i64, building: BuildingIdx) {
+        self.iso_buildings.get_mut().remove(&id);
+        self.runtime_rooms.get_mut().remove(&building);
+    }
+
     pub fn get_x(&self) -> i32 {
         self.wx
     }
@@ -512,6 +525,30 @@ impl IsoMetaGrid {
         self.get_chunk_data(fastfloor(x as f32 / 8.0), fastfloor(y as f32 / 8.0))
     }
 
+    /// IsoMetaGrid.countNearbyBuildingsRooms. A room can occupy several
+    /// chunks and floors. The native outer cell bounds use the grid size.
+    pub fn count_nearby_buildings_rooms(&self, px: f32, py: f32) -> usize {
+        let (x, y) = (fastfloor(px).wrapping_sub(20), fastfloor(py).wrapping_sub(20));
+        let end_chunk = |end: i32| end / 8 - i32::from(end % 8 == 0);
+        let cells_x = x / 256..=x.wrapping_add(self.width) / 256;
+        let cells_y = y / 256..=y.wrapping_add(self.height) / 256;
+        let mut rooms = std::collections::HashSet::new();
+        for cy in y / 8..=end_chunk(y.wrapping_add(40)) {
+            if !cells_y.contains(&cy.div_euclid(32)) { continue; }
+            for cx in x / 8..=end_chunk(x.wrapping_add(40)) {
+                if !cells_x.contains(&cx.div_euclid(32)) { continue; }
+                let Some(chunk) = self.get_chunk_data(cx, cy) else { continue };
+                for &idx in chunk.rooms() {
+                    let room = &self.room_defs[idx.0 as usize];
+                    if room.is_empty_outside() && room.building.is_some_and(|building|
+                        !self.building_defs[building.0 as usize].rooms.is_empty()) { continue; }
+                    if room.intersects(x, y, 40, 40) { rooms.insert(idx); }
+                }
+            }
+        }
+        rooms.len()
+    }
+
     /// `getRoomAt(x, y, z)`. A missing chunk has no rooms, so not creating it
     /// here is equivalent apart from allocation.
     pub fn get_room_at(&self, x: i32, y: i32, z: i32) -> Option<&RoomDef> {
@@ -566,23 +603,51 @@ impl IsoMetaGrid {
         Ok(None)
     }
 
-    /// `getRoomByID(id)`: the room, creating its runtime `IsoRoom` /
-    /// `IsoBuilding` on first use. A new `IsoBuilding` draws its
-    /// `scoreUpdate` from `Rand`; that draw is the only state kept here (the
-    /// runtime room and building objects are not ported). A room without a
-    /// building would also get a new `BuildingDef` (another draw); map data
-    /// has none, and that case is not ported.
-    pub fn get_room_by_id(&self, id: i64, rand: &mut dyn GameRand) -> Option<&RoomDef> {
+    /// Materialize a mapped room and its building. CreateFrom visits the
+    /// building's indoor definitions in order. An emptyoutside room can
+    /// join an already-created building when it is subsequently requested.
+    /// Definitions without a building still need the native orphan-building
+    /// allocation when the streamer acquires mutable access to the meta grid.
+    pub fn runtime_room_index(&self, id: i64, mut draw: impl FnMut(i32) -> i32) -> Option<RoomIdx> {
         let cell = self.get_cell_data(room_id::get_cell_x(id), room_id::get_cell_y(id))?;
-        let room = &self.room_defs[cell.rooms.get(&id)?.0 as usize];
-        if let Some(b) = room.building {
-            let bid = self.building_defs[b.0 as usize].id;
-            if cell.iso_buildings.borrow_mut().insert(bid) {
-                // `new IsoBuilding()`: `scoreUpdate = -120 + Rand.Next(120)`.
-                rand.next(120);
-            }
+        let &room = cell.rooms.get(&id)?;
+        let Some(building) = self.room_defs[room.0 as usize].building else {
+            return Some(room);
+        };
+        let def = &self.building_defs[building.0 as usize];
+        let mut runtime = cell.runtime_rooms.borrow_mut();
+        let state = runtime.entry(building).or_default();
+        if state.created.contains(&room) {
+            return Some(room);
         }
+        if cell.iso_buildings.borrow_mut().insert(def.id) {
+            draw(120);
+            for &member in &def.rooms {
+                let member_id = self.room_defs[member.0 as usize].id;
+                let Some(member) = self.get_cell_data(room_id::get_cell_x(member_id), room_id::get_cell_y(member_id))
+                    .and_then(|cell| cell.rooms.get(&member_id)).copied() else { continue };
+                if state.created.insert(member) {
+                    state.rooms.push(member);
+                }
+            }
+        } else {
+            state.rooms.push(room);
+        }
+        state.created.insert(room);
         Some(room)
+    }
+
+    pub fn get_room_by_id(&self, id: i64, rand: &mut dyn GameRand) -> Option<&RoomDef> {
+        let index = self.runtime_room_index(id, |n| rand.next(n))?;
+        Some(&self.room_defs[index.0 as usize])
+    }
+
+    /// `IsoBuilding.rooms` in construction order, including later additions.
+    pub fn with_runtime_building_rooms<R>(&self, building: BuildingIdx, f: impl FnOnce(&[RoomIdx]) -> R) -> Option<R> {
+        let id = self.building_defs.get(building.0 as usize)?.id;
+        let cell = self.get_cell_data(building_id::get_cell_x(id), building_id::get_cell_y(id))?;
+        let runtime = cell.runtime_rooms.borrow();
+        Some(f(&runtime.get(&building)?.rooms))
     }
 
     pub fn get_room_def_by_id(&self, id: i64) -> Option<&RoomDef> {
@@ -1692,6 +1757,50 @@ mod building_api_tests {
         g.get_chunk_data(wx, wy)
             .map(|c| c.rooms().to_vec())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn listener_counts_intersecting_rooms_once_across_chunks_and_levels() {
+        let mut g = grid();
+        g.add_building(0, 0, BuildingDef::new(&mut Zero),
+            vec![room("hall", 0, &[(10, 10, 24, 6)]), room("cellar", -1, &[(10, 10, 4, 6)]),
+                 room("shed", 0, &[(55, 10, 3, 3)])],
+            vec![room("emptyoutside", 0, &[(7, 10, 3, 3)])],
+        ).unwrap();
+        assert_eq!(g.count_nearby_buildings_rooms(20.5, 20.5), 2);
+        assert_eq!(g.count_nearby_buildings_rooms(75.0, 20.0), 1);
+        assert_eq!(g.count_nearby_buildings_rooms(80.0, 20.0), 0);
+    }
+
+    #[test]
+    fn runtime_building_rooms_follow_create_from_and_later_exterior_lookups() {
+        for exterior_first in [true, false] {
+            let mut g = grid();
+            let b = g.add_building(0, 0, BuildingDef::new(&mut Zero),
+                vec![room("office", 0, &[(1, 1, 2, 2)]), room("office", 0, &[(3, 1, 2, 2)])],
+                vec![room("emptyoutside", 0, &[(5, 1, 1, 1)])],
+            ).unwrap();
+            let (first, second, exterior) = (RoomIdx(0), RoomIdx(1), RoomIdx(2));
+            // The basement helper registers indoor IDs. A lot header also
+            // registers exterior definitions, which this map fixture needs.
+            let exterior_id = room_id::make_id(0, 0, 2);
+            g.room_defs[exterior.0 as usize].id = exterior_id;
+            g.get_cell_data_mut(0, 0).unwrap().rooms.insert(exterior_id, exterior);
+            let ids: Vec<_> = g.room_defs.iter().map(|r| r.id).collect();
+            let mut draws = Vec::new();
+            for index in [if exterior_first { exterior } else { second }, first, exterior, second] {
+                let result = g.runtime_room_index(ids[index.0 as usize], |bound| {
+                    draws.push(bound);
+                    0
+                });
+                assert_eq!(result, Some(index));
+            }
+            assert_eq!(draws, vec![120]);
+            let members = g.with_runtime_building_rooms(b, |rooms| rooms.to_vec()).unwrap();
+            let mut expected = vec![first, second];
+            if !exterior_first { expected.push(exterior); }
+            assert_eq!(members, expected);
+        }
     }
 
     #[test]

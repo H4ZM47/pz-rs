@@ -151,6 +151,16 @@ fn captured_nearest_uses_base_level_and_respecified_image_retires_derived_bindin
     assert_eq!(gpu.sampled.len(), 1);
     assert_eq!(gpu.versions[&id], textures.data(id).unwrap().version);
 
+    // Another upload at the same size should update the pixels sampled
+    // through both bind groups, while retaining the GPU allocation.
+    let allocation = gpu.views[&id].texture().clone();
+    textures.tex_image(id, 2, 2, [0, 0, 255, 255].repeat(4));
+    gpu.render_frame(&[(params(2, 1), &list)], &mut textures);
+    assert_eq!(gpu.views[&id].texture(), &allocation);
+    let pixels = gpu.read_pixels();
+    near(pixel(&pixels, 2, 0), [0, 0, 255]);
+    near(pixel(&pixels, 2, 1), [0, 0, 255]);
+
     textures.destroy_data(id);
     gpu.render_frame(&[(params(2, 1), &list)], &mut textures);
     assert!(!gpu.sampled.keys().any(|(sampled_id, _)| *sampled_id == id));

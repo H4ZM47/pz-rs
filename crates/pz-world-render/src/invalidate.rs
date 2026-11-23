@@ -223,6 +223,15 @@ impl<'a> RenderInvalidation<'a> {
             fbo_render_chunk: true,
         }
     }
+
+    /// Refresh the renderer's object snapshot and recorded tile texture after
+    /// a live square edit, including PolygonalMap2's visibility and cutaways.
+    pub fn object_geometry_changed(&mut self, pos: SquarePos) {
+        let (wx, wy) = chunk_of(pos.0, pos.1);
+        self.invalidate_vispoly_chunk_level(wx, wy, pos.2);
+        self.cutaways_square_changed(Some(pos));
+        self.invalidate_render_chunk_level(wx, wy, pos.2, dirty::OBJECT_MODIFY);
+    }
 }
 
 fn chunk_of(x: i32, y: i32) -> (i32, i32) {
@@ -306,6 +315,7 @@ impl RenderSquareHooks for RenderInvalidation<'_> {
 
     fn clear_water(&mut self, square: pz_world::SquareRef) {
         let sq = square.borrow();
+        self.render.water_changed(sq.x.div_euclid(8), sq.y.div_euclid(8));
         if let Some(rs) = self.render.squares.get_mut(&(sq.x, sq.y, sq.z)) {
             rs.water = None;
         }

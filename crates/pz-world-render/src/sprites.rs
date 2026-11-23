@@ -124,8 +124,30 @@ impl SpriteCache {
         if let Some(s) = self.cache.get(&idx) {
             return s.clone();
         }
+        let info = Rc::new(build(sprites, &sprites.sprites[idx], Some(idx), self.named_flags(sprites), tex));
+        self.cache.insert(idx, info.clone());
+        info
+    }
+
+    /// A runtime sprite owns its texture and tint. Re-read both on a redraw.
+    pub(crate) fn runtime(&mut self, sprites: &IsoSpriteManager, sprite: &pz_world::sprite::runtime::RuntimeSprite)
+        -> pz_entity::runtime_load::HostResult<Rc<SpriteInfo>>
+    {
+        use pz_entity::runtime_load::RuntimeHostError;
+        let mut info = build(sprites, &sprite.data, None, self.named_flags(sprites), &mut NoTextures);
+        if let Some(texture) = sprite.texture_slot() {
+            info.texture = Some(texture.0.try_borrow().map_err(|_| RuntimeHostError::Borrowed("render sprite texture"))?.clone());
+        }
+        if let Some(tint) = sprite.tint_slot() {
+            let rgba = tint.try_borrow().map_err(|_| RuntimeHostError::Borrowed("render sprite tint"))?;
+            info.tint_mod = [rgba[0], rgba[1], rgba[2]];
+        }
+        Ok(Rc::new(info))
+    }
+
+    fn named_flags(&mut self, sprites: &IsoSpriteManager) -> &NamedFlags {
         let t = &sprites.tables;
-        let named = self.named.get_or_insert_with(|| {
+        self.named.get_or_insert_with(|| {
             let n = |s: &str| t.flag_from_string(s);
             NamedFlags {
                 water: n("water"),
@@ -141,20 +163,17 @@ impl SpriteCache {
                 attached_surface: n("attachedSurface"),
                 attached_ceiling: n("attachedCeiling"),
             }
-        });
-        let info = Rc::new(build(sprites, idx, named, tex));
-        self.cache.insert(idx, info.clone());
-        info
+        })
     }
 }
 
 fn build(
     sprites: &IsoSpriteManager,
-    idx: SpriteIdx,
+    sp: &pz_world::sprite::IsoSprite,
+    idx: Option<SpriteIdx>,
     named: &NamedFlags,
     tex: &mut dyn SpriteTextures,
 ) -> SpriteInfo {
-    let sp = &sprites.sprites[idx];
     let t = &sprites.tables;
     let f = &t.flag;
     let p = &sp.properties;
@@ -255,7 +274,7 @@ fn build(
         sloped: p.get(&sprites.alias, "SlopedSurfaceDirection").is_some(),
         tint_mod: [1.0; 3],
         grid_levels: grid.map_or(0, |g| g.levels),
-        grid_pos_z: grid.and_then(|g| g.sprite_pos(idx)).map_or(0, |p| p.2),
+        grid_pos_z: grid.map_or(0, |g| idx.and_then(|i| g.sprite_pos(i)).map_or(-1, |p| p.2)),
         name,
         ..Default::default()
     }

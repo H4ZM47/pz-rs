@@ -324,6 +324,8 @@ pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
     target: Target,
+    /// Readable window target shared by screenshot frames and unavailable drawables.
+    window_buffer: Option<wgpu::Texture>,
     format: wgpu::TextureFormat,
     width: u32,
     height: u32,
@@ -582,6 +584,7 @@ impl Gpu {
             device,
             queue,
             target,
+            window_buffer: None,
             format,
             width,
             height,
@@ -629,6 +632,9 @@ impl Gpu {
     /// Back-buffer size changed (physical pixels).
     pub fn resize(&mut self, width: u32, height: u32) {
         let (width, height) = (width.max(1), height.max(1));
+        if (width, height) != (self.width, self.height) {
+            self.window_buffer = None;
+        }
         self.width = width;
         self.height = height;
         match &mut self.target {
@@ -691,21 +697,81 @@ impl Gpu {
         if self.lost() {
             return;
         }
-        let (frame, view) = match &self.target {
-            Target::Surface { surface, .. } => {
-                let st = match surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-                    _ => return,
-                };
-                let view = st.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                (Some(st), view)
+        let frame = match self.acquire_window_frame() {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.faults.record(error);
+                return;
             }
-            Target::Headless { texture } => (None, texture.create_view(&wgpu::TextureViewDescriptor::default())),
+        };
+        let view = match (&self.target, &frame) {
+            (_, Some(frame)) => frame.texture.create_view(&Default::default()),
+            (Target::Headless { texture }, _) => texture.create_view(&Default::default()),
+            // Chunk updates, corpse jobs and sky targets outlive the current
+            // frame. Their CPU owners have already marked these draws complete.
+            (Target::Surface { .. }, None) => self.window_buffer().create_view(&Default::default()),
         };
         self.draw(segments, textures, &view);
         if let Some(st) = frame {
             self.queue.present(st);
         }
+    }
+
+    fn acquire_window_frame(&self) -> Result<Option<wgpu::SurfaceTexture>, GpuError> {
+        let Target::Surface { surface, config } = &self.target else { return Ok(None) };
+        match surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(Some(frame)),
+            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => Ok(None),
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                surface.configure(&self.device, config);
+                Ok(None)
+            }
+            wgpu::CurrentSurfaceTexture::Lost => Err(GpuError::Surface("window surface lost".into())),
+            wgpu::CurrentSurfaceTexture::Validation => Err(GpuError::Surface("window surface validation failed".into())),
+        }
+    }
+
+    fn window_buffer(&mut self) -> &wgpu::Texture {
+        self.window_buffer.get_or_insert_with(|| headless_texture(&self.device, self.format, self.width, self.height))
+    }
+
+    /// Draw the ordinary frame once and return its top-to-bottom RGBA pixels.
+    pub fn render_frame_capture(&mut self, segments: &[(FrameParams, &DrawList)], textures: &mut TextureManager)
+        -> Result<Vec<u8>, GpuError> {
+        if let Some(error) = self.error() { return Err(error); }
+        if matches!(self.target, Target::Headless { .. }) {
+            self.render_frame(segments, textures);
+            return self.try_read_pixels();
+        }
+        let frame = self.acquire_window_frame()?;
+        // Surface textures only guarantee RENDER_ATTACHMENT. Present the same
+        // readable image that is returned to the screenshot caller.
+        let drawn = self.window_buffer().clone();
+        let source = drawn.create_view(&Default::default());
+        self.draw(segments, textures, &source);
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        if let Some(surface) = &frame {
+            let target = surface.texture.create_view(&Default::default());
+            wgpu::util::TextureBlitter::new(&self.device, self.format).copy(&self.device, &mut encoder, &source, &target);
+        }
+        let conversion = match self.format {
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb |
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => None,
+            _ => {
+                let format = wgpu::TextureFormat::Rgba8Unorm;
+                let rgba = headless_texture(&self.device, format, self.width, self.height);
+                wgpu::util::TextureBlitter::new(&self.device, format)
+                    .copy(&self.device, &mut encoder, &source, &rgba.create_view(&Default::default()));
+                Some(rgba)
+            }
+        };
+        self.queue.submit([encoder.finish()]);
+        if let Some(surface) = frame { self.queue.present(surface); }
+        let mut pixels = self.read_texture_pixels(conversion.as_ref().unwrap_or(&drawn))?;
+        if matches!(self.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+            for pixel in pixels.chunks_exact_mut(4) { pixel.swap(0, 2); }
+        }
+        Ok(pixels)
     }
 
     /// The headless target's pixels, RGBA, top row first. Panics with the
@@ -722,6 +788,10 @@ impl Gpu {
             return Err(e);
         }
         let Target::Headless { texture } = &self.target else { return Ok(Vec::new()) };
+        self.read_texture_pixels(texture)
+    }
+
+    fn read_texture_pixels(&self, texture: &wgpu::Texture) -> Result<Vec<u8>, GpuError> {
         let (w, h) = (self.width, self.height);
         let row = (w * 4).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -2069,12 +2139,35 @@ impl Gpu {
     /// `TextureID.generateHwId` + `assignFilteringFlags`: uploads the image
     /// (every mip level for `MIPMAPS` textures) and picks the sampler.
     fn ensure_texture(&mut self, id: u32, textures: &mut TextureManager) {
+        if pz_render::SKYBOX_TEXTURE_IDS.contains(&id) {
+            self.ensure_sky_target(id);
+            return;
+        }
         let Some(d) = textures.data(id) else { return };
+        let one = d.width == 1 && d.height == 1;
+        let filter = (d.min_nearest() || one, d.mag_nearest() || one, d.mipmaps() && !one, d.clamp_to_edge());
         if self.textures.contains_key(&id) {
             // A respecified image (`glTexImage2D` on a live texture, e.g. a
             // video frame) replaces the upload.
             if self.versions.get(&id) == Some(&d.version) || (d.ready && d.image.is_none()) {
                 return;
+            }
+            // glTexImage2D can keep the existing allocation and sampler
+            // bindings when a movie supplies its next frame at the same size.
+            if d.ready && !d.mipmaps() && self.filters.get(&id) == Some(&filter) {
+                if let (Some(view), Some(image)) = (self.views.get(&id), &d.image) {
+                    let texture = view.texture();
+                    let level = &image.data;
+                    if texture.width() == level.width as u32 && texture.height() == level.height as u32
+                        && texture.mip_level_count() == 1 && texture.format() == wgpu::TextureFormat::Rgba8Unorm
+                        && texture.usage().contains(wgpu::TextureUsages::COPY_DST)
+                    {
+                        self.upload_level(texture, 0, texture.width(), texture.height(), &level.pixels);
+                        self.versions.insert(id, d.version);
+                        textures.data_mut(id).unwrap().image = None;
+                        return;
+                    }
+                }
             }
             self.textures.remove(&id);
             self.views.remove(&id);
@@ -2089,11 +2182,9 @@ impl Gpu {
         if levels.is_empty() {
             return;
         }
-        // 1x1 textures are always sampled GL_NEAREST.
-        let one = d.width == 1 && d.height == 1;
-        let filter = (d.min_nearest() || one, d.mag_nearest() || one, d.mipmaps() && !one, d.clamp_to_edge());
-        let pixels: Vec<Vec<u8>> = levels.iter().map(|l| l.pixels.clone()).collect();
-        let (bind_group, view) = self.create_texture(levels[0].width as u32, levels[0].height as u32, &pixels, filter);
+        let (width, height) = (levels[0].width as u32, levels[0].height as u32);
+        let pixels: Vec<Vec<u8>> = levels.into_iter().map(|level| level.pixels).collect();
+        let (bind_group, view) = self.create_texture(width, height, &pixels, filter);
         self.textures.insert(id, bind_group);
         self.versions.insert(id, d.version);
         self.filters.insert(id, filter);
@@ -2198,6 +2289,15 @@ impl Gpu {
         self.sampled.insert((id, filter), bg);
     }
 
+    fn upload_level(&self, texture: &wgpu::Texture, level: u32, w: u32, h: u32, pixels: &[u8]) {
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture, mip_level: level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            pixels,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+    }
+
     fn create_texture(&mut self, width: u32, height: u32, levels: &[Vec<u8>], filter: Filter) -> (wgpu::BindGroup, wgpu::TextureView) {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -2211,12 +2311,7 @@ impl Gpu {
         });
         let (mut w, mut h) = (width, height);
         for (level, px) in levels.iter().enumerate() {
-            self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: level as u32, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                px,
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
-                wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-            );
+            self.upload_level(&texture, level as u32, w, h, px);
             w = (w / 2).max(1);
             h = (h / 2).max(1);
         }
@@ -2592,7 +2687,7 @@ fn headless_texture(device: &wgpu::Device, format: wgpu::TextureFormat, width: u
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     })
 }

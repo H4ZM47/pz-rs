@@ -243,6 +243,16 @@ impl StatesWorldAdapter<'_> {
         }
     }
 
+    /// The portal's own eligibility check, with an optional character.
+    pub fn portal_can_climb_through(&self, sq: &IsoGridSquare, object: &IsoObject, chr: Option<&Thumper>) -> bool {
+        match &object.kind {
+            ObjectKind::Window(_) => self.window_can_climb_through(sq, object, chr),
+            ObjectKind::Thumpable(_) => self.thumpable_can_climb_through(sq, object, chr),
+            ObjectKind::WindowFrame { north } => self.frame_can_climb_through(sq, *north, chr),
+            _ => false,
+        }
+    }
+
     /// `getClimbThroughWindowPositioningParams(chr, obj, params)`'s world
     /// part.
     pub fn window_climb_for(&self, t: &Thumper, r: ObjectRef) -> Option<WindowClimb> {
@@ -446,12 +456,14 @@ impl StatesWorldAdapter<'_> {
             return true;
         }
         if let ObjectKind::Thumpable(t) = &o.kind {
-            if let Some(table) = t.mod_data.as_ref().or(o.mod_data.as_ref()) {
-                return table
-                    .entries
-                    .iter()
-                    .any(|(k, _)| matches!(k, pz_world::save::lua_table::LuaKey::Str(s) if s.contains("MetalPipe")));
-            }
+            use pz_inventory::moddata::ItemModData;
+            return match &t.mod_data {
+                Some(ItemModData::Archive(table)) => table.entries.iter().any(|(k, _)|
+                    matches!(k, pz_world::save::lua_table::LuaKey::Str(s) if s.contains("MetalPipe"))),
+                Some(ItemModData::Live(table)) => table.entries().iter().any(|(key, _)|
+                    key.as_str().is_some_and(|name| name.contains("MetalPipe"))),
+                None => false,
+            };
         }
         false
     }

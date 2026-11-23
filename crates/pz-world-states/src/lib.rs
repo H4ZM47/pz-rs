@@ -33,6 +33,7 @@ mod climb;
 mod collide;
 mod context;
 mod door;
+mod door_hits;
 mod floor;
 pub mod population;
 mod query;
@@ -70,6 +71,21 @@ use pz_world::{
     BuildingIdx, IsoCell, IsoDirections, IsoGridSquare, IsoMetaGrid, IsoSpriteManager, SquareRef,
     VisionEnv,
 };
+
+/// A character already in CloseWindowState at the start of a world query.
+#[derive(Clone, Copy)]
+pub struct ClosingWindow {
+    pub actor: i32,
+    pub target: ObjectRef,
+    pub success: bool,
+}
+
+impl ClosingWindow {
+    pub fn of<I: 'static>(chr: &GameCharacter<I>) -> Option<Self> {
+        let target = pz_characters::character::states::window::closing_window(chr)?;
+        Some(Self { actor: chr.id, target, success: chr.variable_string("CloseWindowOutcome").eq_ignore_ascii_case("success") })
+    }
+}
 
 /// What a thumper or a character the thump code looks at is, as the world
 /// code reads it (`IsoGameCharacter` / `IsoZombie` fields).
@@ -151,6 +167,7 @@ impl Default for ThumpSettings {
 /// world and hand it to every adapter.
 #[derive(Clone, Debug, Default)]
 pub struct StatesRuntime {
+    door_hits: Vec<door_hits::DoorHit>,
     /// `partialThumpDmg` by object.
     pub partial_thump_dmg: HashMap<ObjectRef, f32>,
     /// `IsoObject.damage` of plain objects (100 when absent).
@@ -167,21 +184,7 @@ impl StatesRuntime {
     }
 }
 
-/// `WorldSoundManager.instance.addSound(source, x, y, z, radius, volume,
-/// stressHumans, zombieIgnoreDist, stressMod)`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WorldSoundRequest {
-    /// The thumper's id, or `None` for `null`.
-    pub source: Option<i32>,
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
-    pub radius: i32,
-    pub volume: i32,
-    pub stress_humans: bool,
-    pub zombie_ignore_dist: f32,
-    pub stress_mod: f32,
-}
+pub use pz_characters::character::context::WorldSoundRequest;
 
 /// What the states' world code needs from outside `pz-world`. Every
 /// method has the answer of an engine with nothing in it; the provider is
@@ -293,11 +296,8 @@ pub trait StatesEngine {
     fn character_eating_count(&self, _chr: i32) -> usize {
         0
     }
-    /// `IsoWindow.getFirstCharacterClosing()` has `CloseWindowOutcome` of
-    /// `success`.
-    fn window_closing_success(&self, _window: ObjectRef) -> bool {
-        false
-    }
+    /// Active close-window actions, captured before the world borrows its actors.
+    fn closing_windows(&self) -> &[ClosingWindow] { &[] }
     /// The zombies among `square.getMovingObjects()` (the squares'
     /// moving-object lists are the character owner's), in list order.
     fn zombies_on_square(&self, _sq: (i32, i32, i32)) -> Vec<i32> {
@@ -364,6 +364,11 @@ pub trait StatesEngine {
     /// render invalidation) after the adapter changed a square's objects.
     fn square_changed(&mut self, _sq: (i32, i32, i32)) {}
 
+    fn geometry_changed(&mut self, _cell: &IsoCell, _meta: &IsoMetaGrid,
+        _sprites: &IsoSpriteManager, pos: (i32, i32, i32)) {
+        self.square_changed(pos);
+    }
+
     // ---- audio (pz-audio) ----
 
     /// `WorldSoundManager.instance.addSound(...)`.
@@ -399,25 +404,57 @@ pub trait StatesEngine {
     fn object_removed(&mut self, _sq: (i32, i32, i32), _obj: &IsoObjectRef, _destroyed: bool) {}
     /// `LuaEventManager.triggerEvent("OnContainerUpdate")`.
     fn on_container_update(&mut self) {}
+    fn on_window_toggled(&mut self, _actor: i32, _window: &IsoObjectRef) {
+        self.on_container_update();
+    }
     /// `building.forceAwake()`.
     fn force_awake(&mut self, _building: BuildingIdx) {}
     /// `AmbientStreamManager.instance.doAlarm(def)` for an alarmed building.
     fn do_alarm(&mut self, _building: BuildingIdx) {}
+    fn do_room_alarm(&mut self, _room: i64, building: BuildingIdx) { self.do_alarm(building) }
+    fn zombie_triggers_house_alarm(&self) -> bool { false }
     /// `IsoDoor/IsoThumpable.ToggleDoor(chr)` on the cell (the door code
     /// with its sounds, Lua and path invalidation).
     fn toggle_door(&mut self, _cell: &mut IsoCell, _door: ObjectRef, _chr: i32) {}
     /// `IsoWindow.ToggleWindow(chr)` on the cell.
-    fn toggle_window(&mut self, _cell: &mut IsoCell, _window: ObjectRef, _chr: i32) {}
+    fn toggle_window(&mut self, cell: &mut IsoCell, meta: &IsoMetaGrid, sprites: &IsoSpriteManager,
+        window: ObjectRef, actor: &Thumper) -> pz_inventory::floor_drop::HostResult<()> {
+        let Some(square) = cell.get_grid_square(window.x, window.y, window.z) else { return Ok(()) };
+        let object = {
+            let square = square.try_borrow().map_err(|_| pz_inventory::floor_drop::RuntimeHostError::Borrowed("window square"))?;
+            square.object_index(window.id).map(|index| square.objects[index].ref_handle())
+        };
+        if let Some(object) = object {
+            if pz_world::world_state::toggle_window(cell, meta, sprites, (window.x, window.y, window.z),
+                &object, Some((actor.x, actor.y)))? {
+                if !actor.zombie || self.zombie_triggers_house_alarm() {
+                    if let Some((room, building)) = pz_world::world_state::opened_window_alarm(cell, meta, (window.x, window.y, window.z), &object)? {
+                        self.do_room_alarm(room, building);
+                    }
+                }
+                self.geometry_changed(cell, meta, sprites, (window.x, window.y, window.z));
+                self.on_window_toggled(actor.id, &object);
+            }
+        }
+        Ok(())
+    }
     /// `LuaEventManager.triggerEvent("OnWeaponHitThumpable", chr, null,
     /// obj)` (a bare-handed window smash).
     fn weapon_hit_thumpable(&mut self, _chr: i32, _obj: ObjectRef) {}
     /// `VehicleWindow.isDestroyed()` of a vehicle's part (the vehicles'
     /// owner; `None`: no such window).
-    fn vehicle_window_destroyed(&self, _vehicle: i16, _part: &str) -> Option<bool> {
-        None
+    fn vehicle_window_destroyed(&self, id: i16, part: &str) -> Option<bool> {
+        let part = pz_vehicles::manager::vehicle_by_id(id)?.part_by_id(part)?;
+        let state = part.st();
+        state.window.map(|_| state.condition == 0)
     }
-    /// `VehicleWindow.hit(chr)`.
-    fn vehicle_window_hit(&mut self, _vehicle: i16, _part: &str, _chr: i32) {}
+
+    fn vehicle_window_hit(&mut self, id: i16, part: &str, _actor: i32) {
+        if let Some(part) = pz_vehicles::manager::vehicle_by_id(id).and_then(|v| v.part_by_id(part)) {
+            if part.st().window.is_some() { part.hit_window() }
+        }
+    }
+
     /// The local player's input this frame (`pressedMovement`,
     /// `pressedCancelAction` in the window states).
     fn player_input(&self) -> Option<&dyn pz_characters::character::player::PlayerInput> {
@@ -466,6 +503,9 @@ pub trait StatesEngine {
     /// `doTreeNoises()` of `chr` on its current square (`treeSoundMgr
     /// .addSquare` when the listener is within 20; no draws).
     fn do_tree_noises(&mut self, _chr: i32, _sq: (i32, i32, i32)) {}
+    /// `Core.getOptionDoDoorSpriteEffects()`.
+    fn door_sprite_effects_enabled(&self) -> bool { true }
+
     /// `getRenderEffectMaster().objectRenderEffects != null`.
     fn has_render_effect(&self, _obj: ObjectRef) -> bool {
         false
@@ -529,6 +569,8 @@ pub struct StatesWorldAdapter<'a> {
     pub settings: ThumpSettings,
     pub runtime: &'a mut StatesRuntime,
     pub engine: &'a mut dyn StatesEngine,
+    /// The shared gameplay sound list for character hearing.
+    sounds: Option<&'a pz_audio::world_sound::WorldSoundManager>,
     /// The other characters the states reach by id (the owner's
     /// `Vec<GameCharacter<I>>`, set with [`Self::with_characters`]); `None`:
     /// no other characters.
@@ -552,6 +594,11 @@ impl<I: 'static> CharacterLookup for ListLookup<'_, I> {
 }
 
 impl<'a> StatesWorldAdapter<'a> {
+    pub fn with_world_sounds(mut self, sounds: &'a pz_audio::world_sound::WorldSoundManager) -> Self {
+        self.sounds = Some(sounds);
+        self
+    }
+
     /// Lets the states reach `characters` by id (`character_mut`,
     /// `take_character`, `characters_near`).
     pub fn with_characters<I: 'static>(mut self, characters: &'a mut Vec<GameCharacter<I>>) -> Self {
@@ -610,6 +657,7 @@ impl<'a> StatesWorldAdapter<'a> {
             settings,
             runtime,
             engine,
+            sounds: None,
             characters: None,
             taken: Vec::new(),
             path: None,
@@ -812,7 +860,22 @@ pub fn corpse_pos(id: i64) -> (i32, i32, i32, usize) {
     )
 }
 
+// Hearing queries need the same loaded square and room a character occupies.
+// Mutations register through StatesEngine after the state releases its cell.
+impl pz_audio::world_sound::SoundWorld for StatesWorldAdapter<'_> {
+    fn is_server(&self) -> bool { self.settings.server }
+    fn is_client(&self) -> bool { self.settings.client }
+    fn chunk_loaded(&self, wx: i32, wy: i32) -> bool { self.cell.chunks.contains_key(&(wx, wy)) }
+    fn room_at(&self, x: i32, y: i32, z: i32) -> pz_audio::world_sound::RoomAt {
+        pz_world_sound::sound_room_at(self.cell, x, y, z)
+    }
+}
+
 impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
+    fn world_sounds(&self) -> Option<(&pz_audio::world_sound::WorldSoundManager, &dyn pz_audio::world_sound::SoundWorld)> {
+        Some((self.sounds?, self))
+    }
+
     fn character_mut(&mut self, id: i32) -> Option<&mut GameCharacter<I>> {
         self.character_list::<I>()?.iter_mut().find(|c| c.id == id)
     }
@@ -1038,7 +1101,12 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     }
 
     fn window_closing(&self, window: ObjectRef) -> bool {
-        self.engine.window_closing_success(window)
+        if self.engine.closing_windows().is_empty() { return false }
+        let Some((square, object)) = self.find(window) else { return false };
+        let object = object.borrow();
+        let pz_world::objects::ObjectKind::Window(w) = &object.kind else { return false };
+        let square = square.borrow();
+        self.first_window_closer_succeeds(&square, window, w.north)
     }
 
     fn reroute_collide(&self, obj: ObjectRef) -> bool {
@@ -1475,12 +1543,24 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         self.window_info_of(window)
     }
 
-    fn toggle_window(&mut self, window: ObjectRef, chr: i32) {
-        self.engine.toggle_window(self.cell, window, chr);
+    fn toggle_window(&mut self, window: ObjectRef, chr: &GameCharacter<I>) -> pz_inventory::floor_drop::HostResult<()> {
+        self.engine.toggle_window(self.cell, self.meta, self.sprites, window, &Thumper::of(chr))
     }
 
+    fn debug_unlock_window(&mut self, window: ObjectRef, opening: bool) -> pz_inventory::floor_drop::HostResult<()> {
+        self.debug_unlock_window_at(window, opening)
+    }
     fn set_window_perma_locked(&mut self, window: ObjectRef, perma: bool) {
         self.set_window_perma_locked_at(window, perma);
+    }
+
+    fn window_hit_target(&self, window: ObjectRef, chr: &GameCharacter<I>) -> Option<pz_characters::character::state::cx::WindowHitTarget> {
+        let location = self.thumpable_for(window, Some(&Thumper::of(chr)))?;
+        let object = self.object_ref(location)?;
+        if matches!(&object.borrow().kind, pz_world::objects::ObjectKind::Barricade(b) if b.is_destroyed()) {
+            return None;
+        }
+        Some(pz_characters::character::state::cx::WindowHitTarget { location, object })
     }
 
     fn window_weapon_hit(&mut self, window: ObjectRef, chr: &GameCharacter<I>) {

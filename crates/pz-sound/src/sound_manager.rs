@@ -714,6 +714,15 @@ impl SoundManager {
     /// `Update()`. `toggle_music_pressed` is
     /// `GameKeyboard.isKeyPressed(KeybindId.TOGGLE_MUSIC)`.
     pub fn update(&mut self, toggle_music_pressed: bool, ctx: &mut Ctx) {
+        self.update_with_ambient(toggle_music_pressed, ctx, |_| {});
+    }
+
+    pub fn update_with_ambient(&mut self, toggle_music_pressed: bool, ctx: &mut Ctx, ambient: impl FnOnce(&mut dyn AudioBackend)) {
+        self.update_with_ambient_context(toggle_music_pressed, ctx, |ctx, _| ambient(ctx.backend));
+    }
+
+    /// Run the world's ambient emitters after the UI emitter and before the final music mix.
+    pub fn update_with_ambient_context(&mut self, toggle_music_pressed: bool, ctx: &mut Ctx, ambient: impl FnOnce(&mut Ctx, usize)) -> Vec<(i64, String, i32)> {
         if !self.initialized {
             self.initialized = true;
             self.in_game_group_bus = ctx.backend.get_bus("bus:/InGame");
@@ -733,17 +742,22 @@ impl SoundManager {
         if ui.is_empty() {
             ui.clear_parameters();
         }
+        ambient(ctx, self.parameter_count);
         if !self.allow_music() {
             self.stop_music_all(ctx.backend);
         }
         if self.music_is_playing(ctx.backend) {
             self.update_music_volume(ctx);
         }
-        for (_, name, _) in ctx.backend.take_timeline_markers() {
-            if name == "Lightning" {
+        let mut markers = ctx.backend.take_timeline_markers();
+        markers.retain(|(id, name, _)| {
+            if *id == self.music_combined_event && name == "Lightning" {
                 self.lightning_timeline_marker = true;
+                return false;
             }
-        }
+            true
+        });
+        markers
     }
 
     fn update_music(&mut self, toggle_music_pressed: bool, ctx: &mut Ctx) {

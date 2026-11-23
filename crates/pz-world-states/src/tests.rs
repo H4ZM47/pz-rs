@@ -149,6 +149,7 @@ const SPRITES: &[Spec] = &[
         "normal",
         &[("windowW", ""), ("WindowW", "")],
     ),
+    ("protected_window", "normal", &[("WindowLocked", "true")]),
     ("crate", "normal", &[("solidtrans", "")]),
     ("brokenglass_1_2", "normal", &[]),
     ("carpentry_01_9", "normal", &[]),
@@ -247,14 +248,17 @@ struct Engine {
     movers: HashMap<i32, CollideMoverInfo>,
     hop: Vec<(i32, Vec<HoppableAction>)>,
     effects: Vec<(ObjectRef, NewRenderEffect)>,
+    disable_door_effects: bool,
     noises: Vec<(i32, (i32, i32, i32))>,
     cancelled: Vec<MoverId>,
     toggled: Vec<ObjectRef>,
+    closing_windows: Vec<ClosingWindow>,
     replace_toggled_square: bool,
     moving: Vec<(i32, i32, i32)>,
 }
 
 impl StatesEngine for Engine {
+    fn closing_windows(&self) -> &[ClosingWindow] { &self.closing_windows }
     fn rand(&mut self) -> &mut dyn GameRand {
         &mut self.rand
     }
@@ -300,6 +304,7 @@ impl StatesEngine for Engine {
     fn hoppable_actions(&mut self, chr: i32, actions: &[HoppableAction]) {
         self.hop.push((chr, actions.to_vec()));
     }
+    fn door_sprite_effects_enabled(&self) -> bool { !self.disable_door_effects }
     fn has_render_effect(&self, obj: ObjectRef) -> bool {
         self.effects.iter().any(|(r, _)| *r == obj)
     }
@@ -312,7 +317,7 @@ impl StatesEngine for Engine {
     fn path_cancel_request(&mut self, mover: MoverId) {
         self.cancelled.push(mover);
     }
-    fn toggle_window(&mut self, cell: &mut IsoCell, window: ObjectRef, _chr: i32) {
+    fn toggle_window(&mut self, cell: &mut IsoCell, _meta: &IsoMetaGrid, _sprites: &IsoSpriteManager, window: ObjectRef, _chr: &Thumper) -> pz_inventory::floor_drop::HostResult<()> {
         self.toggled.push(window);
         let sq = cell
             .get_grid_square_mut(window.x, window.y, window.z)
@@ -353,6 +358,7 @@ impl StatesEngine for Engine {
                     Some(replacement.into()),
                 );
         }
+        Ok(())
     }
     fn has_moving_objects(&self, sq: (i32, i32, i32)) -> bool {
         self.moving.contains(&sq)
@@ -495,6 +501,35 @@ fn zombie(x: f32, y: f32, strength: i32) -> GameCharacter<()> {
     z.zombie.cognition = 3;
     z.path.current_square = Some((x as i32, y as i32, 0));
     z
+}
+
+#[test]
+fn loaded_zombie_hears_player_across_chunk_boundary_and_rooms() {
+    use pz_audio::world_sound::{SoundSource, WorldSoundManager};
+    use pz_characters::character::{context::DefaultSimContext, state::StateCx};
+    use pz_world_sound::{NoEffects, WorldSoundAdapter};
+
+    let mut world = World::new();
+    let source = SoundSource { id: 51, is_player: true, ..Default::default() };
+    let mut sounds = WorldSoundManager::new();
+    let mut effects = NoEffects;
+    let mut host = WorldSoundAdapter::new(&world.cell, 2, &mut effects);
+    sounds.add_sound(&mut host, Some(source), 17, 11, 0, 30, 40).unwrap();
+    let scripts = ScriptManager::new();
+    let characters = pz_characters::Characters::default();
+    let hear = |world: &mut World| {
+        let mut zombie = zombie(14.5, 11.5, 1);
+        zombie.zombie.hearing = 2;
+        let mut adapter = world.adapter().with_world_sounds(&sounds);
+        zombie.respond_to_sound(&mut StateCx::new(&scripts, &characters, &DefaultSimContext, &mut adapter));
+        assert_eq!(zombie.zombie.sound_source_target, Some(51));
+        assert!(zombie.zombie.sound_source_is_player);
+        zombie.zombie.sound_attract
+    };
+    let open = hear(&mut world);
+    world.cell.get_grid_square(17, 11, 0).unwrap().borrow_mut().room_id = 4;
+    let muffled = hear(&mut world);
+    assert!(0.0 < muffled && muffled < open);
 }
 
 fn special(w: &mut World, from: (i32, i32, i32), to: (i32, i32, i32)) -> Option<ObjectRef> {
@@ -734,6 +769,38 @@ fn smashing_a_window_leaves_glass_and_hands_over_to_the_barricade() {
     let i = info(&mut w, win, 3);
     assert_eq!(i.thumpable_for, Some(ThumpTarget::Object(b)));
     assert!(i.destroyed);
+}
+
+#[test]
+fn surviving_barricade_hit_reuses_its_phase_and_expires() {
+    let mut world = World::new();
+    let win = world.add(12, 12, "window_w", window(&world, 50), true);
+    let board = world.barricade(12, 12, IsoDirections::W, &[1000]);
+    let actor = climber(12.5, 12.5);
+    let hit = |w: &mut World| w.adapter().window_weapon_hit_by(win, &actor, true);
+    world.engine.disable_door_effects = true;
+    hit(&mut world);
+    assert!(world.rt.visible_door_hits(&world.cell).unwrap().is_empty());
+    world.engine.disable_door_effects = false;
+    hit(&mut world);
+    for _ in 0..2 { world.rt.update_door_hits(1.0, &mut world.engine.rand); }
+    let visible = world.rt.visible_door_hits(&world.cell).unwrap();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].0, board);
+    assert!(visible[0].1[0][0] < 0.0 && visible[0].1[0][1] < 0.0);
+    hit(&mut world);
+    assert_eq!(visible, world.rt.visible_door_hits(&world.cell).unwrap());
+    for _ in 0..30 { world.rt.update_door_hits(1.0, &mut world.engine.rand); }
+    assert!(world.rt.visible_door_hits(&world.cell).unwrap().is_empty());
+
+    hit(&mut world);
+    let square = world.cell.get_grid_square(board.x, board.y, board.z).unwrap();
+    let old = world.object(board).unwrap();
+    let replacement = IsoObject::new(board.id, ObjectKind::Object, None);
+    let idx = square.borrow().object_index(board.id).unwrap();
+    square.borrow_mut().objects[idx] = pz_world::ObjectSlot::new(replacement);
+    assert!(world.rt.visible_door_hits(&world.cell).unwrap().is_empty());
+    drop(old);
 }
 
 #[test]
@@ -1256,6 +1323,32 @@ fn climber(x: f32, y: f32) -> Thumper {
 }
 
 #[test]
+fn first_window_closer_uses_near_then_far_moving_object_order() {
+    let mut world = World::new();
+    let window = world.add(12, 12, "window_w", window(&world, 0), true);
+    let near = world.cell.get_grid_square(12, 12, 0).unwrap();
+    let far = world.cell.get_grid_square(11, 12, 0).unwrap();
+    near.borrow_mut().moving_objects.extend([99, 2, 1]);
+    far.borrow_mut().moving_objects.push(3);
+    for (actor, success) in [(1, true), (2, false), (3, true)] {
+        world.engine.closing_windows.push(ClosingWindow { actor, target: window, success });
+    }
+    let can_climb = |world: &mut World| {
+        let adapter = world.adapter();
+        let (sq, obj) = adapter.find(window).unwrap();
+        let result = adapter.portal_can_climb_through(&sq.borrow(), &obj.borrow(), None);
+        result
+    };
+    assert!(can_climb(&mut world));
+    near.borrow_mut().moving_objects.swap(1, 2);
+    assert!(!can_climb(&mut world));
+    near.borrow_mut().moving_objects.clear();
+    assert!(!can_climb(&mut world));
+    far.borrow_mut().moving_objects.clear();
+    assert!(can_climb(&mut world));
+}
+
+#[test]
 fn window_info_and_perma_lock() {
     let mut w = World::new();
     let win = w.add(12, 12, "window_w", window(&w, 50), true);
@@ -1268,6 +1361,29 @@ fn window_info_and_perma_lock() {
     // Not a window.
     let d = w.add(10, 10, "door_n", door(true, 500), true);
     assert_eq!(w.adapter().window_info_of(d), None);
+}
+
+#[test]
+fn debug_unlock_preserves_protected_or_missing_sprites_only_while_opening() {
+    let mut world = World::new();
+    let win = world.add(12, 12, "protected_window", window(&world, 50), true);
+    let object = world.object(win).unwrap();
+    for missing in [false, true] {
+        {
+            let mut body = object.borrow_mut();
+            if missing { body.sprite = pz_world::objects::ObjectSprite::None; }
+            let ObjectKind::Window(pane) = &mut body.kind else { unreachable!() };
+            pane.locked = true;
+            pane.perma_locked = true;
+        }
+        let adapter = world.adapter();
+        adapter.debug_unlock_window_at(win, true).unwrap();
+        let info = adapter.window_info_of(win).unwrap();
+        assert!(info.locked && info.perma_locked);
+        adapter.debug_unlock_window_at(win, false).unwrap();
+        let info = adapter.window_info_of(win).unwrap();
+        assert!(!info.locked && !info.perma_locked);
+    }
 }
 
 #[test]
@@ -2103,4 +2219,44 @@ fn the_states_find_paths_through_the_host() {
     let gone = zombie(2.5, 2.5, 1).mover_id_of();
     StateWorld::<()>::path_to_character(&mut a, &mut other, gone);
     assert!(StateWorld::<()>::path_behavior(&a, 30).map_or(true, |b| !b.is_goal_character()));
+}
+
+#[test]
+fn facing_uses_frame_sprite_and_resolves_the_closest_live_grid_member() {
+    use pz_entity::runtime_load::RuntimeHostError;
+    use pz_world::sprite::{runtime::{create_runtime_sprite, ObjectSprite}, IsoSpriteGrid};
+    use std::{cell::RefCell, rc::Rc};
+
+    let mut w = World::new();
+    let first = w.add(10, 10, "crate", ObjectKind::WindowFrame { north: true }, false);
+    let second = w.add(11, 10, "wall_w", ObjectKind::Object, false);
+    let frame = w.object(first).unwrap();
+    let second = w.object(second).unwrap();
+    let square = w.cell.get_grid_square(10, 10, 0).unwrap();
+    let square = square.borrow();
+    assert_eq!(pz_world::world_state::barricade_able_north(&frame.borrow()), Some(true));
+    assert_eq!(w.adapter().try_closest_facing_position(&square, &frame.borrow(), 14.0, 10.0).unwrap(),
+        Some((10.5, 10.5)));
+
+    let tile = w.m.named_map["crate"];
+    let mut grid = IsoSpriteGrid::new(2, 1, 1);
+    grid.set_sprite(0, 0, 0, tile);
+    let group = w.m.grids.len();
+    w.m.grids.push(grid);
+    w.m.sprites[tile].sprite_grid = Some(group);
+    let manager = Rc::new(RefCell::new(manager()));
+    let actual = create_runtime_sprite(&manager, &w.m.tables, &mut pz_entity::RetiredComponents::new()).unwrap();
+    actual.borrow_mut().data = w.m.sprites[w.m.named_map["wall_w"]].clone();
+    actual.borrow_mut().data.sprite_grid = Some(group);
+    second.borrow_mut().sprite = ObjectSprite::Native(actual.clone());
+
+    let query = |w: &mut World, x| w.adapter().try_closest_facing_position(&square, &frame.borrow(), x, 10.5);
+    assert_eq!(query(&mut w, 11.0).unwrap(), Some((10.5, 10.5)), "first member wins the tie");
+    assert_eq!(query(&mut w, 11.75).unwrap(), Some((11.0, 10.5)), "native sprite supplies the west wall edge");
+    let held = actual.borrow_mut();
+    assert!(matches!(query(&mut w, 11.75), Err(RuntimeHostError::Borrowed(_))));
+    drop(held);
+    let second_square = w.cell.get_grid_square(11, 10, 0).unwrap();
+    assert_eq!(w.adapter().try_closest_facing_position(&second_square.borrow(), &second.borrow(), 14.0, 10.0).unwrap(),
+        None, "an unindexed sprite has offsets (-1,-1,-1) and its search finds no upstairs member");
 }
