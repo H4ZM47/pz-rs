@@ -734,6 +734,8 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
                 let $item = item_of(&$args, 1, $class)?;
                 let $sm: &ScriptManager = &s;
                 run(c, &chr, |$ch, $ctx| {
+                    let chars_ref = k.borrow();
+                    let $chars: &Characters = &chars_ref;
                     let _ = (&$sm, &$chars, &$ctx, &$args);
                     $body
                 })?;
