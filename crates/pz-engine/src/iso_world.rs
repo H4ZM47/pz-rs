@@ -219,6 +219,10 @@ pub struct IsoWorld {
     pub action_groups: pz_characters::character::state::ActionGroups,
     /// `IsoFireManager`.
     pub fire: pz_world::fire::IsoFireManager,
+    /// `IsoFireManager.fireSounds`: 20 pooled `FmodSoundEmitter` slots.
+    pub fire_sounds: crate::world_fire::FireSoundSlots,
+    /// The cell's live `IsoHeatSource` list (permanent fires and hearths).
+    pub heat_sources: crate::world_fire::HeatSourceRegistry,
     pub fire_flags: Option<pz_world::fire::manager::FireFlags>,
     /// Each local player's `IsoPlayer.sqlId` (its `localPlayers` row; -1
     /// before its first save).
@@ -352,6 +356,8 @@ impl IsoWorld {
                 game_dir.join("media"),
             ),
             fire: pz_world::fire::IsoFireManager::new(),
+            fire_sounds: crate::world_fire::FireSoundSlots::new(),
+            heat_sources: crate::world_fire::HeatSourceRegistry::new(),
             fire_flags: None,
             door_tables: None,
             player_sql_ids: [-1; 4],

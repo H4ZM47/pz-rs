@@ -828,6 +828,7 @@ impl IsoWorld {
                         models,
                         floor_world,
                         regions,
+                        heat_sources,
                         zombies,
                         ..
                     } = self;
@@ -843,7 +844,14 @@ impl IsoWorld {
                         Some(zombies),
                         |w| {
                             if first_phase {
-                                fill_square_environment(&mut chr, w.cell, w.meta, regions.as_ref())?;
+                                fill_square_environment(
+                                    &mut chr,
+                                    w.cell,
+                                    w.meta,
+                                    Some(&*w.sprites),
+                                    regions.as_ref(),
+                                    Some(heat_sources),
+                                )?;
                             }
                             pz_lua_api::bind_states::with_state_registry(|reg| {
                                 let chars = chars.borrow();
@@ -954,6 +962,7 @@ impl IsoWorld {
             floor_world,
             pathfind,
             regions,
+            heat_sources,
             ..
         } = self;
         let mut dying = Vec::new();
@@ -972,7 +981,14 @@ impl IsoWorld {
                     for &id in &zombie_ids {
                         let Some(mut z) = StateWorld::<LuaItem>::take_character(w, id) else { continue };
                         z.preupdate_zombie();
-                        if let Err(error) = fill_square_environment(&mut z, w.cell, w.meta, regions.as_ref()) {
+                        if let Err(error) = fill_square_environment(
+                            &mut z,
+                            w.cell,
+                            w.meta,
+                            Some(&*w.sprites),
+                            regions.as_ref(),
+                            Some(heat_sources),
+                        ) {
                             StateWorld::<LuaItem>::put_character(w, z);
                             return Err(error.into());
                         }
@@ -1958,6 +1974,7 @@ impl IsoWorld {
     /// (logged here: `UpdateStuff` catches and logs it, then goes on).
     pub fn update_fire(
         &mut self,
+        lua: &mut LuaManager,
         sim: &FrameSim,
         settings: pz_world::fire::FireSettings,
     ) -> Result<(), String> {
@@ -1995,8 +2012,22 @@ impl IsoWorld {
         };
         drop(g);
         let num_players = pz_lua_api::bind_players::num_players();
+        let scripts = pz_lua_api::bind_registry::shared_script_manager();
+        let listeners: Vec<[f32; 3]> = local_players()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| {
+                let p = p.try_borrow().ok()?;
+                if p.has_trait(&scripts, "DEAF").unwrap_or(false) {
+                    return None;
+                }
+                Some([p.vars.x, p.vars.y, p.vars.z * 3.0])
+            })
+            .collect();
         let IsoWorld {
             fire,
+            fire_sounds,
+            heat_sources,
             fire_flags,
             door_tables,
             sprites,
@@ -2023,9 +2054,9 @@ impl IsoWorld {
         // has let go of the sprites (`PathfindNative.squareChanged` builds
         // its tasks from the cell as it is then).
         let mut pf = QueuedPathfind::default();
-        let r = with_world(|w| {
+        let (r, deferred) = with_world(|w| {
             let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else {
-                return Ok(());
+                return (Ok(()), crate::world_fire::FireDeferredEffects::default());
             };
             let mut no_hooks = pz_world::square_mutation::NoMutationHooks;
             let mut no_render = pz_world::square_mutation::NoMutationHooks;
@@ -2035,10 +2066,6 @@ impl IsoWorld {
                 Some(i) => i,
                 None => &mut no_render,
             };
-            // TODO(port): the engine's `SquareMutationHooks` (Lua events,
-            // the add/remove-from-world registries) and the `FireHooks`
-            // (sounds, lights through `FireLightLinks`, burning characters,
-            // heat sources, hutches).
             let mutation = pz_world::fire::manager::FireMutation {
                 regions,
                 doors,
@@ -2047,7 +2074,13 @@ impl IsoWorld {
                 render,
                 num_players,
             };
-            let mut hooks = pz_world::fire::manager::NoFireHooks;
+            let mut hooks = crate::world_fire::EngineFireHooks {
+                sounds: fire_sounds,
+                heat_sources,
+                object_names: &w.object_names,
+                listeners,
+                deferred: crate::world_fire::FireDeferredEffects::default(),
+            };
             let mut fw = pz_world::fire::FireWorld {
                 cell,
                 meta,
@@ -2057,13 +2090,78 @@ impl IsoWorld {
                 settings,
                 hooks: &mut hooks,
             };
-            fire.update(&mut fw, rand, frame)
+            let res = fire.update(&mut fw, rand, frame);
+            (res, hooks.deferred)
         });
+        if !deferred.light_ops.is_empty() {
+            if let Ok(mut guard) = render.try_borrow_mut() {
+                if let Some(wr) = guard.as_mut() {
+                    for op in deferred.light_ops {
+                        match op {
+                            crate::world_fire::FireLightOp::Updated(fr, fire_state) => {
+                                wr.fire_lights.updated(&mut wr.lighting, fr, &fire_state);
+                            }
+                            crate::world_fire::FireLightOp::Removed(fr) => {
+                                wr.fire_lights.removed(&mut wr.lighting, fr);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let Some(h) = pathfind.as_mut() {
             pf.apply(h, &sprites);
         }
         drop(sprites);
         drop(regions_guard);
+        for (x, y, z, radius, volume) in deferred.world_sounds {
+            let req = pz_world_states::WorldSoundRequest {
+                source: None,
+                x,
+                y,
+                z,
+                radius,
+                volume,
+                stress_humans: false,
+                zombie_ignore_dist: 0.0,
+                stress_mod: 1.0,
+            };
+            self.interaction_noise(lua, req, NoiseKind::Once);
+        }
+        for (name, x, y, z) in deferred.play_sounds {
+            pz_lua_api::bind_audio::sound_system()
+                .borrow_mut()
+                .play_world_clip(&name, [x as f32 + 0.5, y as f32 + 0.5, z as f32], true);
+        }
+        for (name, x, y, z) in deferred.lua_events {
+            let arg = if name == "OnNewFire" {
+                let fire_obj = with_world(|w| {
+                    w.cell
+                        .as_ref()
+                        .and_then(|c| c.get_grid_square(x, y, z))
+                        .and_then(|sq| {
+                            let s = sq.try_borrow().ok()?;
+                            s.objects
+                                .iter()
+                                .find(|o| {
+                                    o.try_borrow().is_ok_and(|b| {
+                                        matches!(b.kind, pz_world::objects::ObjectKind::Fire(_))
+                                    })
+                                })
+                                .map(|o| o.ref_handle())
+                        })
+                });
+                fire_obj
+                    .and_then(|o| {
+                        pz_lua_api::bind_world::square_queries::square_object_value(&o, (x, y, z))
+                            .ok()
+                    })
+                    .unwrap_or_else(|| pz_lua_api::bind_world::square_value(x, y, z))
+            } else {
+                pz_lua_api::bind_world::square_value(x, y, z)
+            };
+            lua.trigger_event(&name, &[arg]);
+        }
         if let Err(e) = &r {
             self.log_exception(e.clone());
         }
@@ -2172,10 +2270,14 @@ impl IsoWorld {
 
 /// The parts of the character's `CharacterEnvironment` the world answers
 /// from `getCurrentSquare()`, refreshed before its update. TODO(port): the
-/// building toxicity, can-see, heat sources and the vehicle.
+/// building toxicity, can-see, and the vehicle.
 fn fill_square_environment(
-    chr: &mut LuaGameCharacter, cell: &IsoCell, meta: &IsoMetaGrid,
+    chr: &mut LuaGameCharacter,
+    cell: &IsoCell,
+    meta: &IsoMetaGrid,
+    sprites: Option<&IsoSpriteManager>,
     regions: Option<&Rc<RefCell<pz_world::isoregion::IsoRegions>>>,
+    heat_sources: Option<&crate::world_fire::HeatSourceRegistry>,
 ) -> HostResult<()> {
     let cur = chr.path.current_square;
     let sq_owner = cur.and_then(|(x, y, z)| cell.get_grid_square(x, y, z));
@@ -2193,6 +2295,12 @@ fn fill_square_environment(
             .borrow()
             .get_stress_from_sounds(x, y, z)
     });
+    let heat = match (cur, heat_sources) {
+        (Some((x, y, z)), Some(reg)) if !reg.is_empty() => {
+            reg.query_for_square(x, y, z, cell, meta, sprites, regions.as_deref())
+        }
+        _ => Vec::new(),
+    };
     let e = &mut chr.environment;
     e.has_current_square = sq.is_some();
     e.on_last_square = cur.is_some() && cur == chr.vars.last_square;
@@ -2206,6 +2314,7 @@ fn fill_square_environment(
         .filter(|s| s.room_id != -1)
         .map(|s| s.room_id as u64);
     e.stress_from_sounds = stress;
+    e.heat_sources = heat;
     Ok(())
 }
 
@@ -2604,6 +2713,8 @@ impl IsoWorld {
     /// `PlayerDB.close` and `VehiclesDB2.Reset` (`world_save::close_stores`).
     pub fn stop(&mut self) {
         self.house_alarms.stop();
+        self.fire_sounds.stop_all();
+        self.heat_sources.clear();
         pz_lua_api::bind_audio::sound_system().borrow_mut()
             .with(|_, ctx| self.ambient_parameters.stop(ctx));
         // Invalidate the installed provider before teardown can run actions;

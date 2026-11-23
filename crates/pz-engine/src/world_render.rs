@@ -105,6 +105,8 @@ pub struct WorldRender {
     sprites: SpriteCache,
     pub world: RenderWorld,
     pub lighting: WorldLighting,
+    /// `IsoFire.lightSource` links kept in step with [`WorldLighting`].
+    pub fire_lights: pz_world_render::FireLightLinks,
     /// `FBORenderChunkManager`'s chunk textures, per player.
     caches: [ChunkCache; MAX_PLAYERS],
     /// What the chunk renderer recorded about each drawn object
@@ -208,6 +210,7 @@ impl WorldRender {
             sprites: SpriteCache::new(),
             world: RenderWorld::new(),
             lighting: WorldLighting::new(),
+            fire_lights: pz_world_render::FireLightLinks::new(),
             caches: Default::default(),
             infos: RenderInfos::new(),
             cutaways: std::array::from_fn(|_| Cutaways::new()),
