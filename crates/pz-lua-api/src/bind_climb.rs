@@ -208,7 +208,7 @@ fn set_glass_removed(c: &NativeCall<'_>, removed: bool) -> LuaResult<()> {
     pz_inventory::component_host::retire_components(retired);
     pz_world::object_slot::observe_object(&world.object, ISO_WINDOW);
     if let Some((pos, _)) = object_index(world)? {
-        crate::bind_world::with_world_state_cell(|w| {
+        crate::bind_world::with_world_state_cell(|w| -> LuaResult<()> {
             let state = w.try_borrow().map_err(|_| borrowed("IsoWorld"))?;
             if let (Some(queue), Some(cell), Some(meta)) = (&state.square_changes, &state.cell, &state.meta_grid) {
                 let sprites = crate::bind_sprites::manager()?;
