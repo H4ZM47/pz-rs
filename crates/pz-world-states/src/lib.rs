@@ -517,9 +517,10 @@ pub trait StatesEngine {
     /// `doTreeNoises()` of `chr` on its current square (`treeSoundMgr
     /// .addSquare` when the listener is within 20; no draws).
     fn do_tree_noises(&mut self, _chr: i32, _sq: (i32, i32, i32)) {}
-    /// `getRenderEffectMaster().objectRenderEffects != null`.
+    /// `Core.getOptionDoDoorSpriteEffects()`.
     fn door_sprite_effects_enabled(&self) -> bool { true }
 
+    /// `getRenderEffectMaster().objectRenderEffects != null`.
     fn has_render_effect(&self, _obj: ObjectRef) -> bool {
         false
     }

@@ -65,6 +65,7 @@ impl DoorHit {
 
 impl StatesWorldAdapter<'_> {
     pub(crate) fn hit_door_effect(&mut self, pos: ObjectRef) {
+        if self.settings.server { return; }
         let Some(object) = self.object_ref(pos) else {
             return;
         };

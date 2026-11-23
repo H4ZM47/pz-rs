@@ -248,6 +248,7 @@ struct Engine {
     movers: HashMap<i32, CollideMoverInfo>,
     hop: Vec<(i32, Vec<HoppableAction>)>,
     effects: Vec<(ObjectRef, NewRenderEffect)>,
+    disable_door_effects: bool,
     noises: Vec<(i32, (i32, i32, i32))>,
     cancelled: Vec<MoverId>,
     toggled: Vec<ObjectRef>,
@@ -303,6 +304,7 @@ impl StatesEngine for Engine {
     fn hoppable_actions(&mut self, chr: i32, actions: &[HoppableAction]) {
         self.hop.push((chr, actions.to_vec()));
     }
+    fn door_sprite_effects_enabled(&self) -> bool { !self.disable_door_effects }
     fn has_render_effect(&self, obj: ObjectRef) -> bool {
         self.effects.iter().any(|(r, _)| *r == obj)
     }
@@ -738,6 +740,38 @@ fn smashing_a_window_leaves_glass_and_hands_over_to_the_barricade() {
     let i = info(&mut w, win, 3);
     assert_eq!(i.thumpable_for, Some(ThumpTarget::Object(b)));
     assert!(i.destroyed);
+}
+
+#[test]
+fn surviving_barricade_hit_reuses_its_phase_and_expires() {
+    let mut world = World::new();
+    let win = world.add(12, 12, "window_w", window(&world, 50), true);
+    let board = world.barricade(12, 12, IsoDirections::W, &[1000]);
+    let actor = climber(12.5, 12.5);
+    let hit = |w: &mut World| w.adapter().window_weapon_hit_by(win, &actor, true);
+    world.engine.disable_door_effects = true;
+    hit(&mut world);
+    assert!(world.rt.visible_door_hits(&world.cell).unwrap().is_empty());
+    world.engine.disable_door_effects = false;
+    hit(&mut world);
+    for _ in 0..2 { world.rt.update_door_hits(1.0, &mut world.engine.rand); }
+    let visible = world.rt.visible_door_hits(&world.cell).unwrap();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].0, board);
+    assert!(visible[0].1[0][0] < 0.0 && visible[0].1[0][1] < 0.0);
+    hit(&mut world);
+    assert_eq!(visible, world.rt.visible_door_hits(&world.cell).unwrap());
+    for _ in 0..30 { world.rt.update_door_hits(1.0, &mut world.engine.rand); }
+    assert!(world.rt.visible_door_hits(&world.cell).unwrap().is_empty());
+
+    hit(&mut world);
+    let square = world.cell.get_grid_square(board.x, board.y, board.z).unwrap();
+    let old = world.object(board).unwrap();
+    let replacement = IsoObject::new(board.id, ObjectKind::Object, None);
+    let idx = square.borrow().object_index(board.id).unwrap();
+    square.borrow_mut().objects[idx] = pz_world::ObjectSlot::new(replacement);
+    assert!(world.rt.visible_door_hits(&world.cell).unwrap().is_empty());
+    drop(old);
 }
 
 #[test]

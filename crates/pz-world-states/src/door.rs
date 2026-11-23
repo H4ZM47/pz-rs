@@ -106,9 +106,10 @@ impl StatesWorldAdapter<'_> {
         if hoppable {
             unlock();
         }
-        // TODO(sounds): the barricaded door's `TriggerBarricadedDoor` sound
-        // and shake; the door itself stays as it is.
+        // TriggerBarricadedDoor also posts a halo note for a local player.
         if barricaded {
+            self.engine.play_sound(chr, &format!("{prefix}Blocked"), Some(r));
+            self.hit_door_effect(r);
             return Ok(());
         }
         let key_id = self.store_door_key_id(r);
@@ -128,9 +129,9 @@ impl StatesWorldAdapter<'_> {
         let has_key = (actor.have_key)(key_id);
         if (locked_by_key || custom_lock) && !open {
             if !has_key {
-                // TODO(sounds): "Locked" through the door's sound prefix,
-                // `Hit_Door` render effect and `wasTryingToggleLockedDoor`.
+                // TODO(port): wasTryingToggleLockedDoor for the network state.
                 self.engine.play_sound(chr, &format!("{prefix}Locked"), Some(r));
+                self.hit_door_effect(r);
                 return Ok(());
             }
             self.engine.play_sound(chr, &format!("{prefix}Unlock"), Some(r));
@@ -145,6 +146,7 @@ impl StatesWorldAdapter<'_> {
         let open = matches!(&o_owner.borrow().kind, ObjectKind::Door(d) if d.open);
         if locked && !has_key && !open {
             self.engine.play_sound(chr, &format!("{prefix}Locked"), Some(r));
+            self.hit_door_effect(r);
             return Ok(());
         }
         if double {
