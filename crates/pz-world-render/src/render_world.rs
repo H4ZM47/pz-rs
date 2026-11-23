@@ -106,15 +106,9 @@ pub fn render_square(
                         ))?;
                     Some(cache.get(w.sprites, *index, tex))
                 }
-                ObjectSprite::Native(_) => {
-                    return Err(RuntimeHostError::Unsupported {
-                        operation: if kind == ObjectKind::WorldInventory {
-                            "native world-item render/model host"
-                        } else {
-                            "native runtime sprite render host"
-                        },
-                        kind: None,
-                    })
+                ObjectSprite::Native(slot) => {
+                    let sprite = slot.try_borrow().map_err(|_| RuntimeHostError::Borrowed("render runtime sprite"))?;
+                    Some(cache.runtime(w.sprites, &sprite)?)
                 }
                 ObjectSprite::ArchiveUnmanaged(_) => {
                     return Err(RuntimeHostError::Unsupported {
