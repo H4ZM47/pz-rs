@@ -554,6 +554,10 @@ fn containers(
 ) -> LuaResult<(Option<ContainerRef>, Vec<ContainerRef>)> {
     let this = c.arg(0);
     let object = receiver_object(c)?;
+    object_containers(&this, &object)
+}
+
+fn object_containers(this: &Value, object: &IsoObjectRef) -> LuaResult<(Option<ContainerRef>, Vec<ContainerRef>)> {
     let square = {
         let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
         match body.square_slot() {

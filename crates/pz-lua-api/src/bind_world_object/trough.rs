@@ -4,9 +4,9 @@ use super::*;
 use crate::bind_world::{square_coords, try_with_world_read};
 use crate::expose::{bool_arg, expose_class, int_arg, str_arg};
 use pz_entity::{ComponentType, RetiredComponents};
-use pz_kahlua::{NativeCall, TableRef};
+use pz_kahlua::NativeCall;
 use pz_world::objects::{IsoFeedingTrough, ItemContainer, SpriteName};
-use pz_world::square_mutation::SquarePos;
+
 
 const CLASS: &str = "zombie.iso.objects.IsoFeedingTrough";
 const FLUID: ComponentType = ComponentType::FluidContainer;
@@ -193,7 +193,7 @@ pub fn restore_fluid(obj: &IsoObjectRef) -> LuaResult<()> {
     let mut b = obj
         .try_borrow_mut()
         .map_err(|_| borrowed("IsoFeedingTrough"))?;
-    if !b.components.entry_slots().any(|entry|matches!(entry,pz_entity::RuntimeEntryView::Encoded(raw) if raw.type_id==FLUID.id())){return Ok(())}
+    if !b.components.entry_slots().any(|entry|matches!(entry,pz_entity::RuntimeEntryView::Encoded(raw) if raw.type_id()==FLUID.id())){return Ok(())}
     let env = crate::bind_items::item_env();
     let ctx = env
         .entity()
@@ -251,7 +251,7 @@ fn master(obj: &IsoObjectRef) -> LuaResult<Option<IsoObjectRef>> {
 
 fn feed(obj: &IsoObjectRef) -> LuaResult<f32> {
     let value = object_value(obj)?;
-    let (main, _) = containers(&value, obj)?;
+    let (main, _) = object_containers(&value, obj)?;
     let Some(main) = main else { return Ok(0.) };
     let inv = main
         .try_borrow()
