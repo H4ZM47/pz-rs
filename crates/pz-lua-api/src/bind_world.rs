@@ -23,7 +23,7 @@ use pz_world::java::fastfloor;
 use pz_world::{BuildingDef, BuildingIdx, IsoCell, IsoMetaGrid, RoomDef, RoomIdx, RoomRect};
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::{Rc, Weak};
 
 mod cell_drag;
@@ -38,12 +38,37 @@ pub mod power;
 #[cfg(test)]
 mod collection_deferral_tests;
 
+/// Square changes from live objects. Pathfinding needs every intermediate
+/// snapshot. Rendering reads the most recent sprite once per drawn square.
+#[derive(Default)]
+pub struct GeometryChanges {
+    pub pathfind: Option<pz_pathfind::service::SquareChanges>,
+    render: RefCell<Option<BTreeSet<(i32, i32, i32)>>>,
+}
+
+impl GeometryChanges {
+    pub fn notify(&self, cell: &IsoCell, meta: &IsoMetaGrid, sprites: &pz_world::IsoSpriteManager,
+        pos: (i32, i32, i32)) {
+        if let Some(pending) = self.render.borrow_mut().as_mut() {
+            pending.insert(pos);
+        }
+        if let Some(queue) = &self.pathfind {
+            queue.notify(sprites, meta, cell, &pz_world::ObjectHooks::new(cell, sprites), pos);
+        }
+    }
+
+    /// The first render builds the current scene and starts tracking subsequent edits.
+    pub fn take_render_changes(&mut self) -> BTreeSet<(i32, i32, i32)> {
+        self.render.get_mut().replace(BTreeSet::new()).unwrap_or_default()
+    }
+}
+
 /// `IsoWorld.instance.metaGrid` and `IsoWorld.instance.currentCell`.
 #[derive(Default)]
 pub struct WorldState {
     pub meta_grid: Option<IsoMetaGrid>,
     pub cell: Option<IsoCell>,
-    pub square_changes: Option<pz_pathfind::service::SquareChanges>,
+    pub geometry: GeometryChanges,
     pub meta_tracker: Option<Rc<RefCell<pz_core::save_trackers::MetaTracker>>>,
     /// `currentCell.weatherFx`, initialized by `initWeatherFx` and retired
     /// with the cell. The simulation exists independently of GPU drawing.
@@ -77,7 +102,7 @@ pub fn set_cell(cell: Option<IsoCell>) {
     let retired = with_world_state_cell(|w| {
         let mut w = w.borrow_mut();
         w.meta_tracker = None;
-        w.square_changes = None;
+        w.geometry = GeometryChanges::default();
         let weather = w.weather_fx.take();
         let cell = std::mem::replace(&mut w.cell, cell);
         (weather, cell)

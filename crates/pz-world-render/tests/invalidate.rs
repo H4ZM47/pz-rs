@@ -271,6 +271,25 @@ fn chunk_levels_are_invalidated_for_every_player() {
 }
 
 #[test]
+fn live_sprite_change_rebuilds_the_square_and_each_players_texture() {
+    let mut scene = Scene::new();
+    scene.settle();
+    let pos = (17, 9, 0);
+    let wall = scene.m.named_map["wall_w"];
+    let square = scene.sq(pos.0, pos.1);
+    square.borrow().objects[0].ref_handle().borrow_mut().sprite = Some(wall).into();
+    scene.hooks().object_geometry_changed(pos);
+    assert!(scene.pending.vispoly.contains(&(2, 1, 0)));
+    assert!(scene.pending.cutaways_changed);
+    for cache in &scene.caches {
+        assert_eq!(cache.dirty_flags(2, 1, 0), dirty::OBJECT_MODIFY);
+        assert_eq!(cache.dirty_flags(1, 1, 0), 0);
+    }
+    scene.frame();
+    assert!(scene.render.squares[&pos].objects[0].sprite.as_ref().unwrap().flags.wall_w);
+}
+
+#[test]
 fn lighting_flags_are_set_at_once() {
     let mut s = Scene::new();
     s.settle();

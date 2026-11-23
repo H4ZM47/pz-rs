@@ -1039,6 +1039,10 @@ impl IsoWorld {
                     .try_borrow_mut()
                     .map_err(|_| RuntimeHostError::Borrowed("actual render texture manager"))?;
                 r.sync_chunks(&wv, render_chunks, fs, &mut textures)?;
+                let mut invalidation = r.invalidation(sprites.tables.flag.water, num_players);
+                for pos in w.geometry.take_render_changes() {
+                    invalidation.object_geometry_changed(pos);
+                }
                 r.apply_pending(&wv, regions, fs, &mut textures)?;
                 r.init_fx_sprites(&wv, fs, &mut textures);
             }

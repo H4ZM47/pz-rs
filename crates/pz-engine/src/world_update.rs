@@ -126,7 +126,7 @@ mod animation_bridge_tests {
         let mut runtime = StatesRuntime::default();
         {
             let mut engine = EngineStates {
-                square_changes: None,
+                geometry: None,
                 sim: None,
                 closing_windows: Vec::new(),
                 rand: StandardRand,
@@ -190,7 +190,7 @@ mod animation_bridge_tests {
 /// `StatesEngine` (other characters by id, corpses, sounds, the path
 /// host) keeps its defaults: TODO(port): those owners.
 struct EngineStates<'a> {
-    square_changes: Option<&'a pz_pathfind::service::SquareChanges>,
+    geometry: Option<&'a pz_lua_api::bind_world::GeometryChanges>,
     sim: Option<&'a FrameSim>,
     closing_windows: Vec<pz_world_states::ClosingWindow>,
     rand: StandardRand,
@@ -208,8 +208,8 @@ struct EngineStates<'a> {
 impl StatesEngine for EngineStates<'_> {
     fn geometry_changed(&mut self, cell: &IsoCell, meta: &pz_world::IsoMetaGrid,
         sprites: &IsoSpriteManager, pos: (i32, i32, i32)) {
-        if let Some(queue) = self.square_changes {
-            queue.notify(sprites, meta, cell, &pz_world::ObjectHooks::new(cell, sprites), pos);
+        if let Some(geometry) = self.geometry {
+            geometry.notify(cell, meta, sprites, pos);
         }
     }
 
@@ -532,7 +532,7 @@ fn with_states_characters_and_path<R>(
             return None;
         };
         let mut engine = EngineStates {
-            square_changes: w.square_changes.as_ref(),
+            geometry: Some(&w.geometry),
             sim: Some(sim),
             closing_windows,
             rand: StandardRand,
@@ -1757,7 +1757,7 @@ impl IsoWorld {
                 .borrow()
                 .get_time_delta(&pz_lua_api::bind_climate::LuaClimateContext::new());
             let mut engine = EngineStates {
-                square_changes: w.square_changes.as_ref(),
+                geometry: Some(&w.geometry),
                 sim: Some(sim),
                 closing_windows,
                 rand: StandardRand,

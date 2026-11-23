@@ -148,9 +148,7 @@ fn toggle_window(c: &mut NativeCall<'_>) -> LuaResult<()> {
                 .map_err(crate::bind_world_object::host_error)?
         } else { None };
         if changed {
-            if let Some(queue) = &state.square_changes {
-                queue.notify(&sprites, meta, cell, &pz_world::ObjectHooks::new(cell, &sprites), (x, y, z));
-            }
+            state.geometry.notify(cell, meta, &sprites, (x, y, z));
         }
         Ok((changed, alarm))
     })?;
@@ -210,10 +208,10 @@ fn set_glass_removed(c: &NativeCall<'_>, removed: bool) -> LuaResult<()> {
     if let Some((pos, _)) = object_index(world)? {
         crate::bind_world::with_world_state_cell(|w| -> LuaResult<()> {
             let state = w.try_borrow().map_err(|_| borrowed("IsoWorld"))?;
-            if let (Some(queue), Some(cell), Some(meta)) = (&state.square_changes, &state.cell, &state.meta_grid) {
+            if let (Some(cell), Some(meta)) = (&state.cell, &state.meta_grid) {
                 let sprites = crate::bind_sprites::manager()?;
                 let sprites = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
-                queue.notify(&sprites, meta, cell, &pz_world::ObjectHooks::new(cell, &sprites), pos);
+                state.geometry.notify(cell, meta, &sprites, pos);
             }
             Ok(())
         })?;

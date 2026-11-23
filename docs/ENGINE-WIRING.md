@@ -1840,8 +1840,11 @@ registered):
       damage the selected vehicle part. The installed-session test exercises
       world windows and save/reload. The vehicle-part regression uses a live
       vehicle constructed in the binding test.
-- [ ] Window rendering and navigation (#208). Connect the `Hit_Door` effect
-      for a surviving barricade and propagate geometry changes to pathfinding.
+- [x] Window navigation (#208). Opens, closes, smashes and glass removal
+      update the path service with the loaded chunk ID. Each edit captures
+      the eight neighboring squares and the pane before Lua can reverse it.
+      The next rendered frame refreshes the modified tile and its cutaways.
+- [ ] Window rendering (#208). Connect the `Hit_Door` effect for a surviving barricade.
 
 - [ ] Radio devices: implement `pz_inventory::device_sim::DeviceEnv`
       per device (GameTime minutes stamp / multiplier, `Rand`, the
