@@ -347,6 +347,46 @@ fn verify_utilities_and_ambience(app: &mut super::App, streamer: bool) {
     assert_eq!(ambient.current_value("Temperature"), Some((temperature * 100.0) as i32 as f32 / 100.0));
 }
 
+fn verify_hutch(lua: &mut LuaManager, create: bool) {
+    if create {
+        lua_check(lua, r#"
+            local x,y,z = 10686, 9376, 0
+            local def = HutchDefinitions.hutchs.hutchhen
+            local sq = getSquare(x,y,z)
+            assert(sq and not getHutch(x,y,z))
+            local h = IsoHutch.new(sq, true, def.baseSprite, def, nil)
+            assert(h == getHutch(x,y,z) and h:getHutch() == h and not h:isSlave())
+            assert(h:isDoorClosed() and not h:isEggHatchDoorOpen())
+            h:toggleDoor()
+            h:toggleEggHatchDoor()
+            h:setHutchDirt(12.5)
+            h:setNestBoxDirt(3.25)
+        "#);
+    }
+    lua_check(lua, r#"
+        local x,y,z = 10686, 9376, 0
+        local h = IsoHutch.getHutch(x,y,z)
+        assert(h and h:isOpen() and h:isEggHatchDoorOpen())
+        assert(h:getMaxAnimals() == 20 and h:getMaxNestBox() == 3)
+        assert(h:getEnterSpotY() == 1 and h:getHutchDirt() == 12.5 and h:getNestBoxDirt() == 3.25)
+        assert(h:getSprite():getName() == 'location_farm_accesories_01_48')
+        local parts, opened = 0, 0
+        for dx=0,1 do for dy=-1,0 do
+            local objects = getSquare(x+dx,y+dy,z):getObjects()
+            for j=0,objects:size()-1 do
+                local obj = objects:get(j)
+                if instanceof(obj,'IsoHutch') then
+                    parts = parts + 1
+                    assert(obj:getHutch() == h and obj:isSlave() == (obj ~= h))
+                    local name = obj:getSprite():getName()
+                    if name == 'location_farm_accesories_01_46' or name == 'location_farm_accesories_01_47' then opened=opened+1 end
+                end
+            end
+        end end
+        assert(parts == 6 and opened == 2)
+    "#);
+}
+
 fn verify_pump_supply(app: &mut super::App) {
     let sprites = app.world.as_ref().unwrap().sprites.as_ref().unwrap().borrow();
     let pump = sprites.sprites.iter().find_map(|s| {
@@ -670,6 +710,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     }
     verify_utilities_and_ambience(&mut app, !streamer);
     verify_pump_supply(&mut app);
+    verify_hutch(app.lua.as_mut().unwrap(), true);
     app.core.borrow_mut().set_option_streamer_mode(streamer);
     let late_start = late_start.expect("captured held-W frame 40");
     let held_end = {
@@ -785,6 +826,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     }
     assert_eq!(reloaded.current_state(), Some(INGAME), "saved session never entered gameplay; cache: {}", cache_dir.display());
     verify_tile_definitions(reloaded.lua.as_mut().unwrap());
+    verify_hutch(reloaded.lua.as_mut().unwrap(), false);
     lua_check(reloaded.lua.as_mut().unwrap(), r#"
         local saved = getPlayer():getModData().rustRoofCollector
         assert(saved and saved.z == 1)
