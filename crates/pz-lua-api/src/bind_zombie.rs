@@ -105,7 +105,7 @@ fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Val
         &[x.into(), y.into(), z.into(), radius.into(), volume.into(), receiver]);
     let sounds = shared_world_sounds();
     let mut manager = sounds.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("WorldSoundManager"))?;
-    let mut add = |world: &mut dyn SoundWorld| {
+    let add = |manager: &mut WorldSoundManager, world: &mut dyn SoundWorld| {
         if repeating {
             manager.add_sound_repeating(world, source, x, y, z, radius, volume, stress, ignore, stress_mod)
         } else {
@@ -118,7 +118,7 @@ fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Val
             let hearing = crate::bind_sandbox::current_double("ZombieLore.Hearing").unwrap_or(2.0) as i32;
             let mut effects = pz_world_sound::NoEffects;
             let mut adapter = pz_world_sound::WorldSoundAdapter::new(cell, hearing, &mut effects);
-            let id = add(&mut adapter);
+            let id = add(&mut manager, &mut adapter);
             if let Some(id) = id {
                 let hearing_multiplier = WorldSoundManager::hearing_multiplier(hearing);
                 state.population_sounds.push((manager.sound(id).clone(), hearing_multiplier));
@@ -127,7 +127,7 @@ fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Val
         } else {
             let world = SOUND_WORLD.with(|w| w.borrow().clone());
             let mut world = world.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound host"))?;
-            Ok(add(&mut *world))
+            Ok(add(&mut manager, &mut *world))
         }
     })?;
     Ok(sound_value(id))
