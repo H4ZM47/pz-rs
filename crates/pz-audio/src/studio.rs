@@ -79,6 +79,7 @@ enum Start {
     },
     Event {
         event: Guid,
+        parameters: Vec<Guid>,
         gain: f32,
         delay_ms: f32,
     },
@@ -602,11 +603,16 @@ impl Studio {
                     pick -= w;
                 }
             }
-            InstrumentKind::Event { event, .. } => out.push(Start::Event {
-                event: *event,
-                gain,
-                delay_ms,
-            }),
+            InstrumentKind::Event { event, raw } => {
+                // EVIB lists the parameters passed down to a referenced event.
+                let parameters = raw.get(36..).and_then(|bytes| {
+                    crate::reader::Reader::new(bytes).read_structs(|r| {
+                        r.u32()?;
+                        r.guid()
+                    }).ok()
+                }).unwrap_or_default();
+                out.push(Start::Event { event: *event, parameters, gain, delay_ms });
+            }
             _ => {}
         }
     }
@@ -639,6 +645,7 @@ impl Studio {
                 }
                 Start::Event {
                     event,
+                    parameters,
                     gain,
                     delay_ms,
                 } => {
@@ -651,13 +658,35 @@ impl Studio {
                     let Some(child) = self.create_instance(event) else {
                         continue;
                     };
+                    let inherited = parameters.iter().filter_map(|p|
+                        self.instances[&inst].params.get(p).map(|&v| (*p, v))).collect();
                     let c = self.instances.get_mut(&child).unwrap();
+                    c.params = inherited;
                     c.parent = Some(inst);
                     c.released = true;
                     c.gain = gain;
                     c.start_delay = delay_frames(delay_ms);
                     c.state = PlaybackState::Playing;
                 }
+            }
+        }
+    }
+
+    /// One-shot instruments selected on the event's initial parameter values.
+    fn start_parameter_sheets(&mut self, id: InstanceId, event: &Event, offset: usize) {
+        let mut root = id;
+        while let Some(parent) = self.instances[&root].parent { root = parent; }
+        let relative = self.relative(self.instances[&root].world_position);
+        for sheet_id in &event.parameter_sheets {
+            let Some(sheet) = self.banks.iter().find_map(|b| b.model.parameter_sheets.get(sheet_id)) else { continue };
+            if sheet.instruments.is_empty() { continue; }
+            let Some(parameter) = self.find_parameter(&sheet.parameter) else { continue };
+            let value = self.parameter_value(id, parameter, event, relative);
+            let selected: Vec<_> = sheet.instruments.iter().copied().filter(|key|
+                self.find_instrument(key).and_then(|(_, i)| i.base.parameter_range)
+                    .is_some_and(|range| range.parameter == parameter.id && range.contains(value))).collect();
+            for instrument in selected {
+                self.start_instrument(id, instrument, None, offset);
             }
         }
     }
@@ -871,6 +900,7 @@ impl Studio {
                 for g in event.instruments.clone() {
                     self.start_instrument(id, g, None, leading_silence);
                 }
+                self.start_parameter_sheets(id, &event, leading_silence);
             }
             // Timeline triggers within this block.
             if let Some(t) = self.banks[bank]
@@ -994,6 +1024,45 @@ impl Studio {
 #[cfg(test)]
 mod lifetime_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires the installed Footsteps event and FSB samples"]
+    fn footstep_parameter_sheets_select_the_native_sample_families() {
+        let game = std::path::PathBuf::from(std::env::var_os("PZ_GAME_DIR").unwrap());
+        let mut studio = Studio::new(SetupHeaders::from_game_dir(&game).unwrap());
+        for bank in crate::startup_bank_paths(&game) { studio.load_bank(&bank).unwrap(); }
+        let footsteps = studio.event_by_path("event:/Character/Foley/Footsteps").unwrap();
+        for (material, shoe, gait, expected) in [
+            (2, 3, 3, "Player_Fs_Concrete_Sneakers_Walk_"),
+            (0, 0, 0, "Player_Fs_Wood_Loose_Barefoot_Sneak_"),
+            (7, 3, 3, "Player_Fs_Wood_Loose_Sneakers_Walk_"),
+            (2, 3, 5, "Player_Fs_Concrete_Sneakers_Sprint_"),
+            (12, 1, 1, "Player_Fs_Metal_Boots_Sneak_"),
+        ] {
+            let id = studio.create_instance(footsteps).unwrap();
+            for (name, value) in [("FootstepMaterial", material), ("ShoeType", shoe), ("CharacterMovementSpeed", gait)] {
+                assert!(studio.set_parameter_by_name(id, name, value as f32));
+            }
+            studio.start(id);
+            let mut block = [0.0; 1024 * 2];
+            studio.mix(&mut block);
+            let playing: Vec<_> = studio.instances.values().flat_map(|i| &i.voices)
+                .map(|voice| {
+                    let (&(bank, sample), _) = studio.pcm_cache.iter()
+                        .find(|(_, pcm)| Arc::ptr_eq(pcm, &voice.pcm)).unwrap();
+                    studio.banks[bank].file.fsb.as_ref().unwrap().samples[sample as usize].name.as_deref().unwrap()
+                }).collect();
+            assert_eq!(playing.len(), 1, "{material}/{shoe}/{gait}: {playing:?}");
+            assert!(playing[0].starts_with(expected), "{playing:?} expected {expected}");
+            let mut samples = vec![0.0; 12000 * 2];
+            studio.mix(&mut samples);
+            assert!(samples.iter().all(|s| s.is_finite()));
+            assert!(samples.iter().any(|s| s.abs() > 0.001));
+            studio.stop(id, true);
+            studio.release(id);
+            studio.mix(&mut block);
+        }
+    }
 
     #[test]
     #[ignore = "requires installed FMOD banks in PZ_GAME_DIR"]
