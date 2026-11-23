@@ -128,8 +128,35 @@ impl HudAlarmClocks for PlayerAlarmClocks {
 
 /// What [`update_player_alarm_clocks`] did to one clock.
 pub struct AlarmUpdate {
+    /// Local player index (`0..MAX_PLAYERS`) carrying this clock.
+    pub player: usize,
     pub item: ItemRef,
     pub effects: AlarmEffects,
+}
+
+impl AlarmUpdate {
+    /// Whether this item is a standalone `AlarmClock` (as opposed to
+    /// `AlarmClockClothing`), which plays `"AlarmClockRingingStop"` when
+    /// it stops ringing.
+    pub fn is_alarm_clock_item(&self) -> bool {
+        matches!(self.item.borrow().kind, ItemKind::AlarmClock(_))
+    }
+
+    /// The clock script's `SoundRadius` (0 when missing).
+    pub fn sound_radius(&self) -> i32 {
+        let full_type = self.item.borrow().get_full_type();
+        let sm = crate::bind_registry::shared_script_manager();
+        pz_scripts::objects::items::find_item(&sm, &full_type)
+            .map_or(0, |it| it.borrow().sound_radius)
+    }
+
+    /// The clock script's `AlarmSound` clip name, if configured.
+    pub fn alarm_sound(&self) -> Option<String> {
+        let full_type = self.item.borrow().get_full_type();
+        let sm = crate::bind_registry::shared_script_manager();
+        pz_scripts::objects::items::find_item(&sm, &full_type)
+            .and_then(|it| it.borrow().alarm_sound.clone())
+    }
 }
 
 /// `AlarmClock.update()` / `AlarmClockClothing.update()` on the set alarm
@@ -165,7 +192,11 @@ pub fn update_player_alarm_clocks(world_age_hours: f64) -> Vec<AlarmUpdate> {
                 }
             };
             if let Some(effects) = e {
-                out.push(AlarmUpdate { item: it, effects });
+                out.push(AlarmUpdate {
+                    player: i,
+                    item: it,
+                    effects,
+                });
             }
         }
     }

@@ -48,13 +48,28 @@ thread_local! {
     }) };
 }
 
-/// Sets the `DebugOptions` the tooltip reads.
+/// Sets an explicit override for the `DebugOptions` the tooltip reads.
 pub fn set_debug_options(o: TooltipDebugOptions) {
     DEBUG.with(|d| d.set(o));
 }
 
+/// Reads `DebugOptions.instance.tooltipInfo` (`Tooltip.Info`) and
+/// `DebugOptions.instance.tooltipAttributes` (`Tooltip.Attributes`),
+/// OR'd with any explicit [`set_debug_options`] override.
 pub fn debug_options() -> TooltipDebugOptions {
-    DEBUG.with(|d| d.get())
+    let fallback = DEBUG.with(|d| d.get());
+    let (live_info, live_attrs) = pz_core::debug::debug_options()
+        .try_borrow()
+        .map_or((false, false), |opts| {
+            (
+                opts.get_boolean("Tooltip.Info"),
+                opts.get_boolean("Tooltip.Attributes"),
+            )
+        });
+    TooltipDebugOptions {
+        tooltip_info: fallback.tooltip_info || live_info,
+        tooltip_attributes: fallback.tooltip_attributes || live_attrs,
+    }
 }
 
 /// The `SandboxOptions` values the tooltip uses while
@@ -1474,6 +1489,57 @@ mod captured_texture_tests {
         assert_eq!(*calls.borrow(), ["FirstLookup"]);
         assert_eq!(el.get_width(), 160.0);
         assert_eq!(el.get_height(), 77.0);
+    }
+
+    #[test]
+    fn tooltip_debug_options_reads_live_debug_options_and_fallback() {
+        use pz_core::debug::{debug_options as global_debug, DebugOptionDef};
+        let prev_fallback = debug_options();
+        set_debug_options(TooltipDebugOptions::default());
+        let opts = global_debug();
+        let prev_xml = opts.borrow().options_list_xml();
+        struct Restore(TooltipDebugOptions, String);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                set_debug_options(self.0);
+                pz_core::debug::debug_options()
+                    .borrow_mut()
+                    .load_options_list_xml(&self.1);
+            }
+        }
+        let _restore = Restore(prev_fallback, prev_xml);
+        {
+            let mut o = opts.borrow_mut();
+            o.set_definitions(vec![
+                DebugOptionDef {
+                    name: "Tooltip.Info".into(),
+                    default_value: false,
+                    debug_only: false,
+                },
+                DebugOptionDef {
+                    name: "Tooltip.Attributes".into(),
+                    default_value: false,
+                    debug_only: false,
+                },
+            ]);
+            o.set_boolean("Tooltip.Info", true);
+            o.set_boolean("Tooltip.Attributes", false);
+        }
+        assert_eq!(
+            debug_options(),
+            TooltipDebugOptions {
+                tooltip_info: true,
+                tooltip_attributes: false,
+            }
+        );
+        opts.borrow_mut().set_boolean("Tooltip.Attributes", true);
+        assert_eq!(
+            debug_options(),
+            TooltipDebugOptions {
+                tooltip_info: true,
+                tooltip_attributes: true,
+            }
+        );
     }
 
     #[test]

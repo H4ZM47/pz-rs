@@ -754,7 +754,7 @@ pub trait SimContext {
     // ---- firearms and ragdolls ----
     /// `ClimateManager.getWindIntensity()`.
     fn wind_intensity(&self) -> f32 {
-        0.0
+        self.climate().map_or(0.0, |c| c.get_wind_intensity())
     }
     /// `SandboxOptions.clothingDegradation` (1 none .. 4; default 3).
     fn clothing_degradation(&self) -> i32 {

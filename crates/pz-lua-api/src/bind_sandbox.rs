@@ -230,6 +230,18 @@ pub fn current_double(name: &str) -> Option<f64> {
     }).flatten()
 }
 
+/// An integer or enum option from the current instance.
+pub fn current_int(name: &str) -> Option<i32> {
+    with_current(|opts| {
+        opts.option_by_name(name)?
+            .config
+            .get_value_as_string()
+            .parse::<i32>()
+            .ok()
+    })
+    .flatten()
+}
+
 /// `SandboxOptions.instance`.
 pub fn instance(thread: &mut Thread) -> LuaResult<Value> {
     if let Some(v) = INSTANCE.with(|i| i.borrow().clone()) {

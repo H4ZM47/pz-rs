@@ -1028,21 +1028,19 @@ all installed assets, render paths or foreign platforms.
       bound with the item classes (`bind_items::register` →
       `item_tooltip::register`); the tooltip's `setCharacter` gives the
       rows their character (queried through its Lua binding) (#192).
-- [ ] Item tooltip debug rows: `item_tooltip::set_debug_options` from
-      `DebugOptions.tooltipInfo` / `tooltipAttributes` when the debug UI
-      changes them (#192).
+- [x] Item tooltip debug rows: `item_tooltip::debug_options` now reads
+      live `DebugOptions` (`Tooltip.Info` and `Tooltip.Attributes`) while
+      preserving explicit `item_tooltip::set_debug_options` overrides (#192).
 - [x] HUD alarm clocks: `hud::alarm_clocks::install_alarm_clock_host()`
       (in `register_all`) puts `PlayerAlarmClocks` in `HudAlarmClocks`
       (#192).
-- [ ] Alarm clock updates: call
-      `hud::alarm_clocks::update_player_alarm_clocks(GameTime.getWorldAgeHours())`
-      each tick (the cell's `processItems`) and apply each
-      `AlarmEffects`: `WorldSoundManager.addSoundRepeating` at the player's
-      square (`soundRadius`, 3), `ItemSoundManager` add/remove (the ring
-      loop, "AlarmClockRingingStop" for `AlarmClock`), MP syncs (world,
-      sound, network threads). Clocks on the ground run
-      `AlarmData::update` from the cell's process list with their square
-      (world thread) (#192).
+- [ ] Alarm clock updates: `IsoWorld::update_cell` calls
+      `hud::alarm_clocks::update_player_alarm_clocks(sim.world_age_hours)`
+      each tick, emitting repeating `WorldSoundManager` sounds at the
+      player's square (`soundRadius`, 3) via `NoiseKind::Repeating` and
+      playing the clock's `AlarmSound` / `"AlarmClockRingingStop"` clips.
+      Left: `ItemSoundManager` continuous loop tracking, MP syncs, and
+      ground clock updates from the cell's process list (#192).
 - [ ] Object picking: implement `hud::picking::PickWorld` over the chunk
       renderer's per-object `ObjectRenderInfo` for player 0 (layer, target
       alpha, cutaway, `renderX/Y/Width/Height/ScaleX/ScaleY`, the sprite
@@ -1534,7 +1532,11 @@ registered):
       world's `IsoFireManager`, FireHooks, flags, settings);
       `has_render_effect` / `set_render_effect` (ObjectRenderEffects) and
       `do_tree_noises` (tree sound manager); `ThumpSettings::server`.
-- [ ] `SimContext` climate values from `ClimateManager` (#49).
+- [x] `SimContext` climate values from `ClimateManager` (#49): `FrameSim`
+      and `PlayerSim` expose `ClimateManager` (`climate()`, `humidity`,
+      `rain`, `fog`, `day_light_strength`, `ambient`, and `wind_intensity`),
+      plus live `SandboxOptions`/`Core`/`DebugOptions` firearm, blood,
+      clothing-degradation, and ragdoll settings.
 - [ ] Square edits → pathfinding: `pz_pathfind::pathfind_square_hooks!(pz_world)`
       in the engine crate, and pass `PathfindSquareHooksImpl(PathfindMutationHooks { service:
       host.service_mut(), sprites, meta, bits_hooks: &ObjectHooks })` as

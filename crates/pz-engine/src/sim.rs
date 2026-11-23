@@ -155,6 +155,36 @@ impl SimContext for PlayerSim<'_> {
     fn wet_ground_final_value(&self) -> f32 {
         self.0.wet_ground_final_value()
     }
+    fn clothing_degradation(&self) -> i32 {
+        self.0.clothing_degradation()
+    }
+    fn blood_level(&self) -> i32 {
+        self.0.blood_level()
+    }
+    fn firearm_use_damage_chance(&self) -> i32 {
+        self.0.firearm_use_damage_chance()
+    }
+    fn firearm_moodle_multiplier(&self) -> f64 {
+        self.0.firearm_moodle_multiplier()
+    }
+    fn firearm_weather_multiplier(&self) -> f64 {
+        self.0.firearm_weather_multiplier()
+    }
+    fn firearm_head_gear_effect(&self) -> bool {
+        self.0.firearm_head_gear_effect()
+    }
+    fn firearm_jam_multiplier(&self) -> f64 {
+        self.0.firearm_jam_multiplier()
+    }
+    fn max_active_ragdolls(&self) -> i32 {
+        self.0.max_active_ragdolls()
+    }
+    fn debug_disable_ragdolls(&self) -> bool {
+        self.0.debug_disable_ragdolls()
+    }
+    fn debug_always_hit_target(&self) -> bool {
+        self.0.debug_always_hit_target()
+    }
     fn lock_fps(&self) -> i32 {
         self.0.lock_fps()
     }
@@ -208,6 +238,44 @@ impl SimContext for FrameSim {
             .state
             .wet_ground
             .get()
+    }
+    fn clothing_degradation(&self) -> i32 {
+        pz_lua_api::bind_sandbox::current_int("ClothingDegradation").unwrap_or(3)
+    }
+    fn blood_level(&self) -> i32 {
+        pz_lua_api::bind_sandbox::current_int("BloodLevel").unwrap_or(3)
+    }
+    fn firearm_use_damage_chance(&self) -> i32 {
+        pz_lua_api::bind_sandbox::current_int("FirearmUseDamageChance").unwrap_or(2)
+    }
+    fn firearm_moodle_multiplier(&self) -> f64 {
+        pz_lua_api::bind_sandbox::current_double("FirearmMoodleMultiplier").unwrap_or(1.0)
+    }
+    fn firearm_weather_multiplier(&self) -> f64 {
+        pz_lua_api::bind_sandbox::current_double("FirearmWeatherMultiplier").unwrap_or(1.0)
+    }
+    fn firearm_head_gear_effect(&self) -> bool {
+        pz_lua_api::bind_sandbox::current_bool("FirearmHeadGearEffect").unwrap_or(true)
+    }
+    fn firearm_jam_multiplier(&self) -> f64 {
+        pz_lua_api::bind_sandbox::current_double("FirearmJamMultiplier").unwrap_or(0.0)
+    }
+    fn max_active_ragdolls(&self) -> i32 {
+        pz_lua_api::bind_core::shared_core()
+            .try_borrow()
+            .map_or(20, |c| c.get_max_active_ragdolls())
+    }
+    fn debug_disable_ragdolls(&self) -> bool {
+        self.debug
+            && pz_core::debug::debug_options()
+                .try_borrow()
+                .is_ok_and(|o| o.get_boolean("Animation.DisableRagdolls"))
+    }
+    fn debug_always_hit_target(&self) -> bool {
+        self.debug
+            && pz_core::debug::debug_options()
+                .try_borrow()
+                .is_ok_and(|o| o.get_boolean("Character.Debug.AlwaysHitTarget"))
     }
     fn lock_fps(&self) -> i32 {
         self.lock_fps
@@ -314,5 +382,22 @@ mod tests {
         assert_eq!(frame.wet_ground_final_value(), 0.25);
         run("getPuddlesManager():getPuddlesFloat(1):setEnableAdmin(false)");
         assert_eq!(frame.wet_ground_final_value(), 0.75);
+    }
+
+    #[test]
+    fn frame_sim_reads_live_climate_wind_and_core_ragdoll_limit() {
+        let frame = FrameSim::capture();
+        let player = frame.player_context();
+        let expected_wind = pz_lua_api::bind_climate::shared_game_time()
+            .borrow()
+            .climate
+            .get_wind_intensity();
+        assert_eq!(frame.wind_intensity(), expected_wind);
+        assert_eq!(player.wind_intensity(), expected_wind);
+        let expected_max = pz_lua_api::bind_core::shared_core()
+            .borrow()
+            .get_max_active_ragdolls();
+        assert_eq!(frame.max_active_ragdolls(), expected_max);
+        assert_eq!(player.max_active_ragdolls(), expected_max);
     }
 }

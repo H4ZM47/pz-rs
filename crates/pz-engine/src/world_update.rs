@@ -706,6 +706,7 @@ impl IsoWorld {
         self.process_remove_items();
         // TODO(port): `ProcessItems`: dispatch real item update/finishupdate
         // and world-item updates. Saved codec items are not runtime ItemRefs.
+        self.update_player_alarm_clocks(lua, sim);
         self.process_remove_items();
         self.process_iso_objects(lua);
         self.update_characters(lua, sim)?;
@@ -714,6 +715,59 @@ impl IsoWorld {
         // rain scroll.
         self.update_weather_fx();
         Ok(())
+    }
+
+    /// `AlarmClock.update()` / `AlarmClockClothing.update()` on set alarms
+    /// carried by local players, applying repeating world sounds and
+    /// positional ring/stop audio clips.
+    fn update_player_alarm_clocks(&mut self, lua: &mut LuaManager, sim: &FrameSim) {
+        for update in pz_lua_api::hud::alarm_clocks::update_player_alarm_clocks(sim.world_age_hours)
+        {
+            let Some(player) = pz_lua_api::bind_players::player(update.player) else {
+                continue;
+            };
+            let (x, y, z) = {
+                let p = player.borrow();
+                (
+                    p.vars.x.floor() as i32,
+                    p.vars.y.floor() as i32,
+                    p.vars.z.floor() as i32,
+                )
+            };
+            if update.effects.world_sound {
+                let radius = update.sound_radius();
+                if radius > 0 {
+                    let request = pz_world_states::WorldSoundRequest {
+                        source: None,
+                        x,
+                        y,
+                        z,
+                        radius,
+                        volume: 3,
+                        stress_humans: false,
+                        zombie_ignore_dist: 0.0,
+                        stress_mod: 1.0,
+                    };
+                    self.interaction_noise(lua, request, NoiseKind::Repeating);
+                }
+            }
+            if update.effects.started_ringing {
+                if let Some(clip) = update.alarm_sound() {
+                    pz_lua_api::bind_audio::sound_system()
+                        .borrow_mut()
+                        .play_world_clip(&clip, [x as f32 + 0.5, y as f32 + 0.5, z as f32], true);
+                }
+            }
+            if update.effects.stopped_ringing && update.is_alarm_clock_item() {
+                pz_lua_api::bind_audio::sound_system()
+                    .borrow_mut()
+                    .play_world_clip(
+                        "AlarmClockRingingStop",
+                        [x as f32 + 0.5, y as f32 + 0.5, z as f32],
+                        true,
+                    );
+            }
+        }
     }
 
     /// `IsoCell.updateWeatherFx()`: `IsoWeatherFX.update` once per tick
