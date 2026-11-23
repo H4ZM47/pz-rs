@@ -1077,6 +1077,7 @@ impl WorldRender {
             .flat_map(|x| (y0..y0 + n).map(move |y| (x, y)))
             .collect();
         let inputs = self.world.chunk_inputs(&order);
+        collect_object_outlines(&inputs, view.cell, p, &cam, &mut objects.object_outlines);
         let mut cmds = corpse_jobs;
         let target = view.cell.snow_target;
         let winter = target > 0 && pz_lua_api::bind_world::snow::winter();
@@ -1246,6 +1247,94 @@ impl WorldRender {
 
 /// The floor blood tiles by name.
 struct GroundTextures(std::collections::HashMap<String, Texture>);
+
+/// `FBORenderObjectOutline`: collects highlighted non-character sprite objects
+/// from the visible chunks into `out` and runs `IsoObject.renderlast` cleanup
+/// on their outline flags.
+pub(crate) fn collect_object_outlines(
+    inputs: &[pz_iso_render::frame::ChunkInput<'_>],
+    cell: &pz_world::chunk::IsoCell,
+    player: usize,
+    cam: &Camera,
+    out: &mut Vec<pz_iso_render::object_outline::ObjectOutline>,
+) {
+    let render_hl = pz_lua_api::bind_character_sim::outline::RENDER_CONTAINER_HIGHLIGHT;
+    let blink_alpha = pz_lua_api::bind_core::shared_core()
+        .try_borrow()
+        .map_or(1.0, |c| c.blink_alpha);
+    let ui = pz_lua_api::bind_character_sim::outline::ui_frame_times();
+    let ui_now = (ui.render, ui.update);
+    for chunk in inputs {
+        for (_, squares) in &chunk.levels {
+            for rsq in squares.iter().flatten() {
+                let Some(cell_sq_owner) = cell.get_grid_square(rsq.x, rsq.y, rsq.z) else {
+                    continue;
+                };
+                let Ok(cell_sq) = cell_sq_owner.try_borrow() else {
+                    continue;
+                };
+                let any_hl = cell_sq.objects.iter().any(|slot| {
+                    slot.ref_handle()
+                        .try_borrow()
+                        .is_ok_and(|o| o.outline.is_on(player, render_hl))
+                });
+                if !any_hl {
+                    continue;
+                }
+                for ro in &rsq.objects {
+                    if ro.alpha <= 0.0
+                        || matches!(ro.kind, pz_iso_render::world::ObjectKind::Fire)
+                        || pz_iso_render::cell::render_layer(rsq, ro)
+                            == pz_iso_render::cell::Layer::None
+                    {
+                        continue;
+                    }
+                    let Some(slot) = cell_sq.objects.iter().find(|s| {
+                        s.ref_handle().try_borrow().is_ok_and(|o| o.id == ro.id)
+                    }) else {
+                        continue;
+                    };
+                    let handle = slot.ref_handle();
+                    let Ok(mut obj) = handle.try_borrow_mut() else {
+                        continue;
+                    };
+                    if !obj.outline.is_on(player, render_hl) || obj.sprite_model_name.is_some() {
+                        continue;
+                    }
+                    let mut textures = Vec::new();
+                    if let Some(tex) = ro.sprite.as_ref().and_then(|s| s.texture.clone()) {
+                        textures.push(tex);
+                    }
+                    if obj.outline.is_attached(player) {
+                        if let Some(tex) = ro.overlay.as_ref().and_then(|ov| ov.sprite.texture.clone()) {
+                            textures.push(tex);
+                        }
+                        for att in &ro.attached {
+                            if let Some(tex) = att.sprite.texture.clone() {
+                                textures.push(tex);
+                            }
+                        }
+                    }
+                    if !textures.is_empty() {
+                        let color = pz_iso_render::object_outline::outline_color(
+                            obj.outline.col[player],
+                            obj.outline.is_blink(player).then_some(blink_alpha),
+                        );
+                        out.push(pz_iso_render::object_outline::ObjectOutline::sprites(
+                            &textures,
+                            cam,
+                            [rsq.x as f32, rsq.y as f32, rsq.z as f32],
+                            [ro.offset_x, ro.offset_y],
+                            ro.render_y_offset,
+                            color,
+                        ));
+                    }
+                    obj.outline.render_last(player, render_hl, ui_now);
+                }
+            }
+        }
+    }
+}
 
 impl SurfaceTextures for GroundTextures {
     fn texture(&self, name: &str) -> Option<Texture> {
