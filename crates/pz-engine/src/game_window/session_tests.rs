@@ -175,6 +175,16 @@ fn verify_utilities_and_ambience(app: &mut super::App, streamer: bool) {
         assert(square:getFloor():hasGridPower() == square:hasGridPower())
         assert(type(square:isNoWater()) == "boolean")
         local floor = square:getFloor()
+        assert(type(square:isNoGas()) == "boolean")
+        local data = floor:getModData()
+        local oldFuel = data.fuelAmount
+        data.fuelAmount = nil
+        assert(floor:getPipedFuelAmount() == -1)
+        floor:setPipedFuelAmount(17)
+        assert(data.fuelAmount == 17 and floor:getPipedFuelAmount() == 17)
+        floor:setPipedFuelAmount(-9)
+        assert(data.fuelAmount == 0)
+        data.fuelAmount = oldFuel
         local parts = ArrayList.new()
         parts:add(floor)
         assert(floor:getSpriteGridObjects(parts) == parts and parts:isEmpty())

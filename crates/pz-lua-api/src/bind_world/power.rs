@@ -109,6 +109,7 @@ fn square_utility(c: &NativeCall<'_>, check: fn(&IsoMetaGrid, &pz_world::IsoGrid
 pub(super) fn register(b: &ClassBuilder) {
     get(b, "isDerelict", |c| Ok(square_utility(c, world_state::square_is_derelict)?.into()));
     get(b, "isNoPower", |c| Ok(square_utility(c, world_state::square_has_no_power)?.into()));
+    get(b, "isNoGas", |c| Ok(square_utility(c, world_state::square_has_no_gas)?.into()));
     get(b, "isNoWater", |c| Ok(square_utility(c, world_state::square_has_no_water)?.into()));
     get(b, "hasGridPower", |c| {
         if square_utility(c, world_state::square_has_no_power)? { return Ok(false.into()); }

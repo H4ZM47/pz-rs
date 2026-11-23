@@ -128,6 +128,10 @@ pub fn square_has_no_power(meta: &IsoMetaGrid, sq: &IsoGridSquare) -> bool {
         || blocked_by_zone(meta, sq, "NoPower")
 }
 
+pub fn square_has_no_gas(meta: &IsoMetaGrid, sq: &IsoGridSquare) -> bool {
+    meta.get_zones_at(sq.x, sq.y, 0).into_iter().any(|id| meta.zone(id).zone_type == "NoGas")
+}
+
 pub fn square_has_no_water(meta: &IsoMetaGrid, sq: &IsoGridSquare) -> bool {
     square_is_derelict(meta, sq) || blocked_by_zone(meta, sq, "NoWater")
 }
