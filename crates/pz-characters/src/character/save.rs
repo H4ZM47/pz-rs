@@ -426,10 +426,17 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             }
         }
         if actual && !self.is_zombie() {
-            if self.items.primary_hand_item.is_some() || self.items.secondary_hand_item.is_some() {
-                return Err(ref_player::unsupported("actual loaded hand setEquipParent/onEquip/onUnEquip").into());
+            // setEquipParent(null, left), then setEquipParent(null, right),
+            // which registers only when right is another item.
+            let (primary, secondary) = (self.items.primary_hand_item, self.items.secondary_hand_item);
+            if let Some(id) = primary {
+                self.loaded_hand_on_equip(id, true)?;
             }
-            self.set_use_hand_weapon(None);
+            if let Some(id) = secondary {
+                self.loaded_hand_on_equip(id, secondary != primary)?;
+            }
+            let weapon = primary.filter(|&id| self.items.item(id).is_some_and(|i| super::items::is_hand_weapon(&i.borrow())));
+            self.set_use_hand_weapon(weapon);
         }
         if e(r.bool())? {
             if actual { return Err(ref_player::unsupported("actual loaded character SetOnFire manager").into()); }

@@ -185,6 +185,7 @@ impl Thread {
             host: None,
             out: Box::new(|s| println!("{s}")),
             log: Box::new(|s| eprintln!("{s}")),
+            log_exception: Box::new(|e| eprintln!("{}", crate::error_log::throwable_string(e))),
             exec_level: 0,
             on_missing_global: None,
             on_missing_member: None,
@@ -757,6 +758,7 @@ impl Thread {
                 Ok(Flow::Continue) => {}
                 Ok(Flow::Return) => break Ok(()),
                 Err(e) => {
+                    self.log_mainloop_error(&e);
                     self.unwind_on_error();
                     break Err(e);
                 }

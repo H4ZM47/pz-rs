@@ -4,6 +4,7 @@
 //! UTF-16 string lengths) so existing game scripts and mods behave the same.
 
 pub mod compiler;
+pub mod error_log;
 pub mod exec;
 pub mod gc;
 pub mod java_io;

@@ -392,11 +392,7 @@ pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>, events: EventManag
         Ok(c.push(r as f64))
     });
 
-    global(thread, "triggerEvent", move |c| {
-        let name = str_or_null(c, 0);
-        events.trigger(c.thread, &name, &[]);
-        Ok(0)
-    });
+    register_trigger_event(thread, events);
 
     // Files under <cache>/Lua.
     let fs2 = fs.clone();
@@ -879,6 +875,27 @@ fn register_pz_math(thread: &mut Thread) {
         );
         Ok(c.push((a + (b - a) * t) as f64))
     });
+    // `max` / `min` with 2 to 5 `int` or `float` arguments: integral numbers
+    // reach the `int` overload, others the `float` one.
+    for (name, is_max) in [("max", true), ("min", false)] {
+        m.static_fn(name, move |c| {
+            let n = c.nargs().min(5);
+            if n < 2 {
+                return Err(pz_kahlua::LuaError::runtime(format!(
+                    "No implementation found for PZMath.{name}"
+                )));
+            }
+            let args: Vec<f64> = (0..n).map(|i| num_arg(c, i)).collect();
+            let pick = |a: f64, b: f64| if is_max == (a > b) { a } else { b };
+            let ints = (0..n).all(|i| matches!(c.arg(i), Value::Num(v) if v.fract() == 0.0));
+            let out = if ints {
+                args.iter().map(|&v| v as i32 as f64).reduce(pick).unwrap()
+            } else {
+                args.iter().map(|&v| v as f32 as f64).reduce(pick).unwrap()
+            };
+            Ok(c.push(out))
+        });
+    }
     m.static_fn("radToDeg", |c| {
         let r = num_arg(c, 0) as f32;
         Ok(c.push((57.295776f32 * r) as f64))
@@ -886,6 +903,17 @@ fn register_pz_math(thread: &mut Thread) {
 }
 
 // ---- zombie.Lua.LuaEventManager -----------------------------------------------------------
+
+/// `triggerEvent(name[, a[, b[, c[, d]]]])`: the overloads take up to four
+/// params and pass them to `LuaEventManager.triggerEvent`.
+fn register_trigger_event(thread: &mut Thread, events: EventManager) {
+    global(thread, "triggerEvent", move |c| {
+        let name = str_or_null(c, 0);
+        let params: Vec<Value> = (1..c.nargs().min(5)).map(|i| c.arg(i)).collect();
+        events.trigger(c.thread, &name, &params);
+        Ok(0)
+    });
+}
 
 fn register_lua_event_manager(thread: &mut Thread, events: EventManager) {
     let m = expose_class(thread, "zombie.Lua.LuaEventManager", None);
@@ -990,6 +1018,27 @@ fn open_in_browser(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trigger_event_passes_up_to_four_params() {
+        let env = TableRef::new();
+        let mut t = Thread::new(env.clone());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        let events = EventManager::register(&env, "Events", &["OnFill"]);
+        register_trigger_event(&mut t, events);
+        let code = r#"
+            local function assert(v) if not v then error("assertion failed") end end
+            got = {}
+            Events.OnFill.Add(function(...) got = { n = select('#', ...), ... } end)
+            triggerEvent("OnFill", 0, "context", { 1 }, true, "fifth")
+            assert(got.n == 4 and got[1] == 0 and got[2] == "context")
+            assert(got[3][1] == 1 and got[4] == true)
+            triggerEvent("OnFill")
+            assert(got.n == 0)
+        "#;
+        let f = pz_kahlua::stdlib::load_string(code, None, env).unwrap();
+        t.pcall(&f, &[]).map_err(|(m, _)| format!("{m:?}")).unwrap();
+    }
 
     #[test]
     fn zomb_rand_ranges() {

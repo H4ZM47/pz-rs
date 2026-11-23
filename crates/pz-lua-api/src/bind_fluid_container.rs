@@ -177,6 +177,11 @@ pub(crate) fn amount(component: &ComponentRef) -> LuaResult<f32> {
 }
 
 pub(crate) fn cached_color(component: &ComponentRef) -> LuaResult<Value> {
+    color_value(&cached_color_slot(component)?)
+}
+
+/// `getColor()`'s native `Color` after the same recalculation.
+fn cached_color_slot(component: &ComponentRef) -> LuaResult<Rc<RefCell<Rgba>>> {
     let env = crate::bind_items::item_env();
     let fallback = pz_entity::BasicContext::default();
     let ctx = env.entity().unwrap_or(&fallback);
@@ -187,15 +192,25 @@ pub(crate) fn cached_color(component: &ComponentRef) -> LuaResult<Value> {
         .map_err(runtime)?;
     pz_inventory::component_host::notify_fluid_update(&outcome)
         .map_err(|error| LuaError::runtime(format!("FluidContainer owner update: {error:?}")))?;
-    let color = {
-        let body = component
-            .try_borrow()
-            .map_err(|_| LuaError::runtime("FluidContainer is in use after owner update"))?;
-        body.fluid_color_slot()
-            .cloned()
-            .ok_or_else(|| LuaError::runtime("FluidContainer allocation has no native Color"))?
-    };
-    color_value(&color)
+    let body = component
+        .try_borrow()
+        .map_err(|_| LuaError::runtime("FluidContainer is in use after owner update"))?;
+    body.fluid_color_slot()
+        .cloned()
+        .ok_or_else(|| LuaError::runtime("FluidContainer allocation has no native Color"))
+}
+
+/// The fluid reads of `UIElement.DrawItemIcon`, in its order: `getColor()`,
+/// then `getAmount()` and `getCapacity()`.
+pub(crate) fn icon_fluid(component: &ComponentRef) -> LuaResult<pz_ui::draw::InventoryItemIconFluid> {
+    let color = *cached_color_slot(component)?.borrow();
+    let amount = amount(component)?;
+    let capacity = capacity(component)?;
+    Ok(pz_ui::draw::InventoryItemIconFluid {
+        color: [color[0], color[1], color[2]],
+        amount,
+        capacity,
+    })
 }
 
 /// The actual component owner, with no coordinate/id fallback. A world owner

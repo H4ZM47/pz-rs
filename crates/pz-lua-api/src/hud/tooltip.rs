@@ -23,6 +23,13 @@ thread_local! {
     static LAST_PICKED: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
+/// Whether `UIManager.lastPicked` is set. [`update_tooltip`] sets it to
+/// `UIManager.picked.tile` while the mouse is over a picked object and over
+/// no UI, and clears it otherwise.
+pub fn has_last_picked() -> bool {
+    LAST_PICKED.with(|l| l.get().is_some())
+}
+
 /// The tooltip font option and highlight colours from `Core`.
 fn core_tooltip_font() -> String {
     let core = crate::bind_core::shared_core();

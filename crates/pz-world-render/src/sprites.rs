@@ -23,6 +23,10 @@ pub trait SpriteTextures {
     fn depth_texture(&mut self, name: &str, has_tileset: bool) -> Option<Texture>;
     /// `TileGeometryManager` depth flags of the sprite.
     fn depth_flags(&self, name: &str) -> i32;
+    /// Corner heights (NW, NE, SE, SW, in levels) of the sprite's roof slope.
+    fn roof_plane(&mut self, _name: &str, _has_tileset: bool) -> Option<[f32; 4]> {
+        None
+    }
 }
 
 /// No textures: flags only (tests, headless analysis).
@@ -64,6 +68,12 @@ impl SpriteTextures for GameTextures<'_> {
             return None;
         }
         d.uploaded_texture().cloned()
+    }
+
+    fn roof_plane(&mut self, name: &str, has_tileset: bool) -> Option<[f32; 4]> {
+        self.depth
+            .sprite_roof_plane(name, has_tileset, self.assignments)
+            .map(|p| p.corners)
     }
 
     fn depth_flags(&self, name: &str) -> i32 {
@@ -213,6 +223,7 @@ fn build(
     SpriteInfo {
         texture: tex.texture(&name),
         depth_texture: tex.depth_texture(&name, sp.tileset_name.is_some()),
+        roof_plane: tex.roof_plane(&name, sp.tileset_name.is_some()),
         depth_flags: tex.depth_flags(&name),
         tileset: sp.tileset_name.clone().unwrap_or_default(),
         tile_sheet_index: sp.tile_sheet_index,

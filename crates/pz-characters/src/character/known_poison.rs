@@ -157,6 +157,26 @@ pub fn full_name_ref<I: 'static>(character: &Rc<RefCell<GameCharacter<I>>>) -> H
     full_name(character, &mut pins)
 }
 
+/// `IsoGameCharacter.isRecipeActuallyKnown(String)`:
+/// `isRecipeKnown(name, true)`.
+pub fn is_recipe_actually_known<I: 'static>(
+    character: &Rc<RefCell<GameCharacter<I>>>,
+    name: &str,
+    host: &dyn KnownPoisonHost,
+) -> HostResult<bool> {
+    let mut pins = Pins::new();
+    pins.keep(character);
+    recipe_actually_known(character, name, host, &mut pins)
+}
+
+/// `IsoGameCharacter.isKnowAllRecipes()`.
+pub fn is_know_all_recipes<I: 'static>(
+    character: &Rc<RefCell<GameCharacter<I>>>,
+    host: &dyn KnownPoisonHost,
+) -> HostResult<bool> {
+    know_all(character, host)
+}
+
 pub fn is_known_poison_item<I: 'static>(
     character: &Rc<RefCell<GameCharacter<I>>>,
     item: &ItemRef,

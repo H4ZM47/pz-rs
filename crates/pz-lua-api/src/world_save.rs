@@ -451,6 +451,36 @@ pub fn ensure_subdirectories_exist(save_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// `LuaManager.GlobalObject.createWorld(worldName)`: a null or empty name
+/// becomes "blah", then [`sanitize_world_name`](crate::savefile::sanitize_world_name);
+/// unless saving is off, the save folder `<cache>/Saves/<Core.gameMode>/<name>`
+/// is made with its subdirectories; then `Core.gameSaveWorld = name`. The
+/// original ignores a folder it cannot make; the first such error is
+/// returned here, after `gameSaveWorld` is set.
+pub fn create_world(cache_dir: &Path, world_name: Option<&str>) -> io::Result<()> {
+    let name = match world_name {
+        None | Some("") => "blah",
+        Some(n) => n,
+    };
+    let name = crate::savefile::sanitize_world_name(name);
+    let core = crate::bind_core::shared_core();
+    let (mode, no_save) = {
+        let c = core.borrow();
+        (c.game_mode.clone(), c.is_no_save())
+    };
+    // `ZomboidFileSystem.getGameModeCacheDir()`: `getSaveDir()` makes
+    // `<cache>/Saves`.
+    let saves = cache_dir.join("Saves");
+    let mut result = std::fs::create_dir_all(&saves);
+    let dir = saves.join(mode).join(&name);
+    if !no_save {
+        let made = std::fs::create_dir_all(&dir).and_then(|()| ensure_subdirectories_exist(&dir));
+        result = result.and(made);
+    }
+    core.borrow_mut().game_save_world = name;
+    result
+}
+
 /// The `Core.exiting` branch of `IngameState.updateInternal` (local game):
 /// `PlayerDB.saveLocalPlayersForce()` for `local_players` (each one's
 /// `IsoPlayer.save` bytes in [`PlayerData::bytes`]; a player without an

@@ -183,9 +183,14 @@ impl IsoWorld {
                         ChunkActivationStep::SquareReady { square, x, y, z } => {
                             let (wx, wy) = (cursor.wx, cursor.wy);
                             let result = self.with_stream(|_, cell, ctx| {
-                                // Production erosion is not installed yet. Keep the
-                                // exact per-square seam for its real hook and the
-                                // subsequent MapObjects/Lua observer adapter.
+                                // `ErosionMain.LoadGridsquare`. TODO(port): the
+                                // MapObjects/Lua observer adapter after it.
+                                let hook: Option<
+                                    &mut dyn pz_world::save::chunk_file::ChunkLoadHook,
+                                > = match &mut ctx.chunk_hook {
+                                    Some(h) => Some(&mut **h),
+                                    None => None,
+                                };
                                 finish_square_erosion(
                                     cell,
                                     wx,
@@ -195,7 +200,7 @@ impl IsoWorld {
                                     z,
                                     &square,
                                     ctx.sprites,
-                                    None,
+                                    hook,
                                 )
                             });
                             result
@@ -209,6 +214,34 @@ impl IsoWorld {
                             result
                                 .ok_or("chunk completion requires streaming state")?
                                 .map_err(|e| e.to_string())?;
+                            // `doLoadGridsquare`: `loadGridSquareIfNeeded` for
+                            // each square, levels then x then y; it logs an
+                            // exception and goes on.
+                            let (wx, wy) = (cursor.wx, cursor.wy);
+                            let levels = with_world(|w| {
+                                let chunk = w.cell.as_ref()?.chunks.get(&(wx, wy))?;
+                                Some((chunk.min_level, chunk.max_level))
+                            });
+                            if let Some((min, max)) = levels {
+                                let w = pz_world::chunk::CHUNK_WIDTH;
+                                for z in min..=max {
+                                    for x in 0..w {
+                                        for y in 0..w {
+                                            let (x, y) = (wx * w + x, wy * w + y);
+                                            if let Err(e) =
+                                                pz_lua_api::bind_item_picker::load_gridsquare(
+                                                    &mut lua.thread,
+                                                    x,
+                                                    y,
+                                                    z,
+                                                )
+                                            {
+                                                eprintln!("LoadGridsquare {x},{y},{z}: {e}");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             self.with_stream(|streamer, cell, ctx| {
                                 streamer.process_next_pending_load_grid_square(cell, ctx)
                             });

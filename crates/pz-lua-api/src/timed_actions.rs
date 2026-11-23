@@ -142,6 +142,11 @@ fn callback(
 ) -> Option<Vec<Value>> {
     let table = action.borrow().table.clone()?;
     let f = table.rawget(&Value::str(name));
+    // `LuaCaller.pcall` returns at once for a function that is nil: an action
+    // class without `complete`, `update` or `stop` is not an error.
+    if f.is_nil() {
+        return None;
+    }
     let mut args = vec![Value::Table(table)];
     args.extend_from_slice(extra);
     match thread.pcall(&f, &args) {
@@ -604,6 +609,16 @@ pub fn register(thread: &mut Thread) {
         cleanup(&this(c)?);
         Ok(0)
     });
+    // `BaseAction.restoreWeaponType`: the `Weapon` variable from
+    // `WeaponType.getWeaponType(chr)` (the hand items).
+    b.method("restoreWeaponType", |c| {
+        let chr = owner(&this(c)?);
+        let sm = crate::bind_registry::shared_script_manager();
+        let mut chr = chr.borrow_mut();
+        let weapon = chr.weapon_type(&sm);
+        chr.set_var_str("Weapon", weapon.type_name());
+        Ok(0)
+    });
     for name in [
         "setOverrideHandModels",
         "setOverrideHandModelsObject",
@@ -869,4 +884,48 @@ pub fn register(thread: &mut Thread) {
         chr_of(c)?.borrow_mut().player.is_farming = bool_arg(c, 1);
         Ok(0)
     });
+    player.method("isInvPageDirty", |c| {
+        let value = chr_of(c)?.borrow().player.inv_page_dirty;
+        Ok(c.push(value))
+    });
+    player.method("setInvPageDirty", |c| {
+        chr_of(c)?.borrow_mut().player.inv_page_dirty = bool_arg(c, 1);
+        Ok(0)
+    });
+}
+
+#[cfg(test)]
+mod callback_tests {
+    use super::*;
+    use pz_kahlua::{stdlib, TableRef};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn thread(log: Rc<RefCell<Vec<String>>>) -> Thread {
+        let mut thread = Thread::new(TableRef::new());
+        stdlib::install(&mut thread, None).unwrap();
+        thread.log = Box::new(move |line| log.borrow_mut().push(line.to_string()));
+        thread
+    }
+
+    fn action(thread: &mut Thread, source: &str) -> ActionRef {
+        let closure =
+            stdlib::load_string(source, Some("callback-test"), thread.globals().clone()).unwrap();
+        let table = match thread.pcall(&closure, &[]).unwrap().first() {
+            Some(Value::Table(t)) => t.clone(),
+            other => panic!("expected a table, got {other:?}"),
+        };
+        let action = TimedAction { table: Some(table), ..Default::default() };
+        Rc::new(RefCell::new(action))
+    }
+
+    #[test]
+    fn a_missing_callback_is_not_an_error() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut thread = thread(log.clone());
+        let a = action(&mut thread, "return { complete = function() end }");
+        assert!(callback(&mut thread, &a, "stop", &[]).is_none());
+        assert!(callback(&mut thread, &a, "complete", &[]).is_some());
+        assert!(log.borrow().is_empty(), "logged {:?}", log.borrow());
+    }
 }

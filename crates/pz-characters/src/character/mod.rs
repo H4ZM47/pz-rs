@@ -42,7 +42,10 @@ pub mod clothing_wetness;
 pub mod collide;
 pub mod collision;
 pub mod combat;
+pub mod corpse;
+pub mod death;
 pub mod context;
+pub mod eat;
 pub mod fall;
 pub mod fire;
 pub mod firearm;
@@ -58,7 +61,9 @@ pub mod nutrition;
 pub mod path_mover;
 pub mod player;
 pub mod reading;
+pub mod safety;
 pub mod save;
+pub mod sleeping_event;
 pub mod state;
 pub mod states;
 pub mod stats;
@@ -249,6 +254,8 @@ pub struct GameCharacter<I: 'static> {
     pub descriptor: Option<SurvivorDescRef<I>>,
     /// `cheats`.
     pub cheats: PlayerCheats,
+    /// `safety`.
+    pub safety: safety::Safety,
     /// `bodyDamage`.
     pub body_damage: BodyDamage,
     /// `IsoPlayer.nutrition` (players only).
@@ -303,6 +310,15 @@ pub struct GameCharacter<I: 'static> {
     pub force_wake_up_time: f32,
     /// `forceWakeUp`.
     pub force_wake_up: bool,
+    /// `IsoPlayer.asleepTime`: hours asleep (not saved).
+    pub asleep_time: f32,
+    /// `bed`: the Lua world object the character sleeps on (not saved).
+    pub bed: Option<pz_kahlua::Value>,
+    /// `sitOnFurnitureObject`: the Lua world object the character sits on
+    /// (not saved).
+    pub sit_on_furniture_object: Option<pz_kahlua::Value>,
+    /// `sleepingEventData` (`getOrCreateSleepingEventData`; not saved).
+    pub sleeping_event_data: Option<sleeping_event::SleepingEventData>,
     /// `sleepingTabletEffect`.
     pub sleeping_tablet_effect: f32,
     /// `sleepingTabletDelta`.
@@ -339,10 +355,15 @@ pub struct GameCharacter<I: 'static> {
     pub is_reading: bool,
     /// `numSurvivorsInVicinity`.
     pub num_survivors_in_vicinity: i32,
+    /// `isVisibleToPlayer[playerIndex]` (`updateSeenVisibility`).
+    pub is_visible_to_player: [bool; 4],
     /// `clothingDiscomfortModifier`.
     pub clothing_discomfort_modifier: f32,
     /// `IsoPlayer.sleepingPillsTaken`.
     pub sleeping_pills_taken: i32,
+    /// `effectiveEdibleBuffTimer`: seconds until food can cure a food
+    /// sickness again (counts down in `updateInternal`).
+    pub effective_edible_buff_timer: f32,
     /// `IsoPlayer.lastPillsTaken` (calendar millis).
     pub last_pills_taken: i64,
     /// `IsoPlayer.maxWeightDelta`.
@@ -452,6 +473,7 @@ impl<I: 'static> GameCharacter<I> {
             perk_list: Vec::new(),
             descriptor: None,
             cheats: PlayerCheats::default(),
+            safety: safety::Safety::default(),
             body_damage,
             nutrition: player.then(Nutrition::default),
             fitness: player.then(Fitness::default),
@@ -478,6 +500,10 @@ impl<I: 'static> GameCharacter<I> {
             time_of_sleep: 0.0,
             delay_to_actually_sleep: 0.0,
             force_wake_up_time: -1.0,
+            asleep_time: 0.0,
+            bed: None,
+            sit_on_furniture_object: None,
+            sleeping_event_data: None,
             force_wake_up: false,
             sleeping_tablet_effect: 0.0,
             sleeping_tablet_delta: 1.0,
@@ -497,8 +523,10 @@ impl<I: 'static> GameCharacter<I> {
             time_since_last_smoke: 0.0,
             is_reading: false,
             num_survivors_in_vicinity: 0,
+            is_visible_to_player: [false; 4],
             clothing_discomfort_modifier: 0.0,
             sleeping_pills_taken: 0,
+            effective_edible_buff_timer: 0.0,
             last_pills_taken: 0,
             max_weight_delta: 1.0,
             bleeding_level: 0,

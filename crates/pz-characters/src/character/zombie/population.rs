@@ -358,7 +358,10 @@ impl<I: 'static, W: crate::character::state::StateWorld<I>> pz_world_popman::Zom
         self.with(z, |z, cx| z.pop_die(cx));
     }
     fn remove_zombie(&mut self, z: i32) {
-        self.with(z, |z, cx| z.zombie_remove_from_world(cx));
+        self.with(z, |z, cx| {
+            z.zombie_remove_from_world(cx);
+            z.remove_from_square(&mut *cx.world);
+        });
         if let Some(i) = self.find(z) {
             let z = self.zombies.remove(i);
             self.removed.push(z);

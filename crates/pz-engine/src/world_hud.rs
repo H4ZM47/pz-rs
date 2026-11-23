@@ -94,6 +94,7 @@ fn kind(c: PickClass) -> PickKind {
         PickClass::LightSwitch => PickKind::LightSwitch,
         PickClass::Generator => PickKind::Generator,
         PickClass::WaveSignal => PickKind::WaveSignal,
+        PickClass::Tree => PickKind::Tree,
     }
 }
 
@@ -211,6 +212,10 @@ impl HudCamera for WorldHudCamera {
 
     fn camera_offset(&self, player: usize) -> (f32, f32) {
         self.0.borrow().offset(player)
+    }
+
+    fn fix_jiggly_square(&self, player: usize) -> (f32, f32) {
+        self.0.borrow().fix_jiggly_square(player)
     }
 
     fn frame_player_index(&self) -> usize {

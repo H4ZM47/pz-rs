@@ -300,8 +300,24 @@ and the complete Java ItemCodeOnCreate class remain separate work.
 The genuine ItemCodeOnCreate class now exposes onCreateRecipeMagazine for
 actual Literature receivers: get the actual ModData table, read full type,
 then rawset literatureTitle, retaining unrelated entries and returning no
-values. This implements one of 58 public callbacks. The other 57 callbacks,
-constructor/private helpers, successful resolver cache and native factory
+values. The custom-colour callbacks (`onCreateLipstick`, `onCreateFabricRoll`,
+`onCreateSprayPaint`, `onCreateToyPlane`, `onCreateRandomColor`) draw from the
+`ItemGenerationConstants` weighted colour lists read from the jar, or from
+`Colors.GetRandomColor`, and set the item's custom colour. The ID card
+callbacks (`onCreateIDCard`, `onCreateIDCardFemale`, `onCreateIDCardMale`) name
+the item after its display name and a random survivor name, and give a
+Literature card a random `lockedBy`. The other callbacks
+(`on_create_callbacks`) are ported from the 42.21 bytecode with the same `Rand`
+draws in the same order. Their tables (`Brochure`, `Flier`, `Newspaper`,
+`Book`, `Magazine`, `ComicBook`, `Photo`, `Job`, the `ItemGenerationConstants`
+lists and the `ModelKey` / `ItemKey` / `FluidKey` / `ItemTag` ids they use) are
+read from the installed jar's static initialisers (`on_create_data`), so
+nothing is hard-coded. The exceptions are `onCreateScarecrow` and
+`onCreateSkeletonDisplay`, which build an `IsoMannequin` and fail as
+`pz.host.Unsupported`. `scratchTicketWinner` draws from the weighted
+`ticketWinnings` map in declaration order: the JDK shuffles that immutable
+map's iteration order per run, so no order is the original's.
+Constructor/private helpers, successful resolver cache and native factory
 callback ordering still need work. Supported argument conversion order and
 messages follow the installed invoker; unavailable reflected-null diagnostics
 and concrete Java implementation-class diagnostics fail explicitly as host
@@ -593,9 +609,12 @@ fresh isolated cache. A successful ordinary workspace suite does not exercise
 all installed assets, render paths or foreign platforms.
 
 ## Boot (`GameWindow.init`)
-- [ ] Mods (only when Core's mods option is on): `bind_mods::read_default`,
-      `GameFs::load_mods`, mod texture packs via `mod_pack_files` →
-      `load_texture_pack` + `set_texture_pack_lookup` (#24).
+- [x] Mods (only when Core's mods option is on): `boot::load_default_mods`
+      (`resetDefaultModsForNewRelease`, `bind_mods::read_default`,
+      `GameFs::load_mods`, then `boot::load_mod_pack_files`:
+      `load_texture_pack` + `set_texture_pack_lookup`) before the UI packs in
+      `App::boot`, the client's headless boot and the menu reload; the mods'
+      script folders reach `ScriptManager.Load` (#24). Lua mods only.
 - [x] ScriptManager: `load_builtin_registries` + `load`, then
       `bind_registry::install_script_manager` (#22/#27).
 - [x] Item assets for `instanceItem`: after the ScriptManager,
@@ -612,7 +631,10 @@ all installed assets, render paths or foreign platforms.
       factory components (`FluidContainer`); wired in
       `pz_engine::boot::load_scripts`. A character simulation's own
       `ItemLuaEnv` must return them from `entity()` (#143).
-- [ ] Real `MapGroupsHost` via `bind_map_groups::install_host` (#17/#24).
+- [x] Real `MapGroupsHost`: `LuaManager::init` installs
+      `bind_map_groups::GameFsHost` (GameFs maps and mod dirs, `ActiveMods`
+      values, the `currentGame` list, Translator). `bind_mods::read_default`
+      runs `checkMissingMaps` (#17/#24).
 - [x] Gamepads: `Gamepads::new(game_dir, cache_dir, c)` (#32).
 - [x] Sound: build `pz_audio::studio::Studio` from
       `SetupHeaders::from_game_dir`, load the strings, Sound, SoundMP and
@@ -621,7 +643,7 @@ all installed assets, render paths or foreign platforms.
       with `backend = StudioBackend::new(studio).with_file_resolver(..)`
       (resolving `media/sound/*` through GameFs) (pz-sound feature
       `studio`); set its `rand_next` and `media_file_exists` (#80/#82/#83).
-- [ ] Event and hook names read from the jar via pz-classfile instead of
+- [x] Event and hook names read from the jar via pz-classfile instead of
       `events.rs` constants (#7).
 - [ ] Character simulation context: `bind_character_sim::install_sim_context`
       with the engine's `SimContext` (lore, climate, `Rand`, events) (#41).
@@ -715,6 +737,52 @@ all installed assets, render paths or foreign platforms.
       `bind_input::update`/`after_ui_update` the game loop builds one
       `EnginePlayerInput::capture()` per frame, passes `&input` to each local
       player's `IsoPlayer.update`, then calls `input.write_back()` (#137).
+- [x] Melee targets: a local player's update (and its timed-action tail)
+      and its animation events run with `with_states_and_characters(..,
+      Some(&mut zombies), ..)`, so `StatesWorldAdapter::with_characters`
+      answers `character_mut`, `take_character`/`put_character` and
+      `characters_near` from the real zombies: `CombatManager` finds the
+      zombie, `AttackCollisionCheck` hits it, and it plays its hit reaction,
+      falls and dies. Not wired: the zombies' own update and anim events
+      reaching the player (the zombie's attack).
+- [x] Zombie corpses: a zombie that raises `SimEvent::Die` in its update,
+      postupdate or animation events (`IsoGameCharacter.die`) becomes a
+      corpse after that phase: `GameCharacter::become_dead_body` (`new
+      IsoDeadBody(chr)`: position, look, inventory, worn items) with
+      `MutationEnv::place_new_corpse` (`staticMovingObjects`,
+      `CorpseCount`, render invalidation), then `zombie_remove_from_world`,
+      removal from `IsoWorld::zombies`, and `OnContainerUpdate` and
+      `OnDeadBodySpawn` with the corpse's Lua object. A zombie whose corpse
+      cannot be made or placed stays with its items. `SimEvent::Killed`
+      names the victim, and a killed zombie runs `DoZombieInventory`
+      (`zombie_inventory`: the worn items from its item visuals and the
+      attached items go into its emptied inventory). `Kill` then runs
+      `DoDeath` (`death.rs`): the death sound, the blood splats and the
+      giblets as `SimEvent`s, which the engine does not play or draw yet.
+      Not wired: `ItemSpawner.spawnItem` for `itemsToSpawnAtDeath`
+      (reported as unsupported), the corpse's attached items, `dropHeldItems`,
+      `ObjectIDManager`, `FliesSound`, the ragdoll pose, and the Lua
+      objects for `OnZombieDead` and `OnCharacterDeath` (reported as
+      unsupported when they have listeners). `die()` from the population
+      pass (`RealZombies::die`) is not collected.
+- [x] Corpse objects: each corpse in `staticMovingObjects` is one shared
+      `DeadBodyRef`, and `bind_dead_body` gives it one Lua object
+      (`getStaticMovingObjects`, the events above). Its first `getContainer`
+      moves the saved container into a live one whose parent is the corpse
+      (`dead_body::inventory`); saving writes a snapshot of it. Not wired:
+      `PickCorpse`, the hand items, `getModData`, highlights, and the rest
+      of `IsoDeadBody`'s Lua methods.
+- [x] Corpse rendering: `WorldRender::render_corpses` draws each square's
+      `staticMovingObjects` as `IsoDeadBody.render` does: the square's
+      interpolated light, `BodyParams.init` (outside, room, lights), the
+      body texture from `DeadBodyAtlas.getBodyTexture` (the body model
+      posed by `BodyParams`/`diedBoneTransforms` and drawn into the atlas)
+      and its shadow. New and loaded corpses use the same path. The
+      texture jobs run in `WorldModels::prepare`, so a new body shows one
+      frame later. The 3D view (a port extension) draws no corpses and
+      prepares no atlas entries. Not wired: animal corpses (reported once), attached
+      models, the hand items' models, highlights, the alpha fade and the
+      release of atlas entries.
 - [x] `ZombiePopulationManager::update_main` with PopulationHost and
       `ZombieOps` (`RealZombies`) (#73/#77; `RealZombies::create_survivor`
       returns `CreateSurvivor`'s `ScriptResult`, and `WorldPopulation::update`
@@ -779,13 +847,22 @@ all installed assets, render paths or foreign platforms.
       the player's input component. Unloaded squares/cells return `nil`.
 - [ ] `Basements.loadSavefile` / `writeSavefile` (`map_basements.bin`): a
       loaded world recomputes its placements.
-- [ ] `TileOverlays.updateTileOverlaySprite(obj)` when a square's objects
-      are created or loaded: `bind_tile_overlays::shared_tile_overlays()`
-      `.pick_overlay(..)` puts the sprite first in `attachedAnimSprite`;
-      `ContainerOverlays.updateContainerOverlaySprite` from
-      `shared_container_overlays()` sets the overlay sprite;
-      `fixTableTopOverlays(square)` after moving objects; both `Reset()` on
-      world unload.
+- [x] `TileOverlays.updateTileOverlaySprite(obj)` when a square's objects
+      are loaded: `bind_item_picker::load_gridsquare`
+      (`LoadGridsquarePerformanceWorkaround.LoadGridsquare`) calls
+      `bind_tile_overlays::update_tile_overlay_sprite` for each named object
+      without container overlays; `shared_tile_overlays().pick_overlay(..)`
+      puts the sprite first in `attachedAnimSprite`.
+- [x] Container overlays when a square's objects are loaded:
+      `load_gridsquare` (`LoadGridsquarePerformanceWorkaround.checkObject`)
+      calls `bind_tile_overlays::update_container_overlay_sprite`
+      (`ItemPickerJava.updateOverlaySprite`) for each named object whose
+      container is not empty; `set_overlay_sprite` sets `overlay_sprite`,
+      and `render_world` gives it to the renderer as `RenderObject.overlay`.
+- [ ] The rest of the overlay lifecycle: Lua `ItemPicker.updateOverlaySprite`
+      after a transfer (still a no-op), `invalidateRenderChunkLevel` for a
+      change after load, `fixTableTopOverlays(square)` after moving objects;
+      both `Reset()` on world unload.
 - [ ] `BrokenFences.destroyFence(obj, dir)` (thumping, vehicles): the engine's
       `StatesEngine::destroy_fence` / `is_breakable_fence` /
       `broken_fence_items` read `bind_broken_fences::shared_broken_fences()`
@@ -890,20 +967,23 @@ all installed assets, render paths or foreign platforms.
       game-world UI; `HudPlayers::player_screen` (characters thread) and
       `HudCamera` (`IsoCamera.getOffX/Y`, `Core.getZoom`; world-render
       thread) feed its position (#145).
-- [ ] Clock inputs: `HudAlarmClocks` (players' worn and inventory
+- [x] Clock inputs: `HudAlarmClocks` (players' worn and inventory
       `AlarmClock`/`AlarmClockClothing`, stop/set alarm; world thread),
       `HudClimate::air_temperature_for_character` and
       `HudGameTime::time_of_day/day/month` and `digits_time_of_day` (the
       digits' `serverTimeOfDay` swap while an MP client fast-forwards)
       (characters thread),
-      `HudPlayers::player_dead`, `HudDebug::cheat_clock_visible`. Call
-      `UIManager::resize()` when a player's clocks change (the original
-      re-runs `resize` from its callers) (#146; digits split #164).
-- [ ] Moodles: `hud::set_moodles_character(i, Some(player_index))` when a
-      player is created or removed (`IsoPlayer` sets
-      `UIManager.getMoodleUI(i).setCharacter`); `HudMoodles` (a player's
+      `HudPlayers::player_dead`, `HudDebug::cheat_clock_visible`.
+      `UIManager::resize()` runs every in-game frame before
+      `renderframeui`, as `IngameState.renderInternal` does; `Clock.resize`
+      there reads the players' clocks (#146; digits split #164).
+- [x] Moodles: `hud::set_moodles_character(i, Some(i))` on every update of
+      a living local player (`IsoPlayer.updateInternal2` sets
+      `UIManager.getMoodleUI(playerIndex).setCharacter(this)`; called from
+      `world_update::update_characters`); `HudMoodles` (a player's
       `Moodles`: refresh flag, levels, good/bad, display and description
-      strings; characters thread) (#148).
+      strings; characters thread) is `hud::characters::CharacterMoodles`
+      (#148).
 - [x] Character inventories: `CharacterItems::inventory` is a
       `pz_inventory::ContainerRef` (loaded in place with
       `shared::load_into`, saved via `to_container`);
@@ -924,10 +1004,19 @@ all installed assets, render paths or foreign platforms.
       (#187).
 - [ ] World containers need their `IsoObject` parent set with
       `bind_item_container::set_parent` the same way (#143).
-- [ ] Shared tooltip: `HudPicking::picked_tile` (`UIManager.getPicked().tile`
+- [x] Shared tooltip: `HudPicking::picked_tile` (`UIManager.getPicked().tile`
       as a `pz_ui::tooltip::TooltipObject`: identity, `haveSpecialTooltip`,
       its square's Lua object; world thread); the tooltip font option and
-      highlight colours come from `Core` (#153).
+      highlight colours come from `Core` (#153). `world_pick::install`
+      puts `PickedTile` into the HUD host: the object the last context
+      pick in `UIManager.update` found. `IsoObject.setSpecialTooltip` /
+      `haveSpecialTooltip` are bound for the map objects that set it
+      (rain barrels, plants, traps).
+- [x] Lua `UIManager.getPicked()` / `getLastPicked()`: `UIManager.picked`
+      (the context pick's `ClickObject`, opaque to Lua) and
+      `UIManager.lastPicked` (its tile, set by `updateTooltip` while the
+      mouse is over it). `getPickedTile` / `getTileFromMouse` are still
+      nil (TODO(world): `getTileFromMouse`).
 - [x] Item tooltips: `item:DoTooltip(tooltip)` / `DoTooltipEmbedded` are
       bound with the item classes (`bind_items::register` →
       `item_tooltip::register`); the tooltip's `setCharacter` gives the
@@ -954,6 +1043,16 @@ all installed assets, render paths or foreign platforms.
       `with_host(|h| h.picking = Box::new(WorldPicking { world }))`; use
       `picking::context_pick` for `UIManager.setPicked` on mouse events
       (world-render thread) (#192).
+- [x] World mouse: `pz_engine::world_pick::install(render, sprites,
+      cameras)` after `install_hud_camera` and `uninstall()` on exit. It
+      puts one `EngineWorldMouse` into `UIManager` (`pz_ui::WorldMouse`:
+      `IsoObjectPicker.ContextPick` each frame, `OnObjectRightMouseButton*`
+      with `getObjectIndex`, the right-click state of `IsoPlayer`/the
+      clock) and into `IsoObjectPicker.Instance` for Lua
+      (`bind_object_picker`: `PickDoor/PickWindow/PickWindowFrame/
+      PickThumpable/PickTree`). `PickHoppable`/`PickCorpse`, the left
+      button (`OnObjectLeftMouseButton*`) and dragging moving objects are
+      open (world thread).
 - [ ] Object picking render side: keep a `pz_iso_render::RenderInfos`
       next to the chunk caches, build each player's `ChunkRenderer` with
       `.with_render_infos(&infos, player)` (chunk recording, composite and
@@ -973,14 +1072,16 @@ all installed assets, render paths or foreign platforms.
       `player_index` (`IsoPlayer.getPlayerIndex()`) and
       `frame_player_index` (`IsoCamera.frameState.playerIndex`) before the
       HUD updates and renders (world-render thread) (#198).
-- [ ] Health panel: `HudBodyDamage` (`isFemale`, `getBodyDamage().getHealth()`,
+- [x] Health panel: `HudBodyDamage` (`isFemale`, `getBodyDamage().getHealth()`,
       each `BodyPart`'s wound state as a `BodyPartView`; the remote
       `getBodyDamageRemote()` for another MP player; characters thread) and
       `HudDebug::ui_render_outline` (`Core.debug` plus the debug option)
       feed `NewHealthPanel`/`UI_BodyPart`, built by `ISNewHealthPanel` (#155).
       `HudBodyDamage` for local characters is `CharacterBodyDamage`
       (installed by `install_character_hud_hosts`); the remote path is
-      TODO(network).
+      TODO(network). The part names in the wound list are
+      `BodyPartType.getDisplayName`, translated through
+      `bind_text::translate` (`Translator.getText`).
 - [ ] Debug console (built in `hud::init_ui`): with `Core.debug`, the
       `TOGGLE_LUA_CONSOLE` key toggles `UIManager.debug_console`'s visibility
       in `GameWindow.logic`; `DebugLog`'s stream calls
@@ -1103,7 +1204,7 @@ registered):
       `EnableSnowOnGround`) and `ErosionIceQueen::set_snow(ice_queen)`. The
       climate update's own snow effects collect in the same slot: apply
       `bind_climate::take_snow_effects()` after `update_game_time` each frame (#147).
-- [ ] Zombie dressing (`ModelManager.Add`/`Reset` call
+- [x] Zombie dressing (`ModelManager.Add`/`Reset` call
       `ModelManager.dressInRandomOutfit`): when a zombie gets its model,
       `GameCharacter::model_manager_dress_in_random_outfit(&mut
       ZombieDressCx { chars, dress (bind_appearance::with_dress_context),
@@ -1113,16 +1214,22 @@ registered):
       chance_of_attached_weapon (sandbox) }, settings (sandbox
       `ClothingDegradation`, `RemoveZombieLoot`, game mode, world age) })`;
       it fills `human_visual`, `zombie.item_visuals` and attached weapons (#147).
+      `zombie_dress::dress_zombie` does this in `update_models` for each
+      zombie without a model slot (`WorldModels::contains_character`).
+      `Reset` (a model rebuilt for a character that has one) is not wired;
+      the dressing flags make it a no-op for zombies that already dressed.
 - [x] `IngameState.enter`, world loaded: `WorldPopulation::start_game(&mut
       host, &frame)` (`MapCollisionData.startGame`).
 - [x] Quit: `WorldPopulation::save(&reals)` with the world save, then
       `WorldPopulation::stop()`.
 
-- [ ] Sandbox: on loading a save, `SandboxOptions::load_bin(map_sand.bin)` on
+- [x] Sandbox: on loading a save, `SandboxOptions::load_bin(map_sand.bin)` on
       the constructed instance (preset name goes to the world), then
       `handleOldZombiesFile1`, `applySettings` and `toLua` as `load()` does;
       on save/new game write `save_bin(save_bin::world_version(&jar), preset)`
-      to `map_sand.bin` (#21).
+      to `map_sand.bin` (#21). Done in `IsoWorld::load_sandbox`
+      (`handleOldZombiesFile1` is `load_server_zombies_file` on the save's
+      `zombies.ini`) and `world_save`'s `map_sand.bin`.
 - [ ] `ChunkStreamer::new(players, calc_chunk_width(w, h))`, `load_world`,
       per-frame `update(..)`, `take_events()`, `save_now()` on quit (#64);
       wrap its ChunkLoadHook in `ClearSoundsOnUnload` (#71) and use
@@ -1353,13 +1460,18 @@ registered):
       read `IsoChunk.vehicles.loaded()` (#88/#91); once the vehicle runtime
       replaces those entries with its own objects, route these through
       the cell's vehicle list instead.
-- [ ] Erosion: `ErosionMain::new(tables from jar, ErosionSettings from
+- [x] Erosion: `ErosionMain::new(tables from jar, ErosionSettings from
       sandbox/GameTime, sprites, None = host time zone, OnInitSeasons hook)` at
       world load; pass `ErosionChunkHook { main, hooks: &ObjectHooks,
       dictionary: Some(&WorldDictionary), rand, logs_per_size }` to
       `finish_chunk_load` (it also gets `chunk_unloaded`); `main_timer(day,
       month, year)` on GameTimes ten-minute tick; bind `bind_erosion::
-      set_instance` for Lua (#42).
+      set_instance` for Lua (#42). Done: `IsoWorld::with_stream` passes
+      the hook (live-object `SquareHooks` via `cell_objects`, the save's
+      dictionary, `ObjectTables::logs_per_size`) to the streamer and the
+      deferred `SquareReady` step; `GameTimeEvent::ErosionEveryTenMinutes`
+      runs `mainTimer` before Lua's `EveryTenMinutes`. TODO(port): the
+      `ClearSoundsOnUnload` wrapper.
 - [ ] Pathfinding: one `PathfindService::new(meta min_x, min_y, width, height, is_server)` in a
       `pz_pathfind::host::PathHost` per world. On chunk load/unload
       `add_chunk_to_world(chunk, load_id, &SquareBits)` /
@@ -1653,7 +1765,26 @@ registered):
       `animation_player_ready`, `rendered_angle`, `primary_hand_model_ready`,
       `square_trees`, `collapsed_fence`, `tree_slow_factor`, `ground_info`,
       `foot_injury_floor`, `vehicle_useable_part_near`,
-      `context_actions_nswe`/`context_actions_corners`/`context_door_or_window`;
+      the interact key's `context_*` hooks (`context_door_or_window_object`,
+      `context_do_door_or_window`, `context_special`, `context_hoppable`,
+      `context_safe_to_climb_over`, `context_sheet_rope_side`; implemented
+      by `StatesWorldAdapter` in `pz-world-states::context`) and
+      `context_toggle_door` (`pz-world-states::door`: the door the key
+      chose is toggled by the world, which needs the player's current square
+      and a key lookup, `DoorActor`; other chosen actions come back as
+      `PlayerEvent::ContextualAction` for the engine/Lua).
+      `world_update::fire_player_events` hands that event to
+      `pz_lua_api::contextual_action::perform`, which triggers
+      `Hook.ContextualAction` for `ClimbOverFence`, `ClimbThroughWindow`,
+      `OpenWindow`/`CloseWindow` and calls `climbOverWall` itself; the other
+      kinds fail with a message naming them. The Lua side queues the climb
+      (`climbOverFence`, `climbThroughWindow`, ... in
+      `bind_character_sim::climb`) and the player's update runs the queue with
+      the states world (`GameCharacter::run_path_requests`). A short E press
+      opens or closes a window, a held E (0.5 s) climbs through it; the open
+      and close action still needs `faceThisObject` (the queued
+      `FaceObject` request is not handled), and the climb check of
+      `IsoThumpable` and `IsoWindowFrame` is not bound to Lua yet;
       `SimContext::wet_ground_final_value`, `clothing_degradation`
       (#135).
 
@@ -1991,7 +2122,7 @@ registered):
       `vispoly.wgsl`); any other backend must handle them.
 
 ## Cleanups
-- [ ] Fold bind_vehicles' item subset into the full item bindings (#86).
+- [x] Fold bind_vehicles' item subset into the full item bindings (#86).
 - [ ] Convert remaining bare prints to DebugLog (#66 meta_grid.rs, #67
       meta_zones.rs/zone_save.rs) (#69).
 
@@ -2017,9 +2148,14 @@ registered):
       `MapFiles.Reset` from `WorldMap.Reset` (IngameState.exit and
       Core.ResetLua) is exposed as `host::reset_current_map_files` but not
       called yet.
-- [ ] Move `WorldMapImages.startFrame/endFrame` from each UI map draw to the
-      global SpriteRenderer frame boundary. Restore native file-thread queue
-      scheduling and shared per-frame loading budget across multiple maps.
+- [x] Move `WorldMapImages.startFrame/endFrame` from each UI map draw to the
+      global SpriteRenderer frame boundary: `App::frame` brackets
+      `states.render` with `worldmap::start_frame/end_frame`, so every map in
+      a frame shares each pyramid's required tiles and five-tile budget.
+- [ ] Restore native file-thread queue scheduling
+      (`WorldMapImages.checkLoadingQueue` in `GameWindow.logic`, async
+      `FileTask_LoadImagePyramidTexture`); tiles still decode synchronously
+      in `checkQueue`.
 - [ ] Native request-counter reset ties depend on Java HashMap values order;
       the current Rust map order does not establish that tie behavior. The
       actual Core debug threshold is latched on first production image use;

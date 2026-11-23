@@ -86,9 +86,9 @@ fn this_perk(c: &NativeCall<'_>) -> LuaResult<PerkRef> {
     with_this::<PerkObject, _>(c, |p| p.0.clone())
 }
 
-/// `Translator.getText` as the character classes use it.
+/// `Translator.getText` (the key itself before the translator is booted).
 fn get_text(key: &str) -> String {
-    Characters::translate(key)
+    crate::bind_text::translate(key)
 }
 
 /// The entries of a perk-keyed boost map stored as perk ids: each key is

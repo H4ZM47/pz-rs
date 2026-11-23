@@ -136,6 +136,13 @@ pub struct ItemTemplate {
     pub weapon_sprite: Option<String>,
     pub fire_mode: Option<String>,
     pub cyclic_rate_multiplier: f32,
+    /// `HandWeapon.setFireModePossibilities` (the script's list),
+    /// `setCanBePlaced`, `setSensorRange` and `setExplosionTimer` at
+    /// creation.
+    pub fire_mode_possibilities: Option<Rc<Vec<String>>>,
+    pub can_be_placed: bool,
+    pub sensor_range: i32,
+    pub explosion_timer: i32,
     pub min_sight_range: f32,
     pub max_sight_range: f32,
     pub magazine_type: Option<String>,
@@ -255,6 +262,9 @@ pub struct ItemTemplate {
     pub have_chamber: bool,
     /// `ammoType.getItemKey()`.
     pub ammo_item: Option<String>,
+    /// `ammoType`, which `Item.InstanceItem` gives the item
+    /// (`InventoryItem.getAmmoType()`).
+    pub ammo_type: Option<Rc<pz_scripts::registry::RegistryKey>>,
     pub cosmetic: bool,
     pub remove_on_broken: bool,
     pub can_have_holes: bool,
@@ -267,6 +277,15 @@ pub struct ItemTemplate {
     pub weight_modifier: f32,
     /// `activatedItem` (`InventoryItem.canBeActivated` at creation).
     pub activated_item: bool,
+    /// `requiresEquippedBothHands`, `canBeRemote` and `remoteController`
+    /// (copied to the item at creation).
+    pub requires_equipped_both_hands: bool,
+    pub can_be_remote: bool,
+    pub remote_controller: bool,
+    /// `customContextMenu`: at creation the item takes
+    /// `Translator.getText("ContextMenu_" + customContextMenu)` as its
+    /// `customMenuOption`.
+    pub custom_context_menu: Option<String>,
     /// `lightStrength`, `torchCone`, `lightDistance` (copied to the item at
     /// creation) and `torchDot` (read through the script).
     pub light_strength: f32,
@@ -411,6 +430,10 @@ impl ItemTemplate {
             weapon_sprite: None,
             fire_mode: None,
             cyclic_rate_multiplier: 0.0,
+            fire_mode_possibilities: None,
+            can_be_placed: false,
+            sensor_range: 0,
+            explosion_timer: 0,
             min_sight_range: 2.0,
             max_sight_range: 6.0,
             magazine_type: None,
@@ -495,6 +518,7 @@ impl ItemTemplate {
             two_hand_weapon: false,
             have_chamber: true,
             ammo_item: None,
+            ammo_type: None,
             cosmetic: false,
             remove_on_broken: true,
             can_have_holes: true,
@@ -504,6 +528,10 @@ impl ItemTemplate {
             key_ring_type: false,
             weight_modifier: 0.0,
             activated_item: false,
+            requires_equipped_both_hands: false,
+            can_be_remote: false,
+            remote_controller: false,
+            custom_context_menu: None,
             light_strength: 0.0,
             torch_cone: false,
             light_distance: 0,
@@ -614,6 +642,10 @@ impl ItemTemplate {
             weapon_sprite: item.weapon_sprite.clone(),
             fire_mode: item.fire_mode.clone(),
             cyclic_rate_multiplier: item.cyclic_rate_multiplier,
+            fire_mode_possibilities: item.fire_mode_possibilities.clone().map(Rc::new),
+            can_be_placed: item.can_be_placed,
+            sensor_range: item.sensor_range,
+            explosion_timer: item.explosion_timer,
             min_sight_range: item.min_sight_range,
             max_sight_range: item.max_sight_range,
             magazine_type: item.magazine_type.clone(),
@@ -705,6 +737,7 @@ impl ItemTemplate {
             two_hand_weapon: item.two_hand_weapon,
             have_chamber: item.have_chamber,
             ammo_item: item.ammo_type.as_ref().and_then(|k| k.item_key.clone()),
+            ammo_type: item.ammo_type.clone(),
             cosmetic: item.cosmetic,
             remove_on_broken: item.remove_on_broken,
             can_have_holes: item.can_have_holes,
@@ -714,6 +747,10 @@ impl ItemTemplate {
             key_ring_type: item.is_item_type(sm, "KEY_RING"),
             weight_modifier: item.weight_modifier,
             activated_item: item.activated_item,
+            requires_equipped_both_hands: item.requires_equipped_both_hands,
+            can_be_remote: item.can_be_remote,
+            remote_controller: item.remote_controller,
+            custom_context_menu: item.custom_context_menu.clone(),
             light_strength: item.light_strength,
             torch_cone: item.torch_cone,
             light_distance: item.light_distance,

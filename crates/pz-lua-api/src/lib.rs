@@ -13,11 +13,14 @@ pub mod bind_attached_items;
 pub mod bind_body;
 pub mod bind_body_damage;
 pub mod bind_character_sim;
+pub mod bind_eat;
+pub mod bind_cheat_type;
 pub mod bind_characters;
 pub mod bind_audio;
 pub mod bind_erosion;
 pub mod bind_colors;
 pub mod bind_core;
+pub mod bind_craft_recipe_manager;
 pub mod bind_date;
 pub mod bind_designation;
 pub mod bind_credits;
@@ -33,7 +36,10 @@ pub mod bind_fs;
 pub mod bind_global_objects;
 pub mod bind_globals;
 pub mod bind_item_container;
+pub mod bind_dead_body;
 pub mod bind_world_object;
+pub mod bind_climb;
+pub mod contextual_action;
 pub(crate) mod bind_item_age;
 pub mod bind_item_name;
 pub mod bind_item_visual;
@@ -41,6 +47,7 @@ pub mod bind_items;
 pub mod bind_fluid_container;
 pub mod component_gc;
 pub mod attribute_templates;
+pub mod item_picker;
 pub mod item_tooltip;
 pub mod bind_iso_enums;
 pub mod bind_java_util;
@@ -48,8 +55,13 @@ pub mod bind_misc;
 pub mod bind_misc_classes;
 pub mod bind_mods;
 pub mod bind_nutrition;
+pub mod bind_performance;
+pub mod bind_object_picker;
+pub mod bind_safehouse;
+mod world_menu_logic;
 pub mod bind_players;
 pub mod bind_popman;
+pub mod bind_recipe_manager;
 pub mod bind_registry;
 pub mod bind_render;
 pub mod bind_sandbox;
@@ -58,6 +70,7 @@ pub mod bind_scripts;
 pub mod bind_search_mode;
 pub mod bind_skills;
 pub mod bind_survival_guide;
+pub mod bind_xui;
 pub mod bind_states;
 pub mod bind_zombie;
 pub mod bind_zombie_outfits;
@@ -79,6 +92,7 @@ pub mod bind_bent_fences;
 pub mod bind_map_objects;
 pub mod bind_tile_overlays;
 pub mod bind_broken_fences;
+pub mod bind_item_picker;
 pub mod bind_key_namer;
 pub mod bind_world_gen_utils;
 pub mod bind_world_gen_params;
@@ -97,6 +111,8 @@ pub mod savefile;
 pub mod session_reset;
 pub mod world_save;
 pub mod world_mannequins;
+pub mod character_dressup;
+pub mod zombie_inventory;
 pub mod timed_actions;
 pub mod worldmap;
 
@@ -200,6 +216,7 @@ pub fn register_all(mgr: &mut LuaManager) {
         Some(mgr.events.clone()),
         bind_core::shared_core(),
     );
+    bind_performance::register(&mut mgr.thread, bind_core::shared_core());
     bind_fs::register(mgr);
     bind_render::register(mgr);
     bind_video::register(mgr);
@@ -216,6 +233,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_items::register(&mut mgr.thread);
     bind_item_age::install_events(mgr.events.clone());
     bind_item_container::register(&mut mgr.thread);
+    bind_dead_body::register(&mut mgr.thread);
     bind_misc::register(&mut mgr.thread, mgr.fs.clone(), mgr.events.clone());
     bind_sandbox::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
     {
@@ -233,14 +251,26 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_body_damage::register_shared(&mut mgr.thread);
     bind_states::register_shared(&mut mgr.thread);
     bind_scripts::register(&mut mgr.thread, bind_registry::shared_script_manager());
+    bind_xui::register(&mut mgr.thread);
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
     bind_character_sim::register_shared(&mut mgr.thread);
+    bind_recipe_manager::register(
+        &mut mgr.thread,
+        bind_registry::shared_script_manager(),
+        bind_characters::shared_characters(),
+    );
+    bind_eat::register_shared(&mut mgr.thread);
     timed_actions::register(&mut mgr.thread);
     bind_body::register_shared(&mut mgr.thread);
     bind_nutrition::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
     bind_appearance::register(&mut mgr.thread);
+    bind_craft_recipe_manager::register(
+        &mut mgr.thread,
+        bind_registry::shared_script_manager(),
+        bind_characters::shared_characters(),
+    );
     bind_item_visual::register(&mut mgr.thread);
     bind_climate::register(mgr);
     bind_puddles::register(&mut mgr.thread);
@@ -254,14 +284,22 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_map_objects::register(&mut mgr.thread);
     bind_tile_overlays::register(&mut mgr.thread);
     bind_broken_fences::register(&mut mgr.thread);
+    bind_object_picker::register(&mut mgr.thread);
+    bind_safehouse::register(&mut mgr.thread);
+    world_menu_logic::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
+    bind_item_picker::register(&mut mgr.thread);
+    bind_item_picker::install_event_sink(mgr.events.clone());
     bind_world_gen_utils::register(&mut mgr.thread, mgr.fs.clone());
     bind_world_gen_params::register(&mut mgr.thread);
     {
         let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
         bind_randomized_world::register_from_jar(&mut mgr.thread, jar.as_ref());
+        bind_items::on_create_data::register_from_jar(jar.as_ref());
+        bind_cheat_type::register_from_jar(&mut mgr.thread, jar.as_ref());
     }
     bind_sprites::register(&mut mgr.thread);
+    bind_map_groups::install_host(Rc::new(bind_map_groups::GameFsHost::new(mgr.fs.clone())));
     bind_map_groups::register(&mut mgr.thread, move || fs.borrow().media_file("maps"));
     bind_server::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
     bind_server_list::register(&mut mgr.thread, mgr.fs.clone());
@@ -279,6 +317,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     gizmo::register(&mut mgr.thread);
     hud::characters::install_character_hud_hosts();
     hud::alarm_clocks::install_alarm_clock_host();
+    hud::host::install_debug_options_host();
     bind_ui3d::register(&mut mgr.thread);
     bind_uitextbox2::register(&mut mgr.thread);
     bind_voice::register(&mut mgr.thread);

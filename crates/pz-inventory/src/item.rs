@@ -298,6 +298,11 @@ pub struct WeaponData {
     pub fire_mode: Option<String>,
     pub cyclic_rate_multiplier: f32,
     pub explosion_timer: i32,
+    /// `fireModePossibilities` (the script's list), `canBePlaced` and
+    /// `sensorRange`: set from the script at creation, not saved.
+    pub fire_mode_possibilities: Option<Rc<Vec<String>>>,
+    pub can_be_placed: bool,
+    pub sensor_range: i32,
     pub max_angle: f32,
     pub blood_level: f32,
     pub contains_clip: bool,
@@ -461,6 +466,11 @@ pub struct InventoryItem {
     pub condition_max: i32,
     /// Actual independent `InventoryItem.broken`; Java defaults false. Not saved.
     pub broken: bool,
+    /// `jobDelta`: the progress bar of the timed action using the item.
+    /// Not saved.
+    pub job_delta: f32,
+    /// `jobType`: the name shown on that progress bar. Not saved.
+    pub job_type: Option<String>,
     pub visual: Option<ItemVisual>,
     pub custom_color: bool,
     pub col: Rgba,
@@ -480,6 +490,14 @@ pub struct InventoryItem {
     pub key_id: i32,
     pub remote_control_id: i32,
     pub remote_range: i32,
+    /// `canBeRemote`, `remoteController` and `requiresEquippedBothHands`:
+    /// set from the script at creation (`Item.InstanceItem`), not saved.
+    pub can_be_remote: bool,
+    pub remote_controller: bool,
+    pub requires_equipped_both_hands: bool,
+    /// `customMenuOption`: the translated `customContextMenu` text that
+    /// `Item.InstanceItem` sets (null without one), not saved.
+    pub custom_menu_option: Option<String>,
     pub color_red: f32,
     pub color_green: f32,
     pub color_blue: f32,
@@ -622,6 +640,8 @@ impl InventoryItem {
             condition: t.condition_max,
             condition_max: t.condition_max,
             broken: false,
+            job_delta: 0.0,
+            job_type: None,
             visual: None,
             custom_color: false,
             col: WHITE,
@@ -640,6 +660,10 @@ impl InventoryItem {
             key_id: -1,
             remote_control_id: -1,
             remote_range: 0,
+            can_be_remote: t.can_be_remote,
+            remote_controller: t.remote_controller,
+            requires_equipped_both_hands: t.requires_equipped_both_hands,
+            custom_menu_option: None,
             color_red: 1.0,
             color_green: 1.0,
             color_blue: 1.0,
@@ -739,9 +763,9 @@ impl InventoryItem {
         let continuation = self.save_fields_prefix(w, env).map_err(SaveError::from)?;
         let name = self
             .textures
-            .archive_saved_name()
+            .saved_name()
             .map_err(|error| SaveError(format!("{error:?}")))?;
-        self.save_fields_suffix(w, env, continuation, name)
+        self.save_fields_suffix(w, env, continuation, name.as_deref())
     }
 
     pub(crate) fn save_native_prefix(
@@ -887,12 +911,8 @@ impl InventoryItem {
         }
         if !self.components.is_empty() {
             bits.add(0x4000000);
-            if w.is_native_buffer() {
-                return Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
-                    operation: "bounded scratch component writer",
-                    kind: None,
-                }.into());
-            }
+            // saveEntity puts into the same ByteBuffer, also the bounded
+            // CompressIdenticalItems scratch buffer; overflow there retries.
             self.components
                 .write_to_runtime(w, crate::component::COMPONENT_WORLD_VERSION)
                 .map_err(pz_entity::runtime_load::RuntimeHostError::Storage)?;
@@ -1278,13 +1298,24 @@ impl InventoryItem {
         Ok(())
     }
 
+    /// The subclass `load` of an actual item. `Err(None)`: a `HandWeapon`
+    /// with weapon parts, whose nested actual loads are not ported.
     pub(crate) fn load_kind_native(
         &mut self,
         r: &mut Reader<'_>,
         wv: i32,
         env: &dyn ItemEnv,
-    ) -> SaveResult<()> {
-        self.load_kind(r, wv, env)
+    ) -> Result<(), Option<SaveError>> {
+        let template = self.template.clone();
+        if let ItemKind::Weapon(w) = &mut self.kind {
+            let mut parts = false;
+            let result = w.load(r, env, &template, &mut |_, _| {
+                parts = true;
+                Err(SaveError("HandWeapon.load: weapon parts".into()))
+            });
+            return result.map_err(|e| (!parts).then_some(e));
+        }
+        self.load_kind(r, wv, env).map_err(Some)
     }
 
     pub(crate) fn load_kind_and_sync(
@@ -1362,7 +1393,16 @@ impl InventoryItem {
                 c.load(r, env)?;
                 *a = AlarmData::load(r, wv)?;
             }
-            ItemKind::Weapon(w) => w.load(r, wv, env, &template)?,
+            ItemKind::Weapon(w) => w.load(r, env, &template, &mut |r, reg| {
+                // `InventoryItemFactory.CreateItem(reg)`, a byte, then
+                // `load`; a null item makes the original throw.
+                let Some(mut part) = crate::env::create_item(env, reg) else {
+                    return Err(SaveError(format!("weapon part {reg} cannot be created")));
+                };
+                r.i8()?;
+                part.load(r, wv, env)?;
+                Ok(part)
+            })?,
             ItemKind::Literature(l) => l.load(r, wv)?,
             ItemKind::AlarmClock(a) => *a = AlarmData::load(r, wv)?,
             ItemKind::Key { .. } => {
@@ -1990,7 +2030,10 @@ impl WeaponData {
             } else {
                 0.0
             },
-            explosion_timer: 0,
+            explosion_timer: t.explosion_timer,
+            fire_mode_possibilities: t.fire_mode_possibilities.clone(),
+            can_be_placed: t.can_be_placed,
+            sensor_range: t.sensor_range,
             max_angle: 1.0,
             blood_level: 0.0,
             contains_clip: false,
@@ -2110,12 +2153,14 @@ impl WeaponData {
         Ok(())
     }
 
+    /// `HandWeapon.load` after `InventoryItem.load`; `load_part` creates
+    /// and loads one weapon part from its registry id.
     fn load(
         &mut self,
         r: &mut Reader<'_>,
-        wv: i32,
         env: &dyn ItemEnv,
         t: &ItemTemplate,
+        load_part: &mut dyn FnMut(&mut Reader<'_>, i16) -> SaveResult<InventoryItem>,
     ) -> SaveResult<()> {
         self.max_range = 1.0;
         self.min_range_ranged = 0.0;
@@ -2172,13 +2217,7 @@ impl WeaponData {
             let n = r.i8()?;
             for _ in 0..n.max(0) {
                 let reg = r.i16()?;
-                let Some(mut part) = crate::env::create_item(env, reg) else {
-                    // InventoryItemFactory.CreateItem returned null: the
-                    // original throws and the whole item is dropped.
-                    return Err(SaveError(format!("weapon part {reg} cannot be created")));
-                };
-                r.i8()?;
-                part.load(r, wv, env)?;
+                let part = load_part(r, reg)?;
                 if part.template.class == ItemClass::WeaponPart {
                     self.attachments.push(part);
                 }

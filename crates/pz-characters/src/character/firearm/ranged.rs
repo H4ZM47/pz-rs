@@ -601,6 +601,7 @@ impl<I: 'static> GameCharacter<I> {
                 vel_x: target.vars.hit_dir_x * ax + rx,
                 vel_y: target.vars.hit_dir_y * ay + ry,
                 invisible,
+                eye: false,
             });
         }
     }

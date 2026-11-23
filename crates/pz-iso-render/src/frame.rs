@@ -359,8 +359,11 @@ pub fn world_frame_for_player_extras(r: &ChunkRenderer<'_>, size: FrameSize, vie
     outlines.end_frame(&mut out);
     out.push(DrawCmd::GlDisable(gl::DEPTH_TEST));
     out.push(DrawCmd::OffscreenEnd);
-    // Core.RenderOffScreenBuffer: 1:1 screen projection over the whole
-    // screen, no blending.
+    // Core.RenderOffScreenBuffer: stencil test off (a UI element can leave
+    // it on, e.g. when its render fails between setStencilRect and
+    // clearStencilRect), 1:1 screen projection over the whole screen, no
+    // blending.
+    out.push(DrawCmd::GlDisable(gl::STENCIL_TEST));
     let (w, h) = (full.width, full.height);
     if view.is_some() {
         out.push(DrawCmd::Viewport { x: 0, y: 0, width: w, height: h });
@@ -419,6 +422,20 @@ mod tests {
             _ => None,
         });
         assert_eq!(pass, Some(([320.0, 0.0, 320.0, 480.0], [320.0, 0.0, 320.0, 480.0], screen)));
+    }
+
+    /// `Core.RenderOffScreenBuffer` turns the stencil test off before it
+    /// draws the world to the screen.
+    #[test]
+    fn screen_pass_runs_without_the_stencil_test() {
+        let cam = Camera::player(10.5, 10.5, 0.0, 640, 480, 1.0);
+        let r = ChunkRenderer::new(cam, &NoMaps, (640, 480));
+        let cmds = world_frame_for_player(&r, FrameSize { width: 640, height: 480 }, None, &[], &FrameObjects::default(), None, ScreenParams::default(), Vec::new());
+        let pos = |f: &dyn Fn(&DrawCmd) -> bool| cmds.iter().position(f).unwrap();
+        let end = pos(&|c| matches!(c, DrawCmd::OffscreenEnd));
+        let off = pos(&|c| matches!(c, DrawCmd::GlDisable(gl::STENCIL_TEST)));
+        let pass = pos(&|c| matches!(c, DrawCmd::ScreenPass { .. }));
+        assert!(end < off && off < pass);
     }
 
     /// The object pass follows the composite; each level's shadows come

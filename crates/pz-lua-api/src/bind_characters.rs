@@ -291,7 +291,12 @@ fn profession_def_arg(
 }
 
 /// A `CharacterTraits`.
-pub struct CharacterTraitsObject(pub RefCell<CharacterTraits>);
+pub enum CharacterTraitsObject {
+    /// A standalone set from the `CharacterTraits` constructor.
+    Owned(RefCell<CharacterTraits>),
+    /// `IsoGameCharacter.getCharacterTraits()`: the character's own field.
+    Of(crate::bind_character_sim::LuaGameCharacterRef),
+}
 
 impl LuaObject for CharacterTraitsObject {
     fn class_name(&self) -> &str {
@@ -396,8 +401,45 @@ pub fn desc_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Rc<RefCell<LuaSurvivo
     }
 }
 
-/// A `SurvivorDesc`'s `HumanVisual`.
-pub struct HumanVisualObject(pub Rc<RefCell<LuaSurvivorDesc>>);
+/// A `HumanVisual`, with its owner (`IHumanVisual`): a `SurvivorDesc`'s,
+/// or a character's (`IsoGameCharacter.getHumanVisual()`).
+#[derive(Clone)]
+pub enum HumanVisualObject {
+    Desc(Rc<RefCell<LuaSurvivorDesc>>),
+    Character(crate::bind_character_sim::LuaGameCharacterRef),
+}
+
+impl HumanVisualObject {
+    /// Runs `f` on the visual and its owner. A character without a human
+    /// visual has no such object; reaching one is a native null field.
+    pub fn with<R>(
+        &self,
+        f: impl FnOnce(
+            &mut pz_inventory::visual::HumanVisual,
+            &dyn pz_inventory::visual::human::HumanVisualOwner,
+        ) -> R,
+    ) -> LuaResult<R> {
+        let take = |hv: &mut pz_inventory::visual::HumanVisual| {
+            std::mem::replace(hv, pz_inventory::visual::HumanVisual::new(0))
+        };
+        match self {
+            Self::Desc(d) => {
+                let mut d = d.try_borrow_mut().map_err(|_| LuaError::runtime("SurvivorDesc is borrowed"))?;
+                let mut hv = take(&mut d.human_visual);
+                let r = f(&mut hv, &*d);
+                d.human_visual = hv;
+                Ok(r)
+            }
+            Self::Character(chr) => {
+                let mut c = chr.try_borrow_mut().map_err(|_| LuaError::runtime("IsoGameCharacter is borrowed"))?;
+                let mut hv = take(c.human_visual.as_mut().ok_or_else(npe)?);
+                let r = f(&mut hv, &*c);
+                c.human_visual = Some(hv);
+                Ok(r)
+            }
+        }
+    }
+}
 
 impl LuaObject for HumanVisualObject {
     fn class_name(&self) -> &str {
@@ -502,7 +544,7 @@ thread_local! {
     ];
 }
 
-fn gender_value(g: CharacterGender) -> Value {
+pub(crate) fn gender_value(g: CharacterGender) -> Value {
     GENDERS.with(|v| v[g as usize].clone())
 }
 
@@ -557,6 +599,18 @@ fn tdef(c: &NativeCall<'_>) -> LuaResult<CharacterTraitDefinitionRef> {
 
 fn register_trait_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let b = expose_class(thread, TRAIT_DEFINITION_CLASS, None);
+    // getTexture(): the constructor's Texture.getSharedTexture(textureName),
+    // else media/ui/Traits/trait_generic.png. Resolved on each call; the
+    // texture cache gives the same object.
+    b.method("getTexture", |c| {
+        let name = tdef(c)?.borrow().texture_name.clone();
+        let texture = match pz_render::get_shared_texture_ref(&name).map_err(crate::bind_render::texture_error)? {
+            Some(texture) => Some(texture),
+            None => pz_render::get_shared_texture_ref("media/ui/Traits/trait_generic.png")
+                .map_err(crate::bind_render::texture_error)?,
+        };
+        Ok(c.push(crate::bind_render::texture_value_ref(texture.as_ref())))
+    });
     let s = sm.clone();
     b.static_fn("getTraits", move |c| {
         let list = defs::character_trait_definitions(&s).iter().map(|d| trait_def_value(Some(d))).collect();
@@ -733,6 +787,16 @@ fn pdef(c: &NativeCall<'_>) -> LuaResult<CharacterProfessionDefinitionRef> {
 
 fn register_profession_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let b = expose_class(thread, PROFESSION_DEFINITION_CLASS, None);
+    // getTexture(): the constructor's Texture.trygetTexture(iconPathName)
+    // for a non-empty path, else null. Resolved on each call.
+    b.method("getTexture", |c| {
+        let path = pdef(c)?.borrow().icon_path_name.clone().filter(|p| !p.is_empty());
+        let texture = match path {
+            Some(path) => pz_render::try_get_texture_ref(&path).map_err(crate::bind_render::texture_error)?,
+            None => None,
+        };
+        Ok(c.push(crate::bind_render::texture_value_ref(texture.as_ref())))
+    });
     let s = sm.clone();
     b.static_fn("getProfessions", move |c| {
         let list = defs::character_profession_definitions(&s).iter().map(|d| profession_def_value(Some(d))).collect();
@@ -849,7 +913,17 @@ fn register_profession_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
 }
 
 fn traits_with<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut CharacterTraits) -> R) -> LuaResult<R> {
-    with_this::<CharacterTraitsObject, _>(c, |o| f(&mut o.0.borrow_mut()))
+    let o = crate::expose::this::<CharacterTraitsObject>(c)?;
+    match o.as_any().downcast_ref::<CharacterTraitsObject>().unwrap() {
+        CharacterTraitsObject::Owned(t) => {
+            let mut t = t.try_borrow_mut().map_err(|_| LuaError::runtime("CharacterTraits is in use"))?;
+            Ok(f(&mut t))
+        }
+        CharacterTraitsObject::Of(chr) => {
+            let mut chr = chr.try_borrow_mut().map_err(|_| LuaError::runtime("IsoGameCharacter is in use"))?;
+            Ok(f(&mut chr.character_traits))
+        }
+    }
 }
 
 fn register_character_traits(thread: &mut Thread, sm: &Rc<ScriptManager>) {
@@ -858,7 +932,7 @@ fn register_character_traits(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     b.ctor(move |c| {
         let t = CharacterTraits::new(&s);
         Ok(
-            c.push(Value::Object(Rc::new(CharacterTraitsObject(RefCell::new(
+            c.push(Value::Object(Rc::new(CharacterTraitsObject::Owned(RefCell::new(
                 t,
             ))))),
         )
@@ -1421,7 +1495,7 @@ fn register_survivor_desc(
         let v = dobj(c, |o| {
             o.visual
                 .borrow_mut()
-                .get_or_insert_with(|| Value::Object(Rc::new(HumanVisualObject(o.desc.clone()))))
+                .get_or_insert_with(|| Value::Object(Rc::new(HumanVisualObject::Desc(o.desc.clone()))))
                 .clone()
         })?;
         Ok(c.push(v))
@@ -1490,31 +1564,26 @@ fn survivor_meta(c: &mut NativeCall<'_>) -> LuaResult<Value> {
     Ok(meta)
 }
 
-fn visual<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut LuaSurvivorDesc) -> R) -> LuaResult<R> {
-    with_this::<HumanVisualObject, _>(c, |o| f(&mut o.0.borrow_mut()))
+fn visual<R>(
+    c: &NativeCall<'_>,
+    f: impl FnOnce(&mut pz_inventory::visual::HumanVisual, &dyn pz_inventory::visual::human::HumanVisualOwner) -> R,
+) -> LuaResult<R> {
+    with_this::<HumanVisualObject, _>(c, |o| o.clone())?.with(f)
 }
 
 /// Runs `f` on the visual of a `HumanVisual` object with its owner (the
-/// descriptor) and the real style lookups ([`crate::bind_appearance::with_styles`]).
+/// descriptor or the character) and the real style lookups
+/// ([`crate::bind_appearance::with_styles`]).
 fn visual_styled<R>(
     c: &NativeCall<'_>,
     f: impl FnOnce(
         &mut pz_inventory::visual::HumanVisual,
-        &LuaSurvivorDesc,
+        &dyn pz_inventory::visual::human::HumanVisualOwner,
         &dyn pz_inventory::visual::human::HumanStyles,
     ) -> R,
 ) -> LuaResult<R> {
-    let desc = with_this::<HumanVisualObject, _>(c, |o| o.0.clone())?;
-    Ok(crate::bind_appearance::with_styles(c.thread, |styles| {
-        let mut d = desc.borrow_mut();
-        let mut hv = std::mem::replace(
-            &mut d.human_visual,
-            pz_inventory::visual::HumanVisual::new(0),
-        );
-        let r = f(&mut hv, &d, styles);
-        d.human_visual = hv;
-        r
-    }))
+    let object = with_this::<HumanVisualObject, _>(c, |o| o.clone())?;
+    crate::bind_appearance::with_styles(c.thread, |styles| object.with(|hv, owner| f(hv, owner, styles)))
 }
 
 fn rgb_value(c: Option<pz_inventory::visual::Rgb>) -> Value {
@@ -1532,29 +1601,28 @@ fn rgb_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<pz_inventory::visua
 }
 
 fn register_human_visual(thread: &mut Thread) {
-    use pz_inventory::visual::human::HumanVisualOwner;
     use pz_inventory::visual::HumanVisual;
     let b = expose_class(thread, HUMAN_VISUAL_CLASS, None);
     // `HumanVisual.isFemale()` etc. ask the owner (`IHumanVisual`).
     b.method("isFemale", |c| {
-        let v = visual(c, |d| HumanVisualOwner::is_female(d))?;
+        let v = visual(c, |_, o| o.is_female())?;
         Ok(c.push(v))
     });
     b.method("isZombie", |c| {
-        let v = visual(c, |d| HumanVisualOwner::is_zombie(d))?;
+        let v = visual(c, |_, o| o.is_zombie())?;
         Ok(c.push(v))
     });
     b.method("isSkeleton", |c| {
-        let v = visual(c, |d| HumanVisualOwner::is_skeleton(d))?;
+        let v = visual(c, |_, o| o.is_skeleton())?;
         Ok(c.push(v))
     });
     b.method("getSkinTextureIndex", |c| {
-        let v = visual(c, |d| d.human_visual.get_skin_texture_index())?;
+        let v = visual(c, |hv, _| hv.get_skin_texture_index())?;
         Ok(c.push(v))
     });
     b.method("setSkinTextureIndex", |c| {
         let v = int_arg(c, 1);
-        visual(c, |d| d.human_visual.set_skin_texture_index(v))?;
+        visual(c, |hv, _| hv.set_skin_texture_index(v))?;
         Ok(0)
     });
     b.method("getSkinTexture", |c| {
@@ -1572,21 +1640,21 @@ fn register_human_visual(thread: &mut Thread) {
     });
     b.method("setSkinColor", |c| {
         let v = rgb_arg(c, 1)?;
-        visual(c, |d| d.human_visual.set_skin_color(v))?;
+        visual(c, |hv, _| hv.set_skin_color(v))?;
         Ok(0)
     });
     b.method("getBodyHairIndex", |c| {
-        let v = visual(c, |d| d.human_visual.get_body_hair_index())?;
+        let v = visual(c, |hv, _| hv.get_body_hair_index())?;
         Ok(c.push(v))
     });
     b.method("setBodyHairIndex", |c| {
         let v = int_arg(c, 1);
-        visual(c, |d| d.human_visual.set_body_hair_index(v))?;
+        visual(c, |hv, _| hv.set_body_hair_index(v))?;
         Ok(0)
     });
     b.method("setSkinTextureName", |c| {
         let v = opt_string(c, 1);
-        visual(c, |d| d.human_visual.set_skin_texture_name(v.as_deref()))?;
+        visual(c, |hv, _| hv.set_skin_texture_name(v.as_deref()))?;
         Ok(0)
     });
     type GetColor = fn(
@@ -1627,7 +1695,7 @@ fn register_human_visual(thread: &mut Thread) {
         });
         b.method(set, move |c| {
             let v = rgb_arg(c, 1)?;
-            visual(c, |d| st(&mut d.human_visual, v))?;
+            visual(c, |hv, _| st(hv, v))?;
             Ok(0)
         });
     }
@@ -1637,7 +1705,7 @@ fn register_human_visual(thread: &mut Thread) {
     });
     b.method("setHairModel", |c| {
         let v = opt_string(c, 1);
-        visual(c, |d| d.human_visual.set_hair_model(v.as_deref()))?;
+        visual(c, |hv, _| hv.set_hair_model(v.as_deref()))?;
         Ok(0)
     });
     b.method("getBeardModel", |c| {
@@ -1646,25 +1714,25 @@ fn register_human_visual(thread: &mut Thread) {
     });
     b.method("setBeardModel", |c| {
         let v = opt_string(c, 1);
-        visual(c, |d| d.human_visual.set_beard_model(v.as_deref()))?;
+        visual(c, |hv, _| hv.set_beard_model(v.as_deref()))?;
         Ok(0)
     });
     b.method("getNonAttachedHair", |c| {
-        let v = visual(c, |d| opt_value(d.human_visual.get_non_attached_hair()))?;
+        let v = visual(c, |hv, _| opt_value(hv.get_non_attached_hair()))?;
         Ok(c.push(v))
     });
     b.method("setNonAttachedHair", |c| {
         let v = opt_string(c, 1);
-        visual(c, |d| d.human_visual.set_non_attached_hair(v.as_deref()))?;
+        visual(c, |hv, _| hv.set_non_attached_hair(v.as_deref()))?;
         Ok(0)
     });
     b.method("setForceModelScript", |c| {
         let v = opt_string(c, 1);
-        visual(c, |d| d.human_visual.set_force_model_script(v.as_deref()))?;
+        visual(c, |hv, _| hv.set_force_model_script(v.as_deref()))?;
         Ok(0)
     });
     b.method("clear", |c| {
-        visual(c, |d| d.human_visual.clear())?;
+        visual(c, |hv, _| hv.clear())?;
         Ok(0)
     });
     b.method("lerp", |c| {
@@ -1677,14 +1745,14 @@ fn register_human_visual(thread: &mut Thread) {
     });
     b.method("hasBodyVisualFromItemType", |c| {
         let t = opt_string(c, 1).ok_or_else(npe)?;
-        let v = visual(c, |d| d.human_visual.has_body_visual_from_item_type(&t))?;
+        let v = visual(c, |hv, _| hv.has_body_visual_from_item_type(&t))?;
         Ok(c.push(v))
     });
     // TODO(ItemVisual Lua object): the body visual methods return the
     // `ItemVisual` (nil here).
     b.method("removeBodyVisualFromItemType", |c| {
         let t = opt_string(c, 1).ok_or_else(npe)?;
-        visual(c, |d| d.human_visual.remove_body_visual_from_item_type(&t))?;
+        visual(c, |hv, _| hv.remove_body_visual_from_item_type(&t))?;
         Ok(c.push(Value::Nil))
     });
     b.method("addBodyVisualFromItemType", |c| {
@@ -1705,7 +1773,7 @@ fn add_body_visual(c: &mut NativeCall<'_>, clothing_name: Option<String>) -> Lua
     let Some(name) = clothing_name.filter(|n| !n.trim().is_empty()) else {
         return Ok(c.push(Value::Nil));
     };
-    let desc = with_this::<HumanVisualObject, _>(c, |o| o.0.clone())?;
+    let object = with_this::<HumanVisualObject, _>(c, |o| o.clone())?;
     let sm = shared_script_manager();
     let Some(script) = defs::get_item_for_clothing_item(&sm, &name) else {
         return Ok(c.push(Value::Nil));
@@ -1718,16 +1786,19 @@ fn add_body_visual(c: &mut NativeCall<'_>, clothing_name: Option<String>) -> Lua
         let Some(item) = asset.as_deref().and_then(|a| ctx.clothing.get(a)) else {
             return Ok(false);
         };
-        let mut d = desc.borrow_mut();
-        if d.human_visual.body_visuals.iter().any(|v| v.clothing_item_name == name) {
-            return Ok(false);
-        }
-        let mut r = pz_characters::population::ClothingItemReference { item_guid: Some(item.guid.clone()), ..Default::default() };
-        r.randomize(ctx.outfit)?;
-        let mut v = pz_inventory::visual::ItemVisual::new(&full_type);
-        pz_characters::population::dress::synch_with_outfit(&mut v, &r, item);
-        d.human_visual.body_visuals.push(v);
-        Ok::<bool, String>(true)
+        object
+            .with(|hv, _| {
+                if hv.body_visuals.iter().any(|v| v.clothing_item_name == name) {
+                    return Ok(false);
+                }
+                let mut r = pz_characters::population::ClothingItemReference { item_guid: Some(item.guid.clone()), ..Default::default() };
+                r.randomize(ctx.outfit)?;
+                let mut v = pz_inventory::visual::ItemVisual::new(&full_type);
+                pz_characters::population::dress::synch_with_outfit(&mut v, &r, item);
+                hv.body_visuals.push(v);
+                Ok::<bool, String>(true)
+            })
+            .map_err(|e| e.to_string())?
     });
     match r {
         Some(Err(e)) => Err(LuaError::runtime(e)),
@@ -2327,5 +2398,39 @@ mod tests {
         )
         .unwrap();
         assert!(chars.borrow().survivor_desc.hair_common_colors.is_empty());
+    }
+
+    #[test]
+    fn world_lua_player_desc_and_traits() {
+        let (mut t, _) = setup();
+        crate::bind_java_util::register(&mut t);
+        let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(std::env::temp_dir())));
+        crate::bind_world::lua_world::register(&mut t, fs);
+        run(
+            &mut t,
+            r#"
+            local w = getWorld()
+            assert(w:getLuaPlayerDesc() == nil)
+            local d = SurvivorDesc.new()
+            w:setLuaPlayerDesc(d)
+            assert(w:getLuaPlayerDesc() == d)
+            local l = w:getLuaTraits()
+            assert(l == w:getLuaTraits() and l:size() == 0)
+            w:addLuaTrait(CharacterTrait.BRAVE)
+            l:add(CharacterTrait.TIMID)
+            assert(not pcall(function() w:addLuaTrait("brave") end))
+            assert(l:size() == 2)
+            "#,
+        )
+        .unwrap();
+        use crate::bind_world::lua_world;
+        assert!(lua_world::lua_player_desc().is_some());
+        let traits: Vec<_> = lua_world::lua_traits()
+            .iter()
+            .map(|k| k.as_ref().map(|k| k.location.id()))
+            .collect();
+        assert_eq!(traits, [Some("t:brave".to_string()), Some("t:timid".to_string())]);
+        run(&mut t, "getWorld():getLuaTraits():clear(); getWorld():setLuaPlayerDesc(nil)").unwrap();
+        assert!(lua_world::lua_traits().is_empty() && lua_world::lua_player_desc().is_none());
     }
 }

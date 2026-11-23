@@ -463,3 +463,28 @@ fn timed_actions_multiplier_progress_infinite_force_completion_and_animation_cle
     )
     .unwrap();
 }
+
+#[test]
+fn timed_actions_restore_weapon_type_from_the_empty_hands() {
+    let (mut thread, chr) = setup();
+    chr.borrow_mut().set_var_str("Weapon", "spear");
+    run(&mut thread, "a = make('weapon', 10); a.action:restoreWeaponType()").unwrap();
+    // `WeaponType.UNARMED.getType()` is the empty string.
+    assert_eq!(chr.borrow().variable_string("Weapon"), "");
+}
+
+/// `ISInventoryPage.prerender` reads and clears `IsoPlayer.invPageDirty`.
+#[test]
+fn inv_page_dirty_is_a_player_flag() {
+    let (mut thread, chr) = setup();
+    run(
+        &mut thread,
+        "assert(player:isInvPageDirty() == false)
+         player:setInvPageDirty(true)
+         assert(player:isInvPageDirty() == true)",
+    )
+    .unwrap();
+    assert!(chr.borrow().player.inv_page_dirty);
+    chr.borrow_mut().player.inv_page_dirty = false;
+    run(&mut thread, "assert(not player:isInvPageDirty())").unwrap();
+}

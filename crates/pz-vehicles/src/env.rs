@@ -150,6 +150,24 @@ pub trait VehicleWorld {
     ) -> bool {
         false
     }
+    /// `PolygonalMap2.instance.lineClearCollide(x1, y1, x2, y2, z, vehicle,
+    /// ignoreDoors, closeToWalls)`: `Some(true)` when something blocks the
+    /// line. `None` when this world has no pathfinding map to ask, so the
+    /// answer is not known (callers must not read it as "clear").
+    #[allow(clippy::too_many_arguments)]
+    fn line_clear_collide_with(
+        &self,
+        _x1: f32,
+        _y1: f32,
+        _x2: f32,
+        _y2: f32,
+        _z: i32,
+        _vehicle: &crate::BaseVehicle,
+        _ignore_doors: bool,
+        _close_to_walls: bool,
+    ) -> Option<bool> {
+        None
+    }
     /// `PolygonalMap2.instance.canStandAt(x, y, z, vehicle, false, false)`.
     fn can_stand_at(&self, _x: f32, _y: f32, _z: i32, _vehicle: &crate::BaseVehicle) -> bool {
         true

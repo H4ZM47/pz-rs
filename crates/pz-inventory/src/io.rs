@@ -259,9 +259,6 @@ impl Writer {
             native_buffer: Some(buffer.clone()),
         }
     }
-    pub(crate) fn is_native_buffer(&self) -> bool {
-        self.native_buffer.is_some()
-    }
     pub fn pos(&self) -> usize {
         match &self.native_buffer {
             Some(buffer) => native_buffer_position(buffer)

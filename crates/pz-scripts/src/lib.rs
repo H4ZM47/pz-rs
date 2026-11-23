@@ -15,6 +15,7 @@ pub use pz_script_parser as parser;
 pub mod registry;
 pub mod script_type;
 pub mod texture_capture;
+pub mod translator;
 pub use texture_capture::CapturedScriptLoadError;
 
 pub use base::{BaseScriptObject, ScriptError, ScriptObject, ScriptRef, ScriptResult};

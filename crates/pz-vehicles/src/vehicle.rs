@@ -295,6 +295,10 @@ pub struct VehicleState {
     pub update_flags: i16,
     pub limit_crash: UpdateLimit,
     pub added_to_world: bool,
+    /// `IsoObject.targetAlpha`, one entry per local player. `BaseVehicle.update`
+    /// rewrites it from what each player can see; the port's update does not
+    /// yet, so it stays at the constructor's 1.
+    pub target_alpha: [f32; 4],
     pub removed_from_world: bool,
     pub poly_plus_radius_min_x: f32,
     pub poly_plus_radius_min_y: f32,
@@ -497,6 +501,7 @@ impl BaseVehicle {
             update_flags: 0,
             limit_crash: now_limits(600),
             added_to_world: false,
+            target_alpha: [1.0; 4],
             removed_from_world: false,
             poly_plus_radius_min_x: -123.0,
             poly_plus_radius_min_y: 0.0,

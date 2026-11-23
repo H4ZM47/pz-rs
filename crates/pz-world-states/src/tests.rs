@@ -133,6 +133,7 @@ type Spec<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)]);
 const SPRITES: &[Spec] = &[
     ("floor", "normal", &[("solidfloor", "")]),
     ("door_n", "doorN", &[("doorN", ""), ("collideN", "")]),
+    ("door_n_open", "normal", &[]),
     (
         "door_w_mat",
         "doorW",
@@ -172,6 +173,7 @@ const SPRITES: &[Spec] = &[
     ("sheet_w", "normal", &[("climbSheetW", "")]),
     ("sheet_top_w", "normal", &[("climbSheetTopW", "")]),
     ("solid_block", "normal", &[("solid", "")]),
+    ("door_n_forcelocked", "doorN", &[("doorN", ""), ("collideN", ""), ("forceLocked", "")]),
 ];
 
 fn manager() -> IsoSpriteManager {
@@ -189,6 +191,7 @@ fn manager() -> IsoSpriteManager {
         "ItemHeight",
         "Surface",
         "Bush",
+        "forceLocked",
     ] {
         map.entry(k);
     }
@@ -1682,4 +1685,422 @@ fn sprite_replacement_observes_full_native_class_after_object_guards() {
             ["zombie.iso.IsoObject", "zombie.iso.objects.IsoWindow"]
         );
     });
+}
+
+// ---- the interact key (`IsoPlayer.doContext`) ----
+
+mod context {
+    use pz_characters::character::player::context::{ContextQuery, ContextSpecial};
+    use pz_characters::character::player::ContextualActionKind as Kind;
+
+    use super::*;
+
+    /// A player standing in the middle of `(x, y, 0)`, tapping the key.
+    fn query(x: i32, y: i32) -> ContextQuery {
+        ContextQuery {
+            chr: 1,
+            square: (x, y, 0),
+            x: x as f32 + 0.5,
+            y: y as f32 + 0.5,
+            shift: false,
+            ticks_since_pressed_movement: 0.0,
+            grappling: false,
+            time_pressed_context: 0.0,
+            ignore_auto_vault: false,
+        }
+    }
+
+    /// A door with a closed and an open sprite on the north edge of
+    /// `(x, y)`.
+    fn north_door(w: &mut World, x: i32, y: i32, open: bool) -> ObjectRef {
+        let mut k = door(true, 500);
+        if let ObjectKind::Door(d) = &mut k {
+            d.open = open;
+            d.closed_sprite = Some(w.m.named_map["door_n"]);
+            d.open_sprite = Some(w.m.named_map["door_n_open"]);
+        }
+        w.add(x, y, if open { "door_n_open" } else { "door_n" }, k, true)
+    }
+
+    /// A player at `square` holding the keys with the ids `keys` toggles
+    /// the door.
+    fn toggle_at(
+        w: &mut World,
+        d: ObjectRef,
+        square: (i32, i32, i32),
+        keys: &[i32],
+    ) -> pz_inventory::floor_drop::HostResult<()> {
+        let have_key = |id: i32| keys.contains(&id);
+        let actor = pz_characters::character::player::context::DoorActor { square, have_key: &have_key };
+        w.adapter().toggle_player_door(d, 1, &actor)
+    }
+
+    /// The same, from the square south of the door's edge.
+    fn toggle(w: &mut World, d: ObjectRef, keys: &[i32]) -> pz_inventory::floor_drop::HostResult<()> {
+        toggle_at(w, d, (d.x, d.y, d.z), keys)
+    }
+
+    fn lock(w: &World, r: ObjectRef, key_id: i32) {
+        let object = w.object(r).unwrap();
+        let mut o = object.borrow_mut();
+        o.key_id = key_id;
+        if let ObjectKind::Door(d) = &mut o.kind {
+            d.locked = true;
+        }
+    }
+
+    fn found(w: &mut World, q: &ContextQuery, dir: IsoDirections) -> Option<ObjectRef> {
+        w.adapter().context_door_or_window_object_at(q, dir)
+    }
+
+    fn toggles(w: &mut World, q: &ContextQuery, dir: IsoDirections, obj: ObjectRef) -> Vec<Kind> {
+        let actions = w.adapter().context_do_door_or_window_at(q, dir, obj).unwrap();
+        actions.iter().for_each(|a| assert_eq!((a.dir, a.object), (Some(dir), Some(obj.id as i64))));
+        actions.iter().map(|a| a.action).collect()
+    }
+
+    fn is_open(w: &World, r: ObjectRef) -> bool {
+        matches!(&w.object(r).unwrap().borrow().kind, ObjectKind::Door(d) if d.open)
+    }
+
+    #[test]
+    fn a_closed_door_in_front_opens_and_closes() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        let q = query(10, 10);
+        assert_eq!(found(&mut w, &q, IsoDirections::N), Some(d));
+        assert_eq!(toggles(&mut w, &q, IsoDirections::N, d), vec![Kind::ToggleDoor]);
+        toggle(&mut w, d, &[]).unwrap();
+        assert!(is_open(&w, d));
+        assert_eq!(w.object(d).unwrap().borrow().sprite, Some(w.m.named_map["door_n_open"]));
+        assert!(w.engine.played.last().unwrap().ends_with("Open"));
+        // The open door is still found from the square, and closes again.
+        assert_eq!(found(&mut w, &q, IsoDirections::N), Some(d));
+        assert_eq!(toggles(&mut w, &q, IsoDirections::N, d), vec![Kind::ToggleDoor]);
+        toggle(&mut w, d, &[]).unwrap();
+        assert!(!is_open(&w, d));
+        assert_eq!(w.object(d).unwrap().borrow().sprite, Some(w.m.named_map["door_n"]));
+        assert!(w.engine.played.last().unwrap().ends_with("Close"));
+    }
+
+    #[test]
+    fn a_door_is_found_from_the_other_side_of_its_edge() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        // Standing north of it, facing south.
+        assert_eq!(found(&mut w, &query(10, 9), IsoDirections::S), Some(d));
+        // Not through the sides, and not where there is no door.
+        assert_eq!(found(&mut w, &query(10, 10), IsoDirections::E), None);
+        assert_eq!(found(&mut w, &query(10, 10), IsoDirections::W), None);
+        assert_eq!(found(&mut w, &query(12, 12), IsoDirections::N), None);
+        // An open door swings onto the west edge of its square.
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, true);
+        assert_eq!(found(&mut w, &query(10, 10), IsoDirections::W), Some(d));
+    }
+
+    #[test]
+    fn an_open_door_is_still_found_by_the_square_across_its_edge() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, true);
+        // The open door does not block the edge, so `getDoor(NORTH_SOUTH)`
+        // of the neighbour finds it after `getOpenDoor` and the closed-state
+        // lookup have not.
+        assert_eq!(found(&mut w, &query(10, 9), IsoDirections::S), Some(d));
+    }
+
+    #[test]
+    fn a_door_in_the_way_is_not_toggled() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        w.add(10, 10, "solid_block", ObjectKind::Object, false);
+        toggle(&mut w, d, &[]).unwrap();
+        assert!(!is_open(&w, d));
+        assert!(w.engine.played.is_empty());
+    }
+
+    /// Puts `(x, y)` in room `room`; a square without a room is outside.
+    fn set_room(w: &mut World, x: i32, y: i32, room: i64) {
+        let sq = w.cell.get_grid_square_mut(x, y, 0).unwrap();
+        sq.borrow_mut().room_id = room;
+        sq.borrow_mut().recalc_properties(&w.m);
+    }
+
+    #[test]
+    fn a_locked_door_stays_shut_without_its_key() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        lock(&w, d, 77);
+        toggle(&mut w, d, &[]).unwrap();
+        assert!(!is_open(&w, d));
+        assert!(w.engine.played.last().unwrap().ends_with("Locked"));
+        // Another key does not fit.
+        toggle(&mut w, d, &[78]).unwrap();
+        assert!(!is_open(&w, d));
+        assert!(matches!(&w.object(d).unwrap().borrow().kind, ObjectKind::Door(k) if k.locked && k.locked_by_key));
+    }
+
+    #[test]
+    fn a_locked_door_opens_with_its_key_and_stays_unlocked() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        lock(&w, d, 77);
+        toggle(&mut w, d, &[3, 77]).unwrap();
+        assert!(is_open(&w, d));
+        assert!(w.engine.played.iter().any(|s| s.ends_with("Unlock")));
+        assert!(w.engine.played.last().unwrap().ends_with("Open"));
+        assert!(matches!(&w.object(d).unwrap().borrow().kind, ObjectKind::Door(k) if !k.locked && !k.locked_by_key));
+        // Closed again, it opens without the key.
+        toggle(&mut w, d, &[]).unwrap();
+        assert!(!is_open(&w, d));
+        toggle(&mut w, d, &[]).unwrap();
+        assert!(is_open(&w, d));
+    }
+
+    #[test]
+    fn a_door_locked_without_a_key_id_cannot_be_opened() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        lock(&w, d, -1);
+        toggle(&mut w, d, &[77]).unwrap();
+        assert!(!is_open(&w, d));
+        assert!(w.engine.played.last().unwrap().ends_with("Locked"));
+    }
+
+    #[test]
+    fn a_door_is_opened_from_inside_without_a_key() {
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        lock(&w, d, 77);
+        for y in [9, 10] {
+            set_room(&mut w, 10, y, 5);
+        }
+        // Standing in the room, on either side of the door.
+        toggle_at(&mut w, d, (10, 9, 0), &[]).unwrap();
+        assert!(is_open(&w, d));
+        // From another room, or from outside, the door stays locked.
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        lock(&w, d, 77);
+        set_room(&mut w, 10, 10, 5);
+        set_room(&mut w, 11, 10, 6);
+        toggle_at(&mut w, d, (11, 10, 0), &[]).unwrap();
+        assert!(!is_open(&w, d));
+    }
+
+    #[test]
+    fn a_force_locked_door_is_not_opened_from_inside() {
+        let mut w = World::new();
+        let mut k = door(true, 500);
+        if let ObjectKind::Door(d) = &mut k {
+            d.closed_sprite = Some(w.m.named_map["door_n"]);
+            d.open_sprite = Some(w.m.named_map["door_n_open"]);
+        }
+        let d = w.add(10, 10, "door_n_forcelocked", k, true);
+        lock(&w, d, 77);
+        for y in [9, 10] {
+            set_room(&mut w, 10, y, 5);
+        }
+        toggle_at(&mut w, d, (10, 10, 0), &[]).unwrap();
+        assert!(!is_open(&w, d));
+    }
+
+    #[test]
+    fn a_custom_lock_asks_for_the_key() {
+        use pz_inventory::lua_table::{LuaTable, LuaValue};
+        use pz_world::save::lua_table::LuaKey;
+        let mut w = World::new();
+        let d = north_door(&mut w, 10, 10, false);
+        w.object(d).unwrap().borrow_mut().key_id = 31;
+        w.object(d).unwrap().borrow_mut().mod_data = Some(LuaTable {
+            entries: vec![(LuaKey::Str("CustomLock".into()), LuaValue::Bool(true))],
+        });
+        toggle(&mut w, d, &[]).unwrap();
+        assert!(!is_open(&w, d));
+        toggle(&mut w, d, &[31]).unwrap();
+        assert!(is_open(&w, d));
+    }
+
+    #[test]
+    fn doors_the_port_does_not_cover_fail_loudly() {
+        let mut w = World::new();
+        let k = ObjectKind::Object;
+        let o = w.add(10, 10, "door_n", k, true);
+        assert!(matches!(
+            toggle(&mut w, o, &[]).unwrap_err(),
+            pz_inventory::floor_drop::RuntimeHostError::Unsupported { .. }
+        ));
+    }
+
+    #[test]
+    fn a_closed_window_is_toggled_with_a_short_or_long_press() {
+        let mut w = World::new();
+        let kind = window(&w, 50);
+        let win = w.add(10, 10, "window_w", kind, true);
+        let mut q = query(10, 10);
+        assert_eq!(found(&mut w, &q, IsoDirections::W), Some(win));
+        assert_eq!(toggles(&mut w, &q, IsoDirections::W, win), vec![Kind::ToggleWindow]);
+        q.time_pressed_context = 0.6;
+        assert_eq!(toggles(&mut w, &q, IsoDirections::W, win), vec![Kind::ToggleWindow]);
+    }
+
+    #[test]
+    fn a_curtain_key_press_is_not_guessed() {
+        let mut w = World::new();
+        let kind = window(&w, 50);
+        let win = w.add(10, 10, "window_w", kind, true);
+        let mut q = query(10, 10);
+        q.shift = true;
+        assert!(w.adapter().context_do_door_or_window_at(&q, IsoDirections::W, win).is_err());
+    }
+
+    #[test]
+    fn a_fence_is_hopped_from_the_square_that_has_it() {
+        let mut w = World::new();
+        w.add(10, 10, "fence_n", ObjectKind::Object, false);
+        let a = w.adapter();
+        let (sq, object) = a.context_hoppable_at(&query(10, 10), IsoDirections::N).unwrap();
+        assert_eq!(sq, (10, 10, 0));
+        assert!(object.is_some());
+        // Seen from the north it is the south neighbour's edge.
+        assert_eq!(a.context_hoppable_at(&query(10, 9), IsoDirections::S).unwrap().0, (10, 10, 0));
+        assert!(a.context_hoppable_at(&query(10, 10), IsoDirections::W).is_none());
+    }
+
+    #[test]
+    fn a_sheet_rope_is_found_on_its_side_of_the_square() {
+        let mut w = World::new();
+        w.add(10, 10, "sheet_w", ObjectKind::Object, false);
+        let a = w.adapter();
+        assert!(a.context_sheet_rope_side_at(&query(10, 10), IsoDirections::W));
+        assert!(!a.context_sheet_rope_side_at(&query(10, 10), IsoDirections::N));
+    }
+
+    #[test]
+    fn nothing_special_on_an_empty_square() {
+        let mut w = World::new();
+        let a = w.adapter();
+        for which in [ContextSpecial::Hutch, ContextSpecial::ButcherHook, ContextSpecial::RestOnFurniture] {
+            assert_eq!(a.context_special_at(&query(10, 10), IsoDirections::N, which).unwrap(), None);
+        }
+    }
+}
+#[test]
+fn characters_by_id() {
+    let mut w = World::new();
+    let mut list = vec![zombie(10.5, 10.5, 1), zombie(12.5, 10.5, 1), zombie(20.5, 10.5, 1)];
+    for (i, z) in list.iter_mut().enumerate() {
+        z.id = 10 + i as i32;
+    }
+    {
+        let a = w.adapter();
+        assert!(StateWorld::<()>::characters_near(&a, 10.5, 10.5, 0.0, 3.0).is_empty());
+    }
+    let mut a = w.adapter().with_characters(&mut list);
+    assert_eq!(StateWorld::<()>::characters_near(&a, 10.5, 10.5, 0.0, 3.0), vec![10, 11]);
+    StateWorld::<()>::character_mut(&mut a, 11).unwrap().health = 0.5;
+    assert!(StateWorld::<()>::character_mut(&mut a, 99).is_none());
+    // A taken character goes back to its place in the list.
+    let z = StateWorld::<()>::take_character(&mut a, 11).unwrap();
+    assert!(StateWorld::<()>::character_mut(&mut a, 11).is_none());
+    StateWorld::<()>::put_character(&mut a, z);
+    // Nested takes, put back in reverse order, keep the order too.
+    let z10 = StateWorld::<()>::take_character(&mut a, 10).unwrap();
+    let z12 = StateWorld::<()>::take_character(&mut a, 12).unwrap();
+    assert_eq!(StateWorld::<()>::characters_near(&a, 10.5, 10.5, 0.0, 100.0), vec![11]);
+    StateWorld::<()>::put_character(&mut a, z12);
+    StateWorld::<()>::put_character(&mut a, z10);
+    drop(a);
+    assert_eq!(list.iter().map(|z| z.id).collect::<Vec<_>>(), vec![10, 11, 12]);
+    assert_eq!(list[1].health, 0.5);
+}
+
+#[test]
+fn moving_squares_list_the_characters_on_them() {
+    let mut w = World::new();
+    let mut z = zombie(9.5, 9.5, 1);
+    let mut a = w.adapter();
+    let on = |a: &StatesWorldAdapter<'_>, x, y| StateWorld::<()>::characters_on_square(a, (x, y, 0));
+    z.set_moving_square(Some((9, 9, 0)), &mut a);
+    z.set_moving_square(Some((9, 9, 0)), &mut a);
+    assert_eq!(on(&a, 9, 9), vec![3]);
+    z.set_moving_square(Some((10, 9, 0)), &mut a);
+    assert!(on(&a, 9, 9).is_empty());
+    assert_eq!(on(&a, 10, 9), vec![3]);
+    z.path.current_square = Some((10, 9, 0));
+    z.remove_from_square(&mut a);
+    assert!(on(&a, 10, 9).is_empty());
+    assert_eq!((z.path.current_square, z.path.moving_square), (None, None));
+}
+
+/// The game settings the path behaviours read: the defaults.
+struct PathGame;
+
+impl pz_pathfind::mover::PathWorldHooks for PathGame {
+    fn lore_speed(&self) -> i32 {
+        2
+    }
+    fn easy_climbing(&self) -> bool {
+        false
+    }
+    fn bent_fences_enabled(&self) -> bool {
+        false
+    }
+    fn is_client(&self) -> bool {
+        false
+    }
+    fn is_server(&self) -> bool {
+        false
+    }
+    fn game_time_multiplier(&self) -> f32 {
+        1.0
+    }
+    fn thirty_fps_multiplier(&self) -> f32 {
+        1.0
+    }
+    fn current_game_speed(&self) -> i32 {
+        1
+    }
+}
+
+#[test]
+fn the_states_find_paths_through_the_host() {
+    use pz_pathfind::host::PathHost;
+    use pz_pathfind::service::PathfindService;
+    let mut w = World::new();
+    let mut list = vec![zombie(10.5, 10.5, 1), zombie(14.5, 12.5, 1)];
+    list[0].id = 10;
+    list[1].id = 20;
+    let target = list[1].mover_id_of();
+    // Without a host the path calls do nothing.
+    {
+        let mut a = w.adapter().with_characters(&mut list);
+        let mut z = StateWorld::<()>::take_character(&mut a, 10).unwrap();
+        StateWorld::<()>::path_to_character(&mut a, &mut z, target);
+        assert!(StateWorld::<()>::path_behavior(&a, 10).is_none());
+        StateWorld::<()>::put_character(&mut a, z);
+    }
+    let mut host = PathHost::new(PathfindService::new(0, 0, 1, 1, false));
+    let game = PathGame;
+    let mut a = w.adapter().with_characters(&mut list).with_path(&mut host, &game);
+    // The zombie is out of the list while it updates; its target is found
+    // in the list by mover id.
+    let mut z = StateWorld::<()>::take_character(&mut a, 10).unwrap();
+    StateWorld::<()>::path_to_character(&mut a, &mut z, target);
+    let b = StateWorld::<()>::path_behavior(&a, 10).expect("no PathFindBehavior2 for the zombie");
+    assert!(b.is_goal_character());
+    assert_eq!(b.target_char(), Some(target));
+    assert_eq!((b.target_x(), b.target_y()), (14.5, 12.5));
+    // A location goal replaces it.
+    StateWorld::<()>::path_to_location(&mut a, &mut z, 3, 4, 0);
+    let b = StateWorld::<()>::path_behavior(&a, 10).unwrap();
+    assert!(b.is_goal_location());
+    assert_eq!((b.target_x(), b.target_y()), (3.5, 4.5));
+    StateWorld::<()>::put_character(&mut a, z);
+    // A target that is not in the list is not followed.
+    let mut other = zombie(1.5, 1.5, 1);
+    other.id = 30;
+    let gone = zombie(2.5, 2.5, 1).mover_id_of();
+    StateWorld::<()>::path_to_character(&mut a, &mut other, gone);
+    assert!(StateWorld::<()>::path_behavior(&a, 30).map_or(true, |b| !b.is_goal_character()));
 }

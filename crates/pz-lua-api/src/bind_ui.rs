@@ -95,6 +95,57 @@ fn el_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Rc<UIElement>> {
     })
 }
 
+/// `UIElement.DrawItemIcon(item, x, y, alpha, width, height)`: reads the
+/// item's texture, `col` tint, colour mask and fluid (its own component,
+/// else its world item's) in the original order, then draws through
+/// [`UIElement::draw_inventory_item_icon`].
+fn draw_item_icon(c: &mut NativeCall<'_>) -> LuaResult<usize> {
+    use crate::bind_world_object::{fluid_component, get_world_item, host_error};
+    use pz_inventory::item_texture as it;
+    let e = el(c)?;
+    let item_value = c.arg(1);
+    let Some(item) = crate::bind_items::item_arg_value(&item_value) else {
+        return Ok(0);
+    };
+    if !e.is_visible() {
+        return Ok(0);
+    }
+    let [x, y, alpha, width, height] = nums::<5>(c, 2);
+    let tex = it::get_tex_ref(&item).map_err(host_error)?;
+    let [r, g, b, _] = it::item_tint_ref(&item).map_err(host_error)?;
+    let color_mask = it::get_texture_color_mask_ref(&item).map_err(host_error)?;
+    let Some(tex) = tex else {
+        return Ok(0);
+    };
+    let mut component = fluid_component(&item_value)?;
+    if component.is_none() {
+        let world = get_world_item(&item)?;
+        if !world.is_nil() {
+            component = fluid_component(&world)?;
+        }
+    }
+    let mut fluid_mask = None;
+    let mut fluid = None;
+    if let Some(component) = &component {
+        fluid_mask = it::get_texture_fluid_mask_ref(&item).map_err(host_error)?;
+        if fluid_mask.is_some() {
+            fluid = Some(crate::bind_fluid_container::icon_fluid(component)?);
+        }
+    }
+    let texture = tex.get();
+    let color_mask = color_mask.map(|t| t.get());
+    let fluid_mask = fluid_mask.map(|t| t.get());
+    let icon = pz_ui::draw::InventoryItemIcon {
+        texture: Some(&texture),
+        color: [r, g, b],
+        color_mask: color_mask.as_ref(),
+        fluid_mask: fluid_mask.as_ref(),
+        fluid,
+    };
+    e.draw_inventory_item_icon(&icon, x, y, alpha, width, height);
+    Ok(0)
+}
+
 fn tex_arg(c: &NativeCall<'_>, i: usize) -> Option<Texture> {
     match c.arg(i) {
         Value::Object(o) => o.as_any().downcast_ref::<LuaTexture>().map(LuaTexture::get),
@@ -545,7 +596,7 @@ fn register_element(thread: &mut Thread) {
         e.draw_polygon(t.as_ref(), p, r, g, bb, a);
         Ok(0)
     });
-    act!(b, "DrawItemIcon", draw_item_icon);
+    b.method("DrawItemIcon", draw_item_icon);
     act!(b, "DrawScriptItemIcon", draw_script_item_icon);
     draw9!(b, "DrawTextureIcon", draw_texture_icon);
     draw10!(b, "DrawTextureIconMask", draw_texture_icon_mask);
@@ -887,6 +938,18 @@ fn register_element(thread: &mut Thread) {
     key_fn!("onKeyRelease", on_key_release, void);
 }
 
+/// `IsoObjectPicker.ClickObject` as Lua holds it.
+struct ClickObjectValue;
+
+impl LuaObject for ClickObjectValue {
+    fn class_name(&self) -> &str {
+        "zombie.iso.IsoObjectPicker$ClickObject"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 fn register_manager(thread: &mut Thread) {
     let b = expose_class(thread, UIMANAGER, None);
     b.field("DEBUGGER_FPS", 60);
@@ -1158,9 +1221,25 @@ fn register_manager(thread: &mut Thread) {
         Ok(c.push(0))
     });
     // TODO(world): picking and the remaining Java-side widgets.
+    // getPicked(): `UIManager.picked`, the last context pick's
+    // `IsoObjectPicker.ClickObject`. The class is not exposed, so Lua only
+    // holds and passes it.
+    b.static_fn("getPicked", |c| {
+        let v = with_ui(|m| m.picked.clone())
+            .map_or(Value::Nil, |_| Value::Object(Rc::new(ClickObjectValue)));
+        Ok(c.push(v))
+    });
+    // getLastPicked(): `UIManager.lastPicked`. `updateTooltip` sets it to
+    // `picked.tile` after the pick, so while it is set it is that tile.
+    b.static_fn("getLastPicked", |c| {
+        let v = if crate::hud::tooltip::has_last_picked() {
+            with_ui(|m| m.picked.as_ref().map(|p| p.tile.clone())).unwrap_or_default()
+        } else {
+            Value::Nil
+        };
+        Ok(c.push(v))
+    });
     s_nil!(
-        "getPicked",
-        "getLastPicked",
         "getPickedTile",
         "getPickedTileLocal",
         "getRightDownObject",
@@ -1588,6 +1667,48 @@ mod tests {
         run(&mut t, "p.javaObject:setWidth(150)");
         tick(&mut t, 1_000_500);
         assert_eq!(eval(&mut t, "k.javaObject:getX()").as_num(), Some(100.0));
+    }
+
+    /// `DrawItemIcon(item, x, y, alpha, w, h)` draws the item's `getTex()`
+    /// with its tint and the alpha argument, offset by the element.
+    #[test]
+    fn draw_item_icon_draws_the_item_texture() {
+        let mut t = setup();
+        crate::bind_java_util::register(&mut t);
+        crate::bind_items::register(&mut t);
+        let mut texture = Texture::empty("Item_Icon");
+        texture.id = Some(7);
+        texture.width = 16;
+        texture.height = 16;
+        texture.width_orig = 16;
+        texture.height_orig = 16;
+        texture.ready = true;
+        let mut template = pz_inventory::ItemTemplate::new(pz_inventory::ItemClass::Normal, "Base", "Icon");
+        template.texture_capture = Some(pz_inventory::item_texture::CapturedScriptTextures::new(
+            Some(Rc::new(LuaTexture::new(texture))),
+            Vec::new(),
+        ));
+        struct Env;
+        impl pz_inventory::ItemEnv for Env {}
+        let item = pz_inventory::env::create_from_template_ref(&Env, Rc::new(template), 1).unwrap();
+        t.globals().set_str("item", crate::bind_items::item_value(&item));
+        run(
+            &mut t,
+            r#"
+            s = Widget:new("s", 10, 10, 100, 100); s:instantiate()
+            s.javaObject:DrawItemIcon(nil, 0, 0, 1, 16, 16)
+            s.javaObject:DrawItemIcon(item, 2, 3, 0.5, 16, 16)
+        "#,
+        );
+        let cmds = with_ui(|m| m.sprite.cmds.clone());
+        let quads: Vec<_> = cmds
+            .iter()
+            .filter(|c| matches!(c, UiDrawCmd::Quad { texture: Some(tex), .. } if tex.id == Some(7)))
+            .collect();
+        assert_eq!(quads.len(), 1, "{cmds:?}");
+        let UiDrawCmd::Quad { x, y, w, h, color, .. } = quads[0] else { unreachable!() };
+        assert_eq!([*x, *y, *w, *h], [12.0, 13.0, 16.0, 16.0]);
+        assert_eq!(color.3, 0.5);
     }
 
     #[test]

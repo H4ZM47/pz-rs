@@ -304,6 +304,34 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             })
             .transpose()
     }
+    /// `InventoryItem.setEquipParent(chr, register)` for a loaded hand item:
+    /// `equipParent` (not modelled, as in `setPrimaryHandItem`), then
+    /// `GameEntity.onEquip(register)`. `GameEntityManager.RegisterEntity`
+    /// returns for no components or only a `Script` component; the
+    /// manager branch is not ported. `addedToWorldOrEquipped` is not
+    /// modelled on inventory items.
+    pub(super) fn loaded_hand_on_equip(&self, id: i32, register: bool) -> CharacterPersistenceResult<()> {
+        if !register {
+            return Ok(());
+        }
+        let Some(item) = self.items.item(id) else {
+            return Ok(());
+        };
+        let body = item
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("loaded hand item components"))?;
+        let script_only = body.components.len() == 1
+            && body
+                .components
+                .get_ref(pz_entity::ComponentType::Script)
+                .map_err(RuntimeHostError::Storage)?
+                .is_some();
+        if body.components.len() == 0 || script_only {
+            return Ok(());
+        }
+        Err(unsupported("actual loaded hand GameEntityManager.RegisterEntity").into())
+    }
+
     pub(super) fn persistence_base_item(
         &self,
         index: i32,

@@ -1263,4 +1263,108 @@ mod tests {
         assert_eq!((vis.texture_choice, vis.tint), (1, Some([0.25, 0.5, 0.75])));
         assert_eq!(item.col, [0.25, 0.5, 0.75, 1.0]);
     }
+
+    #[test]
+    fn dressup_wears_new_copies_of_descriptor_visuals_in_inventory() {
+        use pz_characters::CharacterKind;
+        let mut t = setup(5);
+        let sm = shared_script_manager();
+        let mut chars = pz_characters::Characters::default();
+        let tshirt = body_location_key("base:tshirt");
+        let back = body_location_key("base:back");
+        let group = chars.body_locations.get_group("Human").unwrap();
+        for k in [&tshirt, &back] {
+            group.borrow_mut().get_or_create_location(k.clone()).unwrap();
+        }
+        let desc = Rc::new(RefCell::new(LuaSurvivorDesc::new(&mut chars, &sm).unwrap()));
+        let shirt = crate::bind_items::try_create_item("Base.Tshirt_Test", 1.0).unwrap().unwrap();
+        get_visual(&shirt).unwrap();
+        shirt.borrow_mut().visual.as_mut().unwrap().texture_choice = 2;
+        let rock = crate::bind_items::try_create_item("Base.Rock", 1.0).unwrap().unwrap();
+        for (k, item) in [(&tshirt, &shirt), (&back, &rock)] {
+            desc.borrow_mut().worn_items.set_item(k.clone(), Some(LuaItem(item_value(item)))).unwrap();
+        }
+        let new_chr = |kind| {
+            let mut c = crate::bind_character_sim::LuaGameCharacter::new(&sm, kind);
+            c.init_worn_items(&sm, group.clone());
+            Rc::new(RefCell::new(c))
+        };
+
+        // A zombie is not dressed and keeps the descriptor's items.
+        let zombie = new_chr(CharacterKind::Zombie);
+        crate::character_dressup::dressup(&mut t, &sm, &zombie, &desc).unwrap();
+        assert!(zombie.borrow().items.worn_ids().is_empty());
+        assert_eq!(desc.borrow().worn_items.items().len(), 2);
+
+        let chr = new_chr(CharacterKind::Player);
+        crate::character_dressup::dressup(&mut t, &sm, &chr, &desc).unwrap();
+        let c = chr.borrow();
+        // The rock has no visual, so only the shirt is copied.
+        let ids = c.items.worn_ids();
+        assert_eq!(ids.len(), 1);
+        assert!(c.items.worn_location(ids[0]) == tshirt);
+        let inventory = c.items.inventory_items();
+        assert_eq!(inventory.len(), 1);
+        let worn = c.items.item(ids[0]).unwrap();
+        assert!(Rc::ptr_eq(&worn, &inventory[0]));
+        assert!(!Rc::ptr_eq(&worn, &shirt), "Dressup wears a new item");
+        let w = worn.borrow();
+        assert_eq!(w.get_full_type(), "Base.Tshirt_Test");
+        assert_eq!(w.visual.as_ref().unwrap().texture_choice, 2);
+        assert_eq!(w.condition, w.condition_max);
+        assert!(desc.borrow().worn_items.items().is_empty());
+    }
+
+    #[test]
+    fn player_human_visual_copies_the_descriptor_look() {
+        use pz_characters::CharacterKind;
+        let t = setup(7);
+        let sm = shared_script_manager();
+        let mut chars = pz_characters::Characters::default();
+        let desc = Rc::new(RefCell::new(LuaSurvivorDesc::new(&mut chars, &sm).unwrap()));
+        {
+            let mut d = desc.borrow_mut();
+            let h = &mut d.human_visual;
+            h.hair_model = Some("Bob".into());
+            h.beard_model = Some("Full".into());
+            h.hair_color = Some([0.5, 0.25, 0.125]);
+            h.natural_hair_color = Some([0.5, 0.25, 0.125]);
+            h.natural_beard_color = Some([0.1, 0.2, 0.3]);
+            h.beard_color = Some([0.1, 0.2, 0.3]);
+            h.skin_color = Some([0.9, 0.8, 0.7]);
+            h.skin_texture_name = Some("MaleBody03".into());
+            h.skin_texture = 2;
+            h.body_hair = 1;
+            h.blood = vec![3; h.blood.len()];
+        }
+        let new_chr = |visual: bool| {
+            let mut c = crate::bind_character_sim::LuaGameCharacter::new(&sm, CharacterKind::Player);
+            if visual {
+                c.human_visual = Some(pz_inventory::visual::HumanVisual::new(desc.borrow().human_visual.blood.len()));
+            }
+            Rc::new(RefCell::new(c))
+        };
+        let without = new_chr(false);
+        crate::character_dressup::copy_human_visual(&t, &without, &desc).unwrap();
+        assert!(without.borrow().human_visual.is_none());
+
+        let chr = new_chr(true);
+        crate::character_dressup::copy_human_visual(&t, &chr, &desc).unwrap();
+        let c = chr.borrow();
+        let h = c.human_visual.as_ref().unwrap();
+        // The descriptor's lazy values are settled first (here the hair and
+        // beard models are checked against the fixture's empty style lists),
+        // then everything is copied.
+        assert_eq!(*h, desc.borrow().human_visual);
+        assert_eq!(h.hair_color, Some([0.5, 0.25, 0.125]));
+        assert_eq!(h.natural_beard_color, Some([0.1, 0.2, 0.3]));
+        assert_eq!(h.skin_color, Some([0.9, 0.8, 0.7]));
+        assert_eq!((h.skin_texture, h.body_hair, h.blood[0]), (2, 1, 3));
+        drop(c);
+        // The character's `getHumanVisual()` object reads the same visual
+        // and asks the character as its owner.
+        let object = crate::bind_characters::HumanVisualObject::Character(chr.clone());
+        let read = object.with(|hv, owner| (hv.skin_color, owner.is_zombie())).unwrap();
+        assert_eq!(read, (Some([0.9, 0.8, 0.7]), false));
+    }
 }

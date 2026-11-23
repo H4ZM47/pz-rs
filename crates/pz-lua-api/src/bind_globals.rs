@@ -57,6 +57,8 @@ pub fn register(thread: &mut Thread) {
         "isMultiplayer",
         "isServerSoftReset",
         "getDebug",
+        // `GameClient.client && connection.getRole() == Roles.getDefaultForAdmin()`.
+        "isAdmin",
     ];
     for name in ret_false {
         global(thread, name, |c| Ok(c.push(false)));
@@ -70,6 +72,23 @@ pub fn register(thread: &mut Thread) {
             _ => TableRef::new(),
         };
         Ok(c.push(r))
+    });
+    // `showDebugInfoInChat(text)`: only a client (`GameClient.client`) with
+    // the Action or Trace debug log shows it in the chat; this is not one.
+    global(thread, "showDebugInfoInChat", |_| Ok(0));
+    // `sendAddItemToContainer(container, item)`: only a server
+    // (`GameServer.server`) sends it to the clients.
+    global(thread, "sendAddItemToContainer", |_| Ok(0));
+    // `convertToPZNetTable(table)`: a shallow copy.
+    global(thread, "convertToPZNetTable", |c| {
+        let Value::Table(from) = c.arg(0) else {
+            return Err(pz_kahlua::LuaError::runtime("java.lang.ClassCastException"));
+        };
+        let to = TableRef::new();
+        for (k, v) in from.entries() {
+            to.rawset(k, v);
+        }
+        Ok(c.push(to))
     });
     global(thread, "mergeTable", |c| {
         let result = TableRef::new();

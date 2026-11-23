@@ -2,7 +2,8 @@
 //!
 //! `ActiveMods`, mod folders and `Translator` belong to other subsystems;
 //! they are reached through a [`MapGroupsHost`] that the engine installs.
-//! Until then a default host lists the installed `media/maps` only (no mods,
+//! `LuaManager::init` installs [`GameFsHost`]; a bare [`register`] (tests)
+//! falls back to a host that lists one `media/maps` folder only (no mods,
 //! untranslated conflict keys).
 
 use crate::bind_java_util::JavaList;
@@ -10,6 +11,7 @@ use crate::expose::{bool_arg, expose_class, int_arg, str_arg, this};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, NativeCall, Thread, Value};
 use pz_world::map_groups::{add_missing_vanilla_directories, ActiveModsView, MapGroups};
+use pz_fs::GameFs;
 use std::any::Any;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -51,6 +53,60 @@ impl MapGroupsHost for DefaultHost {
     fn get_text(&self, key: &str, _args: &[&str]) -> String {
         key.to_string()
     }
+}
+
+/// The real host: the game's `ZomboidFileSystem` ([`GameFs`]) for map and
+/// mod folders, `ActiveMods` Lua values and the `currentGame` list, and
+/// the installed `Translator`.
+pub struct GameFsHost {
+    fs: Rc<RefCell<GameFs>>,
+}
+
+impl GameFsHost {
+    pub fn new(fs: Rc<RefCell<GameFs>>) -> Self {
+        GameFsHost { fs }
+    }
+}
+
+/// `ChooseGameInfo.getAvailableModDetails(id)`'s `(commonDir, versionDir)`.
+pub fn available_mod_dirs(fs: &mut GameFs, id: &str) -> Option<(String, String)> {
+    let dir = fs.available_mod_dir(id)?;
+    let info = fs.mod_info(&dir)?;
+    Some((info.common_dir.clone(), info.version_dir.clone()))
+}
+
+impl MapGroupsHost for GameFsHost {
+    fn maps_dir(&self) -> PathBuf {
+        self.fs.borrow().media_file("maps")
+    }
+    fn active_mods(&self, v: &Value) -> ActiveModsView {
+        let Value::Object(o) = v else { return ActiveModsView::default() };
+        match o.as_any().downcast_ref::<crate::bind_mods::ActiveMods>() {
+            Some(m) => ActiveModsView { mods: m.mod_ids(), map_order: m.map_order_names() },
+            None => ActiveModsView::default(),
+        }
+    }
+    fn current_game_mods(&self) -> ActiveModsView {
+        // Loading a save registers its list here (`savefile::set_active_mods`).
+        let m = crate::savefile::active_mods_by_id("currentGame");
+        ActiveModsView { mods: m.mods, map_order: m.map_order }
+    }
+    fn mod_dirs(&self, id: &str) -> Option<(String, String)> {
+        let mut fs = self.fs.try_borrow_mut().ok()?;
+        available_mod_dirs(&mut fs, id)
+    }
+    fn get_text(&self, key: &str, args: &[&str]) -> String {
+        translate(key, args)
+    }
+}
+
+/// `Translator.getText(key, args...)` with string arguments (the key itself
+/// before the translator is installed).
+pub fn translate(key: &str, args: &[&str]) -> String {
+    let args: Vec<pz_text::jfmt::JavaArg> =
+        args.iter().map(|a| pz_text::jfmt::JavaArg::Str(a.to_string())).collect();
+    crate::bind_text::with_translator(|t| t.get_text(key, &args))
+        .unwrap_or_else(|| key.to_string())
 }
 
 thread_local! {

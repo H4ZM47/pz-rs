@@ -466,3 +466,42 @@ fn rain_wets_the_outer_layer() {
     // The hands have no clothing: the skin gets wet.
     assert_eq!(c.body_damage.parts[0].wetness, 0.5);
 }
+
+#[test]
+fn eating_food_scales_every_change_by_the_part_eaten() {
+    let (sm, mut chars) = body_fixture();
+    let mut c = player(&sm, &mut chars);
+    let ctx = HalfRand::default();
+    let hunger = chars.sim.character_stats.field("HUNGER").unwrap();
+    let fresh = |c: &mut GameCharacter<()>| c.stats.set(&hunger, 0.5);
+    give_item(&sm, &mut c, ItemClass::Food, "Apple", 1, |t| {
+        t.hunger_change = -20.0;
+        t.calories = 100.0;
+    }, |_| {});
+    give_item(&sm, &mut c, ItemClass::Weapon, "Bat", 2, |_| {}, |_| {});
+    let apple = c.items.item(1).unwrap().borrow().clone();
+    let full = apple.get_hung_change();
+    assert!(full < 0.0);
+
+    // Half of the hunger: half of every change, `percentage` is rewritten.
+    fresh(&mut c);
+    let pct = c.eat_food(&sm, &chars, &ctx, &apple, 0.5, false).unwrap();
+    assert_eq!(pct, Some(0.5));
+    assert_eq!(c.stats.get(&hunger), 0.5 + apple.get_hunger_change() * 0.5);
+    assert_eq!(c.nutrition.as_ref().unwrap().calories(), Nutrition::default().calories() + 50.0);
+
+    // Out-of-range percentages are clamped.
+    fresh(&mut c);
+    assert_eq!(c.eat_food(&sm, &chars, &ctx, &apple, 7.0, false).unwrap(), Some(1.0));
+    assert_eq!(c.stats.get(&hunger), 0.5 + apple.get_hunger_change());
+
+    // What is left after the part would be below 0.01 hunger: it is all eaten.
+    let mut crumb = apple.clone();
+    crumb.set_hung_change(-0.015);
+    fresh(&mut c);
+    assert_eq!(c.eat_food(&sm, &chars, &ctx, &crumb, 0.5, false).unwrap(), Some(1.0));
+
+    // Anything but food is not eaten.
+    let bat = c.items.item(2).unwrap().borrow().clone();
+    assert_eq!(c.eat_food(&sm, &chars, &ctx, &bat, 1.0, false).unwrap(), None);
+}

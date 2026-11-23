@@ -29,6 +29,8 @@ use std::rc::{Rc, Weak};
 mod cell_drag;
 pub mod lua_world;
 mod reachability;
+mod player_vehicles;
+mod square_walk;
 pub mod square_queries;
 pub mod power;
 
@@ -55,7 +57,7 @@ thread_local! {
 
 // A Lua call can unwind to an interpreter drain while this actual WORLD
 // cell is still borrowed by its Rust caller. Do not collect at that boundary.
-fn with_world_state_cell<R>(f: impl FnOnce(&RefCell<WorldState>) -> R) -> R {
+pub(crate) fn with_world_state_cell<R>(f: impl FnOnce(&RefCell<WorldState>) -> R) -> R {
     let _collection_deferral = pz_kahlua::gc::defer_collection();
     WORLD.with(f)
 }
@@ -159,6 +161,8 @@ enum Key {
     /// Absolute chunk coordinates.
     MetaChunk(i32, i32),
     Room(u32),
+    /// The runtime `IsoRoom` of a room id (what `IsoGridSquare.getRoom` returns).
+    IsoRoom(i64),
     Building(u32),
     /// Room, index in `objects`.
     MetaObject(u32, u32),
@@ -210,6 +214,7 @@ impl Key {
                 | Key::MetaCell(..)
                 | Key::MetaChunk(..)
                 | Key::Room(_)
+                | Key::IsoRoom(_)
                 | Key::Building(_)
                 | Key::MetaObject(..)
                 | Key::RoomRect(..)
@@ -231,6 +236,7 @@ impl Key {
             Key::MetaCell(..) => "zombie.iso.IsoMetaCell",
             Key::MetaChunk(..) => "zombie.iso.IsoMetaChunk",
             Key::Room(_) => "zombie.iso.RoomDef",
+            Key::IsoRoom(_) => "zombie.iso.areas.IsoRoom",
             Key::Building(_) => "zombie.iso.BuildingDef",
             Key::MetaObject(..) => "zombie.iso.MetaObject",
             Key::RoomRect(..) => RECT_CLASS,
@@ -416,6 +422,17 @@ fn cell<R>(f: impl FnOnce(&IsoCell) -> LuaResult<R>) -> LuaResult<R> {
     })
 }
 
+/// Run `f` on the loaded square at `(x, y, z)` of the current cell; `None`
+/// when there is no such square or it is in use.
+pub(crate) fn with_cell_square<R>(x: i32, y: i32, z: i32, f: impl FnOnce(&pz_world::IsoGridSquare) -> R) -> Option<R> {
+    with_world_state_cell(|w| {
+        let w = w.borrow();
+        let square = w.cell.as_ref()?.get_grid_square(x, y, z)?;
+        let square = square.try_borrow().ok()?;
+        Some(f(&square))
+    })
+}
+
 fn square_exists(x: i32, y: i32, z: i32) -> bool {
     with_world_state_cell(|w| {
         w.borrow()
@@ -499,6 +516,7 @@ pub fn register_with_events(thread: &mut Thread, events: crate::events::EventMan
 }
 
 fn register_world(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::events::Event>>>) {
+    player_vehicles::register(thread);
     register_array_list(thread);
     register_room_def(thread);
     register_room_rect(thread);
@@ -1911,6 +1929,45 @@ fn square_room(x: i32, y: i32, z: i32) -> LuaResult<Option<usize>> {
     })
 }
 
+/// The room of a square as `ItemPickerJava` reads it (`getRoom()`'s
+/// name, `RoomDef` bounds and the building's room count).
+pub(crate) struct SquareRoom {
+    pub id: i64,
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub x2: i32,
+    pub y2: i32,
+    pub building_rooms: Option<usize>,
+}
+
+/// [`SquareRoom`] of the square at `(x, y, z)`; `None` outside rooms or
+/// when the square or the meta grid is not loaded.
+pub(crate) fn square_room_info(x: i32, y: i32, z: i32) -> Option<SquareRoom> {
+    let r = square_room(x, y, z).ok()??;
+    grid(|g| {
+        let d = &g.room_defs[r];
+        Ok(SquareRoom {
+            id: d.id,
+            name: d.name.clone(),
+            x: d.x,
+            y: d.y,
+            x2: d.x2,
+            y2: d.y2,
+            building_rooms: d.building.map(|b| g.building_defs[b.0 as usize].rooms.len()),
+        })
+    })
+    .ok()
+}
+
+/// `IsoWorld.getMetaChunk(wx, wy)`'s zombie intensity (`None` without a
+/// meta grid or outside it).
+pub(crate) fn meta_chunk_zombie_intensity(wx: i32, wy: i32) -> Option<u8> {
+    let (cx, cy) = (wx.div_euclid(32), wy.div_euclid(32));
+    let i = ((wy - cy * 32) * 32 + (wx - cx * 32)) as usize;
+    grid(|g| Ok(g.meta_chunk_mut(cx, cy, i).map(|c| c.get_zombie_intensity()))).ok()?
+}
+
 fn square_building(x: i32, y: i32, z: i32) -> LuaResult<Option<usize>> {
     match square_room(x, y, z)? {
         Some(r) => grid(|g| Ok(g.room_defs[r].building.map(|b| b.0 as usize))),
@@ -1921,6 +1978,7 @@ fn square_building(x: i32, y: i32, z: i32) -> LuaResult<Option<usize>> {
 fn register_grid_square(thread: &mut Thread) {
     let b = expose_class(thread, "zombie.iso.IsoGridSquare", Some("java.lang.Object"));
     reachability::register(&b);
+    square_walk::register(&b);
     square_queries::register(&b);
     power::register(&b);
     static_get(&b, "getMatrixBit", |c| {
@@ -1955,6 +2013,13 @@ fn register_grid_square(thread: &mut Thread) {
     get(&b, "getRoomIDString", |c| {
         let (x, y, z) = self_square(c)?;
         Ok(square_room_id(x, y, z)?.to_string().into())
+    });
+    // `getRoom()`: the room of the square, `nil` outside. Rooms of the same id
+    // are one Lua object, so `==` compares them as Java does.
+    get(&b, "getRoom", |c| {
+        let (x, y, z) = self_square(c)?;
+        let id = square_room_id(x, y, z)?;
+        Ok(if id == -1 { Value::Nil } else { obj(Key::IsoRoom(id)) })
     });
     get(&b, "getRoomDef", |c| {
         let (x, y, z) = self_square(c)?;
@@ -2405,5 +2470,26 @@ mod tests {
             assert!(nav[1].is_polyline());
             assert_eq!(nav[1].points, vec![260, 320, 270, 330, 270, 330, 280, 340]);
         });
+    }
+
+    #[test]
+    fn create_region_file_lists_maps_with_spawn_points() {
+        let dir = load_world("region-file");
+        std::fs::write(dir.0.join("media/maps/Test/spawnpoints.lua"), "").unwrap();
+        std::fs::create_dir_all(dir.0.join("media/maps/NoPoints")).unwrap();
+        crate::bind_core::shared_core().borrow_mut().game_map = " ;NoPoints; Test ;;".into();
+        let fs = Rc::new(RefCell::new(GameFs::new(&dir.0)));
+        let mut t = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        register(&mut t);
+        lua_world::register(&mut t, fs);
+        run(
+            &mut t,
+            r#"
+            local r = createRegionFile()
+            check(#r == 1 and r[1].name == "Test")
+            check(r[1].file == "media/maps/Test/spawnpoints.lua")
+            "#,
+        );
     }
 }

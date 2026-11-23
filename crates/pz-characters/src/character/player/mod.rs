@@ -14,6 +14,7 @@ pub mod attack;
 pub mod context;
 pub mod control;
 pub mod input;
+pub mod los;
 pub mod update;
 pub mod vision;
 
@@ -30,6 +31,9 @@ pub use vision::PlayerRenderInputs;
 pub struct PlayerControl {
     /// IsoPlayer.isFarming; maintained by Lua farming/timed actions.
     pub is_farming: bool,
+    /// `seeDesignationZone`: the designation zone panel is open. Read by
+    /// the area highlights.
+    pub see_designation_zone: bool,
     /// `playerIndex`.
     pub player_index: i32,
     /// `CharacterInputComponent`.
@@ -63,6 +67,13 @@ pub struct PlayerControl {
     pub ticks_since_seen_zombie: i32,
     /// `lastSeenZombieTime` (hours).
     pub last_seen_zombie_time: f64,
+    /// `spottedList`, `lastSpotted` (character ids) and
+    /// `clearSpottedTimer`, from `updateLOS`.
+    pub spotted_list: Vec<i32>,
+    pub last_spotted: Vec<i32>,
+    pub clear_spotted_timer: i32,
+    /// `timeSinceLastStab`.
+    pub time_since_last_stab: f32,
     /// `pressContext`, `timePressedContext`.
     pub press_context: bool,
     pub time_pressed_context: f32,
@@ -153,11 +164,19 @@ pub struct PlayerControl {
     pub lured_animals: Vec<i32>,
     /// `getAttachedAnimals()` (character ids of the animals on a leash).
     pub attached_animals: Vec<i32>,
+    /// `nextRandXpCheckTimes`: perk id to the wall-clock millisecond of its
+    /// next `isRandXp` roll.
+    pub next_rand_xp_check_times: std::collections::HashMap<String, i64>,
+    /// `invPageDirty`: the inventory page should refresh its containers
+    /// (`ISInventoryPage.prerender` reads and clears it).
+    pub inv_page_dirty: bool,
 }
 
 impl Default for PlayerControl {
     fn default() -> Self {
         PlayerControl {
+            next_rand_xp_check_times: std::collections::HashMap::new(),
+            see_designation_zone: false,
             player_index: 0,
             input: CharacterInput::default(),
             aiming_position: (0.0, 0.0),
@@ -175,6 +194,10 @@ impl Default for PlayerControl {
             ticks_since_pressed_movement: 0.0,
             ticks_since_seen_zombie: 9_999_999,
             last_seen_zombie_time: 2.0,
+            spotted_list: Vec::new(),
+            last_spotted: Vec::new(),
+            clear_spotted_timer: -1,
+            time_since_last_stab: 0.0,
             press_context: false,
             time_pressed_context: 0.0,
             is_charging: false,
@@ -210,6 +233,7 @@ impl Default for PlayerControl {
             seen_this_frame: false,
             could_be_seen_this_frame: false,
             is_farming: false,
+            inv_page_dirty: false,
             action_blocks_movement: false,
             action_overrides_animation: false,
             has_actions: false,

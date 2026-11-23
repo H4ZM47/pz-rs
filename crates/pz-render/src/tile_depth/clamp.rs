@@ -22,7 +22,7 @@ const CLAMP_WIDTH: usize = 128;
 /// Rows of the clamp table; only the top half of a tile is clamped.
 pub const CLAMP_ROWS: usize = 64;
 /// `top` in `initClampedPixels`: height of the upper floor plane.
-const UPPER_FLOOR_Y: f32 = 2.44949;
+pub(super) const UPPER_FLOOR_Y: f32 = 2.44949;
 /// `pushTopDown` in `initClampedPixels` (3/255).
 const PUSH_TOP_DOWN: f32 = 0.011764706;
 /// The miss value of the `getDepthOn*At` helpers.
@@ -30,19 +30,19 @@ const NO_HIT: f32 = 666.0;
 
 /// A JOML `Matrix4f`, column-major (`m[col][row]` is JOML's `m<col><row>`).
 #[derive(Clone, Copy, Debug)]
-struct Mat4 {
-    m: [[f32; 4]; 4],
+pub(super) struct Mat4 {
+    pub(super) m: [[f32; 4]; 4],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct Vec3 {
-    x: f32,
-    y: f32,
-    z: f32,
+pub(super) struct Vec3 {
+    pub(super) x: f32,
+    pub(super) y: f32,
+    pub(super) z: f32,
 }
 
 impl Vec3 {
-    const fn new(x: f32, y: f32, z: f32) -> Self {
+    pub(super) const fn new(x: f32, y: f32, z: f32) -> Self {
         Vec3 { x, y, z }
     }
 
@@ -139,7 +139,7 @@ impl Mat4 {
     }
 
     /// `mul(right)` with both operands affine (`mulAffine`).
-    fn mul_affine(&self, r: &Mat4) -> Mat4 {
+    pub(super) fn mul_affine(&self, r: &Mat4) -> Mat4 {
         let (a, b) = (&self.m, &r.m);
         let mut o = Mat4::IDENTITY;
         for col in 0..3 {
@@ -158,7 +158,7 @@ impl Mat4 {
     }
 
     /// `invertAffine()`.
-    fn invert_affine(&self) -> Mat4 {
+    pub(super) fn invert_affine(&self) -> Mat4 {
         let [[m00, m01, m02, _], [m10, m11, m12, _], [m20, m21, m22, _], [m30, m31, m32, _]] = self.m;
         let m11m00 = m00 * m11;
         let m10m01 = m01 * m10;
@@ -194,7 +194,7 @@ impl Mat4 {
     }
 
     /// `unprojectInv(winX, winY, winZ, viewport)` on an inverted matrix.
-    fn unproject_inv(&self, win_x: f32, win_y: f32, win_z: f32, viewport: [i32; 4]) -> Vec3 {
+    pub(super) fn unproject_inv(&self, win_x: f32, win_y: f32, win_z: f32, viewport: [i32; 4]) -> Vec3 {
         let m = &self.m;
         let ndc_x = (win_x - viewport[0] as f32) / viewport[2] as f32 * 2.0 - 1.0;
         let ndc_y = (win_y - viewport[1] as f32) / viewport[3] as f32 * 2.0 - 1.0;
@@ -216,7 +216,7 @@ impl Mat4 {
 
 /// `TileGeometryUtils.calcMatricesForSquare`: the projection and model-view
 /// of one tile (2 units wide, 4 tall, 30/315 degree isometric view).
-fn matrices_for_square() -> (Mat4, Mat4) {
+pub(super) fn matrices_for_square() -> (Mat4, Mat4) {
     let s = 2.0f64.sqrt() as f32;
     // `-1 * s` and `1 * s` are exact.
     let projection = Mat4::ortho(-s / 2.0, s / 2.0, -2.0 * s / 2.0, 2.0 * s / 2.0, -2.0, 2.0).translate(0.0, -2.0 * s * 0.375, 0.0);
@@ -226,14 +226,20 @@ fn matrices_for_square() -> (Mat4, Mat4) {
 }
 
 /// `TileGeometryUtils.getDepthOfScenePoint`.
-fn depth_of_scene_point(p: Vec3) -> f32 {
+pub(super) fn depth_of_scene_point(p: Vec3) -> f32 {
     let (projection, model_view) = matrices_for_square();
     projection.mul_affine(&model_view).transform_position_z(p)
 }
 
+/// Inverse of [`normalized_depth`]: the raw scene depth of a normalized one.
+pub(super) fn raw_depth_of_normalized(normalized: f32) -> f32 {
+    let depth_nw = depth_of_scene_point(Vec3::new(-0.5, 0.0, -0.5)).abs();
+    (normalized - 0.75) / (0.25 / depth_nw)
+}
+
 /// `TileGeometryUtils.getNormalizedDepth`: scene depth mapped so the
 /// tile's north-west corner on the floor is 0.5 and its centre 0.75.
-fn normalized_depth(depth: f32) -> f32 {
+pub(super) fn normalized_depth(depth: f32) -> f32 {
     let depth_nw = depth_of_scene_point(Vec3::new(-0.5, 0.0, -0.5)).abs();
     let mut scale = 1.0 / depth_nw;
     scale *= 0.25;
@@ -261,7 +267,7 @@ fn intersect_ray_plane(point: Vec3, normal: Vec3, origin: Vec3, direction: Vec3)
 /// `TileGeometryUtils.getDepthOnPlaneAt(tileX, tileY, planePoint,
 /// planeNormal)`: depth of the plane under tile pixel (`tile_x`, `tile_y`),
 /// or 666 when the camera ray misses it.
-fn depth_on_plane_at(tile_x: f32, tile_y: f32, point: Vec3, normal: Vec3) -> f32 {
+pub(super) fn depth_on_plane_at(tile_x: f32, tile_y: f32, point: Vec3, normal: Vec3) -> f32 {
     let (projection, model_view) = matrices_for_square();
     let tile_x = tile_x * (1.0 / (64.0 * TILE_SCALE as f32));
     let tile_y = tile_y * (2.0 / (128.0 * TILE_SCALE as f32));

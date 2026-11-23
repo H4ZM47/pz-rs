@@ -12,12 +12,14 @@ pub mod clock;
 pub mod debug_console;
 pub mod health;
 pub mod host;
+pub mod iso_utils;
 pub mod moodles;
 pub mod new_window;
 pub mod picking;
 pub mod progress_bar;
 pub mod radial_menu;
 pub mod radial_progress_bar;
+pub mod screen_iso;
 pub mod scroll_bar;
 pub mod speed_controls;
 pub mod text_draw;
@@ -232,6 +234,7 @@ fn speed_controls(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
 /// `bind_ui::register`).
 pub fn register(thread: &mut Thread) {
     tooltip::register(thread);
+    screen_iso::register(thread);
     let m = expose_class(thread, UIMANAGER, None);
     m.static_fn("init", |c| {
         init_ui(c.thread);
@@ -243,13 +246,24 @@ pub fn register(thread: &mut Thread) {
     // `setGameSpeed(newSpeed)`: `UIManager.getSpeedControls()
     // .SetCurrentGameSpeed(newSpeed)`, nothing without speed controls.
     crate::expose::global(thread, "setGameSpeed", |c| {
-        let speed = int_arg(c, 0);
-        if let Some(e) = with_ui(|m| m.speed_controls.clone()) {
-            if let Some(sc) = e.ext::<SpeedControls>() {
-                sc.set_current_game_speed(&e, speed);
-            }
-        }
+        set_game_speed(int_arg(c, 0));
         Ok(0)
+    });
+    // `getGameSpeed()`: `UIManager.getSpeedControls()
+    // .getCurrentGameSpeed()`, 0 without speed controls.
+    crate::expose::global(thread, "getGameSpeed", |c| {
+        let speed = with_ui(|m| m.speed_controls.clone())
+            .and_then(|e| e.ext::<SpeedControls>().map(|sc| sc.get_current_game_speed()))
+            .unwrap_or(0);
+        Ok(c.push(Value::Num(speed as f64)))
+    });
+    // `isGamePaused()`: `GameTime.isGamePaused()`; outside multiplayer,
+    // speed controls that are at speed 0.
+    crate::expose::global(thread, "isGamePaused", |c| {
+        let paused = with_ui(|m| m.speed_controls.clone())
+            .and_then(|e| e.ext::<SpeedControls>().map(|sc| sc.get_current_game_speed() == 0))
+            .unwrap_or(false);
+        Ok(c.push(Value::Bool(paused)))
     });
     m.static_fn("setSpeedControls", |c| {
         let e = element_of(&c.arg(0));
@@ -331,6 +345,7 @@ pub fn register(thread: &mut Thread) {
     register_radial_menu(thread);
     text_draw::register(thread);
     world_markers::register(thread);
+    iso_utils::register(thread);
     register_vehicle_gauge(thread);
     let mu = expose_class(thread, MOODLES_UI, Some(UIELEMENT));
     mu.static_fn("getInstance", |c| Ok(c.push(el_value(moodles::instance()))));
@@ -639,6 +654,16 @@ fn index_error(i: i32) -> LuaError {
     }
 }
 
+
+/// `UIManager.getSpeedControls().SetCurrentGameSpeed(speed)`, nothing
+/// without speed controls.
+pub fn set_game_speed(speed: i32) {
+    if let Some(e) = with_ui(|m| m.speed_controls.clone()) {
+        if let Some(sc) = e.ext::<SpeedControls>() {
+            sc.set_current_game_speed(&e, speed);
+        }
+    }
+}
 #[cfg(test)]
 pub(crate) mod test_util {
     use pz_kahlua::{TableRef, Thread, Value};
@@ -979,6 +1004,66 @@ mod tests {
             Some(1.0)
         );
         assert_eq!(eval(&mut t, "SpeedControls.WaitSpeed").as_num(), Some(4.0));
+    }
+
+    #[test]
+    fn get_game_speed_reads_the_speed_controls() {
+        install_textures(&[]);
+        install(HudHost::default());
+        let mut t = thread();
+        // No speed controls yet: 0 (xpUpdate.displayCharacterInfo then
+        // ignores H, L and B).
+        with_ui(|m| m.speed_controls = None);
+        assert_eq!(eval(&mut t, "getGameSpeed()").as_num(), Some(0.0));
+        init_ui(&mut t);
+        assert_eq!(eval(&mut t, "getGameSpeed()").as_num(), Some(1.0));
+        run(&mut t, "setGameSpeed(3)");
+        assert_eq!(eval(&mut t, "getGameSpeed()").as_num(), Some(3.0));
+    }
+
+    struct ZoomCam;
+    impl host::HudCamera for ZoomCam {
+        fn zoom(&self, _p: usize) -> f32 {
+            2.0
+        }
+        fn camera_offset(&self, _p: usize) -> (f32, f32) {
+            (1000.0, 500.0)
+        }
+        fn fix_jiggly_square(&self, _p: usize) -> (f32, f32) {
+            (0.25, 0.0)
+        }
+    }
+
+    #[test]
+    fn screen_to_iso_and_back() {
+        install_textures(&[]);
+        install(HudHost {
+            camera: Box::new(ZoomCam),
+            ..HudHost::default()
+        });
+        let mut t = thread();
+        // Tile scale 2, zoom 2: pixel (100, 50) is (200, 100) + offsets
+        // (1000, 500) = (1200, 600); x = (1200 + 1200) / 128 = 18.75,
+        // y = (1200 - 1200) / -128 = 0, plus 3 per floor.
+        assert_eq!(eval(&mut t, "screenToIsoX(0, 100, 50, 0)").as_num(), Some(18.75));
+        assert_eq!(eval(&mut t, "screenToIsoY(0, 100, 50, 1)").as_num(), Some(3.0));
+        // isoToScreen adds fixJigglyModelsSquareX: (18.5 + 0.25, 0).
+        assert_eq!(eval(&mut t, "isoToScreenX(0, 18.5, 0, 0)").as_num(), Some(100.0));
+        assert_eq!(eval(&mut t, "isoToScreenY(0, 18.5, 0, 0)").as_num(), Some(50.0));
+    }
+
+    #[test]
+    fn is_game_paused_is_speed_zero() {
+        install_textures(&[]);
+        install(HudHost::default());
+        let mut t = thread();
+        // No speed controls: not paused.
+        with_ui(|m| m.speed_controls = None);
+        assert!(matches!(eval(&mut t, "isGamePaused()"), Value::Bool(false)));
+        init_ui(&mut t);
+        assert!(matches!(eval(&mut t, "isGamePaused()"), Value::Bool(false)));
+        run(&mut t, "setGameSpeed(0)");
+        assert!(matches!(eval(&mut t, "isGamePaused()"), Value::Bool(true)));
     }
 
     #[test]
@@ -1880,6 +1965,40 @@ mod tests {
         fn picked_tile(&self) -> pz_kahlua::LuaResult<Option<pz_ui::tooltip::TooltipObject>> {
             Ok(PICKED.with(|p| p.borrow().clone()))
         }
+    }
+
+    /// `UIManager.getPicked()` is the context pick's `ClickObject`;
+    /// `getLastPicked()` is its tile once `updateTooltip` has run with the
+    /// mouse over it, and nil over nothing.
+    #[test]
+    fn picked_and_last_picked() {
+        install_textures(&[]);
+        install(HudHost {
+            players: Box::new(OnePlayer),
+            picking: Box::new(FakePicking),
+            ..HudHost::default()
+        });
+        let mut t = thread();
+        init_ui(&mut t);
+        assert!(eval(&mut t, "UIManager.getPicked() == nil and UIManager.getLastPicked() == nil").truthy());
+        with_ui(|m| {
+            m.picked = Some(pz_ui::PickedObject { tile: Value::str("barrel"), lx: 3, ly: 4 });
+        });
+        PICKED.with(|p| {
+            *p.borrow_mut() = Some(pz_ui::tooltip::TooltipObject {
+                id: 9,
+                have_special_tooltip: false,
+                square: Value::Nil,
+            })
+        });
+        assert!(eval(&mut t, "UIManager.getPicked() ~= nil and UIManager.getLastPicked() == nil").truthy());
+        tooltip::update_tooltip(&mut t, 400, 300).unwrap();
+        assert_eq!(eval(&mut t, "UIManager.getLastPicked()").as_str(), Some("barrel"));
+        // Nothing under the mouse.
+        with_ui(|m| m.picked = None);
+        PICKED.with(|p| *p.borrow_mut() = None);
+        tooltip::update_tooltip(&mut t, 400, 300).unwrap();
+        assert!(eval(&mut t, "UIManager.getPicked() == nil and UIManager.getLastPicked() == nil").truthy());
     }
 
     /// The shared tooltip: built by init, follows a picked object with a

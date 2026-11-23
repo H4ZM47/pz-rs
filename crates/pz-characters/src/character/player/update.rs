@@ -56,11 +56,17 @@ pub enum PlayerUpdatePhase {
     Start,
     AfterAiming(AimInputLocals),
     AfterMovement { strafe_x: f32, strafe_y: f32 },
+    /// After the host ran [`super::los::update_player_los`].
+    AfterLos,
 }
 
 #[derive(Debug)]
 pub enum PlayerUpdateStep {
     StopActionQueue { reason: &'static str, resume: PlayerUpdatePhase },
+    /// `updateLOS()`: the host runs [`super::los::update_player_los`]
+    /// with the player in the world's character list, then resumes with
+    /// [`PlayerUpdatePhase::AfterLos`].
+    UpdateLos,
     TimedActions,
     Done,
 }
@@ -135,6 +141,9 @@ impl<I: 'static> GameCharacter<I> {
                     out.events.push(PlayerEvent::StopActionQueue(reason));
                     phase = resume;
                 }
+                // This driver has the player outside the world's character
+                // list, so it cannot run updateLOS; hosts with the list do.
+                PlayerUpdateStep::UpdateLos => phase = PlayerUpdatePhase::AfterLos,
                 PlayerUpdateStep::TimedActions => return Ok((out, true)),
                 PlayerUpdateStep::Done => return Ok((out, false)),
             }
@@ -174,16 +183,21 @@ impl<I: 'static> GameCharacter<I> {
             PlayerUpdatePhase::AfterMovement { strafe_x, strafe_y } => {
                 self.update_internal2_tail(strafe_x, strafe_y, cx)?
             }
+            PlayerUpdatePhase::AfterLos => {
+                return if self.update_character_before_actions(cx)? {
+                    Ok(PlayerUpdateStep::TimedActions)
+                } else {
+                    Ok(PlayerUpdateStep::Done)
+                };
+            }
         };
         if cx.has_host_error() { return Ok(PlayerUpdateStep::Done); }
         match step {
             ControlFlow::Break((reason, resume)) => Ok(PlayerUpdateStep::StopActionQueue { reason, resume }),
-            ControlFlow::Continue(update_base) => {
-                // updateLOS: the spotting of other characters is the world's.
-                if update_base && self.update_character_before_actions(cx)? {
-                    Ok(PlayerUpdateStep::TimedActions)
-                } else { Ok(PlayerUpdateStep::Done) }
-            }
+            // updateLOS() for a local (not remote) player, then
+            // IsoGameCharacter.update().
+            ControlFlow::Continue(true) => Ok(PlayerUpdateStep::UpdateLos),
+            ControlFlow::Continue(false) => Ok(PlayerUpdateStep::Done),
         }
     }
 
@@ -1361,9 +1375,10 @@ impl<I: 'static> GameCharacter<I> {
             self.update_ballistics_target(ctx, &mut *cx.world);
         }
         // TODO(grappling): LetGoOfGrappled when not in a grappler state.
-        if self.is_dead() {
-            return Ok(false);
-        }
+        // `isDead()` with the character off its square's moving objects
+        // (`die()` on a server) returns here. The port's character is on
+        // its current square while it has one (checked above), so a dead
+        // player goes on: its states fall it down and `die()` it.
         // checkSCBADrain: TODO(items). Toxic buildings: TODO(world).
         let fps = ctx.thirty_fps_multiplier();
         if self.player.lunge_fall_timer > 0.0 {
@@ -1393,6 +1408,10 @@ impl<I: 'static> GameCharacter<I> {
     /// Resume after the host's borrow-free timed-action callbacks.
     pub fn update_player_after_actions(&mut self, out: &mut PlayerUpdate, cx: &mut StateCx<'_, I>) -> ScriptResult {
         if cx.has_host_error() { return Ok(()); }
+        // The climbs that Lua asked for during the timed actions
+        // (`climbOverFence`, `climbThroughWindow`, `climbOverWall`).
+        self.run_path_requests(cx);
+        if cx.has_host_error() { return Ok(()); }
         let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
         let fps = ctx.thirty_fps_multiplier();
         if ctx.do_character_stats() {
@@ -1403,7 +1422,7 @@ impl<I: 'static> GameCharacter<I> {
             self.calculate_stats(sm, chars, ctx)?;
         }
         if self.asleep {
-            // TODO(sleep): IsoPlayer.processWakingUp.
+            self.process_waking_up(chars, ctx)?;
         }
         self.update_idle_square_time(ctx);
         if !self.asleep {
@@ -1428,7 +1447,12 @@ impl<I: 'static> GameCharacter<I> {
             self.sleeping_pills_taken = 0;
         }
         self.update_movement_momentum(ctx);
-        // effectiveEdibleBuffTimer: TODO(food buffs).
+        if self.effective_edible_buff_timer > 0.0 {
+            self.effective_edible_buff_timer -= ctx.multiplier() * 0.015;
+            if self.effective_edible_buff_timer < 0.0 {
+                self.effective_edible_buff_timer = 0.0;
+            }
+        }
         self.update_dirt(out, sm, chars, ctx, cx)?;
         let aimed = self.vars.use_hand_weapon.and_then(|i| self.items.item(i)).is_some_and(|i| i.borrow().is_aimed_firearm());
         if aimed && self.is_player_aiming() {

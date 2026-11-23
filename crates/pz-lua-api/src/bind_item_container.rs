@@ -968,7 +968,7 @@ fn contains_in(_t: &mut Thread, c: &ContainerRef, item: &ItemRef, do_inv: bool) 
 }
 
 /// `isItemAllowed(item)`.
-fn is_item_allowed(t: &mut Thread, c: &ContainerRef, item: Option<&ItemRef>) -> LuaResult<bool> {
+pub(crate) fn is_item_allowed(t: &mut Thread, c: &ContainerRef, item: Option<&ItemRef>) -> LuaResult<bool> {
     let Some(item) = item else {
         return Ok(false);
     };
@@ -1050,7 +1050,7 @@ fn is_item_allowed(t: &mut Thread, c: &ContainerRef, item: Option<&ItemRef>) -> 
 
 /// `hasRoomFor(chr, weightVal, weightAddedToFloor)` without vehicle seats
 /// or a bag's world item (neither is shared yet).
-fn has_room_for_weight(
+pub(crate) fn has_room_for_weight(
     t: &mut Thread,
     c: &ContainerRef,
     chr: &Value,
@@ -1261,6 +1261,78 @@ pub fn remove(t: &mut Thread, c: &ContainerRef, item: &ItemRef) -> LuaResult<()>
         after_remove(t, c, item_value(item))?;
     }
     Ok(())
+}
+
+/// `ItemUser.RemoveItem(item)`. A floor item's `IsoWorldInventoryObject`
+/// (`transmitRemoveItemFromSquare`) and worn clothing (`Clothing.Unwear`)
+/// are not ported; vehicle part containers are not shared yet.
+pub fn item_user_remove_item(t: &mut Thread, item: &ItemRef) -> LuaResult<()> {
+    let Some(c) = container_of(item) else {
+        // An item with no container is only removed from its square.
+        return Err(crate::bind_world_object::unsupported("ItemUser.RemoveItem (IsoWorldInventoryObject)"));
+    };
+    if c.borrow().kind == "floor" {
+        return Err(crate::bind_world_object::unsupported("ItemUser.RemoveItem (IsoWorldInventoryObject)"));
+    }
+    let p = parent(&c);
+    let v = item_value(item);
+    if instance_of(&p, ISO_GAME_CHARACTER) {
+        let worn = {
+            let i = item.borrow();
+            matches!(i.kind, ItemKind::Clothing(_) | ItemKind::AlarmClockClothing(..)) && item_env().owner(item).is_worn(&i)
+        };
+        if worn {
+            return Err(crate::bind_world_object::unsupported("ItemUser.RemoveItem (Clothing.Unwear)"));
+        }
+        call(t, &p, "removeFromHands", std::slice::from_ref(&v))?;
+        let back = call(t, &p, "getClothingItem_Back", &[])?;
+        let same = !back.is_nil() && crate::bind_world_object::item_argument(&back).is_ok_and(|b| Rc::ptr_eq(&b, item));
+        if same {
+            call(t, &p, "setClothingItem_Back", &[Value::Nil])?;
+        }
+    }
+    {
+        let mut s = c.borrow_mut();
+        if let Some(i) = s.index_of(item) {
+            s.items.remove(i);
+        }
+        s.dirty = true;
+        s.draw_dirty = true;
+    }
+    set_container(item, None);
+    if instance_of(&p, ISO_DEAD_BODY) || instance_of(&p, ISO_MANNEQUIN) {
+        call_if_bound(t, &p, "checkClothing", &[v])?;
+    }
+    Ok(())
+}
+
+/// `ItemUser.UseItem(item, true, false, uses, keep, destroy)`, the form
+/// `CraftRecipeData.processDestroyAndUsedItems` calls: takes up to `uses`
+/// uses (none for a keep input), then removes the item when `destroy` or
+/// when it is used up and not kept on deplete. Returns the uses taken.
+pub fn item_user_use_item(t: &mut Thread, item: &ItemRef, uses: i32, keep: bool, destroy: bool) -> LuaResult<i32> {
+    let n = item.borrow().get_current_uses().min(uses);
+    if !keep {
+        let cur = item.borrow().get_current_uses();
+        let e = item_env();
+        item.borrow_mut().set_current_uses_with(cur - n, Some(e.context()));
+    }
+    // `replaceOnUse` needs the second argument false.
+    let replace = {
+        let i = item.borrow();
+        i.get_replace_on_deplete().is_some_and(|r| !r.is_empty()) && i.get_current_uses() <= 0
+    };
+    if replace {
+        return Err(crate::bind_world_object::unsupported("ItemUser.UseItem (replaceOnDeplete)"));
+    }
+    let remove = {
+        let i = item.borrow();
+        destroy || (i.get_current_uses() <= 0 && !i.is_keep_on_deplete())
+    };
+    if remove {
+        item_user_remove_item(t, item)?;
+    }
+    Ok(n)
 }
 
 /// `DoRemoveItem(item)`.
@@ -1614,7 +1686,7 @@ pub(crate) fn on_fluid_update(item: &ItemRef) -> pz_entity::runtime_load::HostRe
 
 /// `item.getFluidContainer()` decoded against the environment's entity
 /// registries.
-fn fluid_container(i: &InventoryItem) -> Option<pz_entity::FluidContainer> {
+pub(crate) fn fluid_container(i: &InventoryItem) -> Option<pz_entity::FluidContainer> {
     let e = item_env();
     match e.entity() {
         Some(ctx) => i.get_fluid_container(ctx),
@@ -1623,7 +1695,7 @@ fn fluid_container(i: &InventoryItem) -> Option<pz_entity::FluidContainer> {
 }
 
 /// `FluidInstance.getFluid().getFluidTypeString()` (`None`: no fluid).
-fn fluid_name(f: &pz_entity::FluidInstance) -> Option<String> {
+pub(crate) fn fluid_name(f: &pz_entity::FluidInstance) -> Option<String> {
     use pz_entity::fluids::FluidRef;
     use pz_entity::Lookup;
     let e = item_env();
@@ -1671,7 +1743,7 @@ fn fc_is_water_source(fc: &pz_entity::FluidContainer) -> bool {
 
 /// `InventoryItem.isWaterSource()` (STUB: `isMultiTileMoveable` is false,
 /// moveable sprite grids are not in pz-inventory).
-fn is_water_source(i: &InventoryItem) -> bool {
+pub(crate) fn is_water_source(i: &InventoryItem) -> bool {
     has_fluid_container(i) && fluid_container(i).is_some_and(|fc| fc_is_water_source(&fc))
 }
 
@@ -3072,6 +3144,17 @@ fn register_fields(b: &crate::expose::ClassBuilder) {
     b.method("isEmpty", |c| {
         let v = this(c)?.borrow().items.is_empty();
         Ok(c.push(v))
+    });
+    // isEmptyOrUnwanted(player): true when there are no items or every
+    // item is unwanted by the player.
+    b.method("isEmptyOrUnwanted", |c| {
+        let player = c.arg(1);
+        for item in items(&this(c)?) {
+            if !crate::item_tooltip::chr::unwanted_by(c.thread, &item, &player)? {
+                return Ok(c.push(false));
+            }
+        }
+        Ok(c.push(true))
     });
     b.method("isFreezer", |c| {
         let v = this(c)?.borrow().is_freezer();

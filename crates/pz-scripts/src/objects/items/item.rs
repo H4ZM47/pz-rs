@@ -2412,21 +2412,18 @@ impl Item {
             .clone()
     }
 
-    /// `Translator.getItemNameFromFullType(getFullName())` without loaded
-    /// translations: the display name of the item with this full type.
-    /// TODO(Translator): translated item names.
+    /// `Translator.getItemNameFromFullType(getFullName())`: the translated
+    /// name, else the display name of the item with this full type.
     fn translator_item_name(&self, sm: &ScriptManager) -> String {
-        let full = self.full_name();
-        match sm
-            .get_script(ScriptType::Item, &full)
-            .and_then(|s| s.downcast::<Item>())
-        {
-            None => full,
-            Some(item) => match item.try_borrow() {
+        let script_display_name = |full: &str| {
+            let item = sm.get_script(ScriptType::Item, full)?.downcast::<Item>()?;
+            let name = match item.try_borrow() {
                 Ok(other) => other.display_name(),
                 Err(_) => self.display_name(),
-            },
-        }
+            };
+            Some(name)
+        };
+        crate::translator::get_item_name_from_full_type(&self.full_name(), &script_display_name)
     }
 
     /// `resolveItemTypes`: makes item references in this item's fields

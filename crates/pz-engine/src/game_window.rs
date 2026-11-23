@@ -67,28 +67,13 @@ impl Start {
     }
 }
 
-/// `LuaManager.GlobalObject.createWorld(worldName)`: the save folder (unless
-/// saving is off) with its subdirectories, and `Core.gameSaveWorld`.
+/// `LuaManager.GlobalObject.createWorld(worldName)`
+/// ([`pz_lua_api::world_save::create_world`]).
 pub fn create_world(cache_dir: &std::path::Path, world_name: &str) -> Result<(), String> {
-    let name = if world_name.is_empty() {
-        "blah"
-    } else {
-        world_name
-    };
-    let name = pz_lua_api::savefile::sanitize_world_name(name);
-    let core = pz_lua_api::bind_core::shared_core();
-    let (mode, no_save) = {
-        let c = core.borrow();
-        (c.game_mode.clone(), c.is_no_save())
-    };
-    let dir = cache_dir.join("Saves").join(mode).join(&name);
-    if !no_save {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        pz_lua_api::world_save::ensure_subdirectories_exist(&dir)
-            .map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
-    core.borrow_mut().game_save_world = name;
-    Ok(())
+    pz_lua_api::world_save::create_world(cache_dir, Some(world_name)).map_err(|e| {
+        let name = pz_lua_api::bind_core::shared_core().borrow().game_save_world.clone();
+        format!("createWorld {name}: {e}")
+    })
 }
 
 struct App {
@@ -213,9 +198,16 @@ impl App {
         let _collection_deferral = pz_kahlua::gc::defer_collection();
         let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&self.launch.game_dir)));
         fs.borrow_mut().set_cache_dir(&self.launch.cache_dir);
+        // GameWindow.init: "Loading Mods" before initShared's UI packs.
+        let mods_enabled = self.core.borrow().get_option_mods_enabled();
+        crate::boot::load_default_mods(&mut fs.borrow_mut(), mods_enabled);
         pz_lua_api::bind_render::textures()
             .borrow_mut()
             .load_ui_packs(&fs.borrow());
+        // GameWindow.init: Languages.init and Translator.loadFiles come
+        // before initShared loads the scripts.
+        pz_lua_api::bind_text::load_translator(&fs.borrow(), &self.core.borrow())
+            .map_err(|e| format!("text init: {e}"))?;
         crate::boot::load_scripts(&self.launch.game_dir, &fs)?;
         // SoundManager.init / FMODManager.init (windowed runs; headless
         // runs keep the silent system).
@@ -333,6 +325,15 @@ impl App {
         if let Some(w) = self.window.as_ref() {
             apply_window_requests(w, pz_lua_api::bind_input::take_window_requests());
         }
+        // Lua's `forceChangeState` sets `states.forceNext` at once; the
+        // machine reads it in its next update.
+        if let Some(forced) = pz_lua_api::bind_game_window::take_forced_state() {
+            self.states.force_next = forced.map(|s| match s {
+                pz_lua_api::bind_game_window::ForcedState::LoadingQueue => {
+                    state(LoadingQueueState::default())
+                }
+            });
+        }
         // MapCollisionData.instance.updateGameState().
         // GameWindow.logic snapshots this after UI/input callbacks. Paused
         // frames still update UI/audio/rendering, but never the game states.
@@ -368,6 +369,19 @@ impl App {
             && self.states.current_name() == Some("zombie.gameStates.MainScreenState")
         {
             self.launch.start = Start::MainMenu;
+        }
+        // GameWindow.logic, after the states and `RunQueuedEvents`: with
+        // `Core.debug`, `TOGGLE_LUA_CONSOLE` flips the debug console.
+        // TODO(port): `TOGGLE_LUA_DEBUGGER` (the Lua debugger).
+        // `isKeyPressed(KeybindId)` is `isKeyPressed(keybindId.getId())`.
+        let debug = self.core.borrow().debug;
+        if debug
+            && pz_lua_api::bind_input::is_key_down_named("ToggleLuaConsole")
+            && !pz_lua_api::bind_input::was_key_down_named("ToggleLuaConsole")
+        {
+            if let Some(console) = pz_ui::with_ui(|m| m.debug_console.clone()) {
+                console.set_visible(!console.is_visible());
+            }
         }
         for mut models in self.retired_models.drain(..) {
             models.clear();
@@ -417,7 +431,11 @@ impl App {
                 error: &mut self.error,
                 retired_models: &mut self.retired_models,
             };
+            // SpriteRenderer brackets the frame holding the UI's map draws
+            // with WorldMapImages.startFrame/endFrame.
+            pz_lua_api::worldmap::start_frame();
             self.states.render(&mut cx, &mut dl);
+            pz_lua_api::worldmap::end_frame();
         }
         if self.error.is_some() {
             drop(collection_deferral);

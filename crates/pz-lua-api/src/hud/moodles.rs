@@ -242,6 +242,11 @@ impl MoodlesUI {
     }
 
     /// `setCharacter(chr)` (the player index; `None` clears).
+    /// The character's slot (`isoGameCharacter`).
+    pub fn character(&self) -> Option<usize> {
+        self.st.borrow().character
+    }
+
     pub fn set_character(&self, player: Option<usize>) {
         if self.st.borrow().character == player {
             return;

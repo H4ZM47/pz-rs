@@ -6,7 +6,8 @@
 //! the screen shader).
 
 use crate::iso_world::{IsoWorld, RenderChunkEvents};
-use crate::world_models::{CharacterView, WorldModels};
+use crate::world_models::{CharacterView, CorpseSquare, WorldModels};
+use pz_character_model::corpse::PointLight;
 use pz_character_model::lights::LightContext;
 use pz_entity::runtime_load::{HostResult, RuntimeHostError};
 use pz_fs::GameFs;
@@ -15,7 +16,12 @@ use pz_iso_render::chunk::dirty;
 use pz_iso_render::cutaways::{CutawayPlayer, Cutaways};
 use pz_iso_render::frame::{plan_chunks, world_frame_full, FrameSize};
 use pz_iso_render::objects::FrameObjects;
-use pz_iso_render::{Camera, ChunkRenderer, CutawayWorld};
+use pz_iso_render::weather::{SurfaceSettings, SurfaceTextures, Surfaces};
+use pz_iso_render::weather_fx::{IsoWeatherFx, WeatherFxView};
+use pz_iso_render::weather_fx_mask::{
+    render_weather_fx, FxMaskCharacters, FxMaskFrame, FxMaskPlayer, FxMaskSprites, WeatherFxMask,
+};
+use pz_iso_render::{Camera, ChunkRenderer, CutawayWorld, RenderInfos};
 use pz_lighting::jni::{IsoDirection, VisionConeInput};
 use pz_lua_api::bind_character_sim::LuaGameCharacter;
 use pz_render::tile_depth::{
@@ -26,9 +32,10 @@ use pz_world::isoregion::IsoRegions;
 use pz_world::square::IsoDirections;
 use pz_world_render::{
     check_changed_buildings, default_player, ClimateSettings, GameTextures, NoWorldHooks,
-    PendingRender, PlayerFrameInput, PuddleInputs, RenderInvalidation, RenderWorld, SpriteCache,
-    WorldLighting, WorldView,
+    master_region, PendingRender, PlayerFrameInput, PuddleInputs, RenderInvalidation, RenderWorld,
+    SpriteCache, WorldFxMask, WorldLighting, WorldView,
 };
+use std::cell::RefCell;
 use std::time::Instant;
 
 #[cfg(test)]
@@ -87,17 +94,32 @@ pub struct WorldRender {
     seams: Vec<Texture>,
     cutaway_stencils: Vec<Texture>,
     drop_shadow: Option<Texture>,
+    /// The `blood_floor_*` tiles (`Texture.getSharedTexture` in
+    /// `renderOneLevel_Blood`).
+    blood_textures: BloodTextures,
     sprites: SpriteCache,
     pub world: RenderWorld,
     pub lighting: WorldLighting,
     /// `FBORenderChunkManager`'s chunk textures, per player.
     caches: [ChunkCache; MAX_PLAYERS],
+    /// What the chunk renderer recorded about each drawn object
+    /// (`IsoObject.getRenderInfo(player)`), for the object picker.
+    pub infos: RenderInfos,
     cutaways: [Cutaways; MAX_PLAYERS],
     start: Instant,
     /// The lighting session failed; frames draw unlit.
     lighting_error: bool,
+    /// The last corpse render error, reported once.
+    corpse_error: Option<String>,
     /// What the square mutations changed since the last frame.
     pub pending: PendingRender,
+    /// `WeatherFxMask.playerFxMasks`.
+    fx_masks: [WeatherFxMask; MAX_PLAYERS],
+    /// `WeatherFxMask.init`'s stand-in sprites, built on the first frame.
+    fx_sprites: Option<FxMaskSprites>,
+    /// `WeatherFxMask.playerHasMaskToDraw(player)` after the last frame's
+    /// `initMask`, for `IsoWeatherFX.update`.
+    pub fx_mask_to_draw: [bool; MAX_PLAYERS],
     /// Port extension: the 3D view (off by default).
     pub view3d: pz_world3d::view::ViewState,
     /// Last frame's O and middle-button state, for presses.
@@ -106,29 +128,37 @@ pub struct WorldRender {
     view3d_cursor_free: bool,
 }
 
+/// `GameWindow.enter`'s tile packs at `Core.tileScale` 2. The original
+/// loads them before any world. The port loads them when a game starts
+/// loading, so that the menu does not pay for them; square loading
+/// (`TileOverlays.updateTileOverlaySprite`) needs them. Loads once.
+pub fn load_tile_packs(fs: &GameFs, tm: &mut TextureManager) {
+    if tm.packs.iter().any(|p| p.pack_name == "Tiles2x") {
+        return;
+    }
+    let flags = if tm.use_compression { 4 } else { 0 } | 0x40;
+    for (pack, f) in [
+        ("Tiles2x", flags),
+        ("Overlays2x", flags),
+        ("JumboTrees2x", flags),
+        ("JumboTreesBigs2x", flags),
+        ("Tiles2x.floor", flags & !4),
+        ("B42ChunkCaching2x", flags),
+        ("B42ChunkCaching2x.floor", flags & !4),
+        ("Clock2x", flags),
+    ] {
+        tm.load_texture_pack(fs, pack, f, None);
+    }
+    let mods = fs.mod_ids().to_vec();
+    tm.set_texture_pack_lookup(&mods);
+}
+
 impl WorldRender {
-    /// The textures and tables the world renderer reads. The tile packs
-    /// are `GameWindow.enter`'s (loaded here, on the first world frame, so
-    /// that the menu does not pay for them); then
-    /// `TileDepthTextureManager.init`, the tile depth assignments and the
-    /// tile geometry, the seam and cutaway masks.
+    /// The textures and tables the world renderer reads: the tile packs
+    /// (see [`load_tile_packs`]), `TileDepthTextureManager.init`, the tile
+    /// depth assignments and the tile geometry, the seam and cutaway masks.
     pub fn new(game_dir: &std::path::Path, fs: &mut GameFs, tm: &mut TextureManager) -> Self {
-        // `GameWindow.enter` at `Core.tileScale` 2.
-        let flags = if tm.use_compression { 4 } else { 0 } | 0x40;
-        for (pack, f) in [
-            ("Tiles2x", flags),
-            ("Overlays2x", flags),
-            ("JumboTrees2x", flags),
-            ("JumboTreesBigs2x", flags),
-            ("Tiles2x.floor", flags & !4),
-            ("B42ChunkCaching2x", flags),
-            ("B42ChunkCaching2x.floor", flags & !4),
-            ("Clock2x", flags),
-        ] {
-            tm.load_texture_pack(fs, pack, f, None);
-        }
-        let mods = fs.mod_ids().to_vec();
-        tm.set_texture_pack_lookup(&mods);
+        load_tile_packs(fs, tm);
         let depth = TileDepthTextureManager::init(fs, tm);
         let assignments = TileDepthTextureAssignmentManager::init(fs);
         let geometry = TileGeometryManager::from_media_dirs([game_dir.join("media").as_path()]);
@@ -152,14 +182,25 @@ impl WorldRender {
             seams,
             cutaway_stencils,
             drop_shadow: tm.shared_texture_flags(fs, "media/textures/NewShadow.png", 0),
+            blood_textures: BloodTextures(
+                pz_iso_render::blood::FLOOR_BLOOD_TYPES
+                    .iter()
+                    .filter_map(|&name| Some((name, tm.shared_texture(fs, name)?)))
+                    .collect(),
+            ),
             sprites: SpriteCache::new(),
             world: RenderWorld::new(),
             lighting: WorldLighting::new(),
             caches: Default::default(),
+            infos: RenderInfos::new(),
             cutaways: std::array::from_fn(|_| Cutaways::new()),
             start: Instant::now(),
             lighting_error: false,
+            corpse_error: None,
             pending: PendingRender::new(),
+            fx_masks: std::array::from_fn(|_| WeatherFxMask::default()),
+            fx_sprites: None,
+            fx_mask_to_draw: [false; MAX_PLAYERS],
             view3d: Default::default(),
             view3d_held: (false, false),
             view3d_cursor_free: false,
@@ -198,6 +239,11 @@ impl WorldRender {
         }
         let look = on && !self.view3d_cursor_free;
         pz_input::set_mouse_look(look);
+        if !look {
+            // The world mouse follows the crosshair only under mouse-look
+            // (set in `render_player`); otherwise it is the real cursor.
+            pz_input::set_world_mouse(None);
+        }
         let (dx, dy) = pz_input::take_mouse_motion();
         if look {
             self.view3d.apply_mouse(dx, dy);
@@ -362,8 +408,22 @@ impl WorldRender {
         fs: &GameFs,
         tm: &mut TextureManager,
     ) -> HostResult<()> {
+        // The world chunks' splats, before chunks leave: a chunk that left
+        // has no copy to add to.
+        let lock_fps = pz_lua_api::bind_climate::climate_settings().lock_fps;
+        for b in events.blood.drain(..) {
+            if let Some(level) = self
+                .world
+                .add_blood_splat(b.wx, b.wy, b.x, b.y, b.z, b.kind, b.world_age, lock_fps)
+            {
+                for c in self.caches.iter_mut() {
+                    c.invalidate(b.wx, b.wy, level, dirty::BLOOD);
+                }
+            }
+        }
         for (wx, wy) in events.removed.drain(..) {
             self.world.remove_chunk(wx, wy);
+            self.infos.forget_chunk(wx, wy);
             self.lighting.remove_chunk(wx, wy);
         }
         let mut tex = GameTextures {
@@ -399,6 +459,126 @@ impl WorldRender {
         Ok(())
     }
 
+    /// `WeatherFxMask.init`: the floor and wall sprites the mask is drawn
+    /// with and the white texture, once.
+    fn init_fx_sprites(&mut self, view: &WorldView<'_>, fs: &GameFs, tm: &mut TextureManager) {
+        if self.fx_sprites.is_some() {
+            return;
+        }
+        let mut tex = GameTextures {
+            fs,
+            textures: tm,
+            depth: &self.depth,
+            assignments: &self.assignments,
+            geometry: &self.geometry,
+        };
+        let cache = &mut self.sprites;
+        let mut sprite = |name: &str| {
+            let idx = *view.sprites.named_map.get(name)?;
+            Some(cache.get(view.sprites, idx, &mut tex))
+        };
+        let [floor, n, w, nw, se] = FxMaskSprites::SPRITES;
+        let mut sprites = FxMaskSprites {
+            floor: sprite(floor),
+            wall_n: sprite(n),
+            wall_w: sprite(w),
+            wall_nw: sprite(nw),
+            wall_se: sprite(se),
+            ..Default::default()
+        };
+        sprites.white = tm.shared_texture(fs, FxMaskSprites::WHITE);
+        self.fx_sprites = Some(sprites);
+    }
+
+    /// `IsoDeadBody.render` and `renderShadow` for the corpses on the
+    /// squares of the player's chunk map: their atlas draws and shadows
+    /// into `objects`, the atlas render jobs into `jobs`.
+    ///
+    /// TODO(port): the stairs test of `renderCorpseShadows`, the on-screen
+    /// and seen tests, and corpses in the 3D view.
+    fn render_corpses(
+        &mut self,
+        view: &WorldView<'_>,
+        v: &RenderView,
+        cam: &Camera,
+        models: &mut WorldModels,
+        objects: &mut FrameObjects,
+        jobs: &mut Vec<DrawCmd>,
+    ) {
+        let p = v.player as i32;
+        let world_age_days = (pz_lua_api::bind_climate::shared_game_time()
+            .borrow()
+            .world_age_hours()
+            / 24.0) as f32;
+        let (x0, y0, n) = v.chunk_map;
+        for wx in x0..x0 + n {
+            for wy in y0..y0 + n {
+                let Some(chunk) = view.cell.chunks.get(&(wx, wy)) else {
+                    continue;
+                };
+                for sq_owner in chunk.squares() {
+                    if sq_owner.borrow().static_moving.is_empty() {
+                        continue;
+                    }
+                    let sq = sq_owner.borrow();
+                    let (sx, sy, sz) = (sq.x, sq.y, sq.z);
+                    let outside = sq.is_exterior(view.sprites);
+                    let room = sq.room_id != -1;
+                    // `BodyParams.initLights`: `square.lighting[0]`.
+                    let lights: Vec<PointLight> = self
+                        .lighting
+                        .result_lights(0, sx, sy, sz)
+                        .iter()
+                        .map(|l| PointLight {
+                            x: l.x,
+                            y: l.y,
+                            z: l.z,
+                            rgb: [l.r, l.g, l.b],
+                            radius: l.radius,
+                        })
+                        .collect();
+                    let vert_light = self.lighting.square_light(p, sx, sy, sz).map(|l| l.vert_light);
+                    for body in &sq.static_moving {
+                        let Ok(mut body) = body.try_borrow_mut() else {
+                            continue;
+                        };
+                        let rgb = vert_light
+                            .as_ref()
+                            .map(|vl| {
+                                let c = pz_iso_render::models::interpolate_light(
+                                    vl,
+                                    body.base.x - sx as f32,
+                                    body.base.y - sy as f32,
+                                );
+                                [c.r, c.g, c.b]
+                            })
+                            .unwrap_or([v.climate.climate.ambient; 3]);
+                        let input = CorpseSquare {
+                            outside,
+                            room,
+                            lights: lights.clone(),
+                            light: [rgb[0], rgb[1], rgb[2], 1.0],
+                            world_age_days,
+                        };
+                        match models.render_corpse(&mut body, &input, cam, jobs) {
+                            Ok(Some(d)) => {
+                                objects.corpses.extend(d.draws);
+                                objects.corpse_shadows.push(d.shadow);
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                if self.corpse_error.as_deref() != Some(e.as_str()) {
+                                    eprintln!("ERROR: IsoDeadBody.render: {e}");
+                                    self.corpse_error = Some(e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// One player's world frame (`FBORenderCell.renderInternal` and what
     /// `IsoWorld.render` draws around it), appended to `out`.
     fn render_player(
@@ -407,6 +587,8 @@ impl WorldRender {
         v: &mut RenderView,
         models: Option<&mut WorldModels>,
         zombies: &[LuaGameCharacter],
+        regions: &IsoRegions,
+        weather_fx: Option<&RefCell<IsoWeatherFx>>,
         out: &mut Vec<DrawCmd>,
     ) {
         let p = v.player;
@@ -479,10 +661,25 @@ impl WorldRender {
         }
         let first_person = p == 0 && self.view3d.mode == pz_world3d::ViewMode::FirstPerson;
         let aspect = v.width as f32 / v.height.max(1) as f32;
-        // TODO(port): corpses, world items, the water and sky surfaces
+        // Port extension: under mouse-look the mouse acts where the
+        // crosshair meets the world. Picking and context menus read the
+        // isometric screen position, so hand them that point's.
+        let look = cam3.is_some() && pz_input::with_input(|i| i.mouse_look);
+        if let (true, Some(c3)) = (look, &cam3) {
+            let hit = c3.pick(aspect, 0.0, 0.0, &faces).map(|m| {
+                let [wx, wy, wz] = pz_world3d::from_model(m, [v.x, v.y, v.z]);
+                let sx = pz_render::iso::x_to_screen(wx, wy) - cam.off_x as f32;
+                let sy = pz_render::iso::y_to_screen(wx, wy, wz, 0) - cam.off_y as f32;
+                ((sx / cam.zoom) as i32, (sy / cam.zoom) as i32)
+            });
+            pz_input::set_world_mouse(hit);
+        }
+        // TODO(port): world items, the water and sky surfaces
         // (`SkyBox`, `SurfaceChecks`) and the
         // `FrameExtras` (flies, highlights, markers, vision cone, fog).
         let mut objects = FrameObjects::default();
+        // `DeadBodyAtlas.render()`'s jobs, drawn before the world.
+        let mut corpse_jobs = Vec::new();
         if let Some(models) = models {
             let camera = match &cam3 {
                 Some(c3) => pz_iso_render::models::ModelCamera::perspective(
@@ -554,7 +751,9 @@ impl WorldRender {
                 models.render_character(chr, &cv)
             };
             for n in 0..MAX_PLAYERS {
-                if let Some(player) = pz_lua_api::bind_players::player(n) {
+                // A player whose corpse was made is off the world: its
+                // corpse draws instead.
+                if let Some(player) = pz_lua_api::bind_players::player(n).filter(|p| !p.borrow().vars.died_body) {
                     if let Some(mut object) = draw(&player.borrow()) {
                         object.local_player = n == v.player;
                         objects.players.push(object);
@@ -565,6 +764,12 @@ impl WorldRender {
                 if let Some(object) = draw(zombie) {
                     objects.moving.push(object);
                 }
+            }
+            // Port extension: the 3D view draws no corpses, and its frame
+            // does not carry the atlas jobs, so it must not make atlas
+            // entries ready.
+            if cam3.is_none() {
+                self.render_corpses(view, v, &cam, models, &mut objects, &mut corpse_jobs);
             }
         }
         // Port extension: the 3D view (pz-world3d) replaces the isometric
@@ -580,9 +785,11 @@ impl WorldRender {
                 size,
                 view_proj: c3.view_proj(aspect).0,
                 sky: pz_world3d::frame::sky_colour(v.climate.climate.ambient),
+                eye: c3.eye,
                 faces: &faces,
                 models: &models,
                 screen: v.screen,
+                crosshair: look,
             };
             out.extend(pz_world3d::frame::scene_frame(&scene));
             return;
@@ -594,7 +801,7 @@ impl WorldRender {
             .flat_map(|x| (y0..y0 + n).map(move |y| (x, y)))
             .collect();
         let inputs = self.world.chunk_inputs(&order);
-        let mut cmds = Vec::new();
+        let mut cmds = corpse_jobs;
         let chunks = plan_chunks(&mut self.caches[p], &cam, size, &inputs, &mut cmds);
         let maps = pz_iso_render::seam::WorldDepthMaps {
             tiles: &self.depth,
@@ -623,11 +830,86 @@ impl WorldRender {
             state: &state,
             world: &self.world,
         };
-        let r = ChunkRenderer::new(cam, &maps, (v.width, v.height)).with_cutaways(Some(cv));
-        // `renderWeatherFX` draws after the cell, in the world projection.
-        // TODO(port): `render_weather_fx` from `ClimateRenderValues` with
-        // the weather mask.
-        let mut late = |_: &mut Vec<DrawCmd>| {};
+        // TODO(port): the climate, water, puddles, sky reflection, rain
+        // and fish splash inputs; with their defaults only the floor blood
+        // draws.
+        let (blood_decals, world_age_hours) = surface_values();
+        let surfaces = Surfaces {
+            settings: SurfaceSettings {
+                blood_decals,
+                lock_fps: pz_lua_api::bind_climate::climate_settings().lock_fps,
+                ..Default::default()
+            },
+            climate: Default::default(),
+            water: Default::default(),
+            puddles: Default::default(),
+            sky: Default::default(),
+            world_age_hours,
+            meta_grid_min_x: 0,
+            world: &self.world,
+            textures: &self.blood_textures,
+            frame: Default::default(),
+            rain: None,
+            fish: None,
+        };
+        let r = ChunkRenderer::new(cam, &maps, (v.width, v.height))
+            .with_cutaways(Some(cv))
+            .with_render_infos(&self.infos, p)
+            .with_surfaces(Some(surfaces));
+        // `WeatherFxMask.initMask()` before the cell; `renderWeatherFX`
+        // (`renderFxMask`) draws after it, in the world projection. The
+        // mask's characters replay this frame's model draws.
+        let fx_world = WorldFxMask {
+            render: &self.world,
+            cell: view.cell,
+            regions,
+        };
+        let fx_chars = FxMaskCharacters {
+            world: &fx_world,
+            objects: &objects,
+        };
+        let (sx, sy, sz) = (v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32);
+        let building = self
+            .world
+            .squares
+            .get(&(sx, sy, sz))
+            .and_then(|sq| sq.cut.building);
+        let mask = &mut self.fx_masks[p];
+        mask.init_mask(
+            &fx_chars,
+            FxMaskPlayer {
+                square: view.cell.get_grid_square(sx, sy, sz).map(|_| [sx, sy, sz]),
+                building,
+                z: v.z,
+                master_region: master_region(view.cell, regions, sx, sy, sz),
+            },
+            weather_fx.is_some(),
+        );
+        self.fx_mask_to_draw[p] = mask.has_mask_to_draw;
+        let fx_sprites = self
+            .fx_sprites
+            .clone()
+            .unwrap_or_default()
+            .with_depth_maps(&maps);
+        let (render_precipitation, fog_quality) = {
+            let core = pz_lua_api::bind_core::shared_core();
+            let core = core.borrow();
+            (core.get_option_render_precipitation(), core.performance.fog_quality)
+        };
+        let fx_view = WeatherFxView {
+            render_precipitation,
+            fog_quality,
+            ..WeatherFxView::new(cam.off_x as f32, cam.off_y as f32, v.width as i32, v.height as i32, v.zoom)
+        };
+        let fx_frame = FxMaskFrame {
+            cam_character_z: v.z,
+            ..Default::default()
+        };
+        let mut late = |out: &mut Vec<DrawCmd>| {
+            let Some(fx) = weather_fx else { return };
+            let Ok(mut fx) = fx.try_borrow_mut() else { return };
+            render_weather_fx(&mut fx, mask, &fx_chars, &fx_sprites, &fx_view, &fx_frame, out);
+        };
         let cmds = world_frame_full(
             &r,
             size,
@@ -640,6 +922,27 @@ impl WorldRender {
         );
         out.extend(cmds);
     }
+}
+
+/// The floor blood tiles by name.
+struct BloodTextures(std::collections::HashMap<&'static str, Texture>);
+
+impl SurfaceTextures for BloodTextures {
+    fn texture(&self, name: &str) -> Option<Texture> {
+        self.0.get(name).cloned()
+    }
+}
+
+/// `Core.getOptionBloodDecals()` and `GameTime.getWorldAgeHours()`; a
+/// borrowed owner draws no blood this frame.
+fn surface_values() -> (i32, f32) {
+    let decals = pz_lua_api::bind_core::shared_core()
+        .try_borrow()
+        .map_or(0, |c| c.get_option_blood_decals());
+    let age = pz_lua_api::bind_climate::shared_game_time()
+        .try_borrow()
+        .map_or(0.0, |t| t.world_age_hours() as f32);
+    (decals, age)
 }
 
 impl IsoWorld {
@@ -733,6 +1036,7 @@ impl IsoWorld {
                     .map_err(|_| RuntimeHostError::Borrowed("actual render texture manager"))?;
                 r.sync_chunks(&wv, render_chunks, fs, &mut textures)?;
                 r.apply_pending(&wv, regions, fs, &mut textures)?;
+                r.init_fx_sprites(&wv, fs, &mut textures);
             }
             // Character resources may lazily load hair or equipped-item
             // file textures. Release the shared texture owner first.
@@ -743,7 +1047,8 @@ impl IsoWorld {
             if view.player == 0 {
                 r.update_view3d(view.dir.delta());
             }
-            r.render_player(&wv, view, models.as_mut(), zombies, out);
+            let weather_fx = w.weather_fx.clone();
+            r.render_player(&wv, view, models.as_mut(), zombies, regions, weather_fx.as_deref(), out);
             check_changed_buildings(&mut r.lighting, &mut r.caches, &mut r.pending, num_players);
             Ok(())
         })?;

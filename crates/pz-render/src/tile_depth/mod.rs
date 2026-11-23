@@ -27,12 +27,14 @@ pub mod clamp;
 pub mod geometry;
 pub mod manager;
 pub mod modifier;
+pub mod plane;
 pub mod texture;
 
 pub use geometry::{TileGeometryManager, TileGeometryProperties};
 pub use assignments::{TileDepthTextureAssignmentManager, TileDepthTextureAssignments};
 pub use manager::{split_tile_name, ModData, TileDepthPreset, TileDepthTextureManager, TileDepthTextures};
 pub use modifier::{depth_uv1, wall_preset, TileDepthModifier, WallDirection, WallFlags};
+pub use plane::{fit_depth_plane, DepthPlane};
 pub use texture::{depth_bytes, DepthBytes, TileDepthTexture, TilesetDepthTexture, DEPTH_TEXTURE_FLAGS};
 
 #[cfg(test)]

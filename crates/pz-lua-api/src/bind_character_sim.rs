@@ -76,11 +76,20 @@ use std::rc::Rc;
 mod direction_tests;
 #[cfg(test)]
 mod grapple_tests;
+mod climb;
 mod control;
+mod crafting_surface;
+mod sleeping;
+pub(crate) use sleeping::update_asleep_player;
+pub use sleeping::wake_up_ui as sleeping_event_wake_up_ui;
 mod key_ring;
 pub(crate) mod known_poison;
+pub(crate) use known_poison::with_recipe_knowledge;
 mod reading;
+mod safety;
 pub(crate) mod read_flags;
+#[cfg(test)]
+mod get_players_tests;
 #[cfg(test)]
 mod running_tests;
 #[cfg(test)]
@@ -90,9 +99,25 @@ mod timed_action_phases_tests;
 #[cfg(test)]
 mod timed_actions_tests;
 #[cfg(test)]
+mod designation_zone_tests;
+#[cfg(test)]
+mod safety_tests;
+#[cfg(test)]
+mod definition_texture_tests;
+#[cfg(test)]
+mod traits_tests;
+#[cfg(test)]
+mod gender_tests;
+#[cfg(test)]
+mod unwanted_tests;
+#[cfg(test)]
 mod floor_bridge_tests;
 #[cfg(test)]
+mod crafting_surface_tests;
+#[cfg(test)]
 mod class_identity_tests;
+#[cfg(test)]
+mod hand_item_tests;
 
 pub const ISO_GAME_CHARACTER_CLASS: &str = "zombie.characters.IsoGameCharacter";
 pub const ISO_PLAYER_CLASS: &str = "zombie.characters.IsoPlayer";
@@ -338,6 +363,15 @@ impl SimContext for CallContext {
     }
     fn world_age_hours(&self) -> f64 {
         self.base.world_age_hours()
+    }
+    fn time_of_day(&self) -> f32 {
+        self.game_time.borrow().time_of_day
+    }
+    fn last_time_of_day(&self) -> f32 {
+        self.game_time.borrow().last_time_of_day
+    }
+    fn num_players(&self) -> i32 {
+        crate::bind_players::num_players()
     }
     fn all_players_asleep(&self) -> bool {
         self.base.all_players_asleep()
@@ -599,6 +633,9 @@ enum Handle {
     Xp,
     PerkInfo,
     WornItems,
+    HumanVisual,
+    Safety,
+    Traits,
 }
 
 /// One Lua object per (kind, owner, member), so Lua `==` is identity.
@@ -721,6 +758,27 @@ fn register_vision(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         Ok(c.push(v.map_or(Value::Nil, |v| pz_vehicles::lua::vehicle_value(&v))))
     });
     let p = expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS));
+    // getPlayers(): a new list with all four player slots, empty ones
+    // included.
+    p.static_fn("getPlayers", |c| {
+        let slots = (0..crate::bind_players::MAX_PLAYERS)
+            .map(|i| crate::bind_players::player(i).map_or(Value::Nil, |p| character_value(&p)))
+            .collect();
+        Ok(c.push(crate::bind_java_util::list_value(slots)))
+    });
+    // isUnwanted(id): getModData().rawget("itemUnwanted:" + id) is
+    // Boolean.TRUE. A null id is a null key, so false.
+    p.method("isUnwanted", |c| {
+        let Some(id) = crate::expose::str_arg(c, 1) else {
+            return Ok(c.push(false));
+        };
+        let table = chr_of(c)?.borrow_mut().get_mod_data();
+        match table.rawget(&Value::str(&format!("itemUnwanted:{id}"))) {
+            Value::Nil => Ok(c.push(false)),
+            Value::Bool(b) => Ok(c.push(b)),
+            other => Err(crate::bind_java_util::class_cast(&other, "java.lang.Boolean")),
+        }
+    });
     p.method("IsRunning", running_query);
     // getIndex() and getPlayerNum() (which calls it): `playerIndex`.
     p.method("getIndex", |c| {
@@ -734,6 +792,17 @@ fn register_vision(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     p.method("getJoypadBind", |c| {
         let v = chr_of(c)?.borrow().player.input.joypad_bind;
         Ok(c.push(v))
+    });
+    // isSeeDesignationZone() / setSeeDesignationZone(b): the
+    // seeDesignationZone field.
+    p.method("isSeeDesignationZone", |c| {
+        let v = chr_of(c)?.borrow().player.see_designation_zone;
+        Ok(c.push(v))
+    });
+    p.method("setSeeDesignationZone", |c| {
+        let v = bool_arg(c, 1);
+        chr_of(c)?.borrow_mut().player.see_designation_zone = v;
+        Ok(0)
     });
     p.method("isLocalPlayer", |c| {
         let ctx = current_sim_context();
@@ -798,6 +867,27 @@ fn register_inventory(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let id = opt_item_id(c, 1)?;
         let v = id.is_some() && chr_of(c)?.borrow().items.secondary_hand_item == id;
         Ok(c.push(v))
+    });
+    // `isHandItem`: in either hand; `isItemInBothHands`: in both.
+    for (name, both) in [("isHandItem", false), ("isItemInBothHands", true)] {
+        b.method(name, move |c| {
+            let id = opt_item_id(c, 1)?;
+            let chr = chr_of(c)?;
+            let chr = chr.borrow();
+            let (primary, secondary) = (
+                id.is_some() && chr.items.primary_hand_item == id,
+                id.is_some() && chr.items.secondary_hand_item == id,
+            );
+            let v = if both { primary && secondary } else { primary || secondary };
+            Ok(c.push(v))
+        });
+    }
+    // `getAttachedItems().contains(item)`: characters hold no
+    // `AttachedItems` yet, so no item is attached.
+    b.method("isAttachedItem", |c| {
+        opt_item_id(c, 1)?;
+        chr_of(c)?;
+        Ok(c.push(false))
     });
     let s = sm.clone();
     b.method("removeFromHands", move |c| {
@@ -929,6 +1019,18 @@ fn register_clothing(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         }
         let v = canonical((Handle::WornItems, Rc::as_ptr(&chr) as usize, 0), || {
             Value::Object(Rc::new(WornItemsObject::Character(chr.clone())))
+        });
+        Ok(c.push(v))
+    });
+    // `getHumanVisual()`: the character's `HumanVisual` (`nil` for a
+    // character without one).
+    b.method("getHumanVisual", |c| {
+        let chr = chr_of(c)?;
+        if chr.borrow().human_visual.is_none() {
+            return Ok(c.push(Value::Nil));
+        }
+        let v = canonical((Handle::HumanVisual, Rc::as_ptr(&chr) as usize, 0), || {
+            Value::Object(Rc::new(crate::bind_characters::HumanVisualObject::Character(chr.clone())))
         });
         Ok(c.push(v))
     });
@@ -1140,6 +1242,14 @@ lua_object!(MoodleObject, MOODLE_CLASS);
 lua_object!(XpObject, XP_CLASS);
 lua_object!(PerkInfoObject, PERK_INFO_CLASS);
 lua_object!(XpMultiplierObject, XP_MULTIPLIER_CLASS);
+
+/// `IsoGameCharacter.getCharacterGender()`.
+fn character_gender(chr: &LuaGameCharacterRef) -> pz_characters::CharacterGender {
+    match &chr.borrow().descriptor {
+        None => pz_characters::CharacterGender::Female,
+        Some(d) => d.borrow().character_gender,
+    }
+}
 
 pub(crate) fn chr_of(c: &NativeCall<'_>) -> LuaResult<LuaGameCharacterRef> {
     with_this::<CharacterObject, _>(c, |o| o.0.clone())
@@ -1629,6 +1739,28 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
         })?;
         Ok(0)
     });
+    // Global `addXp(player, perk, amount)`: in single player,
+    // `player.getXp().AddXP(perk, amount)` when `player.isExistInTheWorld()`.
+    // The port keeps no `square.movingObjects` lists, so a character is in
+    // the world when its current square is a square of the current cell.
+    let (s, ch) = (sm.clone(), chars.clone());
+    crate::expose::global(thread, "addXp", move |c| {
+        let chr = chr_of(c)?;
+        let square = chr.borrow().current_square_xyz();
+        let in_world =
+            square.is_some_and(|(x, y, z)| !crate::bind_world::square_value(x, y, z).is_nil());
+        if !in_world {
+            return Ok(0);
+        }
+        let v = character_value(&chr);
+        let perk = perk_arg(c, 1)?;
+        let amount = float_arg(c, 2);
+        let chars = ch.borrow();
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().add_xp(&s, &chars, perk.as_ref(), amount, ctx)
+        })?;
+        Ok(0)
+    });
     let (s, ch) = (sm.clone(), chars.clone());
     b.method("AddXPHaloText", move |c| {
         let chr = xp_chr(c)?;
@@ -1811,11 +1943,36 @@ fn register_character(
         }
     }
     control::register(&b);
+    climb::register(&b);
     control::register_globals(thread);
     known_poison::register(&b, sm, chars);
     reading::register(&b);
     read_flags::register(&b);
+    safety::register(thread);
+    // getCharacterGender(): FEMALE without a descriptor, else the
+    // descriptor's. isFemale(): true when that gender is FEMALE.
+    b.method("getCharacterGender", |c| {
+        let gender = character_gender(&chr_of(c)?);
+        Ok(c.push(crate::bind_characters::gender_value(gender)))
+    });
+    b.method("isFemale", |c| {
+        let gender = character_gender(&chr_of(c)?);
+        Ok(c.push(gender == pz_characters::CharacterGender::Female))
+    });
+    // setFemale(b): setCharacterGender(FEMALE or MALE), which sets the
+    // descriptor's gender and does nothing without a descriptor.
+    b.method("setFemale", |c| {
+        let female = bool_arg(c, 1);
+        if let Some(d) = &chr_of(c)?.borrow().descriptor {
+            d.borrow_mut().set_female(female);
+        }
+        Ok(0)
+    });
     b.method("createKeyRing", key_ring::create_key_ring);
+    b.method(
+        "canUseAsGenericCraftingSurface",
+        crafting_surface::can_use_as_generic_crafting_surface,
+    );
     b.method("getModData", |c| {
         let table = chr_of(c)?.borrow_mut().get_mod_data();
         Ok(c.push(table))
@@ -1908,6 +2065,15 @@ fn register_character(
         });
         Ok(c.push(v))
     });
+    // getCharacterTraits(): the characterTraits field (one Lua object).
+    b.method("getCharacterTraits", |c| {
+        let chr = chr_of(c)?;
+        let v = canonical((Handle::Traits, Rc::as_ptr(&chr) as usize, 0), || {
+            Value::Object(Rc::new(crate::bind_characters::CharacterTraitsObject::Of(chr.clone())))
+        });
+        Ok(c.push(v))
+    });
+    b.method("getSafety", safety::get_safety);
     b.method("getMoodles", |c| {
         let chr = chr_of(c)?;
         let v = canonical((Handle::Moodles, Rc::as_ptr(&chr) as usize, 0), || {
@@ -2041,6 +2207,74 @@ fn register_character(
         Ok(c.push(any))
     });
     let s = sm.clone();
+    b.method("isWearingAwkwardGloves", move |c| {
+        let v = chr_of(c)?.borrow().is_wearing_awkward_gloves(&s);
+        Ok(c.push(v))
+    });
+    // `isRecipeKnown(CraftRecipe[, actuallyKnown])`: unless `actuallyKnown`,
+    // `SandboxOptions.seeNotLearntRecipe` makes every recipe known.
+    // `isRecipeKnown(Recipe)` checks its original name, and
+    // `isRecipeKnown(name[, actuallyKnown])` the `Recipe` of that name, else
+    // the name itself.
+    let s = sm.clone();
+    b.method("isRecipeKnown", move |c| {
+        use pz_scripts::objects::entity::components::crafting::CraftRecipe;
+        use pz_scripts::objects::recipes::Recipe;
+        fn see_not_learnt(t: &mut Thread) -> LuaResult<bool> {
+            crate::bind_sandbox::instance(t)?;
+            crate::bind_sandbox::current_bool("SeeNotLearntRecipe")
+                .ok_or_else(|| crate::bind_world_object::unsupported("SandboxOptions.seeNotLearntRecipe"))
+        }
+        let know_all = |c: &NativeCall<'_>| -> LuaResult<bool> {
+            let ctx = current_sim_context();
+            Ok(chr_of(c)?.borrow().cheats.is_set(&*ctx, "KNOW_ALL_RECIPES"))
+        };
+        let known = |c: &NativeCall<'_>, name: Option<&str>| -> LuaResult<bool> {
+            let chr = chr_of(c)?;
+            let chr = chr.borrow();
+            Ok(name.is_some_and(|n| chr.known_recipes.iter().any(|k| k == n)))
+        };
+        // `isRecipeKnown(Recipe)`.
+        let old_recipe = |c: &mut NativeCall<'_>, r: &Recipe| -> LuaResult<bool> {
+            if know_all(c)? || see_not_learnt(c.thread)? {
+                return Ok(true);
+            }
+            known(c, r.originalname())
+        };
+        let actually = c.arg(2).truthy();
+        let (craft, old) = match c.arg(1) {
+            Value::Str(name) => {
+                let v = match pz_scripts::objects::recipes::get_recipe(&s, &name) {
+                    Some(r) => old_recipe(c, &r.borrow())?,
+                    None => (!actually && see_not_learnt(c.thread)?) || know_all(c)? || known(c, Some(&*name))?,
+                };
+                return Ok(c.push(v));
+            }
+            Value::Object(o) => match o.as_any().downcast_ref::<crate::bind_scripts::ScriptHandle>() {
+                Some(h) => (h.root.downcast::<CraftRecipe>(), h.root.downcast::<Recipe>()),
+                None => (None, None),
+            },
+            _ => (None, None),
+        };
+        if let Some(r) = old {
+            let v = old_recipe(c, &r.borrow())?;
+            return Ok(c.push(v));
+        }
+        let Some(recipe) = craft else {
+            return Err(LuaError::runtime("java.lang.ClassCastException: not a recipe"));
+        };
+        if !actually && see_not_learnt(c.thread)? {
+            return Ok(c.push(true));
+        }
+        let r = recipe.borrow();
+        let v = know_all(c)?
+            || !r.need_to_be_learn()
+            || known(c, r.name())?
+            || known(c, r.meta_recipe())?
+            || known(c, r.translation_name())?;
+        Ok(c.push(v))
+    });
+    let s = sm.clone();
     b.method("isInventive", move |c| {
         let v = chr_of(c)?.borrow().is_inventive(&s).map_err(java_error)?;
         Ok(c.push(v))
@@ -2050,9 +2284,41 @@ fn register_character(
         let v = chr_of(c)?.borrow().is_unlimited_endurance(&*ctx);
         Ok(c.push(v))
     });
+    b.method("getZombieKills", |c| {
+        let v = chr_of(c)?.borrow().zombie_kills;
+        Ok(c.push(v))
+    });
+    // `isBuildCheat()`: `getCheats().isSet(CheatType.BUILD)`.
+    b.method("isBuildCheat", |c| {
+        let ctx = CONTEXT.with(|c| c.borrow().clone());
+        let v = chr_of(c)?.borrow().cheats.is_set(&*ctx, "BUILD");
+        Ok(c.push(v))
+    });
+    // `isCheatSet(CheatType)`: `getCheats().isSet(cheat)`.
+    b.method("isCheatSet", |c| {
+        let cheat = match c.arg(1) {
+            Value::Nil => None,
+            Value::Object(o) => match o.as_any().downcast_ref::<crate::expose::JavaEnum>() {
+                Some(e) if e.class == crate::bind_cheat_type::CHEAT_TYPE_CLASS => Some(e.name),
+                _ => return Err(class_cast(&c.arg(1), crate::bind_cheat_type::CHEAT_TYPE_CLASS)),
+            },
+            other => return Err(class_cast(&other, crate::bind_cheat_type::CHEAT_TYPE_CLASS)),
+        };
+        let ctx = CONTEXT.with(|c| c.borrow().clone());
+        // `EnumSet.contains(null)` is false.
+        let chr = chr_of(c)?;
+        let v = cheat.is_some_and(|n| chr.borrow().cheats.is_set(&*ctx, n));
+        Ok(c.push(v))
+    });
     b.method("isGodMod", |c| {
         let ctx = CONTEXT.with(|c| c.borrow().clone());
         let v = chr_of(c)?.borrow().is_god_mod(&*ctx);
+        Ok(c.push(v))
+    });
+    // `getCheats().isSet(CheatType.MOVABLES)`.
+    b.method("isMovablesCheat", |c| {
+        let ctx = CONTEXT.with(|c| c.borrow().clone());
+        let v = chr_of(c)?.borrow().cheats.is_set(&*ctx, "MOVABLES");
         Ok(c.push(v))
     });
     b.method("isAsleep", |c| {
@@ -2111,6 +2377,12 @@ fn register_character(
     b.method("setBedType", |c| {
         let v = str_arg(c, 1).map(|s| s.to_string()).unwrap_or_default();
         chr_of(c)?.borrow_mut().bed_type = v;
+        Ok(0)
+    });
+    // `IsoPlayer.setHoursSurvived(hours)`.
+    b.method("setHoursSurvived", |c| {
+        let v = num_arg(c, 1);
+        chr_of(c)?.borrow_mut().hours_survived = v;
         Ok(0)
     });
     b.method("getHoursSurvived", |c| {
@@ -2410,6 +2682,28 @@ pub(crate) mod tests {
 
     /// A script manager with an invented item, loaded from a unique temp
     /// dir.
+    /// `isRecipeKnown(name[, actuallyKnown])`: the `Recipe` of that name
+    /// takes the `Recipe` form; any other name is looked up as it is.
+    #[test]
+    fn is_recipe_known_takes_a_recipe_name() {
+        let dir = std::env::temp_dir().join(format!("pz-bind-character-recipe-{}", std::process::id()));
+        let p = dir.join("media/scripts/test.txt");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "module Base { recipe Make Brick { Base.Nails, Result:Base.Nails, Time:10, } }").unwrap();
+        let sm = ScriptManager::new();
+        sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        let (mut t, player, _) = setup_with(sm);
+        run(&mut t, "assert(not player:isRecipeKnown('Sew Thing', true))").unwrap();
+        player.borrow_mut().known_recipes.push("Sew Thing".into());
+        run(&mut t, "assert(player:isRecipeKnown('Sew Thing', true))").unwrap();
+        // A `Recipe` name takes the `Recipe` form, which reads
+        // `seeNotLearntRecipe` even when `actuallyKnown` (the test has no
+        // sandbox options).
+        let err = run(&mut t, "player:isRecipeKnown('Make Brick', true)").unwrap_err();
+        assert!(err.contains("SandboxOptions used before init"), "{err}");
+    }
+
     fn item_scripts() -> ScriptManager {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2434,6 +2728,24 @@ pub(crate) mod tests {
         sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
         sm
+    }
+
+    #[test]
+    fn set_female_sets_the_descriptor_gender() {
+        let (mut t, player, _log) = setup();
+        let desc = player.borrow().descriptor.clone().unwrap();
+        t.globals().set_str("desc", survivor_desc_value(&desc));
+        run(
+            &mut t,
+            r#"
+            s = IsoSurvivor.new(desc, nil, 0, 0, 0)
+            s:setFemale(false)
+            assert(not s:isFemale() and not desc:isFemale())
+            s:setFemale(true)
+            assert(s:isFemale() and desc:isFemale())
+            "#,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -3046,6 +3358,73 @@ pub(crate) mod tests {
         run(&mut t, "assert(player:getJoypadBind() == 3)").unwrap();
     }
 
+    /// `ISCharacterScreen.render` shows `getZombieKills()`.
+    #[test]
+    fn zombie_kills_from_lua() {
+        let (mut t, chr, _) = setup();
+        run(&mut t, "assert(player:getZombieKills() == 0)").unwrap();
+        chr.borrow_mut().zombie_kills = 7;
+        run(&mut t, "assert(player:getZombieKills() == 7 and player:getZombieKills() .. '' == '7')").unwrap();
+    }
+
+    #[test]
+    fn movables_cheat_reads_the_player_cheats() {
+        struct Restore(Rc<dyn SimContext>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                install_sim_context(self.0.clone());
+            }
+        }
+        struct Debug;
+        impl SimContext for Debug {
+            fn is_debug(&self) -> bool {
+                true
+            }
+        }
+        let _restore = Restore(current_sim_context());
+        let (mut t, chr, _) = setup();
+        run(&mut t, "assert(player:isMovablesCheat() == false)").unwrap();
+        install_sim_context(Rc::new(Debug));
+        chr.borrow_mut().cheats.set(&Debug, "MOVABLES", true);
+        run(&mut t, "assert(player:isMovablesCheat() == true)").unwrap();
+        // `PlayerCheats.isSet` also needs debug, client or server.
+        install_sim_context(_restore.0.clone());
+        run(&mut t, "assert(player:isMovablesCheat() == false)").unwrap();
+    }
+
+    /// `isCheatSet(CheatType)`: `PlayerCheats.isSet`, which also needs
+    /// debug, client or server.
+    #[test]
+    fn is_cheat_set_reads_the_player_cheats() {
+        struct Debug;
+        impl SimContext for Debug {
+            fn is_debug(&self) -> bool {
+                true
+            }
+        }
+        struct Restore(Rc<dyn SimContext>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                install_sim_context(self.0.clone());
+            }
+        }
+        let _restore = Restore(current_sim_context());
+        let (mut t, chr, _) = setup();
+        let types = ["GOD_MODE", "INVISIBLE"].map(|n| crate::bind_cheat_type::CheatType { name: n.into(), tooltip: n.into() });
+        crate::bind_cheat_type::register(&mut t, &types);
+        install_sim_context(Rc::new(Debug));
+        chr.borrow_mut().cheats.set(&Debug, "INVISIBLE", true);
+        run(
+            &mut t,
+            "assert(player:isCheatSet(CheatType.INVISIBLE) and not player:isCheatSet(CheatType.GOD_MODE))
+             assert(not player:isCheatSet(nil))
+             assert(not pcall(function() return player:isCheatSet('INVISIBLE') end))",
+        )
+        .unwrap();
+        install_sim_context(Rc::new(DefaultSimContext));
+        run(&mut t, "assert(not player:isCheatSet(CheatType.INVISIBLE))").unwrap();
+    }
+
     #[test]
     fn character_coordinates_and_local_player_membership_from_lua() {
         struct Restore {
@@ -3209,6 +3588,31 @@ pub(crate) mod tests {
         assert!(log[1].starts_with("AddXP Knit 26.6"), "{}", log[1]);
         assert!(log.contains(&"LevelPerk Sprinting 0.0 false".to_string()));
         assert_eq!(chr.borrow().perk_list.len(), 3);
+    }
+
+    #[test]
+    fn add_xp_global_needs_a_square_of_the_cell() {
+        let (mut t, chr, log) = setup();
+        let none = "addXp(player, Perks.Knit, 20) assert(player:getXp():getXP(Perks.Knit) == 0)";
+        // No current square.
+        run(&mut t, none).unwrap();
+        // A current square that the cell does not have.
+        chr.borrow_mut().path.current_square = Some((1, 1, 0));
+        run(&mut t, none).unwrap();
+        assert!(log.borrow().iter().all(|l| !l.starts_with("AddXP")));
+
+        let mut chunk = pz_world::IsoChunk::new(0, 0);
+        chunk.set_square(1, 1, 0, Some(pz_world::IsoGridSquare::new(1, 1, 0).into()));
+        let mut cell = pz_world::IsoCell::default();
+        cell.chunks.insert((0, 0), chunk);
+        let old = crate::bind_world::with_world(|w| w.cell.replace(cell));
+        let added = run(
+            &mut t,
+            "addXp(player, Perks.Knit, 20) assert(player:getXp():getXP(Perks.Knit) > 0)",
+        );
+        crate::bind_world::with_world(|w| w.cell = old);
+        added.unwrap();
+        assert!(log.borrow().iter().any(|l| l.starts_with("AddXP Knit")));
     }
 
     #[test]

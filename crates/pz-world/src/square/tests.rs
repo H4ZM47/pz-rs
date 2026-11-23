@@ -41,6 +41,7 @@ const SPRITES: &[Spec] = &[
     ("stairs_tn", "stairsTN", &[]),
     ("stairs_mn", "stairsMN", &[]),
     ("stairs_bn", "stairsBN", &[]),
+    ("tree_0", "tree", &[]),
     ("thump_window_n", "normal", &[("WindowN", "")]),
     ("thump", "normal", &[]),
     ("frame_w", "normal", &[("WindowW", "")]),
@@ -568,6 +569,22 @@ fn thumpable(north: bool) -> ThumpableInfo {
         north,
         ..ThumpableInfo::default()
     }
+}
+
+#[test]
+fn free_squares_have_a_solid_floor_without_solid_objects_or_trees() {
+    let m = manager();
+    let cases: [&[&str]; 7] = [
+        &["floor"],
+        &["floor", "crate"],
+        &["floor", "seat"],
+        &["floor", "tree_0"],
+        &[],
+        &["stairs_bn"],
+        &["floor", "crate", "stairs_mn"],
+    ];
+    let free: Vec<bool> = cases.iter().map(|objs| square(&m, 8, 8, 0, objs).is_free_static(&m)).collect();
+    assert_eq!(free, [true, false, false, false, false, true, true]);
 }
 
 #[test]

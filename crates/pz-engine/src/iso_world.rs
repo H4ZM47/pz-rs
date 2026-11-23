@@ -53,13 +53,28 @@ impl GameRand for StandardRand {
 pub struct RenderChunkEvents {
     pub added: Vec<(i32, i32)>,
     pub removed: Vec<(i32, i32)>,
+    /// Floor blood splats the world chunks kept (`IsoChunk.addBloodSplat`),
+    /// in order, for the renderer's copy and `invalidateRenderChunkLevel`.
+    pub blood: Vec<BloodSplatAdded>,
+}
+
+/// One `IsoChunk.addBloodSplat` a world chunk kept: chunk `(wx, wy)`,
+/// world position, `type` and `GameTime.getWorldAgeHours()`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BloodSplatAdded {
+    pub wx: i32,
+    pub wy: i32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub kind: i32,
+    pub world_age: f32,
 }
 
 /// What the main menu's Lua leaves on `IsoWorld.instance` for a new game
 /// (`CharacterCreationProfession.initWorld` on `OnInitWorld`: the player's
-/// descriptor, traits and spawn square). The menu cannot run that yet
-/// (`getWorld()` is not bound and the menu is blocked on the world map),
-/// so the development entry supplies it.
+/// descriptor, traits and spawn square). The development entry skips the
+/// menu, so it supplies them instead.
 #[derive(Clone, Debug, Default)]
 pub struct NewGameSetup {
     /// `luaPosX/Y/Z`; `None` picks a point of the map's
@@ -145,6 +160,9 @@ pub struct IsoWorld {
     pub preset: String,
     /// `IsoCell.getZombieList()`: the real zombies.
     pub zombies: Vec<LuaGameCharacter>,
+    /// The stand-ins the local players' cells hold while their characters
+    /// are lent to [`Self::zombies`] (`IsoWorld::lend_players`).
+    pub player_stand_ins: Vec<LuaGameCharacter>,
     /// The last `IsoMovingObject` id handed out (`IDMax`).
     pub next_object_id: i32,
     /// Object state the character states keep outside the objects.
@@ -268,6 +286,7 @@ impl IsoWorld {
             statistics: Statistics::default(),
             preset: String::new(),
             zombies: Vec::new(),
+            player_stand_ins: Vec::new(),
             next_object_id: 0,
             states_runtime: Default::default(),
             action_groups: pz_characters::character::state::ActionGroups::from_media(
@@ -323,6 +342,7 @@ impl IsoWorld {
             streamer,
             world_gen,
             items,
+            erosion,
             ..
         } = self;
         // `GameTime.getWorldAgeHours()` as the item loads read it.
@@ -331,6 +351,7 @@ impl IsoWorld {
                 .borrow()
                 .world_age_hours();
         }
+        let dictionary = items.as_ref().map(|i| &i.dictionary);
         let items: &dyn pz_world::save::items::ItemRegistry = match items.as_ref() {
             Some(i) => i,
             None => &AllItems,
@@ -348,6 +369,24 @@ impl IsoWorld {
             // Lua call while the actual world and sprite manager are borrowed.
             let _collection_deferral = pz_kahlua::gc::defer_collection();
             let mut sprites = sprites.borrow_mut();
+            // `ErosionMain.LoadGridsquare` / `ChunkLoaded` from
+            // `IsoChunk.doLoadGridsquare`. A borrowed instance (a Lua call
+            // into erosion on the stack) skips erosion for this pass rather
+            // than aborting the stream.
+            let mut erosion_main = erosion.as_ref().and_then(|e| e.try_borrow_mut().ok());
+            // `Rand` is the one global generator; this is a second handle.
+            let mut erosion_rand = StandardRand;
+            let mut erosion_hook =
+                erosion_main
+                    .as_deref_mut()
+                    .map(|main| pz_erosion::erosion_main::ErosionChunkHook {
+                        main,
+                        hooks: &pz_world::square::NoSquareHooks,
+                        cell_objects: true,
+                        dictionary,
+                        rand: &mut erosion_rand,
+                        logs_per_size: Some(&object_tables.logs_per_size),
+                    });
             let (result, retired_objects, retired_chunks) = with_world(|w| {
                 let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else {
                     return (None, pz_world::RetiredWorldOwners::default(), Vec::new());
@@ -371,9 +410,11 @@ impl IsoWorld {
                     brand_new: world_gen
                         .as_mut()
                         .map(|h| h as &mut dyn pz_world::chunk::BrandNewHook),
-                    // TODO(port): `ErosionChunkHook` wrapped in
-                    // `ClearSoundsOnUnload` (erosion and world sounds on load).
-                    chunk_hook: None,
+                    // TODO(port): wrap it in `ClearSoundsOnUnload` (world
+                    // sounds of unloaded chunks).
+                    chunk_hook: erosion_hook
+                        .as_mut()
+                        .map(|h| h as &mut dyn pz_world::save::chunk_file::ChunkLoadHook),
                     no_save,
                     vehicles_db: vehicles.conn.as_mut(),
                     // TODO(port): the vehicle runtime's savers, meta and ids
@@ -504,7 +545,17 @@ impl IsoWorld {
         }
         println!("triggerEvent OnInitWorld");
         lua.trigger_event("OnInitWorld", &[]);
-        self.apply_new_game_setup(lua);
+        if self.new_game_setup.is_some() {
+            self.apply_new_game_setup(lua);
+        } else {
+            // What the menu's handler (`CharacterCreationProfession.initWorld`)
+            // set on `IsoWorld.instance`: `luaDesc`, `luatraits` and
+            // `luaPosX/Y/Z`.
+            use pz_lua_api::bind_world::lua_world;
+            self.lua_player_desc = lua_world::lua_player_desc();
+            self.lua_traits = lua_world::lua_traits();
+            self.lua_pos = lua_world::lua_world_fields().lua_pos;
+        }
         // `SandboxOptions.instance.load()`.
         let sb = sandbox(lua).ok_or("SandboxOptions.instance")?;
         self.load_sandbox(lua, &sb);
@@ -529,14 +580,16 @@ impl IsoWorld {
                 Some(SquareLighting { light_level: light.light_level_value(), vis: light.vis })
             },
         )));
-        // TODO(port): `ItemPickerJava.Parse()`.
+        // `ItemPickerJava.Parse()` (with `InitSandboxLootSettings()`,
+        // which the original runs a few steps later from the same
+        // options).
+        pz_lua_api::bind_item_picker::parse(&lua.thread, sb.clone());
         self.hydro_power_on = {
             let gt = pz_lua_api::bind_climate::shared_game_time();
             let days = gt.borrow().world_age_hours() as f32 / 24.0;
             sb.borrow().does_power_grid_exist(days, 0)
         };
-        // TODO(port): `ZomboidGlobals.toLua()`,
-        // `ItemPickerJava.InitSandboxLootSettings()`, `survivorDescriptors.clear()`.
+        // TODO(port): `ZomboidGlobals.toLua()`, `survivorDescriptors.clear()`.
         // `LoadTileDefinitions*` (property strings, custom values, lookup
         // tables, the definitions), `PostTileDefinitions`, then
         // `loadedTileDefinitions`.
@@ -599,7 +652,8 @@ impl IsoWorld {
         }
         // TODO(port): `ObjectRenderEffects.init`,
         // `WorldConverter.instance.convert` (and its `worldVersionError`).
-        // TODO(port): `SandboxOptions.handleOldZombiesFile2` (old `zombies.ini`).
+        // `SandboxOptions.handleOldZombiesFile2()`.
+        self.handle_old_zombies_file2(&sb);
         // `GameTime.init()` then `GameTime.load()`.
         {
             let gt = pz_lua_api::bind_climate::shared_game_time();
@@ -790,8 +844,10 @@ impl IsoWorld {
             self.create_new_player(lua, &sm)?;
         }
         // `PlayerDB.getInstance().canSavePlayers = true`.
-        // TODO(port): `PlayerDB.canSavePlayers` (kept by the save path);
-        // `TutorialManager.activeControlZombies`;
+        if let Some(db) = self.player_db.as_mut() {
+            db.can_save_players = true;
+        }
+        // TODO(port): `TutorialManager.activeControlZombies`;
         // `ReanimatedPlayers.loadReanimatedPlayers`.
         if let Some(p) = pz_lua_api::bind_players::player_instance() {
             // TODO(port): `ScriptManager.checkAutoLearn`, `checkMetaRecipes`,
@@ -850,7 +906,11 @@ impl IsoWorld {
             let chars = pz_lua_api::bind_characters::shared_characters();
             let made = chars.borrow_mut().create_survivor(&sm);
             match made {
-                Ok(d) => self.lua_player_desc = Some(Rc::new(RefCell::new(d))),
+                Ok(d) => {
+                    let d = Rc::new(RefCell::new(d));
+                    self.dress_new_game_desc(lua, &d);
+                    self.lua_player_desc = Some(d);
+                }
                 Err(e) => self.log_error(format!("SurvivorFactory.CreateSurvivor: {e:?}")),
             }
         }
@@ -868,6 +928,67 @@ impl IsoWorld {
         };
         // What the menu's `getWorld():setLuaPosX/Y/Z` would have set.
         pz_lua_api::bind_world::lua_world::set_lua_pos(self.lua_pos);
+    }
+
+    /// The clothes the character creation screen gives a new descriptor:
+    /// `CharacterCreationMain:setVisible` calls `randomGenericOutfit`,
+    /// which runs `dressWithDefinitions` with
+    /// `ClothingSelectionDefinitions.default` (worn items cleared first),
+    /// then with the profession's definitions. This runs the same Lua on the
+    /// descriptor. No traits are chosen here, so the trait outfits
+    /// (`TraitClothingSelectionDefinitions`) are not applied.
+    fn dress_new_game_desc(&mut self, lua: &mut LuaManager, desc: &Rc<RefCell<LuaSurvivorDesc>>) {
+        const SRC: &str = r#"
+local desc = ...
+local function dressWithDefinitions(definition, resetWornItems)
+    if resetWornItems then
+        desc:getWornItems():clear()
+    end
+    for bodyLocation, profTable in pairs(definition) do
+        local chance = profTable.chance
+        if not chance or ZombRand(100) < chance then
+            desc:setWornItem(ItemBodyLocation.get(ResourceLocation.of(bodyLocation)), nil)
+            local items = profTable.items
+            local itemType = items[ZombRand(0, #items)+1]
+            if itemType then
+                local item = instanceItem(itemType)
+                if item then
+                    desc:setWornItem(ItemBodyLocation.get(ResourceLocation.of(bodyLocation)), item)
+                end
+            end
+        end
+    end
+end
+local default = ClothingSelectionDefinitions.default
+if desc:isFemale() then
+    dressWithDefinitions(default.Female, true)
+else
+    dressWithDefinitions(default.Male, true)
+end
+local profession = ClothingSelectionDefinitions[desc:getCharacterProfession():getName()]
+if profession then
+    if desc:isFemale() then
+        dressWithDefinitions(profession.Female, false)
+    elseif profession.Male then
+        dressWithDefinitions(profession.Male, false)
+    else
+        dressWithDefinitions(profession.Female, false)
+    end
+end
+"#;
+        let g = lua.thread.globals().clone();
+        let result = pz_kahlua::stdlib::load_string(SRC, Some("randomGenericOutfit"), g)
+            .map_err(|e| format!("{e:?}"))
+            .and_then(|f| {
+                let arg = pz_lua_api::bind_characters::survivor_desc_value(desc);
+                lua.thread
+                    .pcall(&f, &[arg])
+                    .map(|_| ())
+                    .map_err(|(e, _)| pz_kahlua::exec::java_value_of(&e))
+            });
+        if let Err(e) = result {
+            self.log_error(format!("CharacterCreationMain:randomGenericOutfit: {e}"));
+        }
     }
 
     /// The single-map spawn region `SpawnRegionMgr` builds
@@ -931,7 +1052,10 @@ impl IsoWorld {
             Ok(bytes) => match s.load_bin(&bytes) {
                 Ok(preset) => {
                     self.preset = preset;
-                    // TODO(port): `handleOldZombiesFile1`.
+                    // `handleOldZombiesFile1()` (never on a server): an old
+                    // `zombies.ini` holds `ZombieConfig.` options without
+                    // the table prefix.
+                    s.load_server_zombies_file(&self.file_in_save("zombies.ini"));
                     // `applySettings()`.
                     let mut g = gt.borrow_mut();
                     g.start_year = s.first_year() + opt_int(&s, "StartYear") - 1;
@@ -983,7 +1107,32 @@ impl IsoWorld {
             5 => 1.2,
             _ => 1.0,
         };
-        // TODO(port): `VirtualZombieManager.maxRealZombies` from `Zombies`.
+        // `VirtualZombieManager.maxRealZombies`: the `Zombies` switch is
+        // overwritten with 1 straight after, the field's initial value.
+    }
+
+    /// `SandboxOptions.handleOldZombiesFile2()` (never on a server): after
+    /// `handleOldZombiesFile1` folded an old `zombies.ini` into the options,
+    /// the file is deleted and `map_sand.bin` rewritten
+    /// (`saveCurrentGameBinFile`). Failures are logged, not fatal.
+    fn handle_old_zombies_file2(&mut self, sb: &Rc<RefCell<pz_sandbox::SandboxOptions>>) {
+        let file = self.file_in_save("zombies.ini");
+        if !file.exists() {
+            return;
+        }
+        println!("deleting {}", file.display());
+        if let Err(e) = std::fs::remove_file(&file) {
+            self.log_error(format!("SandboxOptions.handleOldZombiesFile2: {e}"));
+            return;
+        }
+        let world_version = pz_classfile::Jar::open(self.jar())
+            .ok()
+            .and_then(|j| pz_sandbox::save_bin::world_version(&j).ok())
+            .unwrap_or(WORLD_VERSION);
+        let bytes = sb.borrow().save_bin(world_version, &self.preset);
+        if let Err(e) = std::fs::write(self.file_in_save("map_sand.bin"), bytes) {
+            self.log_error(format!("SandboxOptions.saveCurrentGameBinFile: {e}"));
+        }
     }
 
     /// `ErosionGlobals.Boot(spriteManager)`: `new ErosionMain` (whose
@@ -1069,6 +1218,8 @@ impl IsoWorld {
         use pz_world::designation::DesignationIoError;
         use pz_world::meta_save::MetaCells;
         use pz_lua_api::bind_world::{try_with_world,try_with_world_read};
+        // `SafeHouse.safehouseList` belongs to this world's metadata.
+        pz_lua_api::bind_safehouse::install_safehouses(Vec::new());
         let has_grid=try_with_world_read(|world|Ok(world.meta_grid.is_some()))
             .map_err(|error|format!("metadata current world: {error:?}"))?;
         if !has_grid {return Ok(());}
@@ -1095,6 +1246,9 @@ impl IsoWorld {
                 let notices=reader.take_notices();
                 pz_inventory::component_host::emit_mod_data_notices(&notices)
                     .map_err(|error|format!("metadata StringUTF diagnostics host failure: {error:?}"))?;
+                pz_lua_api::bind_safehouse::install_safehouses(
+                    self.meta_world.safehouses.iter().map(|s| [s.x, s.y, s.w, s.h]).collect(),
+                );
                 match result {
                     Ok(())=>{},
                     Err(DesignationIoError::Io(error))=>self.errors.push(format!("IsoMetaGrid.load: {error}")),
@@ -1152,26 +1306,63 @@ impl IsoWorld {
 
     /// `new WorldGenChunk(seed)`, the biome map and the map's `WorldGen`
     /// zones (`IsoChunk.LoadBrandNew`'s world generation).
-    /// `Basements.beforeLoadMetaGrid()` for a world without
-    /// `map_basements.bin`: the definitions `basements.lua` and the
-    /// `Basement` zones registered on `OnLoadMapZones`, their `.pzby`
-    /// headers, the placements (seeded by the world-generation seed) and
-    /// their buildings in the lot headers and the meta grid.
+    /// `Basements.beforeLoadMetaGrid()`: the definitions `basements.lua`
+    /// and the `Basement` zones registered on `OnLoadMapZones`. A world with
+    /// `map_basements.bin` takes its placements and buildings from it;
+    /// otherwise the definitions' `.pzby` headers are loaded, the
+    /// placements calculated (seeded by the world-generation seed), their
+    /// buildings created and the file written (unless saving is off). Either
+    /// way the buildings then go to the lot headers and the meta grid.
     fn before_load_meta_grid(&mut self) {
-        // TODO(port): `loadSavefile()` / `writeSavefile()`
-        // (`map_basements.bin`): a loaded world recomputes the placements.
         let mut b =
             pz_worldgen::basements::Basements::new(Rc::new(pz_fs::GameFs::new(&self.game_dir)));
         b.per_map = pz_lua_api::bind_basements::take_per_map();
-        b.load_headers(&mut self.rand);
-        let seed = self.world_gen_params.borrow().seed();
-        let rand = &mut self.rand;
-        with_world(|w| {
-            if let Some(meta) = w.meta_grid.as_mut() {
-                b.calculate_placements(meta, seed);
-                b.meta_buildings = b.add_buildings_to_meta_grid(meta, rand);
+        let file = self.file_in_save(pz_worldgen::basements::SAVEFILE_NAME);
+        let loaded = match b.load_savefile(&file) {
+            Ok(l) => l,
+            Err(e) => {
+                // `ExceptionLogger.logException`; the world recomputes.
+                self.log_error(format!("Basements.loadSavefile: {e}"));
+                b.placements.clear();
+                b.buildings.clear();
+                false
             }
+        };
+        // Read before `rand` borrows the world; only the not-loaded branch
+        // writes the file.
+        let world_version = (!loaded).then(|| {
+            pz_classfile::Jar::open(self.jar())
+                .ok()
+                .and_then(|j| pz_sandbox::save_bin::world_version(&j).ok())
+                .unwrap_or(WORLD_VERSION)
         });
+        let rand = &mut self.rand;
+        if loaded {
+            with_world(|w| {
+                if let Some(meta) = w.meta_grid.as_mut() {
+                    b.meta_buildings = b.add_building_defs_to_meta_grid(meta, rand);
+                }
+            });
+        } else {
+            b.load_headers(rand);
+            let seed = self.world_gen_params.borrow().seed();
+            let no_save = pz_lua_api::bind_core::shared_core().borrow().is_no_save();
+            let mut write_err = None;
+            with_world(|w| {
+                if let Some(meta) = w.meta_grid.as_mut() {
+                    b.calculate_placements(meta, seed);
+                    b.create_building_defs(meta);
+                    // `writeSavefile()`.
+                    if !no_save {
+                        write_err = b.write_savefile(&file, world_version.unwrap_or(WORLD_VERSION)).err();
+                    }
+                    b.meta_buildings = b.add_building_defs_to_meta_grid(meta, rand);
+                }
+            });
+            if let Some(e) = write_err {
+                self.log_error(format!("Basements.writeSavefile: {e}"));
+            }
+        }
         for e in std::mem::take(&mut b.errors) {
             self.log_error(format!("Basements: {e}"));
         }
@@ -1411,15 +1602,22 @@ impl IsoWorld {
                 pz_characters::character::items::blood_part::MAX,
             ));
             let group = desc.borrow().worn_items.body_location_group().clone();
-            chr.descriptor = Some(desc);
+            chr.descriptor = Some(desc.clone());
             chr.init_worn_items(sm, group);
             chr.vars.x = x as f32 + 0.5;
             chr.vars.y = y as f32 + 0.5;
             chr.vars.z = z as f32;
             chr.vars.dir = pz_world::square::IsoDirections::SE;
+            let chr = Rc::new(RefCell::new(chr));
+            // `Dressup(desc)`: the player wears new copies of the clothes
+            // the descriptor wears.
+            pz_lua_api::character_dressup::dressup(&mut lua.thread, sm, &chr, &desc)
+                .map_err(|e| format!("IsoPlayer.Dressup: {e}"))?;
+            // `getHumanVisual().copyFrom(descriptor.getHumanVisual())`.
+            pz_lua_api::character_dressup::copy_human_visual(&lua.thread, &chr, &desc)
+                .map_err(|e| format!("IsoPlayer HumanVisual.copyFrom: {e}"))?;
             // `player.sqlId = 1`.
             self.player_sql_ids[0] = 1;
-            let chr = Rc::new(RefCell::new(chr));
             self.place_player(chr.clone());
             player = Some(chr);
         }

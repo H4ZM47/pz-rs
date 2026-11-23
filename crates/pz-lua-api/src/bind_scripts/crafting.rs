@@ -1,22 +1,23 @@
 //! `CraftRecipe` (a script, or embedded in an entity's
 //! `CraftRecipeComponentScript`) with its `InputScript`/`OutputScript` lines,
 //! `CraftRecipe.RequiredSkill` and `CraftRecipe.XpAward`, and the crafting
-//! enums they return.
+//! enums they return. Also `CraftRecipeManager.hasPlayerRequiredSkill`,
+//! which the recipe list draws each required skill with.
 //!
 //! Not exposed yet: members taking characters, players or inventory items
 //! (`canUseItem`, `canOutputItem`, `OnTestItem`, `hasRecipeAtHand`,
 //! `isFavourite`, `addXP`, `hasPlayerLearned`, `canResearch`,
-//! `checkMetaRecipe`, `checkAutoLearn*Skills`, `characterHasRequiredSkills`,
-//! `getHighestRelevantSkill*`, `*BenefitFromRecipeAtHand`,
-//! `generateDebugText`, `getFavouriteModDataString`, `getTime(character)`,
+//! `checkMetaRecipe`, `checkAutoLearn*Skills`, `getHighestRelevantSkill*`,
+//! `canBenefitFromRecipeAtHand`, `validateBenefitFromRecipeAtHand`,
+//! `generateDebugText`, `getFavouriteModDataString`,
 //! the input item tests, `isFluidMatch`, `isEnergyMatch`; TODO(inventory,
-//! IsoGameCharacter)), perks (`getPerk`, `involvesSkill`,
-//! `getHighestPerkRequirement`; TODO(PerkFactory)), `getIconTexture`
-//! (TODO(Texture)), fluids and energies (`getPossibleInputFluids`,
+//! IsoGameCharacter)), perks (`involvesSkill`,
+//! `getHighestPerkRequirement`; TODO(PerkFactory)), fluids and energies (`getPossibleInputFluids`,
 //! `getFluid`, ...; TODO(Fluid, Energy)), `getOverlayMapper`,
-//! `getOutputMapper`, `getLuaCallString`/`hasLuaCall` (enum not exposed),
+//! `getLuaCallString`/`hasLuaCall` (enum not exposed),
 //! `getRecipeGroup` (TODO(CraftRecipeGroup)), `setTags`, `setProp1`/`setProp2`, `getTagBits`/`getModTags`, and a mod's
-//! name in `getModName` (TODO(ChooseGameInfo)).
+//! name in `getModName` (TODO(ChooseGameInfo)). `couldBenefitFromRecipeAtHand`
+//! and `characterHasRequiredSkills` are bound in `bind_craft_recipe_manager`.
 
 use super::{
     get, handle_arg, method, opt_str, script_list, script_value, set, string_list, void, IntoLua, ScriptHandle,
@@ -26,8 +27,8 @@ use crate::bind_registry::{key_value, ITEM_TAG_CLASS};
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg};
 use pz_kahlua::{LuaResult, NativeCall, Thread, Value};
 use pz_scripts::objects::entity::components::crafting::{
-    CraftRecipe, FluidMatchMode, InputFlag, InputScript, ItemApplyMode, OutputFlag, OutputScript, RequiredSkill,
-    XpAward,
+    CraftRecipe, FluidMatchMode, InputFlag, InputScript, ItemApplyMode, OutputFlag, OutputMapper, OutputScript,
+    RequiredSkill, XpAward,
 };
 use pz_scripts::objects::entity::components::resources::ResourceType;
 use pz_scripts::objects::entity::ComponentType;
@@ -37,6 +38,7 @@ use std::rc::Rc;
 
 pub const INPUT_SCRIPT_CLASS: &str = "zombie.scripting.entity.components.crafting.InputScript";
 pub const OUTPUT_SCRIPT_CLASS: &str = "zombie.scripting.entity.components.crafting.OutputScript";
+pub const OUTPUT_MAPPER_CLASS: &str = "zombie.entity.components.crafting.recipe.OutputMapper";
 pub const IO_SCRIPT_CLASS: &str = "zombie.scripting.entity.components.crafting.CraftRecipe$IOScript";
 pub const REQUIRED_SKILL_CLASS: &str = "zombie.scripting.entity.components.crafting.CraftRecipe$RequiredSkill";
 pub const XP_AWARD_CLASS: &str = "zombie.scripting.entity.components.crafting.CraftRecipe$XpAward";
@@ -50,6 +52,31 @@ fn list(values: Vec<Value>) -> Value {
     crate::bind_java_util::list_value(values)
 }
 
+/// `OutputMapper.getOutputItem(data[, manualInputs])`. Matching the
+/// entrees against the input items (`matchItem`) is not ported.
+fn register_output_mapper(thread: &mut Thread) {
+    let b = expose_class(thread, OUTPUT_MAPPER_CLASS, None);
+    method(&b, "getOutputItem", |c, h| {
+        let (data, manual) = (c.arg(1), c.arg(2).truthy());
+        let mapper = h.read(|m: &OutputMapper| m.clone())?;
+        let npe = || pz_kahlua::LuaError::runtime("java.lang.NullPointerException");
+        if data.is_nil() {
+            // No entree is tried; when manual, `getFirstManualInputFor` on
+            // the null data throws for the first mapper input.
+            let Some(result) = mapper.default_output_entree().map(|e| e.result.clone()) else {
+                return Ok(Value::Nil);
+            };
+            if manual && !mapper.input_scripts().is_empty() {
+                return Err(npe());
+            }
+            return Ok(script_value(result.as_ref()));
+        }
+        let recipe = h.parent().ok_or_else(npe)?.target_ptr()?;
+        let item = crate::bind_craft_recipe_manager::data_mapper_output_item(c.thread, &data, recipe, &mapper, manual)?;
+        Ok(script_value(item.as_ref()))
+    });
+}
+
 /// Line `i` of a recipe (an `InputScript` or `OutputScript`).
 fn io_value(recipe: &ScriptHandle, i: usize) -> LuaResult<Value> {
     let input = recipe.read(|r: &CraftRecipe| r.io_lines().get(i).map(|io| io.as_input().is_some()))?;
@@ -61,6 +88,41 @@ fn io_value(recipe: &ScriptHandle, i: usize) -> LuaResult<Value> {
             .child(OUTPUT_SCRIPT_CLASS, &format!("io{i}"), move |r: &CraftRecipe| r.io_lines().get(i)?.as_output()),
         None => Value::Nil,
     })
+}
+
+/// `getIconTexture` as a Lua value: [`icon_texture`].
+pub(crate) fn icon_texture_value(r: &CraftRecipe) -> LuaResult<Value> {
+    let t = icon_texture(r).map_err(crate::bind_render::texture_error)?;
+    Ok(crate::bind_render::texture_value_ref(t.as_ref()))
+}
+
+/// The perks whose highest level `getHighestRelevantSkillLevel(chr,
+/// includeAutoLearn)` takes: the required skills, the xp awards, and with
+/// `include_auto_learn` the auto-learn skills.
+fn relevant_skill_perks(r: &CraftRecipe, include_auto_learn: bool) -> Vec<String> {
+    let mut perks: Vec<String> = r.skill_required.iter().flatten().map(|s| s.perk().to_string()).collect();
+    perks.extend(r.xp_award.iter().flatten().map(|x| x.perk().to_string()));
+    if include_auto_learn {
+        perks.extend(r.auto_learn_any.iter().flatten().map(|s| s.perk().to_string()));
+        perks.extend(r.auto_learn_all.iter().flatten().map(|s| s.perk().to_string()));
+    }
+    perks
+}
+
+/// `chr.getPerkLevel(Perks.<perk>)`.
+fn perk_level(t: &mut Thread, chr: &Value, perk: &str) -> LuaResult<i32> {
+    let perk = perk_of(t, perk);
+    let f = t.table_get(chr, &Value::str("getPerkLevel"))?;
+    let level = t.call1(&f, &[chr.clone(), perk])?;
+    Ok(pz_kahlua::exec::raw_tonumber(&level).unwrap_or(0.0) as i32)
+}
+
+/// The `PerkFactory.Perk` named `perk` (`Perks[perk]`).
+fn perk_of(t: &Thread, perk: &str) -> Value {
+    match t.globals().get_str("Perks") {
+        Value::Table(perks) => perks.get_str(perk),
+        _ => Value::Nil,
+    }
 }
 
 fn opt_io(recipe: &ScriptHandle, i: Option<usize>) -> LuaResult<Value> {
@@ -148,6 +210,7 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     get(&b, "getTranslationName", |r: &CraftRecipe| r.translation_name().map(str::to_string));
     set(&b, "overrideTranslationName", |r: &mut CraftRecipe, v: Option<String>| r.override_translation_name(v));
     get(&b, "getIconName", |r: &CraftRecipe| r.icon_name().map(str::to_string));
+    method(&b, "getIconTexture", |_, h| h.read(icon_texture_value)?);
     get(&b, "getModID", |r: &CraftRecipe| r.mod_id().map(str::to_string));
     get(&b, "getModName", |r: &CraftRecipe| if r.is_vanilla() { "Project Zomboid" } else { "<unknown_mod>" });
     get(&b, "isVanilla", |r: &CraftRecipe| r.is_vanilla());
@@ -188,10 +251,23 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     set(&b, "setResearchSkillLevel", |r: &mut CraftRecipe, v: i32| r.set_research_skill_level(v));
     method(&b, "normalizeSkillLevel", |c, _| Ok(CraftRecipe::normalize_skill_level(int_arg(c, 1)).into_lua()));
     method(&b, "getTime", |c, h| {
-        if !c.arg(1).is_nil() {
-            return Err(pz_kahlua::LuaError::runtime("TODO(IsoGameCharacter): getTime(character)"));
+        let chr = c.arg(1);
+        let (time, highest, perks) = h.read(|r: &CraftRecipe| {
+            (r.time(), r.highest_skill_requirement(false), relevant_skill_perks(r, true))
+        })?;
+        if chr.is_nil() {
+            return Ok(time.into_lua());
         }
-        h.read(|r: &CraftRecipe| r.time().into_lua())
+        // `getTime(chr)`: 1/20 of the time less per level above the highest
+        // requirement.
+        let mut level = 0;
+        for perk in &perks {
+            level = level.max(perk_level(c.thread, &chr, perk)?);
+        }
+        if level <= highest {
+            return Ok(time.into_lua());
+        }
+        Ok((time - (level - highest) * (time / 20)).into_lua())
     });
     get(&b, "getTimedActionScript", |r: &CraftRecipe| script_value(r.timed_action_script()));
     method(&b, "getHighestSkillRequirement", |c, h| {
@@ -259,6 +335,8 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
 
     let b = expose_class(thread, REQUIRED_SKILL_CLASS, None);
     get(&b, "getLevel", |s: &RequiredSkill| s.level());
+    get(&b, "getPerk", |s: &RequiredSkill| required_perk(s));
+    register_required_skill_check(thread);
     let b = expose_class(thread, XP_AWARD_CLASS, None);
     get(&b, "getAmount", |x: &XpAward| x.amount());
 
@@ -322,6 +400,40 @@ fn frozen_food(sm: &ScriptManager, i: &InputScript) -> bool {
     })
 }
 
+pub const CRAFT_RECIPE_MANAGER_CLASS: &str = "zombie.entity.components.crafting.recipe.CraftRecipeManager";
+
+/// `RequiredSkill.getPerk()`: the `PerkFactory.Perk` the skill names.
+fn required_perk(s: &RequiredSkill) -> Value {
+    let chars = crate::bind_characters::shared_characters();
+    let perk = chars.borrow().perks.from_string(s.perk());
+    crate::bind_skills::perk_value(perk.as_ref())
+}
+
+/// `CraftRecipeManager.hasPlayerRequiredSkill(skill, chr)`: false for a
+/// null argument, else `chr.getPerkLevel(skill.getPerk()) >=
+/// skill.getLevel()`.
+fn register_required_skill_check(thread: &mut Thread) {
+    let b = expose_class(thread, CRAFT_RECIPE_MANAGER_CLASS, None);
+    b.static_fn("hasPlayerRequiredSkill", |c| {
+        let chr = c.arg(1);
+        let Some(skill) = handle_arg(c, 0)? else { return Ok(c.push(false)) };
+        if chr.is_nil() {
+            return Ok(c.push(false));
+        }
+        let (perk, level) = skill.read(|s: &RequiredSkill| (required_perk(s), s.level()))?;
+        let f = c.thread.table_get(&chr, &Value::str("getPerkLevel"))?;
+        if f.is_nil() {
+            return Err(pz_kahlua::LuaError::runtime(format!(
+                "{}.getPerkLevel is not bound",
+                pz_kahlua::stdlib::java_class_name(&chr)
+            )));
+        }
+        let have = c.thread.call1(&f, &[chr.clone(), perk])?;
+        let have = pz_kahlua::exec::raw_tonumber(&have).unwrap_or(0.0) as i32;
+        Ok(c.push(have >= level))
+    });
+}
+
 fn register_input(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let b = expose_class(thread, INPUT_SCRIPT_CLASS, Some(IO_SCRIPT_CLASS));
     for &(name, flag) in INPUT_FLAG_GETTERS {
@@ -334,6 +446,25 @@ fn register_input(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     });
     get(&b, "isDestroy", |i: &InputScript| i.is_destroy());
     get(&b, "isKeep", |i: &InputScript| i.is_keep());
+    // `isUsesPartialItem(item)`: never for an item count, destroy or keep
+    // input; then a drainable with a use delta under 1, or a food that
+    // changes hunger.
+    let s = sm.clone();
+    method(&b, "isUsesPartialItem", move |c, h| {
+        let item = handle_arg(c, 1)?;
+        let whole = h.read(|i: &InputScript| i.is_item_count() || i.is_destroy() || i.is_keep())?;
+        let Some(item) = item.filter(|_| !whole) else {
+            return Ok(false.into_lua());
+        };
+        item.read(|i: &Item| {
+            if i.is_item_type(&s, "DRAINABLE") {
+                i.use_delta < 1.0
+            } else {
+                i.is_item_type(&s, "FOOD") && i.hunger_change.abs() > 0.0
+            }
+            .into_lua()
+        })
+    });
     get(&b, "isTool", |i: &InputScript| i.is_tool());
     get(&b, "isProp1", |i: &InputScript| i.is_prop1());
     get(&b, "isProp2", |i: &InputScript| i.is_prop2());
@@ -458,6 +589,17 @@ fn sibling<T: 'static>(h: &ScriptHandle, f: fn(&T) -> Option<usize>) -> LuaResul
 
 fn register_output(thread: &mut Thread) {
     let b = expose_class(thread, OUTPUT_SCRIPT_CLASS, Some(IO_SCRIPT_CLASS));
+    method(&b, "getOutputMapper", |_, h| {
+        let Some((recipe, i)) = line_index(h)? else { return Ok(Value::Nil) };
+        fn mapper(r: &CraftRecipe, i: usize) -> Option<&OutputMapper> {
+            r.output_mapper_for(r.io_lines().get(i)?.as_output()?)
+        }
+        if !recipe.read(|r: &CraftRecipe| mapper(r, i).is_some())? {
+            return Ok(Value::Nil);
+        }
+        Ok(recipe.child(OUTPUT_MAPPER_CLASS, &format!("mapper{i}"), move |r: &CraftRecipe| mapper(r, i)))
+    });
+    register_output_mapper(thread);
     method(&b, "hasFlag", |c, h| {
         let f = flag_arg(c, OutputFlag::ALL, OutputFlag::name);
         h.read(|o: &OutputScript| f.is_some_and(|f| o.has_flag(f)).into_lua())
@@ -503,4 +645,58 @@ fn register_output(thread: &mut Thread) {
                 .into_lua()
         })
     });
+}
+
+/// `CraftRecipe.iconTexture`, as `OnScriptsLoaded` and
+/// `OnPostWorldDictionaryInit` set it. The port looks it up when Lua asks,
+/// not at script load, and `overrideIconTexture` is not bound.
+fn icon_texture(r: &CraftRecipe) -> pz_render::TextureResult<Option<pz_render::TextureRef>> {
+    let icon = match r.icon_name() {
+        Some(name) => pz_render::try_get_texture_ref(name)?,
+        None => None,
+    };
+    let first_texture = |items: &[pz_scripts::ScriptRef]| {
+        items.first().and_then(|s| s.downcast::<Item>()).and_then(|i| i.borrow().normal_texture_slot().cloned())
+    };
+    let outputs = r
+        .outputs()
+        .filter(|o| o.resource_type() == ResourceType::Item)
+        .filter_map(|o| r.output_mapper_for(o).map(|m| m.result_items()))
+        .filter(|items| !items.is_empty())
+        .map(first_texture);
+    let inputs = r
+        .inputs()
+        .filter(|i| i.resource_type() == ResourceType::Item && !i.possible_input_items().is_empty())
+        .map(|i| first_texture(i.possible_input_items()));
+    Ok(pick_icon(icon, outputs, inputs))
+}
+
+/// The order `iconTexture` is chosen in: the `Item_<icon>` texture; else
+/// the normal texture of the first possible result of the first item
+/// output that has one; else that of the first possible item of the first
+/// item input that has one (`OnPostWorldDictionaryInit` keeps the first
+/// non-null input texture and skips the later inputs).
+fn pick_icon<T>(
+    icon: Option<T>,
+    outputs: impl Iterator<Item = Option<T>>,
+    inputs: impl Iterator<Item = Option<T>>,
+) -> Option<T> {
+    icon.or_else(|| outputs.flatten().next()).or_else(|| inputs.flatten().next())
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::pick_icon;
+
+    #[test]
+    fn icon_texture_falls_back_to_outputs_then_the_first_input_texture() {
+        let none = || std::iter::empty::<Option<i32>>();
+        assert_eq!(pick_icon(Some(1), [Some(2)].into_iter(), [Some(3)].into_iter()), Some(1));
+        assert_eq!(pick_icon(None, [None, Some(2), Some(5)].into_iter(), [Some(3)].into_iter()), Some(2));
+        assert_eq!(pick_icon(None, none(), [Some(3), Some(4)].into_iter()), Some(3));
+        assert_eq!(pick_icon(None, none(), [None, Some(4), Some(5)].into_iter()), Some(4));
+        assert_eq!(pick_icon(None, none(), [Some(3), None].into_iter()), Some(3));
+        assert_eq!(pick_icon(None, none(), [None, None].into_iter()), None);
+        assert_eq!(pick_icon::<i32>(None, none(), none()), None);
+    }
 }

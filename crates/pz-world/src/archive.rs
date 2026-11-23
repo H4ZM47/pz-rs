@@ -132,9 +132,22 @@ fn check_object(
     for container in object.containers() {
         check.container(container).map_err(inventory_error)?;
     }
+    for container in object.runtime_containers.iter().flat_map(|r| r.iter()) {
+        check.container_ref(container).map_err(inventory_error)?;
+    }
     check
         .optional_table(&object.mod_data)
         .map_err(inventory_error)?;
+    if let Some(table) = &object.runtime_mod_data {
+        // Clone copies the live table through its saved value.
+        let saved = pz_inventory::moddata::live_to_archive(&table.0).map_err(|error| match error {
+            pz_inventory::moddata::ModDataError::Unsupported(_) => {
+                inventory_error(pz_inventory::archive::ArchiveCopyError::DepthLimit)
+            }
+            _ => inventory_error(pz_inventory::archive::ArchiveCopyError::BorrowedTable),
+        })?;
+        check.table(&saved).map_err(inventory_error)?;
+    }
     match &object.kind {
         ObjectKind::WorldInventory(floor) => {
             let floor = floor.ref_handle();
@@ -274,6 +287,7 @@ pub(crate) fn copy_objects(
         check_object(owner, *origin, &mut check)?;
     }
     for (index, corpse) in square.static_moving.iter().enumerate() {
+        let corpse = corpse.borrow();
         check
             .optional_table(&corpse.base.mod_data)
             .map_err(|cause| SquareArchiveError::Inventory {
@@ -283,6 +297,14 @@ pub(crate) fn copy_objects(
         if let Some(container) = &corpse.container {
             check
                 .container(container)
+                .map_err(|cause| SquareArchiveError::Inventory {
+                    location: ArchiveLocation::Corpse(index),
+                    cause,
+                })?;
+        }
+        if let Some(r) = &corpse.runtime {
+            check
+                .container_ref(&r.container)
                 .map_err(|cause| SquareArchiveError::Inventory {
                     location: ArchiveLocation::Corpse(index),
                     cause,

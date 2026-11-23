@@ -402,6 +402,19 @@ impl IsoGridSquare {
         self.has_type(ty.stairsTW) || self.has_type(ty.stairsMW) || self.has_type(ty.stairsBW)
     }
 
+    /// The static part of `isFree(b)`, after its moving-object check: a
+    /// solid floor without `solid`, `solidtrans` or a tree, or any stairs.
+    /// The original caches this in `cacheIsFree` until the square's
+    /// properties change; this computes it from the current properties.
+    pub fn is_free_static(&self, m: &IsoSpriteManager) -> bool {
+        let (f, ty) = (&m.tables.flag, &m.tables.ty);
+        if self.has_stairs_north(m) || self.has_stairs_west(m) {
+            return true;
+        }
+        let blocked = self.has(f.solid) || self.has(f.solidtrans) || self.has_type(ty.tree);
+        !blocked && self.has(f.solidfloor)
+    }
+
     /// `HasStairs()`.
     pub fn has_stairs(&self, m: &IsoSpriteManager) -> bool {
         self.has_stairs_north(m) || self.has_stairs_west(m)

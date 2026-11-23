@@ -49,7 +49,7 @@ fn npe() -> LuaError {
 
 /// An `IsoDirections` constant or its ordinal (`setDir(int)`:
 /// `IsoDirections.fromIndex(dir)`, `VALUES[index & 7]`).
-fn direction_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<IsoDirections> {
+pub(super) fn direction_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<IsoDirections> {
     match c.arg(i) {
         Value::Object(o) => o
             .as_any()
@@ -92,6 +92,34 @@ fn debug_cheat(name: &str) -> bool {
         && pz_core::debug::debug_options().borrow().get_boolean(name)
 }
 
+/// The `IsoObject` fields of a character: `bed` and `sitOnFurnitureObject`.
+/// They live on the character, so they go with it.
+#[derive(Clone, Copy)]
+enum ObjectField {
+    Bed,
+    SitOnFurniture,
+}
+
+/// The object field `field` of `chr`; nil when none is set.
+fn object_field(chr: &LuaGameCharacterRef, field: ObjectField) -> Value {
+    let chr = chr.borrow();
+    let slot = match field {
+        ObjectField::Bed => &chr.bed,
+        ObjectField::SitOnFurniture => &chr.sit_on_furniture_object,
+    };
+    slot.clone().unwrap_or(Value::Nil)
+}
+
+/// Set the object field `field` of `chr` (nil clears it).
+fn set_object_field(chr: &LuaGameCharacterRef, field: ObjectField, object: Value) {
+    let mut chr = chr.borrow_mut();
+    let slot = match field {
+        ObjectField::Bed => &mut chr.bed,
+        ObjectField::SitOnFurniture => &mut chr.sit_on_furniture_object,
+    };
+    *slot = (!object.is_nil()).then_some(object);
+}
+
 /// The `LuaManager.GlobalObject` functions about player control.
 pub(super) fn register_globals(thread: &mut Thread) {
     // `getLoosingXpTick(timer)`. TODO(port): the `DebugType.Multiplayer`
@@ -100,10 +128,38 @@ pub(super) fn register_globals(thread: &mut Thread) {
         let v = if debug_cheat("Cheat.Player.FastLooseXp") { 30000 } else { 10 };
         Ok(c.push(v))
     });
+    // `IsoPlayer.allPlayersAsleep()`: at least one living local player,
+    // and all of them asleep.
+    let player = crate::expose::expose_class(thread, super::ISO_PLAYER_CLASS, Some(super::ISO_GAME_CHARACTER_CLASS));
+    player.static_fn("allPlayersAsleep", |c| {
+        let (mut living, mut asleep) = (0, 0);
+        for i in 0..crate::bind_players::num_players().max(0) as usize {
+            let Some(p) = crate::bind_players::player(i) else { continue };
+            let p = p.try_borrow().map_err(|_| LuaError::runtime("IsoPlayer is in use"))?;
+            if !p.is_dead() {
+                living += 1;
+                if p.is_asleep() {
+                    asleep += 1;
+                }
+            }
+        }
+        Ok(c.push(living > 0 && living == asleep))
+    });
+    super::sleeping::register_globals(thread);
 }
 
 /// The methods on `IsoGameCharacter` (and so every character class).
 pub(super) fn register(b: &ClassBuilder) {
+    // `isLocal()`: the `NetworkComponent`'s `isLocal`, default true. It is
+    // false only for a remote character on a client or a server.
+    // TODO(port): multiplayer.
+    b.method("isLocal", |c| Ok(c.push(true)));
+    // `isGrappling()`: `IGrappleableWrapper` asks the wrapped
+    // `BaseGrappleable` for its `isGrappling` field.
+    b.method("isGrappling", |c| {
+        let v = chr_of(c)?.borrow().is_grappling();
+        Ok(c.push(v))
+    });
     b.method("isAlive", |c| {
         let v = !chr_of(c)?.borrow().is_dead();
         Ok(c.push(v))
@@ -158,6 +214,75 @@ pub(super) fn register(b: &ClassBuilder) {
     });
     b.method("isSitOnGround", |c| {
         let v = chr_of(c)?.borrow().sit_on_ground;
+        Ok(c.push(v))
+    });
+    // `getSitOnFurnitureObject()`: `sitOnFurnitureObject`.
+    b.method("getSitOnFurnitureObject", |c| {
+        let v = object_field(&chr_of(c)?, ObjectField::SitOnFurniture);
+        Ok(c.push(v))
+    });
+    // `setSitOnFurnitureObject(object)`.
+    b.method("setSitOnFurnitureObject", |c| {
+        set_object_field(&chr_of(c)?, ObjectField::SitOnFurniture, c.arg(1));
+        Ok(0)
+    });
+    // `getBed()` / `setBed(object)`: `bed`.
+    b.method("getBed", |c| {
+        let v = object_field(&chr_of(c)?, ObjectField::Bed);
+        Ok(c.push(v))
+    });
+    b.method("setBed", |c| {
+        set_object_field(&chr_of(c)?, ObjectField::Bed, c.arg(1));
+        Ok(0)
+    });
+    // `getForceWakeUpTime()` / `setForceWakeUpTime(hour)`: `forceWakeUpTime`.
+    b.method("getForceWakeUpTime", |c| {
+        let v = float_value(chr_of(c)?.borrow().force_wake_up_time);
+        Ok(c.push(v))
+    });
+    b.method("setForceWakeUpTime", |c| {
+        let v = float_arg(c, 1);
+        chr_of(c)?.borrow_mut().force_wake_up_time = v;
+        Ok(0)
+    });
+    // `IsoPlayer.getAsleepTime()` / `setAsleepTime(hours)`: `asleepTime`.
+    b.method("getAsleepTime", |c| {
+        let v = float_value(chr_of(c)?.borrow().asleep_time);
+        Ok(c.push(v))
+    });
+    b.method("setAsleepTime", |c| {
+        let v = float_arg(c, 1);
+        chr_of(c)?.borrow_mut().asleep_time = v;
+        Ok(0)
+    });
+    // `isSitOnFurnitureObject(object)`: false without a furniture object,
+    // else the same object or `furniture.isConnectedSpriteGridObject(object)`.
+    b.method("isSitOnFurnitureObject", |c| {
+        let furniture = object_field(&chr_of(c)?, ObjectField::SitOnFurniture);
+        let object = c.arg(1);
+        let r = if furniture.is_nil() {
+            false
+        } else if object.raw_equals(&furniture) {
+            true
+        } else {
+            let f = c.thread.table_get(&furniture, &Value::str("isConnectedSpriteGridObject"))?;
+            c.thread.call1(&f, &[furniture, object])?.truthy()
+        };
+        Ok(c.push(r))
+    });
+    // `getLastHourSleeped()`: `lastHourSleeped`.
+    b.method("getLastHourSleeped", |c| {
+        let v = chr_of(c)?.borrow().last_hour_sleeped;
+        Ok(c.push(v))
+    });
+    // `isOnFire()`: `onFire`.
+    b.method("isOnFire", |c| {
+        let v = chr_of(c)?.borrow().vars.on_fire;
+        Ok(c.push(v))
+    });
+    // `isSittingOnFurniture()`: `isSitOnFurniture`.
+    b.method("isSittingOnFurniture", |c| {
+        let v = chr_of(c)?.borrow().sitting_on_furniture;
         Ok(c.push(v))
     });
     b.method("getIgnoreMovement", |c| {
@@ -260,6 +385,10 @@ pub(super) fn register_player(b: &ClassBuilder) {
         chr_of(c)?.borrow_mut().vars.block_movement = v;
         Ok(0)
     });
+    b.method("isBlockMovement", |c| {
+        let v = chr_of(c)?.borrow().vars.block_movement;
+        Ok(c.push(v))
+    });
     b.method("isIgnoreContextKey", |c| {
         let v = chr_of(c)?.borrow().player.ignore_context_key;
         Ok(c.push(v))
@@ -284,6 +413,27 @@ pub(super) fn register_player(b: &ClassBuilder) {
         let v = bool_arg(c, 1);
         chr_of(c)?.borrow_mut().vars.banned_attacking = v;
         Ok(0)
+    });
+    // `isRandXp(interval, chance, perk)`: false until the perk's next check
+    // time has passed. Then the next check moves `interval` ms ahead, and
+    // the result is true when `ZombRand` over `1 / chance` values gives 0.
+    b.method("isRandXp", |c| {
+        let interval = int_arg(c, 1) as i64;
+        let chance = float_arg(c, 2);
+        let perk = crate::bind_skills::perk_arg(c, 3)?
+            .ok_or_else(|| LuaError::runtime("isRandXp: perk is null"))?;
+        let id = perk.borrow().id().to_string();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as i64);
+        let chr = chr_of(c)?;
+        let times = &mut chr.borrow_mut().player.next_rand_xp_check_times;
+        if now <= times.get(&id).copied().unwrap_or(0) {
+            return Ok(c.push(false));
+        }
+        times.insert(id, now + interval);
+        let v = crate::bind_misc::zomb_rand((1.0 / chance) as f64) == 0.0;
+        Ok(c.push(v))
     });
 }
 

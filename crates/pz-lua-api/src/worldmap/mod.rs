@@ -8,6 +8,7 @@ pub mod host;
 pub mod present;
 pub mod style;
 pub mod ui;
+pub mod visited;
 
 use crate::bind_ui::{element_of, UIELEMENT};
 use crate::expose::{bool_arg, expose_class, int_arg, num_arg, str_arg};
@@ -121,6 +122,19 @@ thread_local! {
     static UNVISITED: std::cell::RefCell<[[f32; 4]; 2]> = const { std::cell::RefCell::new([[0.0; 4]; 2]) };
     /// `ZomboidFileSystem.instance` for resolving data file names.
     static FS: std::cell::RefCell<Option<Rc<std::cell::RefCell<pz_fs::GameFs>>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `WorldMapImages.startFrame()`, which `SpriteRenderer` calls before
+/// building the frame that holds the UI's map draws: clears each pyramid's
+/// required-this-frame marks and its per-frame load budget.
+pub fn start_frame() {
+    pz_worldmap::pyramid::start_frame();
+}
+
+/// `WorldMapImages.endFrame()`, after that frame: cancels the tile loads no
+/// map drew this frame.
+pub fn end_frame() {
+    pz_worldmap::pyramid::end_frame();
 }
 
 /// Install the file system the map resolves `media/...` names with.

@@ -1,5 +1,6 @@
-//! `zombie.iso.IsoDirections`, `zombie.iso.SpriteDetails.IsoFlagType` and
-//! `zombie.iso.SpriteDetails.IsoObjectType`, plus the `IsoGridSquare`
+//! `zombie.iso.IsoDirections`, `zombie.iso.SpriteDetails.IsoFlagType`,
+//! `zombie.iso.SpriteDetails.IsoObjectType` and
+//! `zombie.core.properties.IsoPropertyType`, plus the `IsoGridSquare`
 //! static fields that shared Lua touches while loading.
 //!
 //! The constants (names, order and per-constant constructor values such as
@@ -21,6 +22,7 @@ pub const ISO_DIRECTIONS: &str = "zombie.iso.IsoDirections";
 pub const ISO_FLAG_TYPE: &str = "zombie.iso.SpriteDetails.IsoFlagType";
 pub const ISO_OBJECT_TYPE: &str = "zombie.iso.SpriteDetails.IsoObjectType";
 pub const ISO_GRID_SQUARE: &str = "zombie.iso.IsoGridSquare";
+pub const ISO_PROPERTY_TYPE: &str = "zombie.core.properties.IsoPropertyType";
 
 /// An enum constant: its name and the integer constructor arguments that
 /// follow the implicit name and ordinal.
@@ -69,6 +71,34 @@ pub fn enum_constants_from(
         .collect()
 }
 
+/// `IsoPropertyType` constants in `values()` order: the constant and the
+/// property name its constructor takes (`new IsoPropertyType(name,
+/// ordinal, propertyName)`).
+pub fn property_types_from(
+    names: &[String],
+    ctors: &[(String, Vec<ClassValue>)],
+) -> Result<Vec<(String, String)>, String> {
+    let class = "zombie/core/properties/IsoPropertyType";
+    names
+        .iter()
+        .enumerate()
+        .map(|(ordinal, name)| {
+            let (_, args) = ctors
+                .iter()
+                .find(|(f, _)| f == name)
+                .ok_or_else(|| format!("{class}.{name}: no constructor call"))?;
+            match args.as_slice() {
+                [ClassValue::Str(n), ClassValue::Int(o), ClassValue::Str(p)]
+                    if n == name && *o == ordinal as i64 =>
+                {
+                    Ok((name.clone(), p.clone()))
+                }
+                _ => Err(format!("{class}.{name}: unexpected enum constructor arguments {args:?}")),
+            }
+        })
+        .collect()
+}
+
 /// Read enum `class` (`a/b/C`) from the jar.
 pub fn read_enum(jar: &Jar, class: &str) -> Result<Vec<EnumConstant>, String> {
     let names = pz_classfile::enum_constants(jar, class).map_err(|e| format!("{class}: {e}"))?;
@@ -85,6 +115,8 @@ pub struct IsoClassData {
     pub object_types: Vec<EnumConstant>,
     /// What `IsoGridSquare.<clinit>` stores into `ignoreBlockingSprites`.
     pub ignore_blocking_sprites: Option<ClassValue>,
+    /// `IsoPropertyType`: each constant and its property name.
+    pub property_types: Vec<(String, String)>,
 }
 
 impl IsoClassData {
@@ -99,6 +131,17 @@ impl IsoClassData {
         let directions = get("zombie/iso/IsoDirections");
         let flag_types = get("zombie/iso/SpriteDetails/IsoFlagType");
         let object_types = get("zombie/iso/SpriteDetails/IsoObjectType");
+        let property_class = "zombie/core/properties/IsoPropertyType";
+        let property_types = pz_classfile::enum_constants(jar, property_class)
+            .and_then(|names| {
+                Ok((names, pz_classfile::self_constructed_constants(jar, property_class)?))
+            })
+            .map_err(|e| format!("{property_class}: {e}"))
+            .and_then(|(names, ctors)| property_types_from(&names, &ctors))
+            .unwrap_or_else(|e| {
+                errors.push(e);
+                Vec::new()
+            });
         let ignore_blocking_sprites =
             pz_classfile::static_value(jar, "zombie/iso/IsoGridSquare", "ignoreBlockingSprites")
                 .unwrap_or_else(|e| {
@@ -111,6 +154,7 @@ impl IsoClassData {
                 flag_types,
                 object_types,
                 ignore_blocking_sprites,
+                property_types,
             },
             errors,
         )
@@ -172,6 +216,38 @@ pub fn register_with(thread: &mut Thread, data: &IsoClassData) {
     register_indexed(thread, ISO_FLAG_TYPE, &data.flag_types);
     register_indexed(thread, ISO_OBJECT_TYPE, &data.object_types);
     register_grid_square_statics(thread, data.ignore_blocking_sprites.as_ref());
+    register_property_types(thread, &data.property_types);
+}
+
+thread_local! {
+    /// `IsoPropertyType.name` by ordinal.
+    static PROPERTY_NAMES: RefCell<Rc<Vec<String>>> = RefCell::default();
+}
+
+/// `IsoPropertyType.getName()` when `v` is an `IsoPropertyType`.
+pub fn property_type_name(v: &Value) -> Option<String> {
+    let Value::Object(o) = v else { return None };
+    let e = o.as_any().downcast_ref::<JavaEnum>()?;
+    if e.class != ISO_PROPERTY_TYPE {
+        return None;
+    }
+    PROPERTY_NAMES.with(|n| n.borrow().get(usize::try_from(e.ordinal).ok()?).cloned())
+}
+
+/// `IsoPropertyType`: the enum and `getName()` / `toString()`, which
+/// answer the property name. `PropertyContainer` takes the constants as
+/// keys ([`property_type_name`]).
+fn register_property_types(thread: &mut Thread, constants: &[(String, String)]) {
+    let names: Vec<&'static str> =
+        constants.iter().map(|(c, _)| &*Box::leak(c.clone().into_boxed_str())).collect();
+    let b = expose_enum(thread, ISO_PROPERTY_TYPE, &names);
+    PROPERTY_NAMES.with(|n| *n.borrow_mut() = Rc::new(constants.iter().map(|(_, p)| p.clone()).collect()));
+    for method in ["getName", "toString"] {
+        b.method(method, |c| {
+            let name = property_type_name(&c.arg(0));
+            Ok(c.push(name.map_or(Value::Nil, |n| Value::str(&n))))
+        });
+    }
 }
 
 fn leak_names(constants: &[EnumConstant]) -> Vec<&'static str> {
@@ -456,6 +532,10 @@ mod tests {
                 class: "java/util/ArrayList".into(),
                 args: vec![],
             }),
+            property_types: vec![
+                ("ISO_TYPE".into(), "IsoType".into()),
+                ("CUSTOM_NAME".into(), "CustomName".into()),
+            ],
         }
     }
 
@@ -543,6 +623,32 @@ mod tests {
         assert!(r[1].truthy() && r[2].truthy());
         assert!(!r[3].truthy());
         assert_eq!(ignore_blocking_sprites(), ["sign_1"]);
+    }
+
+    #[test]
+    fn property_types_name_their_properties() {
+        let str_ctor = |name: &str, ordinal: i64, prop: &str| {
+            (name.to_string(), vec![ClassValue::Str(name.into()), ClassValue::Int(ordinal), ClassValue::Str(prop.into())])
+        };
+        let names = vec!["ISO_TYPE".to_string(), "CUSTOM_NAME".to_string()];
+        let ctors = vec![str_ctor("CUSTOM_NAME", 1, "CustomName"), str_ctor("ISO_TYPE", 0, "IsoType")];
+        assert_eq!(
+            property_types_from(&names, &ctors).unwrap(),
+            [("ISO_TYPE".to_string(), "IsoType".to_string()), ("CUSTOM_NAME".into(), "CustomName".into())]
+        );
+        assert!(property_types_from(&names, &ctors[..1]).is_err());
+        let mut t = thread();
+        let r = run(
+            &mut t,
+            "return IsoPropertyType.CUSTOM_NAME:getName(), IsoPropertyType.ISO_TYPE:toString(),
+                    IsoPropertyType.valueOf('CUSTOM_NAME') == IsoPropertyType.CUSTOM_NAME",
+        );
+        assert_eq!(pz_kahlua::exec::java_value_of(&r[0]), "CustomName");
+        assert_eq!(pz_kahlua::exec::java_value_of(&r[1]), "IsoType");
+        assert!(r[2].truthy());
+        let custom = t.globals().get_str("IsoPropertyType").as_table().unwrap().get_str("CUSTOM_NAME");
+        assert_eq!(property_type_name(&custom).as_deref(), Some("CustomName"));
+        assert_eq!(property_type_name(&Value::str("CustomName")), None);
     }
 
     #[test]

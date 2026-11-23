@@ -22,12 +22,20 @@
 //! objects whose `tostring` is the id). `getVisual`, `getClothingItem`
 //! and `canBeEquipped` live in [`crate::bind_item_visual`].
 
+mod context_menu;
 mod native_item_code_on_create;
+mod on_create_callbacks;
+#[cfg(test)]
+mod on_create_tests;
+pub(crate) mod on_create_data;
 mod reading;
+mod recipe_code_on_test;
 pub(crate) mod row_read_flags;
 
 use crate::bind_java_util::JavaList;
-use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg};
+use crate::expose::{
+    bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg, with_this,
+};
 use pz_inventory::api::Offline;
 use pz_inventory::gameplay::{ConditionOutcome, ItemError, UseOutcome};
 use pz_inventory::item::ItemKind;
@@ -290,6 +298,9 @@ impl ItemEnv for CreateEnv<'_> {
     }
     fn world_sprite(&self, name: &str) -> Option<pz_inventory::env::WorldSpriteInfo> {
         self.lua?.world_sprite(name)
+    }
+    fn get_text(&self, key: &str) -> String {
+        crate::bind_text::translate(key)
     }
     fn script_actual_weight(&self, name: &str) -> Option<f32> {
         let s = self
@@ -572,6 +583,38 @@ pub fn item_value(item: &ItemRef) -> Value {
     Value::Object(object)
 }
 
+/// `Key.setHighlightDoors(playerNum, item)`. The original un-highlights
+/// the doors it highlighted for `playerNum` and forgets its key; then, for
+/// a key that is not a padlock key, it highlights the doors within 20
+/// tiles of the player that the key opens. The port draws no object
+/// highlights, so there is nothing to un-highlight, and highlighting a
+/// key's doors is unsupported.
+fn set_highlight_doors(c: &mut NativeCall<'_>) -> LuaResult<usize> {
+    let player = int_arg(c, 0);
+    let item = match c.arg(1) {
+        Value::Nil => None,
+        _ => Some(item_arg(c, 1)?),
+    };
+    // `highlightDoor` has one slot per local player.
+    if !(0..4).contains(&player) {
+        return Err(LuaError::Runtime {
+            message: format!("Index {player} out of bounds for length 4"),
+            class: "java.lang.ArrayIndexOutOfBoundsException",
+        });
+    }
+    let opens_doors = item.is_some_and(|i| {
+        let i = i.borrow();
+        let digital = i.template.script.as_ref().is_some_and(|s| s.0.borrow().digital_padlock);
+        matches!(i.kind, ItemKind::Key { .. }) && !i.template.padlock && !digital
+    });
+    if opens_doors {
+        return Err(crate::bind_world_object::unsupported(
+            "Key.setHighlightDoors: highlighting the doors a key opens (IsoObject.setHighlighted)",
+        ));
+    }
+    Ok(0)
+}
+
 /// The item behind a Lua `InventoryItem` object.
 pub fn item_arg_value(v: &Value) -> Option<ItemRef> {
     match v {
@@ -753,6 +796,7 @@ fn register_inventory_item(thread: &mut Thread) {
         Ok(c.push(value))
     });
     crate::bind_world_object::register_classes(thread);
+    crate::bind_climb::register(thread);
     let b = expose_class(thread, INVENTORY_ITEM_CLASS, Some(GAME_ENTITY_CLASS));
     b.method("getWorldItem", |c| {
         let item = crate::bind_world_object::item_argument(&c.arg(0))?;
@@ -780,6 +824,11 @@ fn register_inventory_item(thread: &mut Thread) {
         let table = pz_inventory::moddata::get_mod_data_ref(&item)
             .map_err(|error| error.to_lua_error())?;
         Ok(c.push(Value::Table(table)))
+    });
+    b.method("isUnwanted", |c| {
+        let item = this(c)?;
+        let unwanted = crate::item_tooltip::chr::unwanted_by(c.thread, &item, &c.arg(1))?;
+        Ok(c.push(unwanted))
     });
     b.method("hasModData", |c| {
         let item = this(c)?;
@@ -819,6 +868,24 @@ fn register_inventory_item(thread: &mut Thread) {
         Ok(0)
     });
     get!(b, "getType", |i| Value::from(i.get_type()));
+    // `getWorldStaticItem()` / `getWorldStaticModel()`: a `worldStaticModel`
+    // mod data string, the indexed model, or the script's.
+    for name in ["getWorldStaticItem", "getWorldStaticModel"] {
+        b.method(name, |c| {
+            let item = this(c)?;
+            let model = item
+                .borrow()
+                .try_get_world_static_model()
+                .map_err(|error| error.to_lua_error())?;
+            Ok(c.push(opt_str(model.as_deref())))
+        });
+    }
+    // `getAmmoType()`: the script's `ammoType`, which `InstanceItem` sets.
+    // `setAmmoType` is not bound, so the template's value is the item's.
+    get!(b, "getAmmoType", |i| crate::bind_registry::key_value(
+        crate::bind_registry::AMMO_TYPE_CLASS,
+        i.template.ammo_type.as_ref()
+    ));
     get!(b, "getFullType", |i| Value::from(i.get_full_type()));
     get!(b, "getCategory", |i| Value::from(i.get_category()));
     b.method("getItemType", |c| {
@@ -878,6 +945,18 @@ fn register_inventory_item(thread: &mut Thread) {
         let hidden = script.0.borrow().hidden;
         Ok(c.push(hidden))
     });
+    for (name, unequip) in [("getEquipSound", false), ("getUnequipSound", true)] {
+        // `scriptItem.getEquipSound()` / `getUnequipSound()`.
+        b.method(name, move |c| {
+            let script = this(c)?.borrow().template.script.clone().ok_or_else(|| LuaError::Runtime {
+                message: String::new(),
+                class: "java.lang.NullPointerException",
+            })?;
+            let script = script.0.borrow();
+            let sound = if unequip { &script.unequip_sound } else { &script.equip_sound };
+            Ok(c.push(sound.as_deref().map_or(Value::Nil, Value::str)))
+        });
+    }
     // `getName` and `getDisplayName` with the class overrides and state
     // prefixes ([`crate::bind_item_name`]).
     get!(b, "getDisplayName", |i| Value::from(
@@ -990,6 +1069,12 @@ fn register_inventory_item(thread: &mut Thread) {
     get!(b, "isFavorite", |i| Value::from(i.favorite));
     get!(b, "isActivated", |i| Value::from(i.activated));
     get!(b, "isInfected", |i| Value::from(i.zombie_infected));
+    // `getR/G/B/A`: the components of `col` (the tint item icons are drawn
+    // with), not `colorRed/Green/Blue`.
+    get!(b, "getR", |i| f(i.col[0]));
+    get!(b, "getG", |i| f(i.col[1]));
+    get!(b, "getB", |i| f(i.col[2]));
+    get!(b, "getA", |i| f(i.col[3]));
     get!(b, "getColorRed", |i| f(i.color_red));
     get!(b, "getColorGreen", |i| f(i.color_green));
     get!(b, "getColorBlue", |i| f(i.color_blue));
@@ -1120,6 +1205,39 @@ fn register_inventory_item(thread: &mut Thread) {
         i.set_activated(bool_arg(c, 1));
         Ok(Value::Nil)
     });
+    // `itemHeat` (1 is room temperature), `getInvHeat()` = 1 - itemHeat.
+    get!(b, "getItemHeat", |i| f(i.get_item_heat()));
+    get!(b, "getInvHeat", |i| f(1.0 - i.get_item_heat()));
+    with!(b, "setItemHeat", |i, c| {
+        i.set_item_heat(num_arg(c, 1) as f32);
+        Ok(Value::Nil)
+    });
+    get!(b, "getJobDelta", |i| f(i.job_delta));
+    get!(b, "getJobType", |i| opt_str(i.job_type.as_deref()));
+    with!(b, "setJobDelta", |i, c| {
+        i.job_delta = num_arg(c, 1) as f32;
+        Ok(Value::Nil)
+    });
+    with!(b, "setJobType", |i, c| {
+        i.job_type = str_arg(c, 1).map(|s| s.to_string());
+        Ok(Value::Nil)
+    });
+    // `isFavouriteRecipeInput(player)`: false without a script item, else
+    // whether `player.isFavouriteRecipe(name)` for a name of
+    // `scriptItem.getUsedInRecipes(player)`. That list is empty until the
+    // craft recipes are linked to their inputs (not ported); a non-empty
+    // one needs `isRecipeActuallyKnown`, which is not ported either.
+    b.method("isFavouriteRecipeInput", |c| {
+        let r = this(c)?;
+        let script = crate::item_tooltip::script(&r.borrow());
+        let used = script.is_some_and(|s| s.borrow().is_used_in_recipes());
+        if !used {
+            return Ok(c.push(false));
+        }
+        Err(LuaError::runtime(
+            "TODO(IsoGameCharacter): isFavouriteRecipeInput needs getUsedInRecipes(character)",
+        ))
+    });
     with!(b, "setFavorite", |i, c| {
         i.favorite = bool_arg(c, 1);
         Ok(Value::Nil)
@@ -1135,6 +1253,20 @@ fn register_inventory_item(thread: &mut Thread) {
     with!(b, "setCustomWeight", |i, c| {
         i.custom_weight = bool_arg(c, 1);
         Ok(Value::Nil)
+    });
+    with!(b, "setWorldScale", |i, c| {
+        i.world_scale = num_arg(c, 1) as f32;
+        Ok(Value::Nil)
+    });
+    // `setTooltip`: `getModData().rawset("Tooltip", tooltip)`, then the
+    // field. Here the field stays the script's tooltip (`getTooltip`
+    // reads the mod data first).
+    b.method("setTooltip", |c| {
+        let item = this(c)?;
+        let value = c.arg(1);
+        let value = (!value.is_nil()).then_some(value);
+        crate::item_tooltip::mod_set(&item, "Tooltip", value)?;
+        Ok(0)
     });
     envd!(b, "setCurrentUses", |r, e, ctx, _o, c| {
         r.borrow_mut()
@@ -1209,11 +1341,12 @@ fn register_inventory_item(thread: &mut Thread) {
                 "Use" => (bool_arg(c, 1), bool_arg(c, 2), bool_arg(c, 3)),
                 _ => (false, false, false),
             };
+            let owner = e.owner(&r);
             let out = r.borrow_mut().use_with(
                 crafting,
                 in_container,
                 sync,
-                e.owner(&r).as_ref(),
+                owner.as_ref(),
                 e.context(),
             );
             e.outcome(&r, ItemOutcome::Use(Box::new(out)));
@@ -1483,6 +1616,24 @@ fn register_food(thread: &mut Thread) {
     get!(b, "getProteins", |i| food(&i, |x| x.proteins));
     get!(b, "getLipids", |i| food(&i, |x| x.lipids));
     get!(b, "getCarbohydrates", |i| food(&i, |x| x.carbohydrates));
+    // `Food` setters for the fields above: plain stores.
+    macro_rules! set_food {
+        ($name:literal, $field:ident) => {
+            b.method($name, |c| {
+                let item = this(c)?;
+                if let ItemKind::Food(food) = &mut item.borrow_mut().kind {
+                    food.$field = num_arg(c, 1) as f32;
+                }
+                Ok(0)
+            });
+        };
+    }
+    set_food!("setCalories", calories);
+    set_food!("setProteins", proteins);
+    set_food!("setLipids", lipids);
+    set_food!("setCarbohydrates", carbohydrates);
+    set_food!("setHungChange", hung_change);
+    set_food!("setBaseHunger", base_hunger);
     get!(b, "getHeat", |i| food(&i, |x| x.heat));
     get!(b, "getPainReduction", |i| food(&i, |x| x.pain_reduction));
     get!(b, "getEndChange", |i| food(&i, |x| x.end_change));
@@ -1624,6 +1775,8 @@ fn register_drainable(thread: &mut Thread) {
         .map(Value::from)
         .unwrap_or_default());
     get!(b, "getWeightEmpty", |i| f(i.template.weight_empty));
+    // `DrainableComboItem.heat`, set to 1 by its constructors.
+    get!(b, "getHeat", |i| i.drainable_heat.map(f).unwrap_or_default());
     get!(b, "getOnEat", |i| opt_str(i.get_on_eat()));
     get!(b, "isEmptyUses", |i| Value::from(
         i.get_current_uses_float() <= 0.0
@@ -1770,6 +1923,7 @@ pub fn register(thread: &mut Thread) {
     register_weapon_part(thread);
     reading::register(thread);
     row_read_flags::register(thread);
+    context_menu::register(thread);
     for c in [
         "zombie.inventory.types.ComboItem",
         "zombie.inventory.types.AnimalInventoryItem",
@@ -1781,11 +1935,25 @@ pub fn register(thread: &mut Thread) {
     ] {
         expose_class(thread, c, Some(INVENTORY_ITEM_CLASS));
     }
-    expose_class(
+    expose_class(thread, "zombie.inventory.types.Key", Some(INVENTORY_ITEM_CLASS))
+        .static_fn("setHighlightDoors", set_highlight_doors);
+    // `getDeviceData` is `Radio`'s own method, so other items have none.
+    let b = expose_class(
         thread,
         "zombie.inventory.types.Radio",
         Some("zombie.inventory.types.Moveable"),
     );
+    b.method("getDeviceData", |c| {
+        let item = with_this::<LuaInventoryItem, _>(c, |i| i.item.clone())?;
+        let v = if matches!(item.borrow().kind, ItemKind::Radio(..)) {
+            Value::Object(Rc::new(crate::bind_radio::LuaDeviceData(
+                crate::bind_radio::DeviceOwner::Item(item.clone()),
+            )))
+        } else {
+            Value::Nil
+        };
+        Ok(c.push(v))
+    });
     let wt = expose_enum(thread, WEAPON_TYPE_CLASS, &WEAPON_TYPES);
     wt.static_fn("getWeaponType", |c| {
         // getWeaponType(HandWeapon).
@@ -1802,11 +1970,16 @@ pub fn register(thread: &mut Thread) {
         ))
     });
     native_item_code_on_create::register(thread);
+    recipe_code_on_test::register(thread);
 }
 
 #[cfg(test)]
 #[path = "bind_items/moddata_tests.rs"]
 mod moddata_tests;
+
+#[cfg(test)]
+#[path = "bind_items/pane_row_tests.rs"]
+mod pane_row_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1853,14 +2026,123 @@ mod tests {
         assert_eq!(item.borrow().condition, 0);
     }
 
-    /// A Lua thread with the item bindings (and `Radio.getDeviceData`).
+    #[test]
+    fn ammo_type_from_lua() {
+        let mut thread = item_thread();
+        let ammo = Rc::new(pz_scripts::registry::RegistryKey {
+            location: pz_scripts::registry::ResourceLocation::of("base:bullets_9mm").unwrap(),
+            name: "BULLETS_9MM".into(),
+            item_key: Some("Base.Bullets9mm".into()),
+        });
+        let gun = make(ItemClass::Weapon, "Pistol", |t| t.ammo_type = Some(ammo.clone()));
+        let bat = make(ItemClass::Weapon, "Bat", |_| {});
+        thread.globals().set_str("gun", item_value(&gun));
+        thread.globals().set_str("bat", item_value(&bat));
+        let r = run(&mut thread, "return gun:getAmmoType(), bat:getAmmoType(), gun:getAmmoType() == gun:getAmmoType()");
+        let key = crate::bind_registry::key_value(crate::bind_registry::AMMO_TYPE_CLASS, Some(&ammo));
+        assert!(matches!((&r[0], &key), (Value::Object(a), Value::Object(b)) if Rc::ptr_eq(a, b)));
+        assert!(r[1].is_nil() && r[2].truthy());
+    }
+
+    #[test]
+    fn world_static_model_from_lua() {
+        let mut thread = item_thread();
+        let gun = make(ItemClass::Weapon, "Pistol", |t| t.world_static_model = Some("PistolGround".into()));
+        let indexed = make(ItemClass::Normal, "Mug", |t| t.world_static_model = Some("MugGround".into()));
+        {
+            let mut m = indexed.borrow_mut();
+            m.world_static_models_by_index = Some(Rc::new(vec!["MugA".into(), "MugB".into()]));
+            m.model_index = 1;
+        }
+        let plain = make(ItemClass::Normal, "Rock", |_| {});
+        for (name, item) in [("gun", &gun), ("mug", &indexed), ("rock", &plain)] {
+            thread.globals().set_str(name, item_value(item));
+        }
+        let r = run(
+            &mut thread,
+            "local before = gun:getWorldStaticItem()\n\
+             gun:getModData().worldStaticModel = 'PistolOverride'\n\
+             return before, gun:getWorldStaticModel(), mug:getWorldStaticItem(), rock:getWorldStaticItem()",
+        );
+        let shown: Vec<String> = r.iter().map(pz_kahlua::exec::java_value_of).collect();
+        assert_eq!(shown[..3], ["PistolGround", "PistolOverride", "MugB"], "{shown:?}");
+        assert!(r[3].is_nil(), "{shown:?}");
+    }
+
+    /// `ISInventoryPane.updateTooltip` calls `Key.setHighlightDoors` for
+    /// whatever item is under the mouse, or nil.
+    #[test]
+    fn key_set_highlight_doors() {
+        let mut thread = item_thread();
+        let bat = make(ItemClass::Normal, "Bat", |_| {});
+        let key = make(ItemClass::Key, "Key1", |_| {});
+        let padlock = make(ItemClass::Key, "Padlock", |t| t.padlock = true);
+        for (name, item) in [("bat", &bat), ("key", &key), ("padlock", &padlock)] {
+            thread.globals().set_str(name, item_value(item));
+        }
+        run(&mut thread, "Key.setHighlightDoors(0, nil) Key.setHighlightDoors(1, bat) Key.setHighlightDoors(3, padlock)");
+        let globals = thread.globals().clone();
+        let f = |src: &str| pz_kahlua::stdlib::load_string(src, Some("test"), globals.clone()).unwrap();
+        let err = |t: &mut Thread, src: &str| match t.pcall(&f(src), &[]) {
+            Err((e, _)) => pz_kahlua::exec::java_value_of(&e),
+            Ok(_) => String::new(),
+        };
+        assert!(err(&mut thread, "Key.setHighlightDoors(0, key)").contains("Key.setHighlightDoors"));
+        assert!(err(&mut thread, "Key.setHighlightDoors(4, nil)").starts_with("Index 4 out of bounds for length 4"));
+    }
+
+    /// `ISEquippedItem.render` tints the hand icons with `getR/G/B/A`.
+    #[test]
+    fn item_tint_components() {
+        let mut thread = item_thread();
+        let item = make(ItemClass::Normal, "Bat", |_| {});
+        item.borrow_mut().col = [0.25, 0.5, 0.75, 0.125];
+        thread.globals().set_str("item", item_value(&item));
+        let r = run(&mut thread, "return item:getR(), item:getG(), item:getB(), item:getA()");
+        let n: Vec<f64> = r.iter().map(|v| match v { Value::Num(n) => *n, _ => f64::NAN }).collect();
+        assert_eq!(n, [0.25, 0.5, 0.75, 0.125]);
+    }
+
+    #[test]
+    fn item_heat_and_job_progress_for_the_inventory_pane() {
+        let mut thread = item_thread();
+        let item = make(ItemClass::Normal, "Apple", |_| {});
+        thread.globals().set_str("item", item_value(&item));
+        // ISInventoryPane:renderdetails reads these for every row.
+        let r = run(
+            &mut thread,
+            "local a, b, c, d = item:getItemHeat(), item:getInvHeat(), item:getJobDelta(), item:getJobType()\n\
+             item:setItemHeat(1.5) item:setJobDelta(0.25) item:setJobType('Eating')\n\
+             return a, b, c, d, item:getItemHeat(), item:getInvHeat(), item:getJobDelta(), item:getJobType()",
+        );
+        let n = |v: &Value| v.as_num().unwrap();
+        assert_eq!((n(&r[0]), n(&r[1]), n(&r[2])), (1.0, 0.0, 0.0));
+        assert!(r[3].is_nil());
+        assert_eq!((n(&r[4]), n(&r[5]), n(&r[6])), (1.5, -0.5, 0.25));
+        assert_eq!(pz_kahlua::exec::java_value_of(&r[7]), "Eating");
+        // setItemHeat clamps to [0, 3].
+        run(&mut thread, "item:setItemHeat(9)");
+        assert_eq!(item.borrow().item_heat, 3.0);
+    }
+
+    #[test]
+    fn favourite_recipe_input_is_false_without_recipes() {
+        let mut thread = item_thread();
+        let item = make(ItemClass::Normal, "Apple", |_| {});
+        thread.globals().set_str("item", item_value(&item));
+        // No script item, or a script used in no recipe: false whatever
+        // the player is.
+        let r = run(&mut thread, "return item:isFavouriteRecipeInput(nil), item:isFavouriteRecipeInput({})");
+        assert!(matches!((&r[0], &r[1]), (Value::Bool(false), Value::Bool(false))));
+    }
+
+    /// A Lua thread with the item bindings.
     fn item_thread() -> Thread {
         let mut thread = Thread::new(pz_kahlua::TableRef::new());
         pz_kahlua::stdlib::install(&mut thread, None).unwrap();
         crate::bind_java_util::register(&mut thread);
         crate::bind_globals::register(&mut thread);
         register(&mut thread);
-        crate::bind_vehicles::register(&mut thread);
         thread
     }
 
@@ -2227,5 +2509,34 @@ mod tests {
         );
         assert!(num(&r[0]) == 0.0 && num(&r[0]).is_sign_negative());
         assert!(num(&r[1]) == 0.0 && num(&r[1]).is_sign_negative());
+    }
+
+    #[test]
+    fn fish_on_create_calls_are_bound() {
+        let mut t = item_thread();
+        let fish = make(ItemClass::Food, "FlatheadCatfish", |_| {});
+        let small = make(ItemClass::Food, "BaitFish", |_| {});
+        let other = make(ItemClass::Normal, "Rope", |_| {});
+        t.globals().set_str("fish", item_value(&fish));
+        t.globals().set_str("small", item_value(&small));
+        t.globals().set_str("other", item_value(&other));
+        let r = run(
+            &mut t,
+            "fish:setCalories(10) fish:setLipids(2) fish:setCarbohydrates(3) fish:setProteins(4)
+             fish:setBaseHunger(-0.25) fish:setHungChange(fish:getBaseHunger())
+             fish:setWorldScale(0.5) fish:setActualWeight(3) fish:setCustomWeight(true)
+             small:setActualWeight(0.5) small:setCustomWeight(true)
+             fish:setTooltip('Tooltip_Fishing_TooSmallForSlicing')
+             return fish:getCalories(), fish:getLipids(), fish:getCarbohydrates(), fish:getProteins(),
+                 fish:getHungChange(), fish:getModData().Tooltip,
+                 RecipeCodeOnTest.cutFish(fish, nil), RecipeCodeOnTest.cutFish(small, nil),
+                 RecipeCodeOnTest.cutFish(other, nil), RecipeCodeOnTest.cutFish(nil, nil)",
+        );
+        let nums: Vec<f64> = r[..5].iter().map(num).collect();
+        assert_eq!(nums, [10.0, 2.0, 3.0, 4.0, -0.25]);
+        assert_eq!(pz_kahlua::exec::java_value_of(&r[5]), "Tooltip_Fishing_TooSmallForSlicing");
+        assert_eq!(fish.borrow().world_scale, 0.5);
+        let cut: Vec<bool> = r[6..].iter().map(|v| matches!(v, Value::Bool(true))).collect();
+        assert_eq!(cut, [true, false, true, true]);
     }
 }

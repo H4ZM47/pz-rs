@@ -10,7 +10,7 @@
 use crate::expose::{expose_class, int_arg, str_arg, JavaEnum};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
-use pz_world::sprite::{IsoSpriteManager, SpriteIdx};
+use pz_world::sprite::{IsoSpriteManager, PropertyContainer, SpriteIdx};
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -87,7 +87,41 @@ impl LuaObject for SpriteObj {
     }
 }
 
-fn sprite_value(idx: Option<SpriteIdx>, props: bool) -> Value {
+/// An `IsoGridSquare`'s `PropertyContainer`, copied when Lua reads it.
+struct SquareProps(PropertyContainer);
+
+impl LuaObject for SquareProps {
+    fn class_name(&self) -> &str {
+        PROPS
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// The Lua `PropertyContainer` of a square's `properties`.
+pub(crate) fn square_props_value(props: PropertyContainer) -> Value {
+    Value::Object(Rc::new(SquareProps(props)))
+}
+
+/// Run `f` on the `PropertyContainer` that receives `has` or `get`.
+fn with_props<R>(
+    c: &NativeCall<'_>,
+    f: impl FnOnce(&IsoSpriteManager, &PropertyContainer) -> LuaResult<R>,
+) -> LuaResult<R> {
+    if let Value::Object(o) = c.arg(0) {
+        if let Some(square) = o.as_any().downcast_ref::<SquareProps>() {
+            return with_manager(|m| f(m, &square.0));
+        }
+    }
+    let i = self_idx(c, true)?;
+    with_manager(|m| {
+        let m: &IsoSpriteManager = m;
+        f(m, &m.sprites[i].properties)
+    })
+}
+
+pub(crate) fn sprite_value(idx: Option<SpriteIdx>, props: bool) -> Value {
     idx.map_or(Value::Nil, |idx| {
         Value::Object(Rc::new(SpriteObj { idx, props }))
     })
@@ -120,6 +154,13 @@ fn flag_name(v: &Value) -> Option<&'static str> {
             .map(|e| e.name),
         _ => None,
     }
+}
+
+/// A `String` key, or an `IsoPropertyType`'s name: the `IsoPropertyType`
+/// overloads of `set`, `unset`, `has` and `get` call `getName()` and then
+/// the `String` overload.
+fn key_name(c: &NativeCall<'_>, i: usize) -> Option<String> {
+    crate::bind_iso_enums::property_type_name(&c.arg(i)).or_else(|| str_arg(c, i).map(|s| s.to_string()))
 }
 
 pub fn register(thread: &mut Thread) {
@@ -159,8 +200,8 @@ pub fn register(thread: &mut Thread) {
     });
     let p = expose_class(thread, PROPS, Some("java.lang.Object"));
     // `set(String)`, `set(String, String)`, `set(IsoFlagType)`,
-    // `set(IsoFlagType, String)`: a property name that names an
-    // `IsoFlagType` sets the flag.
+    // `set(IsoFlagType, String)`, `set(IsoPropertyType, String)`: a
+    // property name that names an `IsoFlagType` sets the flag.
     p.method("set", |c| {
         let i = self_idx(c, true)?;
         let key = c.arg(1);
@@ -183,7 +224,7 @@ pub fn register(thread: &mut Thread) {
                 }
                 return Ok(());
             }
-            let Some(name) = str_arg(c, 1) else {
+            let Some(name) = key_name(c, 1) else {
                 return Ok(());
             };
             props.set(tables, alias, &name, value.as_deref().unwrap_or(""), true);
@@ -191,7 +232,7 @@ pub fn register(thread: &mut Thread) {
         })?;
         Ok(0)
     });
-    // `unset(String)` / `unset(IsoFlagType)`.
+    // `unset(String)` / `unset(IsoFlagType)` / `unset(IsoPropertyType)`.
     p.method("unset", |c| {
         let i = self_idx(c, true)?;
         let key = c.arg(1);
@@ -209,40 +250,73 @@ pub fn register(thread: &mut Thread) {
                 }
                 return Ok(());
             }
-            if let Some(name) = str_arg(c, 1) {
+            if let Some(name) = key_name(c, 1) {
                 props.unset(alias, &name);
             }
             Ok(())
         })?;
         Ok(0)
     });
-    // `has(String)` / `has(IsoFlagType)`.
+    // `has(String)` / `has(IsoFlagType)` / `has(IsoPropertyType)`.
     p.method("has", |c| {
-        let i = self_idx(c, true)?;
         let key = c.arg(1);
-        let r = with_manager(|m| {
-            let props = &m.sprites[i].properties;
+        let r = with_props(c, |m, props| {
             Ok(match flag_name(&key) {
                 Some(f) => m
                     .tables
                     .flag_from_string(f)
                     .is_some_and(|flag| props.has(flag)),
-                None => str_arg(c, 1).is_some_and(|n| props.has_name(&m.alias, &n)),
+                None => key_name(c, 1).is_some_and(|n| props.has_name(&m.alias, &n)),
             })
         })?;
         Ok(c.push(r))
     });
-    // `get(String)`.
+    // `get(String)` / `get(IsoPropertyType)`.
     p.method("get", |c| {
-        let i = self_idx(c, true)?;
-        let v = with_manager(|m| {
-            Ok(str_arg(c, 1).and_then(|n| {
-                m.sprites[i]
-                    .properties
-                    .get(&m.alias, &n)
-                    .map(str::to_string)
-            }))
+        let v = with_props(c, |m, props| {
+            Ok(key_name(c, 1).and_then(|n| props.get(&m.alias, &n).map(str::to_string)))
         })?;
         Ok(c.push(v.map_or(Value::Nil, |v| Value::str(&v))))
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bind_iso_enums::{register_with, IsoClassData};
+    use pz_kahlua::TableRef;
+
+    #[test]
+    fn property_container_takes_iso_property_type_keys() {
+        let old = manager().ok();
+        let mut m = IsoSpriteManager::new(pz_world::sprite::test_tables());
+        let mut values = pz_world::sprite::PropertyValueMap::default();
+        values.put("CustomName", vec!["Grave".into()]);
+        m.alias = pz_world::sprite::TilePropertyAliasMap::generate(&values, &[]);
+        install_sprite_manager(Some(Rc::new(RefCell::new(m))));
+        let mut t = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        crate::bind_java_util::register(&mut t);
+        let data = IsoClassData {
+            property_types: vec![("CUSTOM_NAME".into(), "CustomName".into())],
+            ..Default::default()
+        };
+        register_with(&mut t, &data);
+        register(&mut t);
+        let src = "local p = IsoSpriteManager.instance:getSprite('grave_1'):getProperties()
+            local before = p:has(IsoPropertyType.CUSTOM_NAME)
+            p:set(IsoPropertyType.CUSTOM_NAME, 'Grave')
+            local r = { before, p:has(IsoPropertyType.CUSTOM_NAME), p:get(IsoPropertyType.CUSTOM_NAME), p:get('CustomName') }
+            p:unset(IsoPropertyType.CUSTOM_NAME)
+            r[5] = p:has('CustomName')
+            return r[1], r[2], r[3], r[4], r[5]";
+        let proto = pz_kahlua::compiler::compile(src, Some("t"), Some("t"), None).unwrap();
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(proto), t.globals().clone()));
+        let r = t.call(&f, &[]).unwrap_or_else(|e| panic!("{e}"));
+        install_sprite_manager(old);
+        let shown: Vec<String> = r.iter().map(pz_kahlua::exec::java_value_of).collect();
+        assert!(!r[0].truthy() && r[1].truthy() && !r[4].truthy(), "{shown:?}");
+        assert_eq!(pz_kahlua::exec::java_value_of(&r[2]), "Grave");
+        assert_eq!(pz_kahlua::exec::java_value_of(&r[3]), "Grave");
+    }
 }

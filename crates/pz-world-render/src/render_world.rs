@@ -11,6 +11,7 @@ use pz_iso_render::puddles::{puddles_dir, PuddleSquare, PuddlesGeometry};
 use pz_iso_render::world::{
     AttachedSprite, BuildingId, SeamNeighbours, SlopeDir, SquareCutawayInfo,
 };
+use pz_iso_render::blood::{ChunkBlood, FloorBloodSplat};
 use pz_iso_render::{CutawayWorld, ObjectKind, RenderObject, RenderSquare};
 use pz_world::isoregion::IsoRegions;
 use pz_world::sprite::IsoFlagType;
@@ -49,6 +50,10 @@ pub struct RenderWorld {
     /// [`crate::PendingRender::apply`] (via [`RenderWorld::init_puddles`])
     /// before the frame draws.
     pub puddles_recalc: BTreeSet<(i32, i32, i32)>,
+    /// The loaded chunks' `floorBloodSplats` and `floorBloodSplatsFade`
+    /// (the chunk file's splats when the chunk was built, then
+    /// [`RenderWorld::add_blood_splat`]).
+    pub blood: HashMap<(i32, i32), ChunkBlood>,
 }
 
 /// The render square of world square `sq`: its objects and the cutaway
@@ -120,7 +125,7 @@ pub fn render_square(
         ro.id = o.id;
         ro.render_y_offset = o.render_y_offset;
         ro.tint = [o.tint_r, o.tint_g, o.tint_b];
-        ro.container_count = u32::from(o.container.is_some()) + o.secondary_containers.len() as u32;
+        ro.container_count = o.container_count() as u32;
         if !hidden_item {
             for attached in o.attached_anim_sprite.iter().flatten() {
                 w.sprites.sprites.get(attached.sprite).ok_or(
@@ -130,6 +135,18 @@ pub fn render_square(
                     sprite: cache.get(w.sprites, attached.sprite, tex),
                     alpha: attached.alpha,
                 });
+            }
+            // `overlaySprite`, by name. TODO(port): names saved as
+            // `WorldDictionary` ids.
+            if let Some(ov) = &o.overlay_sprite {
+                if let pz_world::objects::SpriteName::Str(name) = &ov.name {
+                    if let Some(&idx) = w.sprites.named_map.get(name.as_str()) {
+                        ro.overlay = Some(pz_iso_render::world::Overlay {
+                            sprite: cache.get(w.sprites, idx, tex),
+                            color: ov.color.map(|[r, g, b, a]| pz_iso_render::color::ColorInfo { r, g, b, a }),
+                        });
+                    }
+                }
             }
         }
         rs.objects.push(ro);
@@ -374,6 +391,27 @@ impl RenderWorld {
             return Ok(Vec::new());
         };
         self.chunks.insert((wx, wy), (ch.min_level, ch.max_level));
+        let saved = &ch.saved;
+        self.blood.insert(
+            (wx, wy),
+            ChunkBlood {
+                fade: Default::default(),
+                splats: saved
+                    .floor_blood_splats
+                    .iter()
+                    .map(|b| FloorBloodSplat {
+                        x: b.x,
+                        y: b.y,
+                        z: b.z,
+                        kind: i32::from(b.kind),
+                        world_age: b.world_age,
+                        index: i32::from(b.index),
+                        fade: 0,
+                    })
+                    .collect(),
+                next_splat_index: saved.next_splat_index,
+            },
+        );
         for sq_owner in ch.squares() {
             let sq = sq_owner
                 .try_borrow()
@@ -503,6 +541,7 @@ impl RenderWorld {
         if self.chunks.remove(&(wx, wy)).is_none() {
             return;
         }
+        self.blood.remove(&(wx, wy));
         self.squares
             .retain(|&(x, y, _), _| (x.div_euclid(8), y.div_euclid(8)) != (wx, wy));
         self.puddles_recalc
@@ -580,6 +619,29 @@ impl RenderWorld {
                 })
             })
             .collect()
+    }
+}
+
+impl RenderWorld {
+    /// `IsoChunk.addBloodSplat` on the renderer's copy of chunk `(wx, wy)`
+    /// after the world chunk kept the splat (its square's solid floor was
+    /// tested there): the splat pushed out of a full queue starts fading
+    /// over `lock_fps * 5` frames. Returns the level to invalidate.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_blood_splat(&mut self, wx: i32, wy: i32, x: f32, y: f32, z: f32, kind: i32, world_age: f32, lock_fps: i32) -> Option<i32> {
+        self.blood
+            .get_mut(&(wx, wy))?
+            .add_splat(wx, wy, x, y, z, kind, world_age, lock_fps, |_, _, _| true)
+    }
+}
+
+impl pz_iso_render::weather::SurfaceWorld for RenderWorld {
+    fn square(&self, x: i32, y: i32, z: i32) -> Option<&RenderSquare> {
+        self.squares.get(&(x, y, z))
+    }
+
+    fn chunk_blood(&self, wx: i32, wy: i32) -> Option<&ChunkBlood> {
+        self.blood.get(&(wx, wy))
     }
 }
 

@@ -2,6 +2,7 @@
 //! which register `CharacterTraitDefinition`/`CharacterProfessionDefinition`
 //! entries (kept in this group's statics).
 
+use crate::translator::get_text;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -98,8 +99,7 @@ fn unknown_key(sm: &ScriptManager, class: &str, k: &str, block: &Block) -> Scrip
 #[derive(Clone, Debug)]
 pub struct CharacterTraitDefinition {
     pub character_trait_type: Option<Rc<RegistryKey>>,
-    /// `Translator.getText(UIName)`. TODO(Translator): translated; this is
-    /// the untranslated key.
+    /// `Translator.getText(UIName)`.
     pub display_name: Option<String>,
     pub cost: i32,
     pub description: Option<String>,
@@ -134,9 +134,10 @@ impl CharacterTraitDefinition {
             .ok_or_else(|| ScriptError::new("java.lang.NullPointerException"))?
             .path();
         Ok(CharacterTraitDefinition {
-            display_name: name.map(str::to_string),
+            display_name: name.map(get_text),
             cost,
-            description: description.filter(|d| !d.is_empty()).map(str::to_string),
+            // `Translator.getText(description)` unless it is null or empty.
+            description: description.filter(|d| !d.is_empty()).map(get_text),
             is_profession_trait,
             texture_name: format!("media/ui/Traits/trait_{}.png", java::to_lower(path)),
             character_trait_type: trait_type,
@@ -446,8 +447,7 @@ impl ScriptObject for CharacterTraitDefinitionScript {
 #[derive(Clone, Debug)]
 pub struct CharacterProfessionDefinition {
     pub character_profession_type: Option<Rc<RegistryKey>>,
-    /// `Translator.getText(UIName)`. TODO(Translator): translated; this is
-    /// the untranslated key.
+    /// `Translator.getText(UIName)`.
     pub display_name: Option<String>,
     pub cost: i32,
     pub description: Option<String>,
@@ -477,13 +477,14 @@ impl CharacterProfessionDefinition {
         }
         Ok(CharacterProfessionDefinition {
             character_profession_type: profession_type,
-            display_name: name.map(str::to_string),
+            display_name: name.map(get_text),
             cost,
+            // `""`, or `Translator.getText(description)` unless it is null
+            // or empty.
             description: Some(
                 description
                     .filter(|d| !d.is_empty())
-                    .unwrap_or("")
-                    .to_string(),
+                    .map_or_else(String::new, get_text),
             ),
             icon_path_name: icon_path_name.map(str::to_string),
             granted_traits: Vec::new(),
@@ -664,5 +665,30 @@ impl ScriptObject for CharacterProfessionDefinitionScript {
         let block = root.children.first().ok_or_else(index_error)?;
         self.base.load_common_block(block);
         self.load_definition(sm, block)
+    }
+}
+
+#[cfg(test)]
+mod translation_tests {
+    use super::*;
+    use crate::objects::items::CharacterTrait;
+    use crate::translator::install_get_text;
+
+    #[test]
+    fn definitions_translate_their_name_and_description() {
+        let sm = ScriptManager::new();
+        let t = CharacterTrait::register(&sm, "t:brave").unwrap();
+        install_get_text(Some(Box::new(|k| format!("<{k}>"))));
+        let tr = CharacterTraitDefinition::new(Some(t.clone()), Some("UI_trait_Brave"), 4, Some("UI_trait_BraveDesc"), false, false).unwrap();
+        let empty = CharacterTraitDefinition::new(Some(t), Some("UI_trait_Brave"), 4, Some(""), false, false).unwrap();
+        let prof = CharacterProfessionDefinition::new(&sm, None, Some("UI_prof_Chef"), 0, Some("UI_profdesc_Chef"), None).unwrap();
+        let no_desc = CharacterProfessionDefinition::new(&sm, None, Some("UI_prof_Chef"), 0, None, None).unwrap();
+        install_get_text(None);
+        assert_eq!(tr.display_name.as_deref(), Some("<UI_trait_Brave>"));
+        assert_eq!(tr.description.as_deref(), Some("<UI_trait_BraveDesc>"));
+        assert_eq!(empty.description, None);
+        assert_eq!(prof.display_name.as_deref(), Some("<UI_prof_Chef>"));
+        assert_eq!(prof.description.as_deref(), Some("<UI_profdesc_Chef>"));
+        assert_eq!(no_desc.description.as_deref(), Some(""));
     }
 }

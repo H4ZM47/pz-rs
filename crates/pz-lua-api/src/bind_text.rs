@@ -38,6 +38,8 @@ pub struct TextState {
 
 thread_local! {
     static STATE: RefCell<Option<TextState>> = const { RefCell::new(None) };
+    /// The translator [`load_translator`] loaded, until [`boot`] installs it.
+    static EARLY_TRANSLATOR: RefCell<Option<Translator>> = const { RefCell::new(None) };
     static LANGUAGES: RefCell<HashMap<usize, Value>> = RefCell::new(HashMap::new());
 }
 
@@ -49,10 +51,9 @@ pub fn install(state: TextState) {
     STATE.with(|s| *s.borrow_mut() = Some(state));
 }
 
-/// Engine start-up for text: `Languages.init`, `Translator.loadFiles` and
-/// `TextManager.Init` from the game files and `Core` options, then
-/// [`install`]. Text draws go to the UI sprite list.
-pub fn boot(fs: &pz_fs::GameFs, core: &pz_core::core::Core) -> Result<(), String> {
+/// `Languages.init` and `Translator.loadFiles` from the game files and
+/// `Core` options.
+fn new_translator(fs: &pz_fs::GameFs, core: &pz_core::core::Core) -> Result<Translator, String> {
     let mods = fs
         .mod_ids()
         .iter()
@@ -77,6 +78,56 @@ pub fn boot(fs: &pz_fs::GameFs, core: &pz_core::core::Core) -> Result<(), String
     let mut translator = Translator::new(env);
     translator.init_languages();
     translator.load_files().map_err(|e| e.to_string())?;
+    Ok(translator)
+}
+
+/// `Translator.getText` for the script objects ([`pz_scripts::translator`]):
+/// the installed translator, else the one [`load_translator`] loaded.
+fn install_script_get_text() {
+    pz_scripts::translator::install_get_text(Some(Box::new(|key| {
+        if let Some(t) = with_translator(|t| t.get_text(key, &[])) {
+            return t;
+        }
+        EARLY_TRANSLATOR
+            .with(|e| e.borrow().as_ref().map(|t| t.get_text(key, &[])))
+            .unwrap_or_else(|| key.to_string())
+    })));
+    pz_scripts::translator::install_get_item_name(Some(Box::new(|full_type, script_name| {
+        if let Some(n) =
+            with_translator_mut(|t| t.get_item_name_from_full_type(full_type, script_name))
+        {
+            return n;
+        }
+        EARLY_TRANSLATOR
+            .with(|e| {
+                e.borrow_mut()
+                    .as_mut()
+                    .map(|t| t.get_item_name_from_full_type(full_type, script_name))
+            })
+            .unwrap_or_else(|| script_name(full_type).unwrap_or_else(|| full_type.to_string()))
+    })));
+}
+
+/// `Languages.init` and `Translator.loadFiles`, which `GameWindow.init`
+/// runs before `initShared` loads the scripts: script objects
+/// (`CharacterTraitDefinition`, ...) translate their names as they load.
+/// [`boot`] then uses this translator.
+pub fn load_translator(fs: &pz_fs::GameFs, core: &pz_core::core::Core) -> Result<(), String> {
+    let translator = new_translator(fs, core)?;
+    EARLY_TRANSLATOR.with(|e| *e.borrow_mut() = Some(translator));
+    install_script_get_text();
+    Ok(())
+}
+
+/// Engine start-up for text: `Languages.init`, `Translator.loadFiles` and
+/// `TextManager.Init` from the game files and `Core` options, then
+/// [`install`]. Text draws go to the UI sprite list. A translator from
+/// [`load_translator`] is used instead of loading the files again.
+pub fn boot(fs: &pz_fs::GameFs, core: &pz_core::core::Core) -> Result<(), String> {
+    let translator = match EARLY_TRANSLATOR.with(|e| e.borrow_mut().take()) {
+        Some(t) => t,
+        None => new_translator(fs, core)?,
+    };
     let opts = pz_text::TextOptions {
         language: translator.get_language().name.clone(),
         dyslexic: core.get_option_enable_dyslexic_font(),
@@ -104,7 +155,18 @@ pub fn boot(fs: &pz_fs::GameFs, core: &pz_core::core::Core) -> Result<(), String
         draw: None,
         known_file: Rc::new(move |p| known.contains(p)),
     });
+    init_perk_translations();
+    install_script_get_text();
     Ok(())
+}
+
+/// `PerkFactory.initTranslations()`, which `Translator.loadFiles` ends
+/// with: the shared perks' names are translated again with the new tables.
+fn init_perk_translations() {
+    crate::bind_characters::shared_characters()
+        .borrow_mut()
+        .perks
+        .init_translations(&translate);
 }
 
 /// `TextManager.instance` as `UIElement` sees it.
@@ -300,7 +362,7 @@ pub fn with_translator<R>(f: impl FnOnce(&Translator) -> R) -> Option<R> {
 }
 
 /// `Translator.getText(key)` (the key itself when no translator is set).
-pub(crate) fn translate(key: &str) -> String {
+pub fn translate(key: &str) -> String {
     with_translator(|t| t.get_text(key, &[])).unwrap_or_else(|| key.to_string())
 }
 
@@ -420,11 +482,15 @@ fn register_translator(thread: &mut Thread) {
     t.static_fn("getDisplayItemName", get_display_item_name);
     t.static_fn("getItemNameFromFullType", get_item_name_from_full_type);
     t.static_fn("loadFiles", |_| {
-        if let Some(Err(e)) = with_translator_mut(|t| t.load_files()) {
-            return Err(LuaError::Runtime {
-                message: e.to_string(),
-                class: "java.lang.RuntimeException",
-            });
+        match with_translator_mut(|t| t.load_files()) {
+            Some(Err(e)) => {
+                return Err(LuaError::Runtime {
+                    message: e.to_string(),
+                    class: "java.lang.RuntimeException",
+                })
+            }
+            Some(Ok(())) => init_perk_translations(),
+            None => {}
         }
         Ok(0)
     });
@@ -965,5 +1031,31 @@ mod tests {
         );
         let quads = pz_ui::with_ui(|m| m.sprite.cmds.len());
         assert_eq!(quads, 2);
+    }
+
+    #[test]
+    fn loading_translations_names_the_perks() {
+        let chars = Rc::new(RefCell::new(pz_characters::Characters::default()));
+        crate::bind_characters::install_characters(chars.clone());
+        let perk = {
+            let mut c = chars.borrow_mut();
+            let p = c.perks.new_perk("Woodwork").unwrap();
+            c.perks.add_perk(&p, "Woodwork", None, [1; 10], false, &|k| k.to_string())
+        };
+        assert_eq!(perk.borrow().name, "IGUI_perks_Woodwork");
+        let mut t = Translator::new(TranslatorEnv::default());
+        t.table_mut(Table::IgUi)
+            .insert("IGUI_perks_Woodwork".into(), format_fixer("Carpentry"));
+        install(TextState {
+            translator: Rc::new(RefCell::new(t)),
+            text_manager: Rc::default(),
+            draw: None,
+            known_file: Rc::new(|_| false),
+        });
+        init_perk_translations();
+        assert_eq!(perk.borrow().name, "Carpentry");
+        let by_name = chars.borrow().perks.perk_from_name("Carpentry");
+        assert!(by_name.is_some_and(|p| Rc::ptr_eq(&p, &perk)));
+        assert!(chars.borrow().perks.perk_from_name("IGUI_perks_Woodwork").is_none());
     }
 }

@@ -179,6 +179,8 @@ pub struct CharacterVars {
     pub ignore_movement: bool,
     pub ignore_stagger_back: bool,
     pub damaged_by_vehicle: bool,
+    /// `doDeathSound`.
+    pub do_death_sound: bool,
     pub climbing: bool,
     /// `climbRopeTime`.
     pub climb_rope_time: f32,
@@ -186,6 +188,10 @@ pub struct CharacterVars {
     /// first rope climb).
     pub climb_data: Option<ClimbData>,
     pub on_kill_done: bool,
+    /// `diedBody != null`: `becomeCorpse()` made the character's corpse
+    /// (the corpse itself is the world's). The character is then off the
+    /// world (`removeFromWorld`).
+    pub died_body: bool,
     /// `getAttackedBy()` (by character id).
     pub attacked_by: Option<i32>,
     /// `lastHitCharacter`.
@@ -423,10 +429,12 @@ impl Default for CharacterVars {
             ignore_movement: false,
             ignore_stagger_back: false,
             damaged_by_vehicle: false,
+            do_death_sound: true,
             climbing: false,
             climb_rope_time: 0.0,
             climb_data: None,
             on_kill_done: false,
+            died_body: false,
             attacked_by: None,
             on_fire: false,
             fire_kill_rate: 0.0038,

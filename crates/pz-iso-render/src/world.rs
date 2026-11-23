@@ -109,6 +109,9 @@ pub struct SpriteInfo {
     pub stairs: Option<StairPart>,
     /// The sprite's own non-empty depth texture (`depthTexture`).
     pub depth_texture: Option<Texture>,
+    /// Roof slope recovered from the depth texture: heights in levels above
+    /// the square's floor at the NW, NE, SE and SW corners (`roofs_` tiles).
+    pub roof_plane: Option<[f32; 4]>,
     /// `getSpriteGrid().getLevels()` (0 without a sprite grid) and
     /// `getSpriteGridPosZ(sprite)`: multi-level objects.
     pub grid_levels: i32,
@@ -148,6 +151,7 @@ impl Default for SpriteInfo {
             tint_mod: [1.0; 3],
             stairs: None,
             depth_texture: None,
+            roof_plane: None,
             grid_levels: 0,
             grid_pos_z: 0,
             hide_for_water_render: false,

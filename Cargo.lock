@@ -2096,6 +2096,7 @@ dependencies = [
  "pz-joml",
  "pz-kahlua",
  "pz-network",
+ "pz-pathfind",
  "pz-popman",
  "pz-radio",
  "pz-render",
@@ -2380,6 +2381,7 @@ version = "0.1.0"
 dependencies = [
  "png",
  "pz-classfile",
+ "pz-core",
  "pz-fs",
  "pz-kahlua",
  "pz-world",

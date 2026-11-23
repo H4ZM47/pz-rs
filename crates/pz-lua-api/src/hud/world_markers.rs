@@ -42,7 +42,7 @@ fn to_screen_exact(player: usize, x: f32, y: f32, z: f32) -> (f32, f32) {
 }
 
 /// `IsoCamera.getScreenLeft/Top/Width/Height(player)`.
-fn screen_rect(player: usize) -> (i32, i32, i32, i32) {
+pub(crate) fn screen_rect(player: usize) -> (i32, i32, i32, i32) {
     let (sw, sh) = {
         let c = crate::bind_core::shared_core();
         let c = c.borrow();
