@@ -212,3 +212,27 @@ fn window_frame_and_thumpable_climb_checks_use_the_live_object_and_actor() {
     });
     f.run("check(not frame:canClimbThrough(nil))");
 }
+
+#[test]
+fn toggle_only_blocks_a_barricade_on_the_actors_side() {
+    use crate::bind_character_sim::{character_value, LuaGameCharacter};
+    use pz_characters::character::CharacterKind;
+    use pz_world::objects::IsoBarricade;
+
+    let mut fixture = Fixture::new();
+    fixture.window(false, false);
+    with_world(|world| {
+        let square = world.cell.as_ref().unwrap().get_grid_square(1, 2, 0).unwrap();
+        let mut square = square.borrow_mut();
+        let barricade = IsoBarricade { dir: 0, plank_health: [100, 0, 0, 0], metal_health: 0, metal_bar_health: 0 };
+        square.objects.push(ObjectSlot::new(IsoObject::new(2, ObjectKind::Barricade(barricade), None)));
+        square.special_objects.push(2);
+    });
+    let actor = Rc::new(RefCell::new(LuaGameCharacter::new(&pz_scripts::ScriptManager::new(), CharacterKind::Player)));
+    fixture.thread.globals().set_str("actor", character_value(&actor));
+    actor.borrow_mut().set_y(2.5);
+    fixture.run("w = IsoCell.getInstance():getGridSquare(1,2,0):getObjects():get(0); w:ToggleWindow(actor); check(not w:IsOpen())");
+    actor.borrow_mut().set_y(1.5);
+    fixture.run("w:ToggleWindow(actor); check(w:IsOpen() and not w:canClimbThrough(nil))");
+    fixture.run("w:ToggleWindow(nil); check(not w:IsOpen())");
+}

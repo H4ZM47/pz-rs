@@ -312,7 +312,7 @@ impl StatesEngine for Engine {
     fn path_cancel_request(&mut self, mover: MoverId) {
         self.cancelled.push(mover);
     }
-    fn toggle_window(&mut self, cell: &mut IsoCell, window: ObjectRef, _chr: i32) {
+    fn toggle_window(&mut self, cell: &mut IsoCell, _meta: &IsoMetaGrid, _sprites: &IsoSpriteManager, window: ObjectRef, _chr: &Thumper) -> pz_inventory::floor_drop::HostResult<()> {
         self.toggled.push(window);
         let sq = cell
             .get_grid_square_mut(window.x, window.y, window.z)
@@ -353,6 +353,7 @@ impl StatesEngine for Engine {
                     Some(replacement.into()),
                 );
         }
+        Ok(())
     }
     fn has_moving_objects(&self, sq: (i32, i32, i32)) -> bool {
         self.moving.contains(&sq)

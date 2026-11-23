@@ -2,6 +2,7 @@
 //! media is read at runtime; saves always go into a fresh test cache.
 
 mod queue;
+mod windows;
 mod cell_drag;
 mod mannequin;
 
@@ -525,7 +526,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     }
     assert_eq!(reloaded.current_state(), Some(INGAME), "saved session never entered gameplay; cache: {}", cache_dir.display());
     verify_tile_definitions(reloaded.lua.as_mut().unwrap());
-    let reloaded_chunks = mannequin::check_live(false);
+    let initial_chunks = mannequin::check_live(false);
     assert_eq!(mannequin::saved_state(), expected_mannequins, "mannequin outfit/identity/pose/skin changed across close and fresh reload");
     let loaded_player = bind_players::player(0).expect("saved session reconstructed local player 0");
     assert!(!Rc::ptr_eq(&player, &loaded_player), "saved session reused the closed session's player");
@@ -558,10 +559,14 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         Events.OnMainMenuEnter.Add(function() rustSessionOldMenuCount = rustSessionOldMenuCount + 1 end)
     "#);
     movement_diagnostics(&mut reloaded, "reloaded");
+    windows::check(&mut reloaded);
     let old_scripts = pz_lua_api::bind_registry::shared_script_manager();
     let old_globals = reloaded.lua.as_ref().unwrap().thread.globals().clone();
     // Preserve the first save in the isolated test cache. Each resident
     // chunk must be written again by quit; the earlier files cannot satisfy it.
+    let reloaded_chunks = mannequin::check_live(false);
+    let streamed_out: Vec<_> = initial_chunks.into_iter().filter(|xy| !reloaded_chunks.contains(xy)).collect();
+    mannequin::check_saved(&save_dir, &streamed_out);
     let first_save = cache_dir.join("first-close-chunks");
     std::fs::create_dir(&first_save).unwrap();
     for &(wx, wy) in &reloaded_chunks {

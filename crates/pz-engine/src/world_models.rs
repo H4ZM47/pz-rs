@@ -471,19 +471,10 @@ fn update_direction_and_turning(model: &mut CharacterModel, chr: &mut LuaGameCha
         allows_twist,
         shoulder_weight,
     );
-    let turning = if chr.is_player() && model.player.tracks().is_empty()
-        || chr.is_zombie()
-            && chr.is_current_state_id(pz_characters::character::states::ids::ZOMBIE_FALL_DOWN)
-        || chr.vars.block_turning
-    {
-        false
-    } else if chr.current_state().is_some_and(|s| s.is_moving(chr)) || chr.player_moving {
-        twisting
-    } else if attacking {
-        !chr.vars.aim_at_floor
-    } else {
-        57.295776 * model.player.excess_twist_angle().abs() > 1.0 || chr.vars.turning && twisting
-    };
+    chr.vars.has_animation_tracks = !model.player.tracks().is_empty();
+    chr.vars.target_twist = target_twist;
+    chr.vars.excess_twist = 57.295776 * model.player.excess_twist_angle();
+    let turning = pz_pathfind::mover::PathMover::should_be_turning(chr);
     chr.vars.turning = turning;
     chr.vars.turning90 = turning && (chr.vars.turning90 || target_twist.abs() > 65.0);
     let was_around = chr.vars.turning_around;
@@ -553,6 +544,7 @@ fn apply_deltas(
 }
 
 fn publish_animation_variables(model: &CharacterModel, chr: &mut LuaGameCharacter) {
+    chr.vars.has_animation_tracks = !model.player.tracks().is_empty();
     chr.vars.anim_angle = 57.295776 * model.player.angle();
     chr.vars.twist = 57.295776 * model.player.twist_angle();
     chr.vars.target_twist = 57.295776 * model.player.target_twist_angle();

@@ -226,7 +226,8 @@ impl StatesWorldAdapter<'_> {
                 )
             };
             if !open {
-                self.engine.toggle_window(self.cell, r, t.id);
+                self.engine.toggle_window(self.cell, self.meta, self.sprites, r, t)
+                    .expect("exclusive state window mutation");
             }
             // Native keeps the found window receiver across ToggleWindow.
             // A callback may replace its coordinate or numeric object ID.

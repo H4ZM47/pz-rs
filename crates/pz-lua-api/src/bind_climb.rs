@@ -79,44 +79,51 @@ fn with_query_world<T>(f: impl FnOnce(&pz_world_states::StatesWorldAdapter<'_>) 
     })
 }
 
-fn can_climb_through(c: &NativeCall<'_>) -> LuaResult<bool> {
-    let this = c.arg(0);
-    let world = crate::bind_world_object::object_from_value(&this)
-        .ok_or_else(|| crate::bind_java_util::class_cast(&this, ISO_OBJECT))?;
-    let square = crate::bind_world_object::object_square(world)?;
-    let Some((x, y, z)) = crate::bind_world::square_coords(&square) else {
-        return Ok(false);
-    };
-    let arg = c.arg(1);
-    let chr = match &arg {
-        Value::Nil => None,
-        Value::Object(value) => {
-            let character = value.as_any().downcast_ref::<crate::bind_character_sim::CharacterObject>()
-                .ok_or_else(|| crate::bind_java_util::class_cast(&arg, "zombie.characters.IsoGameCharacter"))?;
-            let body = character.0.try_borrow().map_err(|_| borrowed("IsoGameCharacter"))?;
-            Some(pz_world_states::Thumper::of(&body))
-        }
-        _ => return Err(crate::bind_java_util::class_cast(&arg, "zombie.characters.IsoGameCharacter")),
-    };
+/// Resolve a retained Lua receiver against the actual cell before translating
+/// its identity into the coordinate and object ID used by character states.
+pub(crate) fn with_live_object<T>(
+    value: &Value,
+    f: impl FnOnce(&pz_world_states::StatesWorldAdapter<'_>, &pz_world::IsoGridSquare, &pz_world::IsoObject,
+        pz_pathfind::mover::ObjectRef) -> LuaResult<T>,
+) -> LuaResult<Option<T>> {
+    let world = crate::bind_world_object::object_from_value(value)
+        .ok_or_else(|| crate::bind_java_util::class_cast(value, ISO_OBJECT))?;
+    let Some(target) = crate::bind_world_object::object_ref(value)? else { return Ok(None) };
     with_query_world(|adapter| {
-        let Some(square) = adapter.cell.get_grid_square(x, y, z) else { return Ok(false) };
+        let Some(square) = adapter.cell.get_grid_square(target.x, target.y, target.z) else { return Ok(None) };
         let square = square.try_borrow().map_err(|_| borrowed("IsoGridSquare"))?;
         if !square.objects.iter().any(|slot| std::rc::Rc::ptr_eq(&slot.ref_handle(), &world.object)) {
-            return Ok(false);
+            return Ok(None);
         }
         let body = world.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
-        Ok(adapter.portal_can_climb_through(&square, &body, chr.as_ref()))
+        f(adapter, &square, &body, target).map(Some)
     })
 }
 
-/// `IsoWindow.ToggleWindow(chr)` of a window on the map: a permanently locked,
-/// smashed or barricaded window stays as it is; otherwise it unlocks, flips
-/// `open` and takes its open or closed sprite, and the square and its
-/// neighbours recalculate.
-///
-/// TODO(port): the house alarm of `handleAlarm`, the `OnContainerUpdate`
-/// event, `PolygonalMap2.squareChanged` and the music intensity event.
-fn toggle_window(c: &NativeCall<'_>) -> LuaResult<()> {
+fn window_actor(c: &NativeCall<'_>) -> LuaResult<Option<pz_world_states::Thumper>> {
+    let value = c.arg(1);
+    if matches!(value, Value::Nil) { return Ok(None) }
+    let Value::Object(handle) = &value else {
+        return Err(crate::bind_java_util::class_cast(&value, crate::bind_character_sim::ISO_GAME_CHARACTER_CLASS));
+    };
+    let actor = handle.as_any().downcast_ref::<crate::bind_character_sim::CharacterObject>()
+        .ok_or_else(|| crate::bind_java_util::class_cast(&value, crate::bind_character_sim::ISO_GAME_CHARACTER_CLASS))?;
+    let actor = actor.0.try_borrow().map_err(|_| borrowed("window actor"))?;
+    Ok(Some(pz_world_states::Thumper::of(&actor)))
+}
+
+fn can_climb_through(c: &NativeCall<'_>) -> LuaResult<bool> {
+    let this = c.arg(0);
+    let chr = window_actor(c)?;
+    Ok(with_live_object(&this, |adapter, square, body, _| {
+        Ok(adapter.portal_can_climb_through(square, body, chr.as_ref()))
+    })?.unwrap_or(false))
+}
+
+/// Toggle the pane unless it is permanently locked, smashed or barricaded
+/// on the supplied actor's side. Dispatch after releasing world and sprite borrows.
+/// TODO(port): alarms, pathfinder invalidation and local music intensity.
+fn toggle_window(c: &mut NativeCall<'_>) -> LuaResult<()> {
     let this = c.arg(0);
     let world = crate::bind_world_object::object_from_value(&this)
         .ok_or_else(|| crate::bind_java_util::class_cast(&this, ISO_WINDOW))?;
@@ -124,46 +131,21 @@ fn toggle_window(c: &NativeCall<'_>) -> LuaResult<()> {
     let Some((x, y, z)) = crate::bind_world::square_coords(&square) else {
         return Ok(());
     };
+    let actor = window_actor(c)?.map(|t| (t.x, t.y));
     let sprites = crate::bind_sprites::manager()?;
     let sprites = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
-    crate::bind_world::with_world_state_cell(|w| {
+    let changed = crate::bind_world::with_world_state_cell(|w| {
         let mut w = w.try_borrow_mut().map_err(|_| borrowed("IsoWorld"))?;
         let state = &mut *w;
         let (Some(cell), Some(meta)) = (state.cell.as_mut(), state.meta_grid.as_ref()) else {
             return Err(crate::bind_world_object::unsupported("IsoWindow.ToggleWindow without a world"));
         };
-        let Some(square) = cell.get_grid_square(x, y, z) else {
-            return Ok(());
-        };
-        let (skip, sprite, native_class) = {
-            let sq = square.try_borrow().map_err(|_| borrowed("IsoGridSquare"))?;
-            let body = world.object.try_borrow().map_err(|_| borrowed("IsoWindow body"))?;
-            let ObjectKind::Window(w) = &body.kind else {
-                return Err(unsupported("IsoWindow.ToggleWindow on another object kind"));
-            };
-            let hooks = pz_world::world_state::ObjectHooks::new(cell, &sprites);
-            let skip = w.perma_locked || w.destroyed || hooks.object_barricaded(&sq, &body);
-            let sprite = if w.open { w.closed_sprite } else { w.open_sprite };
-            (skip, sprite, body.kind.native_class_name())
-        };
-        if skip {
-            return Ok(());
-        }
-        let old = {
-            let mut body = world.object.try_borrow_mut().map_err(|_| borrowed("IsoWindow body"))?;
-            if let ObjectKind::Window(w) = &mut body.kind {
-                w.locked = false;
-                w.open = !w.open;
-            }
-            std::mem::replace(&mut body.sprite, sprite.into())
-        };
-        let mut retired = pz_entity::RetiredComponents::new();
-        retired.push_payload(Box::new(old));
-        cell.retire_components(retired);
-        pz_world::object_slot::observe_object(&world.object, native_class);
-        cell.recalc_all_with_neighbours(x, y, z, meta, &sprites);
-        Ok(())
-    })
+        pz_world::world_state::toggle_window(cell, meta, &sprites, (x, y, z), &world.object, actor)
+            .map_err(crate::bind_world_object::host_error)
+    })?;
+    drop(sprites);
+    if changed { crate::bind_character_sim::fire_container_update(c.thread); }
+    Ok(())
 }
 
 pub(crate) fn register(thread: &mut Thread) {

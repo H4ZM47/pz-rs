@@ -310,6 +310,12 @@ pub fn install_event_sink(sink: EventSink) {
     SINK.with(|s| *s.borrow_mut() = Some(sink));
 }
 
+pub(crate) fn fire_container_update(thread: &mut Thread) {
+    if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
+        sink(thread, "OnContainerUpdate", &[]);
+    }
+}
+
 /// The installed context, collecting events for one call.
 struct CallContext {
     base: Rc<dyn SimContext>,

@@ -578,7 +578,42 @@ impl StatesWorldAdapter<'_> {
         }
     }
 
-    fn facing_position(&self, sq: &IsoGridSquare, o: &IsoObject) -> (f32, f32) {
+    /// Pick the closest member of the sprite grid by square-centre distance.
+    /// The Z/Y/X scan and strict comparison preserve the original tie order.
+    pub fn closest_facing_position(&self, sq: &IsoGridSquare, object: &IsoObject, x: f32, y: f32)
+        -> (f32, f32)
+    {
+        let Some(tile) = object.sprite.tile_projection() else { return self.facing_position(sq, object) };
+        let Some(group) = self.sprites.sprites[tile].sprite_grid else { return self.facing_position(sq, object) };
+        let grid = &self.sprites.grids[group];
+        let Some((ox, oy, oz)) = grid.sprite_pos(tile) else { return self.facing_position(sq, object) };
+        let mut closest = None;
+        let mut distance = f32::INFINITY;
+        for gz in 0..grid.levels {
+            for gy in 0..grid.height {
+                for gx in 0..grid.width {
+                    let Some(square) = self.cell.get_grid_square(sq.x - ox + gx, sq.y - oy + gy, sq.z - oz + gz)
+                        else { continue };
+                    let square = square.borrow();
+                    let dx = square.x as f32 + 0.5 - x;
+                    let dy = square.y as f32 + 0.5 - y;
+                    let dist = dx * dx + dy * dy;
+                    if dist >= distance { continue }
+                    for slot in &square.objects {
+                        let candidate = slot.borrow();
+                        if candidate.sprite.tile_projection().is_some_and(|i| self.sprites.sprites[i].sprite_grid == Some(group)) {
+                            distance = dist;
+                            closest = Some(self.facing_position(&square, &candidate));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        closest.unwrap_or_else(|| self.facing_position(sq, object))
+    }
+
+    pub fn facing_position(&self, sq: &IsoGridSquare, o: &IsoObject) -> (f32, f32) {
         let (x, y) = (sq.x as f32, sq.y as f32);
         let edge = |north: bool| if north { (x + 0.5, y) } else { (x, y + 0.5) };
         match &o.kind {
@@ -604,8 +639,41 @@ impl StatesWorldAdapter<'_> {
                 IsoDirections::E => (x + 1.0, y + 0.5),
                 _ => (x, y + 0.5),
             },
-            // `IsoObject.getFacingPosition`: the square's centre.
-            _ => (x + 0.5, y + 0.5),
+            ObjectKind::Fireplace(_) => {
+                if o.main_container_type().is_some_and(|ty| ty.eq_ignore_ascii_case("campfire")) {
+                    (x + 0.5, y + 0.5)
+                } else {
+                    edge(self.env().obj_has_flag(o, "collideN"))
+                }
+            }
+            ObjectKind::Curtain(curtain) => {
+                let ty = self.env().metadata(o).map(|s| s.tile_type);
+                if ty == Some(self.sprites.tables.ty.curtainS) { (x + 0.5, y + 1.0) }
+                else if ty == Some(self.sprites.tables.ty.curtainE) { (x + 1.0, y + 0.5) }
+                else { edge(curtain.north) }
+            }
+            _ => {
+                let Some(sprite) = self.env().metadata(o) else { return (x + 0.5, y + 0.5) };
+                let tables = &self.sprites.tables;
+                let props = &sprite.properties;
+                if sprite.tile_type == tables.ty.wall {
+                    let n = props.has(tables.flag.collideN);
+                    let w = props.has(tables.flag.collideW);
+                    if n && w { return (x, y) }
+                    if n { return edge(true) }
+                    if w { return edge(false) }
+                    for (flag, north) in [("DoorWallN", true), ("DoorWallW", false)] {
+                        if tables.flag_from_string(flag).is_some_and(|f| props.has(f)) { return edge(north) }
+                    }
+                } else {
+                    let flags = &tables.flag;
+                    if props.has(flags.attachedN) { return edge(true) }
+                    if tables.flag_from_string("attachedS").is_some_and(|f| props.has(f)) { return (x + 0.5, y + 1.0) }
+                    if props.has(flags.attachedW) { return edge(false) }
+                    if tables.flag_from_string("attachedE").is_some_and(|f| props.has(f)) { return (x + 1.0, y + 0.5) }
+                }
+                (x + 0.5, y + 0.5)
+            }
         }
     }
 
@@ -929,7 +997,8 @@ impl StatesWorldAdapter<'_> {
             drop(o);
             drop(sq);
             if can_toggle {
-                self.engine.toggle_window(self.cell, r, t.id);
+                self.engine.toggle_window(self.cell, self.meta, self.sprites, r, t)
+                    .expect("exclusive state window mutation");
                 let Some((sq_owner, o_owner)) = self.find(r) else {
                     return;
                 };

@@ -1177,13 +1177,19 @@ impl AnimationPlayer {
         Vector2::direction(dx, dy)
     }
 
+    /// Target and excess twist in radians relative to the current body angle.
+    pub fn facing_twist(angle: f32, target_angle: f32, max_twist: f32) -> (f32, f32) {
+        let target = pzmath::get_closest_angle(angle, target_angle);
+        let clamped = pzmath::clamp(target, -max_twist, max_twist);
+        (target, pzmath::get_closest_angle(clamped, target))
+    }
+
     /// `setTargetDirection`.
     pub fn set_target_direction(&mut self, dx: f32, dy: f32) {
         if self.target_dir.x != dx || self.target_dir.y != dy {
             self.target_angle = Self::calculate_anim_player_angle(dx, dy);
-            self.target_twist_angle = pzmath::get_closest_angle(self.angle, self.target_angle);
-            let clamped = pzmath::clamp(self.target_twist_angle, -self.max_twist_angle, self.max_twist_angle);
-            self.excess_twist = pzmath::get_closest_angle(clamped, self.target_twist_angle);
+            (self.target_twist_angle, self.excess_twist) =
+                Self::facing_twist(self.angle, self.target_angle, self.max_twist_angle);
             self.target_dir = Vector2::new(dx, dy);
         }
     }

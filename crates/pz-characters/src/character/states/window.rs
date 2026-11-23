@@ -43,6 +43,12 @@ pub const SMASH_VEHICLE_WINDOW: Param<Option<(i16, String)>> =
 pub const SMASH_CLIMB_THROUGH_WINDOW: Param<bool> =
     Param::new(ids::SMASH_WINDOW, "climb_through_window", || false);
 
+#[derive(Clone, Copy)]
+pub enum WindowAction {
+    Open,
+    Close,
+}
+
 /// `OpenWindowState`.
 pub struct OpenWindowState;
 /// `CloseWindowState`.
@@ -161,29 +167,30 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `openWindow(w)`: `OpenWindowState.setParams` and `EventOpenWindow`.
     pub fn open_window(&mut self, window: ObjectRef, cx: &StateCx<'_, I>) {
-        let Some(w) = cx.world.window_info(window) else {
-            return;
-        };
-        if w.invincible {
-            return;
+        if let Some(info) = cx.world.window_info(window) {
+            self.request_window_action(window, info, WindowAction::Open);
         }
-        // OpenWindowState.setParams(owner, window).
-        self.state.params.clear(ids::OPEN_WINDOW);
-        OPEN_WINDOW.set(&mut self.state.params, Some(window));
-        self.report_event("EventOpenWindow");
     }
 
     /// `closeWindow(w)`.
     pub fn close_window(&mut self, window: ObjectRef, cx: &StateCx<'_, I>) {
-        let Some(w) = cx.world.window_info(window) else {
-            return;
-        };
-        if w.invincible {
+        if let Some(info) = cx.world.window_info(window) {
+            self.request_window_action(window, info, WindowAction::Close);
+        }
+    }
+
+    /// Record the live target before reporting the event to the action context.
+    pub fn request_window_action(&mut self, window: ObjectRef, info: WindowInfo, action: WindowAction) {
+        if info.invincible {
             return;
         }
-        self.state.params.clear(ids::CLOSE_WINDOW);
-        CLOSE_WINDOW.set(&mut self.state.params, Some(window));
-        self.report_event("EventCloseWindow");
+        let (state, param, event) = match action {
+            WindowAction::Open => (ids::OPEN_WINDOW, OPEN_WINDOW, "EventOpenWindow"),
+            WindowAction::Close => (ids::CLOSE_WINDOW, CLOSE_WINDOW, "EventCloseWindow"),
+        };
+        self.state.params.clear(state);
+        param.set(&mut self.state.params, Some(window));
+        self.report_event(event);
     }
 
     /// `smashWindow(w)`.
@@ -359,7 +366,7 @@ impl OpenWindowState {
         owner.set_var_str("StopAfterAnimLooped", "success");
         owner.player.context_panic = 0.0;
         if w.in_world && !w.open && owner.is_local_player(cx.ctx) {
-            cx.world.toggle_window(window, owner.id);
+            if let Err(error) = cx.world.toggle_window(window, owner) { cx.record_host_error(error); }
         }
     }
 }
@@ -508,7 +515,7 @@ impl CloseWindowState {
         owner.set_var_str("StopAfterAnimLooped", "success");
         owner.player.context_panic = 0.0;
         if w.in_world && w.open && owner.is_local_player(cx.ctx) {
-            cx.world.toggle_window(window, owner.id);
+            if let Err(error) = cx.world.toggle_window(window, owner) { cx.record_host_error(error); }
         }
     }
 }
@@ -769,9 +776,10 @@ mod tests {
         fn window_info(&self, w: ObjectRef) -> Option<WindowInfo> {
             (w == WIN).then_some(self.info)
         }
-        fn toggle_window(&mut self, _w: ObjectRef, chr: i32) {
-            self.toggled.push(chr);
+        fn toggle_window(&mut self, _w: ObjectRef, chr: &GameCharacter<()>) -> pz_inventory::floor_drop::HostResult<()> {
+            self.toggled.push(chr.id);
             self.info.open = !self.info.open;
+            Ok(())
         }
         fn set_window_perma_locked(&mut self, _w: ObjectRef, perma: bool) {
             self.perma.push(perma);

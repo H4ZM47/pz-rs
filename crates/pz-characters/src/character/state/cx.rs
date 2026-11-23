@@ -756,7 +756,7 @@ pub trait StateWorld<I> {
         None
     }
     /// `IsoWindow.ToggleWindow(chr)`.
-    fn toggle_window(&mut self, _window: pz_pathfind::mover::ObjectRef, _chr: i32) {}
+    fn toggle_window(&mut self, _window: pz_pathfind::mover::ObjectRef, _chr: &GameCharacter<I>) -> pz_inventory::floor_drop::HostResult<()> { Ok(()) }
     /// `window.setPermaLocked(perma)` then `window.sync()`.
     fn set_window_perma_locked(&mut self, _window: pz_pathfind::mover::ObjectRef, _perma: bool) {}
     /// `IsoWindow.WeaponHit(chr, null)` (bare hands smash a window).

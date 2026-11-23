@@ -407,7 +407,22 @@ pub trait StatesEngine {
     /// with its sounds, Lua and path invalidation).
     fn toggle_door(&mut self, _cell: &mut IsoCell, _door: ObjectRef, _chr: i32) {}
     /// `IsoWindow.ToggleWindow(chr)` on the cell.
-    fn toggle_window(&mut self, _cell: &mut IsoCell, _window: ObjectRef, _chr: i32) {}
+    fn toggle_window(&mut self, cell: &mut IsoCell, meta: &IsoMetaGrid, sprites: &IsoSpriteManager,
+        window: ObjectRef, actor: &Thumper) -> pz_inventory::floor_drop::HostResult<()> {
+        let Some(square) = cell.get_grid_square(window.x, window.y, window.z) else { return Ok(()) };
+        let object = {
+            let square = square.try_borrow().map_err(|_| pz_inventory::floor_drop::RuntimeHostError::Borrowed("window square"))?;
+            square.object_index(window.id).map(|index| square.objects[index].ref_handle())
+        };
+        if let Some(object) = object {
+            if pz_world::world_state::toggle_window(cell, meta, sprites, (window.x, window.y, window.z),
+                &object, Some((actor.x, actor.y)))? {
+                self.square_changed((window.x, window.y, window.z));
+                self.on_container_update();
+            }
+        }
+        Ok(())
+    }
     /// `LuaEventManager.triggerEvent("OnWeaponHitThumpable", chr, null,
     /// obj)` (a bare-handed window smash).
     fn weapon_hit_thumpable(&mut self, _chr: i32, _obj: ObjectRef) {}
@@ -1475,8 +1490,8 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         self.window_info_of(window)
     }
 
-    fn toggle_window(&mut self, window: ObjectRef, chr: i32) {
-        self.engine.toggle_window(self.cell, window, chr);
+    fn toggle_window(&mut self, window: ObjectRef, chr: &GameCharacter<I>) -> pz_inventory::floor_drop::HostResult<()> {
+        self.engine.toggle_window(self.cell, self.meta, self.sprites, window, &Thumper::of(chr))
     }
 
     fn set_window_perma_locked(&mut self, window: ObjectRef, perma: bool) {

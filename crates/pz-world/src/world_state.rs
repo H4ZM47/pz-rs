@@ -22,6 +22,51 @@ use crate::square::{
 // `IsoGenerator.GeneratorMinZ`/`GeneratorMaxZ` are the world's level range.
 use crate::chunk::{MAX_LEVEL, MIN_LEVEL};
 
+/// Apply an IsoWindow toggle to a retained object that still belongs to this cell.
+/// The old sprite is retired after the object guard ends, as for other live edits.
+pub fn toggle_window(
+    cell: &mut IsoCell,
+    meta: &IsoMetaGrid,
+    sprites: &IsoSpriteManager,
+    pos: (i32, i32, i32),
+    object: &IsoObjectRef,
+    actor: Option<(f32, f32)>,
+) -> pz_entity::runtime_load::HostResult<bool> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let (x, y, z) = pos;
+    let Some(square) = cell.get_grid_square(x, y, z) else { return Ok(false) };
+    let next = {
+        let square = square.try_borrow().map_err(|_| RuntimeHostError::Borrowed("window square"))?;
+        if !square.objects.iter().any(|slot| std::rc::Rc::ptr_eq(&slot.ref_handle(), object)) {
+            return Ok(false);
+        }
+        let body = object.try_borrow().map_err(|_| RuntimeHostError::Borrowed("window body"))?;
+        let ObjectKind::Window(w) = &body.kind else { return Ok(false) };
+        if w.perma_locked || w.destroyed {
+            return Ok(false);
+        }
+        if let Some((ax, ay)) = actor {
+            let (same, opposite) = ObjectHooks::new(cell, sprites).barricades_for(&square, w.north);
+            let across = if w.north { ay < y as f32 } else { ax < x as f32 };
+            if (if across { opposite } else { same }).is_some() { return Ok(false) }
+        }
+        if w.open { w.closed_sprite } else { w.open_sprite }
+    };
+    let old = {
+        let mut body = object.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("window body"))?;
+        let ObjectKind::Window(w) = &mut body.kind else { return Ok(false) };
+        w.locked = false;
+        w.open = !w.open;
+        std::mem::replace(&mut body.sprite, next.into())
+    };
+    let mut retired = pz_entity::RetiredComponents::new();
+    retired.push_payload(Box::new(old));
+    cell.retire_components(retired);
+    crate::object_slot::observe_object(object, "zombie.iso.objects.IsoWindow");
+    cell.recalc_all_with_neighbours(x, y, z, meta, sprites);
+    Ok(true)
+}
+
 /// The class-static ranges read by `IsoGenerator.isPoweringSquare`.
 /// Sandbox edits take effect when the next generator is constructed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

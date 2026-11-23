@@ -126,6 +126,7 @@ mod animation_bridge_tests {
         let mut runtime = StatesRuntime::default();
         {
             let mut engine = EngineStates {
+                sim: None,
                 rand: StandardRand,
                 movers: Vec::new(),
                 models: RefCell::new(Some(&mut models)),
@@ -187,6 +188,7 @@ mod animation_bridge_tests {
 /// `StatesEngine` (other characters by id, corpses, sounds, the path
 /// host) keeps its defaults: TODO(port): those owners.
 struct EngineStates<'a> {
+    sim: Option<&'a FrameSim>,
     rand: StandardRand,
     /// The squares the local players stand on (`getCurrentSquare()`),
     /// taken before the frame lends any of them out. TODO(port): animals.
@@ -200,6 +202,12 @@ struct EngineStates<'a> {
 }
 
 impl StatesEngine for EngineStates<'_> {
+    fn on_container_update(&mut self) {
+        if let Some(sim) = self.sim {
+            pz_characters::character::SimContext::event(sim, SimEvent::ContainerUpdate);
+        }
+    }
+
     fn rand(&mut self) -> &mut dyn GameRand {
         &mut self.rand
     }
@@ -483,6 +491,7 @@ fn with_states_characters_and_path<R>(
             return None;
         };
         let mut engine = EngineStates {
+            sim: Some(sim),
             rand: StandardRand,
             movers,
             models: RefCell::new(models),
@@ -1665,6 +1674,7 @@ impl IsoWorld {
                 .borrow()
                 .get_time_delta(&pz_lua_api::bind_climate::LuaClimateContext::new());
             let mut engine = EngineStates {
+                sim: Some(sim),
                 rand: StandardRand,
                 movers,
                 models: RefCell::new(models.as_mut()),
