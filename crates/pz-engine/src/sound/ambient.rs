@@ -28,6 +28,15 @@ pub(crate) struct AmbientParameters {
 }
 
 impl AmbientParameters {
+    #[cfg(test)]
+    pub(crate) fn current_value(&self, name: &str) -> Option<f32> {
+        self.params
+            .parameters
+            .iter()
+            .find(|p| p.name() == name)
+            .map(FmodParameter::current_value)
+    }
+
     pub(crate) fn update(&mut self, backend: &mut dyn AudioBackend, streamer: bool) {
         let scripts = bind_registry::shared_script_manager();
         let mut gate = None;

@@ -367,6 +367,9 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
 
     // The shipped guide pauses through the real speed controls. Held input
     // must not advance simulation until its actual close handler resumes it.
+    let ambient_before_pause = app.world.as_ref().unwrap().ambient_parameters.current_value("StreamerMode");
+    let streamer = app.core.borrow().get_option_streamer_mode();
+    app.core.borrow_mut().set_option_streamer_mode(!streamer);
     lua_check(app.lua.as_mut().unwrap(), r#"
         setGameSpeed(0)
         rustSessionPausedTicks = 0
@@ -388,6 +391,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         assert(rustSessionPausedTicks == 3)
         Events.OnTickEvenPaused.Remove(rustSessionPausedTick)
     "#);
+    assert_eq!(app.world.as_ref().unwrap().ambient_parameters.current_value("StreamerMode"), ambient_before_pause);
     close_survival_guide(app.lua.as_mut().unwrap());
 
     // Keyboard scan code 17 is W. It enters the same input queue as the
@@ -413,6 +417,19 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
             }
         }
     }
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        local square = getPlayer():getCurrentSquare()
+        local room = square:getRoomDef()
+        rustAmbientRoom = room and room:getArea() or math.max(0, square:getRoomSize())
+    "#);
+    let room = app.lua.as_ref().unwrap().thread.globals().get_str("rustAmbientRoom").as_num().unwrap() as f32;
+    let ambient = &app.world.as_ref().unwrap().ambient_parameters;
+    assert_eq!(ambient.current_value("RoomSize"), Some(room));
+    assert_eq!(ambient.current_value("CharacterElevation"), Some(player.borrow().vars.z));
+    assert_eq!(ambient.current_value("StreamerMode"), Some(f32::from(!streamer)));
+    let temperature = pz_lua_api::bind_climate::shared_game_time().borrow().climate.get_temperature();
+    assert_eq!(ambient.current_value("Temperature"), Some((temperature * 100.0) as i32 as f32 / 100.0));
+    app.core.borrow_mut().set_option_streamer_mode(streamer);
     let late_start = late_start.expect("captured held-W frame 40");
     let held_end = {
         let p = player.borrow();
