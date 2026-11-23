@@ -67,6 +67,47 @@ pub fn toggle_window(
     Ok(true)
 }
 
+/// Indoor room for a regular window alarm. The room on the window's own
+/// square takes precedence over the room on its opposite edge.
+pub fn window_alarm_room(cell: &IsoCell, meta: &IsoMetaGrid, (x, y, z): (i32, i32, i32), north: bool)
+    -> pz_entity::runtime_load::HostResult<Option<(i64, crate::BuildingIdx)>> {
+    for (sx, sy) in [(x, y), (x - i32::from(!north), y - i32::from(north))] {
+        let Some(square) = cell.get_grid_square(sx, sy, z) else { continue };
+        let square = square.try_borrow().map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("window indoor square"))?;
+        if let Some(room) = square.room_def(meta) {
+            return Ok(room.building.filter(|b| meta.building_defs[b.0 as usize].alarmed).map(|b| (room.id, b)));
+        }
+    }
+    Ok(None)
+}
+
+/// Consume the building alarm and reveal its rooms. Only a loaded, powered
+/// ground-floor square at the triggering room's origin starts an audible alarm.
+pub fn trigger_room_alarm(cell: &IsoCell, meta: &mut IsoMetaGrid, room_id: i64, grid_exists: impl FnOnce(i32) -> bool)
+    -> pz_entity::runtime_load::HostResult<Option<(i32, i32)>> {
+    let Some(room) = meta.get_room_def_by_id(room_id) else { return Ok(None) };
+    let Some(building) = room.building else { return Ok(None) };
+    let def = &meta.building_defs[building.0 as usize];
+    if !def.alarmed { return Ok(None) }
+    let center = (room.x + (room.x2 - room.x) / 2, room.y + (room.y2 - room.y) / 2);
+    let powered = if let Some(origin) = cell.get_grid_square(room.x, room.y, 0) {
+        let origin = origin.try_borrow().map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("alarm room origin"))?;
+        !square_has_no_power(meta, &origin) && grid_exists(def.alarm_decay)
+    } else { false };
+    let def = &mut meta.building_defs[building.0 as usize];
+    def.alarmed = false;
+    for room in &def.rooms {
+        meta.room_defs[room.0 as usize].explored = true;
+    }
+    Ok(powered.then_some(center))
+}
+
+fn square_has_no_power(meta: &IsoMetaGrid, sq: &IsoGridSquare) -> bool {
+    sq.room_def(meta).is_some_and(|r| r.name.to_lowercase().contains("derelict") || r.user_defined)
+        || meta.get_zones_at(sq.x, sq.y, 0).into_iter()
+            .any(|id| matches!(meta.zone(id).zone_type.as_str(), "NoPower" | "NoPowerOrWater"))
+}
+
 /// The class-static ranges read by `IsoGenerator.isPoweringSquare`.
 /// Sandbox edits take effect when the next generator is constructed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -513,8 +554,7 @@ pub struct WorldState<'a> {
     pub meta: &'a IsoMetaGrid,
     pub sprites: &'a IsoSpriteManager,
     pub power: PowerSettings,
-    /// STUB: `IsoMetaGrid.getZonesAt(x, y, 0)` has a `NoPower` or
-    /// `NoPowerOrWater` zone (zones are not ported; runtime input).
+    /// Additional no-power zones supplied by the caller.
     pub no_power_zone: &'a dyn Fn(i32, i32) -> bool,
     /// The local players' light items, in player order.
     pub players: Vec<PlayerLights<'a>>,
@@ -595,12 +635,7 @@ impl<'a> WorldState<'a> {
     /// `IsoGridSquare.isNoPower()`: derelict or user-defined room, or a
     /// `NoPower` zone.
     pub fn is_no_power(&self, sq: &IsoGridSquare) -> bool {
-        if let Some(room) = sq.room_def(self.meta) {
-            if room.name.to_lowercase().contains("derelict") || room.user_defined {
-                return true;
-            }
-        }
-        (self.no_power_zone)(sq.x, sq.y)
+        square_has_no_power(self.meta, sq) || (self.no_power_zone)(sq.x, sq.y)
     }
 
     /// `IsoGridSquare.hasGridPower()`.

@@ -208,6 +208,16 @@ impl StatesEngine for EngineStates<'_> {
         self.sim.map(|sim| sim.player_input() as &dyn pz_characters::character::player::PlayerInput)
     }
 
+    fn zombie_triggers_house_alarm(&self) -> bool {
+        pz_lua_api::bind_sandbox::current_bool("ZombieLore.TriggerHouseAlarm").unwrap_or(false)
+    }
+
+    fn do_room_alarm(&mut self, room: i64, _building: pz_world::BuildingIdx) {
+        if let Some(sim) = self.sim {
+            pz_characters::character::SimContext::event(sim, SimEvent::RoomAlarm(room));
+        }
+    }
+
     fn on_window_toggled(&mut self, actor: i32, window: &pz_world::IsoObjectRef) {
         if let Some(sim) = self.sim {
             pz_characters::character::SimContext::event(sim, SimEvent::WindowToggled { actor, window: window.clone() });
@@ -526,7 +536,7 @@ fn with_states_characters_and_path<R>(
             cell,
             meta,
             &mut sprites,
-            ThumpSettings::default(),
+            ThumpSettings { trigger_house_alarm: engine.zombie_triggers_house_alarm(), ..Default::default() },
             runtime,
             &mut engine,
         );
@@ -1141,6 +1151,11 @@ impl IsoWorld {
                             .trigger(Some(id), &p.player.music_intensity_events);
                     }
                 }
+                SimEvent::RoomAlarm(room) => {
+                    if let Err(error) = pz_lua_api::bind_world::power::trigger_room_alarm(room) {
+                        self.log_update_error(format!("AmbientStreamManager.doAlarm: {error}"));
+                    }
+                }
                 SimEvent::WindowToggled { actor, window } => {
                     let player = chr.filter(|p| p.borrow().id == actor).cloned()
                         .or_else(|| local_players().into_iter().flatten().find(|p| p.borrow().id == actor));
@@ -1741,7 +1756,7 @@ impl IsoWorld {
                 cell,
                 meta,
                 &mut sprites,
-                ThumpSettings::default(),
+                ThumpSettings { trigger_house_alarm: engine.zombie_triggers_house_alarm(), ..Default::default() },
                 states_runtime,
                 &mut engine,
             );
@@ -2246,7 +2261,7 @@ fn with_save_game<R>(
             world_gen: &world_gen_params,
             instance_tracker: &world.instance_tracker,
             cache_dir: Some(&world.cache_dir),
-            meta_tracker: &world.meta_tracker,
+            meta_tracker: &world.meta_tracker.borrow(),
             statistics: &world.statistics,
             local_players: &players,
             on_game_thread: true,

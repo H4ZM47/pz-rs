@@ -183,7 +183,7 @@ pub struct IsoWorld {
     /// `ErosionMain.getInstance()`, shared with its Lua object.
     pub erosion: Option<Rc<RefCell<pz_erosion::erosion_main::ErosionMain>>>,
     pub instance_tracker: InstanceTracker,
-    pub meta_tracker: MetaTracker,
+    pub meta_tracker: Rc<RefCell<MetaTracker>>,
     pub statistics: Statistics,
     /// The sandbox preset `map_sand.bin` named.
     pub preset: String,
@@ -311,7 +311,7 @@ impl IsoWorld {
             pathfind: None,
             erosion: None,
             instance_tracker: InstanceTracker::default(),
-            meta_tracker: MetaTracker::default(),
+            meta_tracker: Default::default(),
             statistics: Statistics::default(),
             preset: String::new(),
             zombies: Vec::new(),
@@ -847,6 +847,7 @@ impl IsoWorld {
             .unwrap()
             .set_deferred_world_activation(true);
         set_cell(Some(IsoCell::default()));
+        with_world(|w| w.meta_tracker = Some(self.meta_tracker.clone()));
         self.install_floor_world()?;
         let (wx, wy) = (self.world_x, self.world_y);
         self.with_stream(|s, cell, ctx| s.load_world(wx, wy, cell, ctx));
@@ -897,11 +898,12 @@ impl IsoWorld {
         }
         // TODO(port): `PopulateCellWithSurvivors`, the cell's object list,
         // `LightingThread.instance.create()`.
-        if let Err(e) = self.meta_tracker.load_file(
+        let loaded_meta = self.meta_tracker.borrow_mut().load_file(
             &self.save_dir,
             no_save,
             pz_lua_api::bind_players::player(0).is_some(),
-        ) {
+        );
+        if let Err(e) = loaded_meta {
             self.log_error(format!("MetaTracker.load: {e}"));
         }
         if let Err(e) = self.statistics.load_file(&self.save_dir, no_save) {

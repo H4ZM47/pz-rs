@@ -274,6 +274,7 @@ pub enum SimEvent {
     /// `LuaEventManager.triggerEvent("OnContainerUpdate")` (an item fell
     /// out of the character's hands to the floor).
     ContainerUpdate,
+    RoomAlarm(i64),
     WindowToggled { actor: i32, window: pz_world::IsoObjectRef },
     /// `LuaEventManager.triggerEvent("onItemFall", item)`.
     ItemFall(pz_inventory::shared::ItemRef),

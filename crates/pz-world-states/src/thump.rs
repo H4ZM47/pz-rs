@@ -1198,21 +1198,6 @@ impl StatesWorldAdapter<'_> {
             return;
         }
         let (north, smashed) = (w.north, w.smashed_sprite);
-        // `getIndoorSquare()`'s building for `handleAlarm`.
-        let indoor = if sq.room_id != -1 {
-            Some(sq_owner.clone())
-        } else {
-            self.opposite(&sq, north)
-                .filter(|s| s.borrow().room_id != -1)
-        };
-        let alarm_building = indoor
-            .and_then(|s| self.square_building_idx(&s.borrow()))
-            .filter(|b| {
-                self.meta
-                    .building_defs
-                    .get(b.0 as usize)
-                    .is_some_and(|d| d.alarmed)
-            });
         let sqp = (r.x, r.y, r.z);
         let attached_to_glass: Vec<bool> = o
             .attached_anim_sprite
@@ -1249,8 +1234,9 @@ impl StatesWorldAdapter<'_> {
             pz_world::object_slot::observe_object(&o_owner, native_class);
         }
         if do_alarm {
-            if let Some(b) = alarm_building {
-                self.engine.do_alarm(b);
+            if let Some((room, building)) = pz_world::world_state::window_alarm_room(self.cell, self.meta, sqp, north)
+                .expect("smash state requires unborrowed indoor squares") {
+                self.engine.do_room_alarm(room, building);
             }
         }
         self.engine.square_changed(sqp);

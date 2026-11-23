@@ -123,7 +123,7 @@ fn can_climb_through(c: &NativeCall<'_>) -> LuaResult<bool> {
 
 /// Toggle the pane unless it is permanently locked, smashed or barricaded
 /// on the supplied actor's side. Dispatch after releasing world and sprite borrows.
-/// TODO(port): alarms and pathfinder invalidation.
+/// TODO(port): pathfinder invalidation.
 fn toggle_window(c: &mut NativeCall<'_>) -> LuaResult<()> {
     let this = c.arg(0);
     let world = crate::bind_world_object::object_from_value(&this)
@@ -132,19 +132,30 @@ fn toggle_window(c: &mut NativeCall<'_>) -> LuaResult<()> {
     let Some((x, y, z)) = crate::bind_world::square_coords(&square) else {
         return Ok(());
     };
-    let actor = window_actor(c)?.map(|t| (t.x, t.y));
+    let actor = window_actor(c)?;
     let sprites = crate::bind_sprites::manager()?;
     let sprites = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
-    let changed = crate::bind_world::with_world_state_cell(|w| {
+    let (changed, alarm) = crate::bind_world::with_world_state_cell(|w| {
         let mut w = w.try_borrow_mut().map_err(|_| borrowed("IsoWorld"))?;
         let state = &mut *w;
         let (Some(cell), Some(meta)) = (state.cell.as_mut(), state.meta_grid.as_ref()) else {
             return Err(crate::bind_world_object::unsupported("IsoWindow.ToggleWindow without a world"));
         };
-        pz_world::world_state::toggle_window(cell, meta, &sprites, (x, y, z), &world.object, actor)
-            .map_err(crate::bind_world_object::host_error)
+        let changed = pz_world::world_state::toggle_window(cell, meta, &sprites, (x, y, z), &world.object, actor.as_ref().map(|a| (a.x,a.y)))
+            .map_err(crate::bind_world_object::host_error)?;
+        let alarm = if changed && (!actor.as_ref().is_some_and(|a| a.zombie) ||
+            crate::bind_sandbox::current_bool("ZombieLore.TriggerHouseAlarm").unwrap_or(false)) {
+            let body = world.object.try_borrow().map_err(|_| borrowed("toggled window"))?;
+            match &body.kind {
+                pz_world::objects::ObjectKind::Window(pane) if pane.open =>
+                    pz_world::world_state::window_alarm_room(cell, meta, (x,y,z), pane.north).map_err(crate::bind_world_object::host_error)?,
+                _ => None,
+            }
+        } else { None };
+        Ok((changed, alarm))
     })?;
     drop(sprites);
+    if let Some((room, _)) = alarm { crate::bind_world::power::trigger_room_alarm(room)?; }
     if changed {
         crate::bind_character_sim::fire_container_update(c.thread);
         if let Value::Object(handle) = c.arg(1) {
