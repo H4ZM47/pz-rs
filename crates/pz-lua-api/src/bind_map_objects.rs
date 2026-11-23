@@ -204,6 +204,7 @@ pub fn dispatch_square(
 
 pub enum PlacedTile {
     Named(String),
+    Remove { object: IsoObjectRef, transmit: bool, safe: Option<bool> },
     Existing { object: IsoObjectRef, index: i32, special: bool },
 }
 
@@ -230,6 +231,15 @@ pub(crate) fn place_tile(c: &mut NativeCall<'_>, pos: SquarePos, special: Option
         PlacedTile::Named(name.to_string())
     };
     apply_tile(c.thread, pos, tile)
+}
+
+pub(crate) fn remove_tile(c: &mut NativeCall<'_>, pos: SquarePos, transmit: bool) -> LuaResult<Value> {
+    let arg=c.arg(1);
+    if arg.is_nil(){return Ok(Value::from(-1));}
+    let object=crate::bind_world_object::object_from_value(&arg).ok_or_else(||crate::bind_java_util::class_cast(&arg,crate::bind_world_object::ISO_OBJECT))?;
+    if transmit && crate::bind_core::shared_core().borrow().is_server {return Err(LuaError::runtime("tile removal requires server replication"))}
+    let safe=(c.nargs()>2).then(||crate::expose::bool_arg(c,2));
+    apply_tile(c.thread,pos,PlacedTile::Remove {object:object.object.clone(),transmit,safe})
 }
 
 pub(crate) fn apply_tile(thread: &mut Thread, pos: SquarePos, tile: PlacedTile) -> LuaResult<Value> {
