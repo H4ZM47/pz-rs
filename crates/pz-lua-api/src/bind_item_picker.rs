@@ -497,7 +497,15 @@ fn try_add_item_to_container(
             }
         }
     }
-    spawn_item(t, &tg.c, name)
+    let spawned = spawn_item(t, &tg.c, name)?;
+    if let (Some(item_ref), Some((x, y, z))) = (&spawned, tg.coords) {
+        if let Ok(mut body) = item_ref.try_borrow_mut() {
+            if matches!(body.kind, pz_inventory::ItemKind::Key { .. }) {
+                crate::bind_key_namer::name_key_at(&mut body, x, y, z);
+            }
+        }
+    }
+    Ok(spawned)
 }
 
 /// `ItemSpawner.spawnItem(name, container, true)` (the bag roll is not

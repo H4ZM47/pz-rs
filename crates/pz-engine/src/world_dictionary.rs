@@ -172,7 +172,57 @@ fn save_data(save_dir: &Path, dictionary: &WorldDictionary) -> Result<(), String
     let temporary = save_dir.join("WorldDictionary.tmp");
     std::fs::write(&temporary, bytes).map_err(|e| format!("Error saving WorldDictionary.: {e}"))?;
     std::fs::rename(&temporary, save_dir.join("WorldDictionary.bin"))
-        .map_err(|e| format!("Error saving WorldDictionary.: {e}"))
+        .map_err(|e| format!("Error saving WorldDictionary.: {e}"))?;
+    let _ = save_as_text(save_dir, dictionary);
+    Ok(())
+}
+
+/// `DictionaryData.saveAsText("WorldDictionaryReadable.lua")`: human-readable
+/// Lua dump of the dictionary's version, items, entities, object/sprite names,
+/// and string/script registers.
+pub(crate) fn save_as_text(save_dir: &Path, dictionary: &WorldDictionary) -> Result<(), String> {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "-- WorldDictionaryReadable.lua");
+    let _ = writeln!(out, "version = {}", dictionary.version);
+    let _ = writeln!(out, "items = {{");
+    let mut items: Vec<_> = dictionary.items.iter().collect();
+    items.sort_by_key(|(&id, _)| id);
+    for (id, info) in items {
+        let _ = writeln!(
+            out,
+            "    [{}] = {{ fullType = {:?}, modId = {:?}, obsolete = {} }},",
+            id, info.full_type, info.mod_id, info.obsolete
+        );
+    }
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out, "entities = {{");
+    let mut entities: Vec<_> = dictionary.entities.iter().collect();
+    entities.sort_by_key(|(&id, _)| id);
+    for (id, info) in entities {
+        let _ = writeln!(
+            out,
+            "    [{}] = {{ fullType = {:?}, modId = {:?}, obsolete = {} }},",
+            id, info.full_type, info.mod_id, info.obsolete
+        );
+    }
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out, "objectNames = {{");
+    let mut objs: Vec<_> = dictionary.object_names.iter().collect();
+    objs.sort_by_key(|(&id, _)| id);
+    for (id, name) in objs {
+        let _ = writeln!(out, "    [{id}] = {name:?},");
+    }
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out, "spriteNames = {{");
+    let mut sprites: Vec<_> = dictionary.sprite_names.iter().collect();
+    sprites.sort_by_key(|(&id, _)| id);
+    for (id, name) in sprites {
+        let _ = writeln!(out, "    [{id}] = {name:?},");
+    }
+    let _ = writeln!(out, "}}");
+    std::fs::write(save_dir.join("WorldDictionaryReadable.lua"), out)
+        .map_err(|e| format!("WorldDictionaryReadable.lua: {e}"))
 }
 
 /// `WorldDictionary.init()` for a local game: load saved ids, reconcile
@@ -341,6 +391,21 @@ pub fn script_items(dictionary: WorldDictionary, inputs: &RegistryInputs<'_>) ->
     items.textures_loaded = true;
     items.rand = std::cell::RefCell::new(Some(Box::new(StandardFactoryRng)));
     items.get_text = Some(Box::new(pz_lua_api::bind_text::translate));
+    items.recorded_media = pz_lua_api::bind_radio::with_media(|rm| {
+        let mut map = std::collections::HashMap::new();
+        for idx in 0..rm.indexes().len() {
+            if let Some(md) = rm.media_data_from_index(idx as i16) {
+                let name = pz_lua_api::bind_text::translate(md.item_display_name());
+                map.insert(md.index(), name);
+            }
+        }
+        map
+    });
+    items.channels = pz_lua_api::bind_radio::with_radio(|r| {
+        let lists: std::collections::HashMap<String, Vec<(i32, String)>> =
+            r.full_channel_list().into_iter().collect();
+        Box::new(lists) as Box<dyn pz_inventory::device::ChannelLists>
+    });
     items.assets = pz_lua_api::bind_items::item_env()
         .context()
         .assets()
@@ -504,6 +569,10 @@ mod tests {
         assert_eq!(disk.items, loaded.items);
         assert_eq!(disk.entities, loaded.entities);
         assert!(!d.join("WorldDictionary.tmp").exists());
+        let readable = std::fs::read_to_string(d.join("WorldDictionaryReadable.lua")).unwrap();
+        assert!(readable.contains("Base.Pebble"));
+        assert!(readable.contains("Base.Bench"));
+        assert!(readable.contains("Fern"));
         std::fs::remove_dir_all(&d).unwrap();
     }
 }
