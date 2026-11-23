@@ -2450,6 +2450,7 @@ impl IsoWorld {
     /// `ZombiePopulationManager.stop`, the pathfinder, then
     /// `PlayerDB.close` and `VehiclesDB2.Reset` (`world_save::close_stores`).
     pub fn stop(&mut self) {
+        self.house_alarms.stop();
         // Invalidate the installed provider before teardown can run actions;
         // retained old service handles fail their distinct session token.
         let retired_floor = pz_lua_api::bind_character_sim::reset_floor_world();

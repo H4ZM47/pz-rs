@@ -63,6 +63,7 @@ pub(super) fn check(app: &mut App) {
     }
     super::queue::wait_for_idle(app);
     cancel_open_with_movement(app);
+    check_direct_alarm(app);
     for (state, open) in [(ids::OPEN_WINDOW, true), (ids::CLOSE_WINDOW, false)] {
         let lua = app.lua.as_mut().unwrap();
         lua_check(lua, r#"
@@ -122,6 +123,43 @@ pub(super) fn check(app: &mut App) {
     smash(app);
     lua_check(app.lua.as_mut().unwrap(), "assert(not rustAlarmBuilding:isAlarmed())");
     assert_eq!(app.world.as_ref().unwrap().meta_tracker.borrow().alarms.len(), 2);
+}
+
+/// Direct Lua, the ambient update and expiry all use the live save owner.
+fn check_direct_alarm(app: &mut App) {
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        rustAlarmSoundCount = 0
+        rustListenToAlarm = function(x,y,z,radius,volume,source)
+            if radius == 600 and volume == 600 then
+                rustAlarmSameSource = rustAlarmSource == nil or rustAlarmSource == source
+                rustAlarmSource = source
+                rustAlarmSoundCount = rustAlarmSoundCount + 1
+                rustAlarmCoordinates = {x, y, z}
+            end
+        end
+        Events.OnWorldSound.Add(rustListenToAlarm)
+        rustSessionWindow:ToggleWindow(getPlayer())
+        assert(rustSessionWindow:IsOpen() and rustAlarmCallback and rustAlarmBuilding:isAllExplored())
+    "#);
+    let tracker = app.world.as_ref().unwrap().meta_tracker.clone();
+    let alarm = tracker.borrow().alarms[0];
+    run_frames(app, 2);
+    lua_check(app.lua.as_mut().unwrap(), &format!(r#"
+        assert(rustAlarmSoundCount == 2 and rustAlarmSameSource and rustAlarmSource ~= nil)
+        assert(rustAlarmCoordinates[1] == {} and rustAlarmCoordinates[2] == {} and rustAlarmCoordinates[3] == 0)
+        assert(getPlayer():getMusicIntensityEvents():findEventById('AlarmNearby'):getIntensity() == 20)
+    "#, alarm.x, alarm.y));
+    tracker.borrow_mut().alarms[0].end_game_time = pz_lua_api::bind_climate::shared_game_time().borrow().world_age_hours() as f32 - 1.0;
+    run_frames(app, 2);
+    assert!(tracker.borrow().alarms.is_empty());
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        assert(rustAlarmSoundCount == 3 and rustAlarmSameSource)
+        Events.OnWorldSound.Remove(rustListenToAlarm)
+        rustSessionWindow:ToggleWindow(getPlayer())
+        assert(not rustSessionWindow:IsOpen() and not rustAlarmBuilding:isAlarmed())
+        rustAlarmCallback = nil
+        rustAlarmBuilding:setAlarmed(true)
+    "#);
 }
 
 /// Start the native state directly so the queue cannot cancel on its behalf.
