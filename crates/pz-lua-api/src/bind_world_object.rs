@@ -108,7 +108,7 @@ thread_local! {
 
 /// Weak metadata is pruned only before capacity growth, not on every world
 /// allocation or cache hit. Surviving live entries reserve geometrically.
-fn prune_for_insert<V>(cache: &mut HashMap<usize, V>, alive: impl Fn(&V) -> bool) -> bool {
+pub(crate) fn prune_for_insert<K: Eq + std::hash::Hash, V>(cache: &mut HashMap<K, V>, alive: impl Fn(&V) -> bool) -> bool {
     if cache.len() != cache.capacity() {
         return false;
     }

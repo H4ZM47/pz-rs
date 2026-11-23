@@ -203,6 +203,7 @@ fn sprite_handle(owner: Option<Rc<SpriteRegistry>>, body: ObjectSprite, props: b
     if let Some(handle) = handles.get(&key).and_then(Weak::upgrade) {
         return Value::Object(handle);
     }
+    crate::bind_world_object::prune_for_insert(&mut handles, |handle| handle.strong_count() != 0);
     let handle = Rc::new(SpriteObj { owner: owner.clone(), body, props });
     handles.insert(key, Rc::downgrade(&handle));
     Value::Object(handle)

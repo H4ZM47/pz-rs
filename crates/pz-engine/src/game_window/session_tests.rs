@@ -277,6 +277,7 @@ fn verify_utilities_and_ambience(app: &mut super::App, streamer: bool) {
                     outlet:doFindExternalWaterSource()
                     assert(outlet:getFluidAmount() == 13)
                     tank:setName('roof-collector-identity-fixture')
+                    getPlayer():getModData().rustRoofCollector = {x=upper:getX(), y=upper:getY(), z=upper:getZ()}
                     rustCollectorProbe = true
                 end
             end
@@ -781,6 +782,17 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     assert_eq!(reloaded.current_state(), Some(INGAME), "saved session never entered gameplay; cache: {}", cache_dir.display());
     verify_tile_definitions(reloaded.lua.as_mut().unwrap());
     lua_check(reloaded.lua.as_mut().unwrap(), r#"
+        local saved = getPlayer():getModData().rustRoofCollector
+        assert(saved and saved.z == 1)
+        local roofs = getSquare(saved.x, saved.y, saved.z):getObjects()
+        local savedTank
+        for j = 0, roofs:size()-1 do
+            local obj = roofs:get(j)
+            if obj:getName() == 'roof-collector-identity-fixture' then savedTank = obj end
+        end
+        assert(savedTank and instanceof(savedTank, 'IsoThumpable'))
+        assert(savedTank:getTable().fixture == 13 and savedTank:getModData().waterAmount == 13)
+        assert(savedTank:getBuildMaterials()['Base.Plank'] == 2)
         local objects = getCell():getGridSquare(10689, 9377, 0):getObjects()
         local found, foundSprite = false, false
         for i = 0, objects:size()-1 do
