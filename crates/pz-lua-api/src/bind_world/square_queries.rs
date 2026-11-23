@@ -249,6 +249,10 @@ pub(super) fn register(b: &ClassBuilder) {
             })
         });
     }
+    get(b, "HasTree", |c| {
+        let (x, y, z) = self_square(c)?;
+        with_square(x, y, z, |square| Ok(square.has_tree.into()))
+    });
     get(b, "isOutside", |c| {
         let (x, y, z) = self_square(c)?;
         Ok(square_is_outside(x, y, z)?.into())

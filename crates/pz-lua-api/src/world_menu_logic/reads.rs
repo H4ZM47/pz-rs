@@ -82,20 +82,14 @@ pub(super) fn register(thread: &mut Thread) {
     // of `GroupName CustomName` (or of `CustomName`); else getName().
     object.method("getTileName", |c| {
         let this = c.arg(0);
-        let names = match tile_sprite(receiver(&this)?, "IsoObject.getTileName")? {
-            None => None,
-            Some(sprite) => {
-                let m = crate::bind_sprites::manager()?;
-                let m = m.try_borrow().map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
-                let props = &m.sprites[sprite].properties;
-                props.get(&m.alias, "CustomName").map(|custom| {
-                    match props.get(&m.alias, "GroupName") {
-                        Some(group) => format!("{group} {custom}"),
-                        None => custom.to_string(),
-                    }
-                })
-            }
-        };
+        let names = with_sprite(receiver(&this)?, |manager, sprite| {
+            let props = &sprite?.properties;
+            let custom = props.get(&manager.alias, "CustomName")?;
+            Some(match props.get(&manager.alias, "GroupName") {
+                Some(group) => format!("{group} {custom}"),
+                None => custom.to_owned(),
+            })
+        })?;
         let r = match names {
             Some(name) => {
                 let display = crate::bind_text::with_translator(|t| t.get_moveable_display_name(&name));
@@ -104,6 +98,14 @@ pub(super) fn register(thread: &mut Thread) {
             None => Cx { t: c.thread }.call(&this, "getName", &[])?,
         };
         Ok(c.push(r))
+    });
+    object.method("getType", |c| {
+        let this = c.arg(0);
+        let value = with_sprite(receiver(&this)?, |manager, sprite| {
+            let ty = sprite.map_or(manager.tables.object_type_max(), |sprite| sprite.tile_type);
+            crate::expose::enum_value(crate::bind_iso_enums::ISO_OBJECT_TYPE, manager.tables.object_type_name(ty))
+        })?;
+        Ok(c.push(value))
     });
     // getSpriteName(): the sprite's name while `spriteName` is null, else
     // `spriteName`.
@@ -146,14 +148,15 @@ fn receiver(this: &Value) -> LuaResult<&LuaWorldObject> {
     }
 }
 
-/// The object's tile sprite; `None` for no sprite.
-fn tile_sprite(object: &LuaWorldObject, what: &str) -> LuaResult<Option<pz_world::sprite::SpriteIdx>> {
+fn with_sprite<R>(
+    object: &LuaWorldObject,
+    f: impl FnOnce(&pz_world::IsoSpriteManager, Option<&pz_world::sprite::IsoSprite>) -> R,
+) -> LuaResult<R> {
+    let manager = crate::bind_sprites::manager()?;
+    let manager = manager.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
     let body = object.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
-    match &body.sprite {
-        ObjectSprite::None => Ok(None),
-        ObjectSprite::Tile(idx) => Ok(Some(*idx)),
-        _ => Err(unsupported(format!("{what}: the sprite has no Lua object"))),
-    }
+    let sprite = body.sprite.try_read(&manager).map_err(crate::bind_world_object::host_error)?;
+    Ok(f(&manager, sprite.as_deref()))
 }
 
 /// `hasFluid()`: a solid floor on a square with more than 0.09 of
@@ -164,14 +167,9 @@ fn has_fluid(c: &mut NativeCall<'_>, this: &Value) -> LuaResult<bool> {
     if square.is_nil() {
         return Ok(false);
     }
-    let Some(sprite) = tile_sprite(object, "IsoObject.hasFluid")? else {
-        return Ok(false);
-    };
-    let solid_floor = {
-        let m = crate::bind_sprites::manager()?;
-        let m = m.try_borrow().map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
-        m.sprites[sprite].properties.has(m.tables.flag.solidfloor)
-    };
+    let solid_floor = with_sprite(object, |manager, sprite| {
+        sprite.is_some_and(|s| s.properties.has(manager.tables.flag.solidfloor))
+    })?;
     if !solid_floor {
         return Ok(false);
     }

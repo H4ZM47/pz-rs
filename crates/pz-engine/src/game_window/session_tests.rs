@@ -202,6 +202,8 @@ fn verify_utilities_and_ambience(app: &mut super::App, streamer: bool) {
         local floor = square:getFloor()
         assert(type(square:isNoGas()) == "boolean")
         local data = floor:getModData()
+        assert(type(square:HasTree()) == "boolean" and floor:getType() ~= nil)
+        assert(type(SFarmingSystem.instance:hasWeeds(square)) == "boolean")
         local oldFuel = data.fuelAmount
         data.fuelAmount = nil
         assert(floor:getPipedFuelAmount() == -1)
@@ -518,7 +520,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
 
     // Use the real loading/state-machine path, including population startup.
     for _ in 0..1100 {
-        run_frames(&mut app, 1);
+        assert!(run_frames(&mut app, 1), "new session stopped at {:?}: {:?}", app.current_state(), app.error);
         if app.current_state() == Some(INGAME) {
             break;
         }
@@ -702,7 +704,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         Events.OnNewGame.Add(function() rustSessionReloadNewGameCount = rustSessionReloadNewGameCount + 1 end)
     "#);
     for _ in 0..1100 {
-        run_frames(&mut reloaded, 1);
+        assert!(run_frames(&mut reloaded, 1), "saved session stopped at {:?}: {:?}", reloaded.current_state(), reloaded.error);
         if reloaded.current_state() == Some(INGAME) {
             break;
         }
