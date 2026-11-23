@@ -12,6 +12,7 @@
 mod entries;
 mod fetch;
 mod fuel;
+mod water;
 mod helpers;
 mod object_power;
 mod reads;

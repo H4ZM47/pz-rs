@@ -5,7 +5,7 @@ use std::any::Any;
 use std::rc::Rc;
 
 use pz_kahlua::value::LuaObject;
-use pz_kahlua::{ LuaResult, NativeCall, Thread, Value};
+use pz_kahlua::{LuaResult, Thread, Value};
 
 use super::Cx;
 use crate::bind_world_object::{borrowed, object_from_value, object_square, LuaWorldObject, ISO_OBJECT};
@@ -122,22 +122,18 @@ pub(super) fn register(thread: &mut Thread) {
         let r = name.as_deref().map_or(Value::Nil, Value::str);
         Ok(c.push(r))
     });
-    object.method("hasFluid", |c| {
-        let this = c.arg(0);
-        let r = has_fluid(c, &this)?;
-        Ok(c.push(r))
-    });
+    super::water::register(&object);
     super::fuel::register(&object);
 }
 
-fn receiver(this: &Value) -> LuaResult<&LuaWorldObject> {
+pub(super) fn receiver(this: &Value) -> LuaResult<&LuaWorldObject> {
     match this {
         Value::Nil => Err(super::null_pointer()),
         v => object_from_value(v).ok_or_else(|| crate::bind_java_util::class_cast(v, ISO_OBJECT)),
     }
 }
 
-fn with_sprite<R>(
+pub(super) fn with_sprite<R>(
     object: &LuaWorldObject,
     f: impl FnOnce(&pz_world::IsoSpriteManager, Option<&pz_world::sprite::IsoSprite>) -> R,
 ) -> LuaResult<R> {
@@ -146,21 +142,4 @@ fn with_sprite<R>(
     let body = object.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
     let sprite = body.sprite.try_read(&manager).map_err(crate::bind_world_object::host_error)?;
     Ok(f(&manager, sprite.as_deref()))
-}
-
-/// `hasFluid()`: a solid floor on a square with more than 0.09 of
-/// puddles (`IsoGridSquare.getPuddlesInGround`).
-fn has_fluid(c: &mut NativeCall<'_>, this: &Value) -> LuaResult<bool> {
-    let object = receiver(this)?;
-    let square = object_square(object)?;
-    if square.is_nil() {
-        return Ok(false);
-    }
-    let solid_floor = with_sprite(object, |manager, sprite| {
-        sprite.is_some_and(|s| s.properties.has(manager.tables.flag.solidfloor))
-    })?;
-    if !solid_floor {
-        return Ok(false);
-    }
-    Ok(Cx { t: c.thread }.num(&square, "getPuddlesInGround", &[])? > 0.09)
 }

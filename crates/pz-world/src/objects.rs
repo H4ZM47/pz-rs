@@ -36,6 +36,26 @@ impl PartialEq for ObjectSquare {
     }
 }
 
+/// Cached external water supply. Its membership in the live cell is checked
+/// before use. Saves and archive comparisons do not include this reference.
+#[derive(Default, Debug)]
+pub struct ExternalWaterSource {
+    source: Option<(crate::square_mutation::SquarePos, std::rc::Weak<std::cell::RefCell<IsoObject>>)>,
+}
+impl ExternalWaterSource {
+    pub fn get(&self) -> Option<(crate::square_mutation::SquarePos, crate::IsoObjectRef)> {
+        let (pos, object) = self.source.as_ref()?;
+        Some((*pos, object.upgrade()?))
+    }
+
+    pub fn set(&mut self, source: Option<(crate::square_mutation::SquarePos, &crate::IsoObjectRef)>) {
+        self.source = source.map(|(pos, object)| (pos, std::rc::Rc::downgrade(object)));
+    }
+}
+impl PartialEq for ExternalWaterSource {
+    fn eq(&self, _: &Self) -> bool { true }
+}
+
 /// Identity of an object within its square (stands in for Java object
 /// identity, e.g. for `specialObjects`).
 pub type ObjectId = u32;
@@ -859,6 +879,7 @@ pub struct IsoObject {
     pub special_tooltip: bool,
     pub key_id: i32,
     pub uses_external_water_source: bool,
+    pub external_water_source: ExternalWaterSource,
     pub sheet_rope: bool,
     pub sheet_rope_health: f32,
     pub overlay_sprite: Option<OverlaySprite>,
@@ -908,6 +929,7 @@ impl Clone for IsoObject {
             runtime_mod_data: None,
             special_tooltip: self.special_tooltip.clone(),
             key_id: self.key_id.clone(),
+            external_water_source: Default::default(),
             uses_external_water_source: self.uses_external_water_source.clone(),
             sheet_rope: self.sheet_rope.clone(),
             sheet_rope_health: self.sheet_rope_health.clone(),
@@ -988,6 +1010,7 @@ impl IsoObject {
             runtime_mod_data: None,
             special_tooltip: false,
             key_id: -1,
+            external_water_source: Default::default(),
             uses_external_water_source: false,
             sheet_rope: false,
             sheet_rope_health: 100.0,

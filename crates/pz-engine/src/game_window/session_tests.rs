@@ -229,6 +229,30 @@ fn verify_utilities_and_ambience(app: &mut super::App, streamer: bool) {
                 end
             end
         end
+        assert(findObject(function(object, sq)
+            local props = object:getProperties()
+            if not props or not props:has(IsoFlagType.waterPiped) or not sq:getRoom() or sq:isNoWater()
+                or object:getUsesExternalWaterSource() or object:getFluidContainer() then return end
+            local data = object:getModData()
+            local moved, remaining, maximum = data.canBeWaterPiped, data.waterAmount, data.waterMaxAmount
+            local shut = sb:getWaterShutModifier()
+            data.canBeWaterPiped = false
+            sb:set("WaterShutModifier", 365)
+            assert(object:hasFluid() and object:getFluidAmount() == 10000 and object:getFluidCapacity() == 10000)
+            sb:set("WaterShutModifier", -1)
+            data.waterAmount, data.waterMaxAmount = 6.25, 19.5
+            assert(object:hasFluid() and object:getFluidAmount() == 6.25 and object:getFluidCapacity() == 19.5)
+            data.canBeWaterPiped = true
+            assert(not object:hasFluid() and object:getFluidAmount() == 0 and object:getFluidCapacity() == 0)
+            object:setUsesExternalWaterSource(true)
+            assert(object:getUsesExternalWaterSource())
+            object:doFindExternalWaterSource()
+            if not object:hasExternalWaterSource() then assert(object:getFluidAmount() == 0) end
+            object:setUsesExternalWaterSource(false)
+            sb:set("WaterShutModifier", shut)
+            data.canBeWaterPiped, data.waterAmount, data.waterMaxAmount = moved, remaining, maximum
+            return true
+        end), "no indoor piped fixture near player")
         local others = ArrayList.new()
         assert(findObject(function(object)
             object:getSpriteGridObjectsExcludingSelf(others)
@@ -670,6 +694,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     assert_eq!(app.current_state(), None);
     // `GameWindow.exit` delivers `OnPostSave` twice.
     assert_eq!(save_counts(app.lua.as_ref().unwrap()), (Some(1.0), Some(2.0)));
+    assert!(app.world.as_ref().unwrap().failed_chunk_activation.is_none(), "new map activation stopped");
     app.close();
     assert_eq!(save_counts(app.lua.as_ref().unwrap()), (Some(1.0), Some(2.0)), "second close saved twice");
     mannequin::check_saved(&save_dir, &expected_world_chunks);
@@ -802,6 +827,9 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         if path.is_file() {
             std::fs::rename(&path, first_save.join(format!("{wx}_{wy}.bin"))).unwrap();
         }
+    }
+    if let Some((_, error)) = &reloaded.world.as_ref().unwrap().failed_chunk_activation {
+        panic!("saved map activation stopped: {error}");
     }
     let active_alarms = reloaded.world.as_ref().unwrap().meta_tracker.borrow().alarms.clone();
     assert_eq!(active_alarms.len(), 2);
