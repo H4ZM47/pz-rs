@@ -140,6 +140,7 @@ impl IsoGridSquare {
             // Archive copies are detached until inserted into an actual chunk.
             chunk_hot_save: None,
             room_id: self.room_id,
+            puddles_cache: std::cell::Cell::new((-1.0, -1.0)),
             roof_hide_building: self.roof_hide_building,
             associated_building: self.associated_building,
             has_set_iso_world_region: self.has_set_iso_world_region.clone(),
