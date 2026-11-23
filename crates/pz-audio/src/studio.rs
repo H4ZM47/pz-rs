@@ -72,6 +72,7 @@ pub enum PlaybackState {
 
 enum Start {
     Wave {
+        loop_count: i32,
         bank: usize,
         subsound: u32,
         gain: f32,
@@ -87,11 +88,21 @@ enum Start {
     },
 }
 
+struct SheetLoop {
+    instrument: Guid,
+    range: crate::bank::ParameterRange,
+    active: bool,
+}
+
 struct Voice {
     pcm: Arc<Pcm>,
     /// Event bus the voice plays into (an audio track).
     track: Guid,
     pos: usize,
+    loops_left: i32,
+    loop_start: usize,
+    loop_end: usize,
+    sheet_instrument: Option<Guid>,
     gain: f32,
     /// Frames until the voice starts.
     delay: usize,
@@ -106,6 +117,7 @@ pub struct EventInstance {
     started: bool,
     pub state: PlaybackState,
     voices: Vec<Voice>,
+    sheet_loops: Vec<SheetLoop>,
     gain: f32,
     /// Timeline placements already triggered.
     triggered: Vec<bool>,
@@ -200,6 +212,7 @@ impl Studio {
             .unwrap_or_default()
             .iter()
             .chain(&e.instruments)
+            .chain(e.parameter_sheets.iter().filter_map(|s| m.parameter_sheets.get(s)).flat_map(|s| &s.instruments))
             .filter_map(|g| self.find_instrument(g))
             .any(|(_, i)| i.base.loop_count < 0);
         Some(EventInfo {
@@ -514,6 +527,7 @@ impl Studio {
             started: false,
             state: PlaybackState::Stopped,
             voices: Vec::new(),
+            sheet_loops: Vec::new(),
             gain: 1.0,
             triggered: vec![false; n],
             parent: None,
@@ -535,6 +549,7 @@ impl Studio {
         self.stop(id, true);
         let i = self.instances.get_mut(&id).unwrap();
         i.triggered.fill(false);
+        i.sheet_loops.clear();
         i.dsps.clear();
         i.timeline_finished = false;
         i.start_delay = 0;
@@ -603,6 +618,7 @@ impl Studio {
             InstrumentKind::Single { waveform } => {
                 if let Some(w) = self.banks[bank].model.waveforms.get(waveform) {
                     out.push(Start::Wave {
+                        loop_count: inst.base.loop_count,
                         bank,
                         subsound: w.subsound,
                         gain,
@@ -644,6 +660,7 @@ impl Studio {
         for start in v {
             match start {
                 Start::Wave {
+                    loop_count,
                     bank,
                     subsound,
                     gain,
@@ -651,11 +668,22 @@ impl Studio {
                     track,
                 } => {
                     if let Some(pcm) = self.pcm(bank, subsound) {
+                        let frames = pcm.frames();
+                        if frames == 0 { continue; }
+                        let (loop_start, loop_end) = self.banks[bank].file.fsb.as_ref()
+                            .and_then(|fsb| fsb.samples[subsound as usize].loop_points)
+                            .map(|(start, end)| (start as usize, (end as usize).saturating_add(1)))
+                            .filter(|&(start, end)| start < end && end <= frames)
+                            .unwrap_or((0, frames));
                         let delay = delay_frames(delay_ms);
                         self.instances.get_mut(&inst).unwrap().voices.push(Voice {
                             pcm,
                             track,
                             pos: 0,
+                            loops_left: loop_count,
+                            loop_start,
+                            loop_end,
+                            sheet_instrument: None,
                             gain,
                             delay,
                             remaining,
@@ -693,7 +721,7 @@ impl Studio {
         }
     }
 
-    /// One-shot instruments selected on the event's initial parameter values.
+    /// Trigger initial one-shots and retain the ranges controlling sustained waves.
     fn start_parameter_sheets(&mut self, id: InstanceId, event: &Event, offset: usize) {
         let mut root = id;
         while let Some(parent) = self.instances[&root].parent { root = parent; }
@@ -703,13 +731,48 @@ impl Studio {
             if sheet.instruments.is_empty() { continue; }
             let Some(parameter) = self.find_parameter(&sheet.parameter) else { continue };
             let value = self.parameter_value(id, parameter, event, relative);
-            let selected: Vec<_> = sheet.instruments.iter().copied().filter(|key|
-                self.find_instrument(key).and_then(|(_, i)| i.base.parameter_range)
-                    .is_some_and(|range| range.parameter == parameter.id && range.contains(value))).collect();
-            for instrument in selected {
-                self.start_instrument(id, instrument, None, offset);
+            let mut sustained = Vec::new();
+            let mut selected = Vec::new();
+            for &key in &sheet.instruments {
+                let Some((_, instrument)) = self.find_instrument(&key) else { continue };
+                let Some(range) = instrument.base.parameter_range else { continue };
+                if range.parameter != parameter.id { continue; }
+                if instrument.base.loop_count < 0 && matches!(instrument.kind, InstrumentKind::Single { .. }) {
+                    sustained.push(SheetLoop { instrument: key, range, active: false });
+                } else if range.contains(value) {
+                    selected.push(key);
+                }
+            }
+            self.instances.get_mut(&id).unwrap().sheet_loops.extend(sustained);
+            for key in selected {
+                self.start_instrument(id, key, None, offset);
             }
         }
+    }
+
+    fn update_sheet_loops(&mut self, id: InstanceId, event: &Event, offset: usize) {
+        if self.instances[&id].sheet_loops.is_empty() { return; }
+        let mut root = id;
+        while let Some(parent) = self.instances[&root].parent { root = parent; }
+        let relative = self.relative(self.instances[&root].world_position);
+        let mut loops = std::mem::take(&mut self.instances.get_mut(&id).unwrap().sheet_loops);
+        for placement in &mut loops {
+            let Some(parameter) = self.find_parameter(&placement.range.parameter) else { continue };
+            let active = placement.range.contains(self.parameter_value(id, parameter, event, relative));
+            if active == placement.active { continue; }
+            placement.active = active;
+            if active {
+                let start = self.instances[&id].voices.len();
+                self.start_instrument(id, placement.instrument, None, offset);
+                for voice in &mut self.instances.get_mut(&id).unwrap().voices[start..] {
+                    voice.sheet_instrument = Some(placement.instrument);
+                }
+            } else {
+                self.instances.get_mut(&id).unwrap().voices.retain(|voice|
+                    voice.sheet_instrument != Some(placement.instrument));
+            }
+        }
+        self.instances.get_mut(&id).unwrap().sheet_loops = loops;
     }
 
     fn find_bus(&self, id: &Guid) -> Option<&(BusKind, crate::bank::Bus)> {
@@ -923,6 +986,7 @@ impl Studio {
                 }
                 self.start_parameter_sheets(id, &event, leading_silence);
             }
+            self.update_sheet_loops(id, &event, leading_silence);
             // Timeline triggers within this block.
             if let Some(t) = self.banks[bank]
                 .model
@@ -978,6 +1042,10 @@ impl Studio {
                     buf[f * 2] += l * v.gain;
                     buf[f * 2 + 1] += r * v.gain;
                     v.pos += 1;
+                    if v.pos == v.loop_end && v.loops_left != 0 {
+                        v.pos = v.loop_start;
+                        if v.loops_left > 0 { v.loops_left -= 1; }
+                    }
                 }
             }
             inst.voices
@@ -988,7 +1056,9 @@ impl Studio {
                 .timelines
                 .get(&event.timeline)
                 .map_or(0, |t| t.end() as u64);
-            if inst.voices.is_empty() && inst.position >= end {
+            // A persistent parameter event can start another layer after silence.
+            let waiting_for_parameter = event.flags & 2 != 0 && !inst.sheet_loops.is_empty();
+            if inst.voices.is_empty() && inst.position >= end && !waiting_for_parameter {
                 inst.timeline_finished = true;
             }
         }
@@ -1058,6 +1128,57 @@ impl Studio {
 #[cfg(test)]
 mod lifetime_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires the installed World/Ambiance rain event"]
+    fn rain_layers_follow_a_running_event_across_dry_and_wet_periods() {
+        let game = std::path::PathBuf::from(std::env::var_os("PZ_GAME_DIR").unwrap());
+        let mut studio = Studio::new(SetupHeaders::from_game_dir(&game).unwrap());
+        for bank in crate::startup_bank_paths(&game) { studio.load_bank(&bank).unwrap(); }
+        // The nested rainfall event stays playing when dry. Its concrete-only
+        // child stops when started on dry ground, as in the native Studio runtime.
+        let rain = Guid::parse("eaeac53f-f54d-45c9-a531-d1239487d504").unwrap();
+        let concrete = Guid::parse("40842ae1-1dd2-424b-9ff3-57585934109e").unwrap();
+        for event in [rain, concrete] { assert!(!studio.event_info(&event).unwrap().is_oneshot); }
+        let id = studio.create_instance(rain).unwrap();
+        let child = studio.create_instance(concrete).unwrap();
+        assert!(studio.set_global_parameter("RainIntensity", 0.0));
+        studio.start(id);
+        studio.start(child);
+        let mut block = vec![0.0; 2048];
+        studio.mix(&mut block);
+        assert_eq!(studio.state(id), PlaybackState::Playing);
+        assert_eq!(studio.state(child), PlaybackState::Stopped);
+        assert!(block.iter().all(|&sample| sample == 0.0));
+        for _ in 0..2 {
+            assert!(studio.set_global_parameter("RainIntensity", 1.0));
+            studio.mix(&mut block);
+            let voices = &studio.instances[&id].voices;
+            for expected in ["world_ext_rain_concrete_very_strong", "world_ext_rain_general_very_strong", "world_ext_rain_general_rumble"] {
+                assert!(voices.iter().any(|v| studio.pcm_cache.iter().any(|(&(bank, sample), pcm)|
+                    Arc::ptr_eq(pcm, &v.pcm) && studio.banks[bank].file.fsb.as_ref().unwrap()
+                        .samples[sample as usize].name.as_deref() == Some(expected))), "{expected}");
+            }
+            // Advance each real voice across its authored end in the next block.
+            let count = voices.len();
+            for v in &mut studio.instances.get_mut(&id).unwrap().voices {
+                assert!(v.loops_left < 0);
+                v.pos = v.loop_end - 1;
+            }
+            block.fill(0.0);
+            studio.mix(&mut block);
+            assert_eq!(studio.instances[&id].voices.len(), count);
+            assert!(studio.instances[&id].voices.iter().all(|v| v.pos == v.loop_start + 1023));
+            assert!(block.iter().any(|sample| sample.abs() > 1e-6));
+            assert!(studio.set_global_parameter("RainIntensity", 0.0));
+            block.fill(0.0);
+            studio.mix(&mut block);
+            assert!(studio.instances[&id].voices.is_empty());
+            assert_eq!(studio.state(id), PlaybackState::Playing);
+        }
+        studio.stop(id, true);
+        assert_eq!(studio.state(id), PlaybackState::Stopped);
+    }
 
     #[test]
     #[ignore = "requires installed FMOD banks in PZ_GAME_DIR"]
