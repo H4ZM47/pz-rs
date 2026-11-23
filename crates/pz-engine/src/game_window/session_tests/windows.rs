@@ -214,6 +214,27 @@ pub(super) fn check(app: &mut App) {
             assert(rustCharacterNoises[i][1] > 0 and rustCharacterNoises[i][1] == rustCharacterNoises[i][2])
         end
     "#);
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        local cell, core, player = getCell(), getCore(), getPlayer()
+        local before, forced = cell:getSnowTarget(), core:isForceSnow()
+        local px, py = math.floor(player:getX()), math.floor(player:getY())
+        core:setForceSnow(true)
+        cell:setSnowTarget(100)
+        assert(cell:getSnowTarget() == 100)
+        local foundX, foundY
+        for y=py-12,py+12 do
+            for x=px-12,px+12 do
+                if cell:gridSquareIsSnow(x, y, 0) then foundX, foundY = x, y break end
+            end
+            if foundX then break end
+        end
+        assert(foundX, "no snow-covered ground around the installed player")
+        assert(not cell:gridSquareIsSnow(foundX, foundY, 30))
+        cell:setSnowTarget(0)
+        assert(not cell:gridSquareIsSnow(foundX, foundY, 0))
+        cell:setSnowTarget(before)
+        core:setForceSnow(forced)
+    "#);
     player.borrow_mut().cheats.set(&sim, "INVISIBLE", previous_invisible);
     app.core.borrow_mut().debug = previous_debug;
 }
