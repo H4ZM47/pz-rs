@@ -21,9 +21,16 @@ pub(super) fn check(app: &mut App) {
                         local obj = objects:get(i)
                         if instanceof(obj, "IsoWindow") and not obj:isPermaLocked()
                             and not obj:isLocked() and not obj:isSmashed() and not obj:IsOpen() then
-                            rustSessionWindow, best = obj, d
-                            rustWindowX, rustWindowY = x+dx, y+dy
-                            break
+                            local north = obj:getNorth()
+                            local opposite = getCell():getGridSquare(x+dx-(north and 0 or 1), y+dy-(north and 1 or 0), z)
+                            -- This scenario immediately closes the pane from the landing tile.
+                            -- A counter instead carries a climber to the free square beyond it.
+                            if opposite and not opposite:has(IsoFlagType.solidtrans)
+                                and not opposite:has(IsoFlagType.solid) and (sq:getRoomDef() or opposite:getRoomDef()) then
+                                rustSessionWindow, best = obj, d
+                                rustWindowX, rustWindowY = x+dx, y+dy
+                                break
+                            end
                         end
                     end
                 end
