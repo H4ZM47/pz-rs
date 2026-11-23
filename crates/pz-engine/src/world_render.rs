@@ -98,7 +98,9 @@ pub struct WorldRender {
     /// The `blood_floor_*` tiles (`Texture.getSharedTexture` in
     /// `renderOneLevel_Blood`).
     surface_textures: GroundTextures,
-    snow_state: [(i32, bool); MAX_PLAYERS],
+    surface_checks: [pz_iso_render::weather::SurfaceChecks; MAX_PLAYERS],
+    winter: [bool; MAX_PLAYERS],
+    puddle_geometry_settings: Option<(i32, bool)>,
     sprites: SpriteCache,
     pub world: RenderWorld,
     pub lighting: WorldLighting,
@@ -185,12 +187,14 @@ impl WorldRender {
             seams,
             cutaway_stencils,
             drop_shadow: tm.shared_texture_flags(fs, "media/textures/NewShadow.png", 0),
-            snow_state: Default::default(),
+            surface_checks: Default::default(),
+            winter: Default::default(),
+            puddle_geometry_settings: None,
             surface_textures: GroundTextures(
                 pz_iso_render::blood::FLOOR_BLOOD_TYPES
                     .iter()
                     .map(|&name| name.to_owned())
-                    .chain(std::iter::once("media/textures/river_bottom.png".to_owned()))
+                    .chain(["media/textures/river_bottom.png", "media/textures/puddles_hm.png"].map(str::to_owned))
                     .chain((0..48).map(|index| format!("e_newsnow_ground_1_{index}")))
                     .filter_map(|name| tm.shared_texture(fs, &name).map(|tex| (name, tex)))
                     .collect(),
@@ -412,9 +416,15 @@ impl WorldRender {
             assignments: &self.assignments,
             geometry: &self.geometry,
         };
-        let perf_puddles = pz_lua_api::bind_core::shared_core()
-            .borrow()
-            .get_perf_puddles();
+        let core = pz_lua_api::bind_core::shared_core();
+        let (perf_puddles, low_quality, shader) = {
+            let core = core.borrow();
+            (core.get_perf_puddles(), core.performance.puddles_quality == 2, core.performance.water_quality != 2)
+        };
+        if self.puddle_geometry_settings.replace((perf_puddles, low_quality)).is_some_and(|old| old != (perf_puddles, low_quality)) {
+            self.world.puddles_recalc.extend(self.world.squares.keys().copied());
+            for cache in &mut self.caches { cache.invalidate_all(dirty::REDRAW); }
+        }
         self.pending.apply(
             view,
             &mut self.world,
@@ -429,7 +439,6 @@ impl WorldRender {
         )?;
         let flow = pz_lua_api::bind_world::lua_world::shared_water_flow();
         let flow = flow.try_borrow().map_err(|_| RuntimeHostError::Borrowed("IsoWaterFlow"))?;
-        let shader = pz_lua_api::bind_core::shared_core().borrow().performance.water_quality != 2;
         for (wx, wy) in self.world.refresh_water(&flow, shader) {
             for cache in &mut self.caches { cache.invalidate_chunk(wx, wy, dirty::REDRAW); }
         }
@@ -842,11 +851,6 @@ impl WorldRender {
         let mut cmds = corpse_jobs;
         let target = view.cell.snow_target;
         let winter = target > 0 && pz_lua_api::bind_world::snow::winter();
-        if self.snow_state[p] != (target, winter) {
-            self.caches[p].invalidate_all(dirty::REDRAW);
-            self.snow_state[p] = (target, winter);
-        }
-        let chunks = plan_chunks(&mut self.caches[p], &cam, size, &inputs, &mut cmds);
         let maps = pz_iso_render::seam::WorldDepthMaps {
             tiles: &self.depth,
             seams: self.seams.clone(),
@@ -874,13 +878,18 @@ impl WorldRender {
             state: &state,
             world: &self.world,
         };
-        // Water, puddle reflections and rain/fish splashes have separate inputs.
+        // Rain/fish splashes and the sky reflection have separate frame inputs.
         let (settings, world_age_hours) = surface_values();
+        let (water, puddles) = {
+            let shared = pz_lua_api::bind_puddles::shared_puddles();
+            let state = shared.borrow();
+            (state.water, state.state)
+        };
         let surfaces = Surfaces {
             settings,
             climate: pz_iso_render::weather::ClimateInputs { snow_target: target, winter, ..Default::default() },
-            water: Default::default(),
-            puddles: Default::default(),
+            water,
+            puddles,
             sky: Default::default(),
             world_age_hours,
             meta_grid_min_x: view.meta.min_x,
@@ -890,6 +899,17 @@ impl WorldRender {
             rain: None,
             fish: None,
         };
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default().as_millis() as i64;
+        let enable_snow = pz_lua_api::bind_sandbox::current_bool("EnableSnowOnGround").unwrap_or(true);
+        let changed = self.surface_checks[p].run(&surfaces, enable_snow, now_ms);
+        if changed.all || self.winter[p] != winter {
+            self.caches[p].invalidate_all(dirty::REDRAW);
+        } else if changed.level_zero {
+            for &(wx, wy) in &order { self.caches[p].invalidate(wx, wy, 0, dirty::REDRAW); }
+        }
+        self.winter[p] = winter;
+        let chunks = plan_chunks(&mut self.caches[p], &cam, size, &inputs, &mut cmds);
         let r = ChunkRenderer::new(cam, &maps, (v.width, v.height))
             .with_cutaways(Some(cv))
             .with_render_infos(&self.infos, p)

@@ -5,7 +5,7 @@
 
 use crate::expose::{bool_arg, expose_class, global, int_arg, num_arg, with_this};
 use pz_core::weather::ClimateContext;
-use pz_iso_render::weather::{ClimateInputs, PuddlesFloat, PuddlesState};
+use pz_iso_render::weather::{ClimateInputs, PuddlesFloat, PuddlesState, WaterState};
 use pz_iso_render::weather_fx::{IsoWeatherFx, WeatherFxClimate, WeatherFxSandbox, WeatherFxTextures};
 use pz_kahlua::{LuaResult, NativeCall, Thread, Value};
 use std::any::Any;
@@ -26,6 +26,8 @@ const NAME_KEYS: [&str; 5] = [
 /// IsoPuddles' simulation, with the names translated once by setup().
 pub struct PuddlesManager {
     pub state: PuddlesState,
+    /// IsoWater is advanced on the same climate update as IsoPuddles.
+    pub water: WaterState,
     names: [String; 5],
 }
 
@@ -33,6 +35,7 @@ impl Default for PuddlesManager {
     fn default() -> Self {
         Self {
             state: PuddlesState::default(),
+            water: WaterState::default(),
             names: NAME_KEYS.map(|key| crate::bind_text::with_translator(|t| t.get_text(key, &[])).unwrap_or_else(|| key.into())),
         }
     }
@@ -180,10 +183,10 @@ pub(crate) fn update_climate_fx(thread: &mut Thread) {
     if let Some(fx) = fx {
         fx.borrow_mut().update_fx(&particle_inputs, &sandbox);
     }
-    shared_puddles()
-        .borrow_mut()
-        .state
-        .update(&inputs, multiplier, thirty_fps_multiplier);
+    let owner = shared_puddles();
+    let mut surface = owner.borrow_mut();
+    if !context.is_server() { surface.water.update(&inputs, multiplier); }
+    surface.state.update(&inputs, multiplier, thirty_fps_multiplier);
 }
 
 pub fn register(thread: &mut Thread) {
