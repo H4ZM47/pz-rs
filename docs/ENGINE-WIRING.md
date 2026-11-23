@@ -720,7 +720,9 @@ all installed assets, render paths or foreign platforms.
       `bind_input::after_ui_update(&mut mgr)`; apply
       `bind_input::take_window_requests()`; `gp.poll(c)` first (#30/#32).
 - [x] Sound: `SoundManager` update and emitter ticks through
-      `sound_system().with(..)`; listener from the active camera (#78/#83).
+      the shared sound system. The local player updates the Studio listener with
+      the isometric orientation, floor-height scale and deaf trait in IsoPlayer.update.
+      The Studio mixer currently consumes the first active listener.
 - [x] `UITransition.UpdateAll` → `bind_misc::ui_transition_update_all()` (#20).
 - [x] The render surface uses Core's VSync setting at creation and applies
       queued option changes before drawing the next frame. UI frame dimensions

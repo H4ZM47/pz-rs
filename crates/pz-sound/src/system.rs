@@ -70,6 +70,17 @@ impl SoundSystem {
         f(manager, &mut ctx)
     }
 
+    /// SoundListener.tick uses the isometric forward vector and triples the
+    /// map floor for FMOD. A deaf local player listens far outside the map.
+    pub fn update_player_listener(&mut self, index: i32, position: [f32; 3], deaf: bool) {
+        if self.sounds.env.sound_disabled || self.sounds.env.server
+            || (self.sounds.env.client && self.manager.sound_volume <= 0.0) { return; }
+        let [x, y, z] = position;
+        let at = if deaf { [-1000.0, -1000.0, 0.0] } else { [x, y, z * 3.0] };
+        let d = -std::f32::consts::FRAC_1_SQRT_2;
+        self.backend.listener_3d(index, at, [0.0; 3], [d, d, 0.0], [0.0, 0.0, 1.0]);
+    }
+
     /// A positioned IsoWorld emitter remains on the world's update list.
     /// Local playback uses playSoundImpl and bypasses network forwarding.
     pub fn play_world_clip(&mut self, name: &str, pos: [f32; 3], local: bool)

@@ -525,6 +525,30 @@ impl IsoMetaGrid {
         self.get_chunk_data(fastfloor(x as f32 / 8.0), fastfloor(y as f32 / 8.0))
     }
 
+    /// IsoMetaGrid.countNearbyBuildingsRooms. A room can occupy several
+    /// chunks and floors. The native outer cell bounds use the grid size.
+    pub fn count_nearby_buildings_rooms(&self, px: f32, py: f32) -> usize {
+        let (x, y) = (fastfloor(px).wrapping_sub(20), fastfloor(py).wrapping_sub(20));
+        let end_chunk = |end: i32| end / 8 - i32::from(end % 8 == 0);
+        let cells_x = x / 256..=x.wrapping_add(self.width) / 256;
+        let cells_y = y / 256..=y.wrapping_add(self.height) / 256;
+        let mut rooms = std::collections::HashSet::new();
+        for cy in y / 8..=end_chunk(y.wrapping_add(40)) {
+            if !cells_y.contains(&cy.div_euclid(32)) { continue; }
+            for cx in x / 8..=end_chunk(x.wrapping_add(40)) {
+                if !cells_x.contains(&cx.div_euclid(32)) { continue; }
+                let Some(chunk) = self.get_chunk_data(cx, cy) else { continue };
+                for &idx in chunk.rooms() {
+                    let room = &self.room_defs[idx.0 as usize];
+                    if room.is_empty_outside() && room.building.is_some_and(|building|
+                        !self.building_defs[building.0 as usize].rooms.is_empty()) { continue; }
+                    if room.intersects(x, y, 40, 40) { rooms.insert(idx); }
+                }
+            }
+        }
+        rooms.len()
+    }
+
     /// `getRoomAt(x, y, z)`. A missing chunk has no rooms, so not creating it
     /// here is equivalent apart from allocation.
     pub fn get_room_at(&self, x: i32, y: i32, z: i32) -> Option<&RoomDef> {

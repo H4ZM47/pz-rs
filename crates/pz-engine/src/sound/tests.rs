@@ -190,7 +190,8 @@ fn installed_window_smash_renders_and_releases_world_audio() {
     let count = backend.parameter_count();
     let mut system = SoundSystem::new(Box::new(backend), Default::default(), count);
     system.sounds.add_sound(Rc::new(RefCell::new(clip)), system.backend.as_mut());
-    let (emitter, handle) = system.play_world_clip("SmashWindow", [0.5, 0.5, 0.0], true);
+    system.update_player_listener(0, [10695.5, 9383.5, 2.0], false);
+    let (emitter, handle) = system.play_world_clip("SmashWindow", [10696.5, 9383.5, 2.0], true);
     assert_ne!(handle, 0);
     system.with_world_emitters(|pool, ctx| pool.update(1, ctx));
     let mut block = [0.0; 2048];

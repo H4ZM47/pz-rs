@@ -258,7 +258,15 @@ impl<I: 'static> GameCharacter<I> {
         self.vars.precision_aim_key_down = self.player.input.is_precision_aim_key_down(input, self.input_owner());
         self.update_nutrition_and_fitness(sm, chars, ctx)?;
         self.update_vision_effect_targets();
-        // updateSoundListener, SafetySystemManager.update: sound / MP.
+        if self.is_local_player(ctx) {
+            self.player.check_nearby_rooms -= ctx.thirty_fps_multiplier();
+            let count_rooms = self.player.check_nearby_rooms <= 0.0;
+            if count_rooms { self.player.check_nearby_rooms = 30.0; }
+            out.events.push(PlayerEvent::UpdateSoundListener {
+                position: [self.vars.x, self.vars.y, self.vars.z], count_rooms,
+            });
+        }
+        // SafetySystemManager.update is multiplayer-only.
         if self.player.death_finished {
             return Ok(ControlFlow::Continue(false));
         }

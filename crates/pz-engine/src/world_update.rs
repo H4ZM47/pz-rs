@@ -2216,6 +2216,20 @@ fn fire_player_events(
             PlayerEvent::LuaEvent(name) => {
                 lua.trigger_event(name, std::slice::from_ref(&pv));
             }
+            PlayerEvent::UpdateSoundListener { position, count_rooms } => {
+                if count_rooms {
+                    let count = with_world(|w| w.meta_grid.as_ref().map_or(0, |m|
+                        m.count_nearby_buildings_rooms(position[0], position[1])));
+                    p.borrow_mut().player.num_nearby_buildings_rooms = count as f32;
+                }
+                let p = p.borrow();
+                let slots = pz_lua_api::bind_players::num_players().min(p.player.player_index);
+                let index = (0..slots).filter(|&i| pz_lua_api::bind_players::player(i as usize).is_some()).count();
+                let scripts = pz_lua_api::bind_registry::shared_script_manager();
+                let deaf = p.has_trait(&scripts, "DEAF").unwrap_or(false);
+                pz_lua_api::bind_audio::sound_system().borrow_mut()
+                    .update_player_listener(index as i32, position, deaf);
+            }
             PlayerEvent::UpdateMusic { inside, now_ms, panic } => {
                 let p = p.borrow();
                 let events = &p.player.music_intensity_events;

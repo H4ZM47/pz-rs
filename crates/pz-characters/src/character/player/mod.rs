@@ -30,6 +30,8 @@ pub use vision::PlayerRenderInputs;
 /// the player loop uses).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerControl {
+    pub check_nearby_rooms: f32,
+    pub num_nearby_buildings_rooms: f32,
     pub music_threat_levels: std::rc::Rc<music::MusicThreatLevels>,
     pub music_intensity_events: std::rc::Rc<music::MusicIntensityEvents>,
     /// IsoPlayer.isFarming; maintained by Lua farming/timed actions.
@@ -178,6 +180,8 @@ pub struct PlayerControl {
 impl Default for PlayerControl {
     fn default() -> Self {
         PlayerControl {
+            check_nearby_rooms: 0.0,
+            num_nearby_buildings_rooms: 0.0,
             next_rand_xp_check_times: std::collections::HashMap::new(),
             see_designation_zone: false,
             player_index: 0,
@@ -266,6 +270,8 @@ pub enum PlayerEvent {
     /// `LuaEventManager.triggerEvent(name, player)`: `OnPlayerMove`,
     /// `OnPlayerUpdate`.
     LuaEvent(&'static str),
+    /// IsoPlayer.updateSoundListener, before OnPlayerUpdate.
+    UpdateSoundListener { position: [f32; 3], count_rooms: bool },
     /// Refresh the player's configured events after OnPlayerUpdate.
     UpdateMusic { inside: bool, now_ms: i64, panic: i32 },
     /// `triggerEvent("OnContextKey", player, millis)`.
