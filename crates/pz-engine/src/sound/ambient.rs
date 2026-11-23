@@ -1,7 +1,7 @@
 //! Client AmbientStreamManager globals sampled between the UI and music updates.
 use pz_core::game_time::GameTime;
 use pz_lua_api::{bind_climate, bind_players, bind_registry, bind_world};
-use pz_sound::backend::AudioBackend;
+use pz_sound::emitter::{Ctx, FmodSoundEmitter, ParentObject};
 use pz_sound::params::{FmodParameter, FmodParameterList};
 use pz_world::{IsoMetaGrid, ZoneId};
 use std::cell::Cell;
@@ -38,6 +38,8 @@ const PARAM_COUNT: usize = NAMES.len() + ZONES.len();
 pub(crate) struct AmbientParameters {
     values: Rc<Cell<[f32; PARAM_COUNT]>>,
     nearby_zones: Vec<ZoneId>,
+    ambiance: Option<FmodSoundEmitter>,
+    channel: i64,
     params: FmodParameterList,
 }
 
@@ -51,10 +53,11 @@ impl AmbientParameters {
             .map(FmodParameter::current_value)
     }
 
-    pub(crate) fn update(&mut self, backend: &mut dyn AudioBackend, streamer: bool) {
+    pub(crate) fn update(&mut self, ctx: &mut Ctx, parameter_count: usize, streamer: bool) {
         let scripts = bind_registry::shared_script_manager();
         let mut gate = None;
         let mut gate_deaf = true;
+        let mut hearing = None;
         let mut selected = None;
         let mut selected_dead = true;
         let mut selected_deaf = true;
@@ -62,6 +65,9 @@ impl AmbientParameters {
             let actor = player.borrow();
             let deaf = actor.has_trait(&scripts, "DEAF").unwrap_or(false);
             let dead = actor.is_dead();
+            if !deaf && hearing.is_none() {
+                hearing = Some((actor.vars.x, actor.vars.y));
+            }
             if gate.is_none() || (gate_deaf && !deaf) {
                 gate = Some(actor.current_square_xyz());
                 gate_deaf = deaf;
@@ -114,7 +120,7 @@ impl AmbientParameters {
             let names = NAMES.into_iter().chain(ZONES.map(|(name, _)| name));
             for (i, name) in names.enumerate() {
                 let inputs = self.values.clone();
-                let description = backend.parameter_description(name);
+                let description = ctx.backend.parameter_description(name);
                 self.params.add(FmodParameter::global(
                     name,
                     description,
@@ -122,7 +128,31 @@ impl AmbientParameters {
                 ));
             }
         }
-        self.params.update(backend);
+        self.params.update(ctx.backend);
+        self.update_ambiance(ctx, parameter_count, hearing);
+    }
+
+    fn update_ambiance(&mut self, ctx: &mut Ctx, count: usize, listener: Option<(f32, f32)>) {
+        let Some((x, y)) = listener.filter(|_| !ctx.sounds.env.sound_disabled) else {
+            self.stop(ctx);
+            return;
+        };
+        let emitter = self
+            .ambiance
+            .get_or_insert_with(|| FmodSoundEmitter::new(count));
+        emitter.set_pos(x, y, 0.0);
+        if self.channel == 0 || !emitter.is_playing(self.channel) {
+            self.channel = emitter.play_sound_impl("WorldAmbiance", ParentObject::None, ctx);
+            emitter.set_volume(self.channel, 1.0);
+        }
+        emitter.tick(ctx);
+    }
+
+    pub(crate) fn stop(&mut self, ctx: &mut Ctx) {
+        if let Some(mut emitter) = self.ambiance.take() {
+            emitter.stop_all(ctx);
+        }
+        self.channel = 0;
     }
 }
 
@@ -226,6 +256,41 @@ fn values(time: &GameTime, streamer: bool, elevation: f32, room_size: i32) -> [f
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires PZ_GAME_DIR and installed sound banks"]
+    fn installed_ambiance_follows_hearing_listener_and_stops() {
+        let (mut system, studio, count) = crate::sound::tests::installed_sound(
+            "media/scripts/generated/sounds/sounds_ambience.txt",
+            "WorldAmbiance",
+        );
+        let mut ambient = AmbientParameters::default();
+        system.update_player_listener(0, [250.0, 100.0, 2.0], false);
+        system.with(|_, ctx| ambient.update_ambiance(ctx, count, Some((250.0, 100.0))));
+        let channel = ambient.channel;
+        assert_ne!(channel, 0);
+        system.with(|_, ctx| ambient.update_ambiance(ctx, count, Some((250.5, 100.5))));
+        let emitter = ambient.ambiance.as_ref().unwrap();
+        assert_eq!((emitter.x, emitter.y, emitter.z), (250.5, 100.5, 0.0));
+        assert_eq!(ambient.channel, channel);
+        assert!(emitter.is_playing(channel));
+        let mut block = [0.0_f32; 2048];
+        let mut peak = 0.0_f32;
+        for _ in 0..128 {
+            studio.lock().unwrap().mix(&mut block);
+            assert!(block.iter().all(|x| x.is_finite()));
+            peak = block.iter().fold(peak, |p, x| p.max(x.abs()));
+        }
+        assert!(peak > 0.00001, "WorldAmbiance peak {peak}");
+        system.with(|_, ctx| ambient.update_ambiance(ctx, count, None));
+        assert!(ambient.ambiance.is_none());
+        assert_eq!(ambient.channel, 0);
+        studio.lock().unwrap().mix(&mut block);
+        assert!(block.iter().all(|&x| x == 0.0));
+        system.with(|_, ctx| ambient.update_ambiance(ctx, count, Some((251.0, 101.0))));
+        assert_ne!(ambient.channel, 0);
+        system.with(|_, ctx| ambient.stop(ctx));
+    }
+
     #[test]
     fn nearby_zones_use_ground_geometry_and_distinct_forest_types() {
         let mut grid = IsoMetaGrid::with_bounds(0, 0, 1, 1);

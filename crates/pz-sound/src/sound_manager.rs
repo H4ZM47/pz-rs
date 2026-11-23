@@ -718,6 +718,11 @@ impl SoundManager {
     }
 
     pub fn update_with_ambient(&mut self, toggle_music_pressed: bool, ctx: &mut Ctx, ambient: impl FnOnce(&mut dyn AudioBackend)) {
+        self.update_with_ambient_context(toggle_music_pressed, ctx, |ctx, _| ambient(ctx.backend));
+    }
+
+    /// Run the world's ambient emitters after the UI emitter and before the final music mix.
+    pub fn update_with_ambient_context(&mut self, toggle_music_pressed: bool, ctx: &mut Ctx, ambient: impl FnOnce(&mut Ctx, usize)) {
         if !self.initialized {
             self.initialized = true;
             self.in_game_group_bus = ctx.backend.get_bus("bus:/InGame");
@@ -737,7 +742,7 @@ impl SoundManager {
         if ui.is_empty() {
             ui.clear_parameters();
         }
-        ambient(ctx.backend);
+        ambient(ctx, self.parameter_count);
         if !self.allow_music() {
             self.stop_music_all(ctx.backend);
         }

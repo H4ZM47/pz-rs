@@ -459,10 +459,10 @@ impl App {
             .borrow_mut()
             .with(|m, ctx| {
                 m.set_music_inputs(crate::sound::music_inputs(&self.core.borrow()));
-                m.update_with_ambient(toggle_music, ctx, |backend| {
+                m.update_with_ambient_context(toggle_music, ctx, |ctx, count| {
                     if !game_paused {
                         if let Some(world) = &mut self.world {
-                            world.ambient_parameters.update(backend, self.core.borrow().get_option_streamer_mode());
+                            world.ambient_parameters.update(ctx, count, self.core.borrow().get_option_streamer_mode());
                         }
                     }
                 });

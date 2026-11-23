@@ -163,23 +163,20 @@ fn held_game_fs_borrow_is_a_failure_and_does_not_become_a_negative_cache_entry()
     assert_eq!(backend.load_sound("media/sound/borrow.wav", true), loaded);
 }
 
-/// Run the installed sound script through the world emitter and Studio mixer.
-#[test]
-#[ignore = "requires PZ_GAME_DIR and installed sound banks"]
-fn installed_window_smash_renders_and_releases_world_audio() {
+pub(super) fn installed_sound(path: &str, name: &str) -> (pz_sound::system::SoundSystem, Arc<Mutex<Studio>>, usize) {
     use pz_scripts::objects::models::game_sound::GameSoundScript;
     use pz_scripts::{ScriptManager, ScriptObject};
     use pz_sound::system::SoundSystem;
 
     let game = PathBuf::from(std::env::var_os("PZ_GAME_DIR").expect("PZ_GAME_DIR"));
-    let script = std::fs::read_to_string(game.join("media/scripts/generated/sounds/objects/sounds_object_window.txt")).unwrap();
+    let script = std::fs::read_to_string(game.join(path)).unwrap();
     let manager = ScriptManager::new();
     let root = manager.parse(&script);
-    let sound = root.get_block("module", Some("Base")).unwrap().get_block("sound", Some("SmashWindow")).unwrap();
+    let sound = root.get_block("module", Some("Base")).unwrap().get_block("sound", Some(name)).unwrap();
     let mut body = String::new();
     sound.pretty_print(0, &mut body, "\n", "    ");
     let mut clip = GameSoundScript::new();
-    clip.load(&manager, "SmashWindow", &body).unwrap();
+    clip.load(&manager, name, &body).unwrap();
     let mut studio = Studio::new(SetupHeaders::from_game_dir(&game).unwrap());
     for bank in pz_audio::startup_bank_paths(&game) {
         studio.load_bank(&bank).unwrap();
@@ -190,6 +187,14 @@ fn installed_window_smash_renders_and_releases_world_audio() {
     let count = backend.parameter_count();
     let mut system = SoundSystem::new(Box::new(backend), Default::default(), count);
     system.sounds.add_sound(Rc::new(RefCell::new(clip)), system.backend.as_mut());
+    (system, studio, count)
+}
+
+/// Run the installed sound script through the world emitter and Studio mixer.
+#[test]
+#[ignore = "requires PZ_GAME_DIR and installed sound banks"]
+fn installed_window_smash_renders_and_releases_world_audio() {
+    let (mut system, studio, _) = installed_sound("media/scripts/generated/sounds/objects/sounds_object_window.txt", "SmashWindow");
     system.update_player_listener(0, [10695.5, 9383.5, 2.0], false);
     let (emitter, handle) = system.play_world_clip("SmashWindow", [10696.5, 9383.5, 2.0], true);
     assert_ne!(handle, 0);
