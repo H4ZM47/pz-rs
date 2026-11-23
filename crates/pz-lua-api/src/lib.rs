@@ -90,6 +90,7 @@ pub mod bind_world;
 pub mod bind_basements;
 pub mod bind_bent_fences;
 pub mod bind_map_objects;
+pub mod farm_definitions;
 pub mod bind_tile_overlays;
 pub mod bind_broken_fences;
 pub mod bind_item_picker;

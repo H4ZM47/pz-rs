@@ -33,9 +33,28 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 struct EngineSaveHooks<'a> {
+    globals: Option<&'a pz_kahlua::TableRef>,
     render: &'a Rc<RefCell<Option<crate::world_render::WorldRender>>>,
 }
 impl SaveHooks for EngineSaveHooks<'_> {
+    fn hutch_max_nest_box(&self, sprite: &str) -> Option<i32> {
+        let def = pz_lua_api::farm_definitions::hutch(self.globals?, sprite)?;
+        Some(def.get_str("maxNestBox").as_num().unwrap_or(0.0) as i32)
+    }
+    fn hutch_max_animals(&self, sprite: &str) -> Option<i32> {
+        let def = pz_lua_api::farm_definitions::hutch(self.globals?, sprite)?;
+        Some(def.get_str("maxAnimals").as_num().unwrap_or(0.0) as i32)
+    }
+    fn feeding_trough_def(&self, sprite: &str) -> Option<(f32, i32)> {
+        let def = pz_lua_api::farm_definitions::trough(self.globals?, sprite)?;
+        Some((def.get_str("maxWater").as_num().unwrap_or(0.0) as f32, def.get_str("maxFeed").as_num().unwrap_or(0.0) as i32))
+    }
+    fn rand_next(&self, min: i32, max: i32) -> i32 {
+        pz_core::random::next_range(min, max)
+    }
+    fn rand_next_float(&self, min: f32, max: f32) -> f32 {
+        pz_core::random::next_float(min, max)
+    }
     fn mannequin_wear_item(&self, object: &pz_world::IsoObjectRef, item: &pz_inventory::shared::ItemRef) -> pz_inventory::io::SaveResult<()> {
         use pz_inventory::io::SaveError;
         if !pz_lua_api::world_mannequins::wear_item_for_save(object, item)? {
@@ -216,6 +235,7 @@ pub struct IsoWorld {
     pub render_chunks: RenderChunkEvents,
     /// The world renderer (`IsoCell.render`'s state), made on the first
     /// rendered frame.
+    farm_globals: Option<pz_kahlua::TableRef>,
     pub render: Rc<RefCell<Option<crate::world_render::WorldRender>>>,
     /// The same live floor service installed for Lua and borrowed states.
     pub(crate) floor_world: Option<Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
@@ -339,6 +359,7 @@ impl IsoWorld {
             chunk_load_id: 0,
             key_spawn_chance_d100: 0.0,
             render_chunks: RenderChunkEvents::default(),
+            farm_globals: None,
             render: Rc::new(RefCell::new(None)),
             floor_world: None,
             floor_session: None,
@@ -382,7 +403,7 @@ impl IsoWorld {
             world_gen,
             items,
             erosion,
-            render,
+            render, farm_globals,
             ..
         } = self;
         // `GameTime.getWorldAgeHours()` as the item loads read it.
@@ -450,7 +471,7 @@ impl IsoWorld {
                     // The save's `WorldDictionary`; without one (a new game, see
                     // `world_dictionary::init`) items load raw.
                     items,
-                    save_hooks: &EngineSaveHooks { render },
+                    save_hooks: &EngineSaveHooks { render, globals: farm_globals.as_ref() },
                     brand_new: world_gen
                         .as_mut()
                         .map(|h| h as &mut dyn pz_world::chunk::BrandNewHook),
@@ -510,6 +531,7 @@ impl IsoWorld {
     /// `OnGameTimeLoaded`). Returns `Err` where the original throws out of
     /// the loader (`unexpectedError`).
     pub fn init(&mut self, lua: &mut LuaManager) -> Result<(), String> {
+        self.farm_globals = Some(lua.thread.globals().clone());
         // Server-system registration loads gos_*.bin from this actual world.
         pz_lua_api::global_objects_save::set_save_dir(Some(self.save_dir.clone()));
         let core_rc = pz_lua_api::bind_core::shared_core();
