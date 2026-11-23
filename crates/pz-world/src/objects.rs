@@ -896,6 +896,7 @@ pub struct IsoObject {
     /// [`crate::object_mod_data`]).
     pub runtime_mod_data: Option<crate::object_mod_data::LiveModData>,
     pub hutch_runtime: Option<Box<HutchRuntime>>,
+    pub trough_definition: Option<crate::object_mod_data::LiveModData>,
     pub special_tooltip: bool,
     pub key_id: i32,
     pub uses_external_water_source: bool,
@@ -948,6 +949,7 @@ impl Clone for IsoObject {
             },
             runtime_mod_data: None,
             hutch_runtime: None,
+            trough_definition: None,
             special_tooltip: self.special_tooltip.clone(),
             key_id: self.key_id.clone(),
             external_water_source: Default::default(),
@@ -1030,6 +1032,7 @@ impl IsoObject {
             mod_data: None,
             runtime_mod_data: None,
             hutch_runtime: None,
+            trough_definition: None,
             special_tooltip: false,
             key_id: -1,
             external_water_source: Default::default(),
