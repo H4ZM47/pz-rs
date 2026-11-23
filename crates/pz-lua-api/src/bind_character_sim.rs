@@ -2648,6 +2648,45 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn smash_car_window_hits_the_retained_part_on_the_animation_event() {
+        use pz_characters::character::state::{StateCx, StateWorld};
+        use pz_vehicles::{part::{VehiclePart, VehicleWindow}, vehicle::BaseVehicle};
+        let (mut thread, player, _) = setup();
+        crate::bind_vehicles::register(&mut thread);
+        let vehicle = BaseVehicle::new();
+        let part = VehiclePart::new(&vehicle);
+        part.st_mut().window = Some(VehicleWindow::default());
+        part.set_condition(85);
+        thread.globals().set_str("panePart", pz_vehicles::lua::part_value(&part));
+        run(&mut thread, "player:smashCarWindow(panePart); assert(panePart:getWindow():getHealth() == 85)").unwrap();
+        let weak = Rc::downgrade(&vehicle);
+        drop(vehicle);
+        assert!(weak.upgrade().is_some());
+        struct World;
+        impl StateWorld<LuaItem> for World {}
+        let script = shared_script_manager();
+        let chars = shared_characters();
+        let chars = chars.borrow();
+        let sim = current_sim_context();
+        let mut world = World;
+        let mut cx = StateCx::new(&script, &chars, &*sim, &mut world);
+        let state = pz_characters::character::states::window::smash_window();
+        let event = pz_anim::AnimEventRecord {
+            state_name: None, layer_depth: -1, track: None,
+            event: Rc::new(pz_anim::AnimEvent { event_name: "AttackCollisionCheck".into(), ..Default::default() }),
+        };
+        state.anim_event(&mut player.borrow_mut(), &mut cx, &event);
+        run(&mut thread, r#"
+            local pane = panePart:getWindow()
+            assert(pane:isDestroyed())
+            panePart:setCondition(40)
+            pane:setOpen(true)
+            pane:hit(player)
+            assert(pane:isDestroyed())
+        "#).unwrap();
+    }
+
+    #[test]
     fn music_events_belong_to_the_player_across_handles_and_frames() {
         let (mut thread, player, _) = setup();
         crate::bind_audio::register(&mut thread);

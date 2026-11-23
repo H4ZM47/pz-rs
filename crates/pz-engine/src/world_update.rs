@@ -208,6 +208,18 @@ impl StatesEngine for EngineStates<'_> {
         self.sim.map(|sim| sim.player_input() as &dyn pz_characters::character::player::PlayerInput)
     }
 
+    fn vehicle_window_destroyed(&self, id: i16, part: &str) -> Option<bool> {
+        let part = pz_vehicles::manager::vehicle_by_id(id)?.part_by_id(part)?;
+        let state = part.st();
+        state.window.map(|_| state.condition == 0)
+    }
+
+    fn vehicle_window_hit(&mut self, id: i16, part: &str, _actor: i32) {
+        if let Some(part) = pz_vehicles::manager::vehicle_by_id(id).and_then(|v| v.part_by_id(part)) {
+            if part.st().window.is_some() { part.hit_window() }
+        }
+    }
+
     fn on_window_toggled(&mut self, actor: i32, window: &pz_world::IsoObjectRef) {
         if let Some(sim) = self.sim {
             pz_characters::character::SimContext::event(sim, SimEvent::WindowToggled { actor, window: window.clone() });

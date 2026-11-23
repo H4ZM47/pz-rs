@@ -626,6 +626,11 @@ fn register_door_window_light(thread: &mut Thread) {
         p.window_damage(int_arg(c, 1));
         Ok(0)
     });
+    b.method("hit", |c| {
+        let p = with_this::<LuaWindow, _>(c, |d| d.0.clone())?;
+        p.hit_window();
+        Ok(0)
+    });
     b.method("getPart", |c| {
         let p = with_this::<LuaWindow, _>(c, |d| d.0.clone())?;
         Ok(c.push(vlua::part_value(&p)))

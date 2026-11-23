@@ -120,6 +120,7 @@ fn cancel_open_with_movement(app: &mut App) {
     pz_input::with_input(|i| i.key(17, 1));
     run_frames(app, 1);
     pz_input::with_input(|i| i.key(17, 0));
+    run_frames(app, 1);
     super::queue::wait_for_idle(app);
     lua_check(app.lua.as_mut().unwrap(), "assert(not rustSessionWindow:IsOpen() and #rustWindowEvents == 0)");
 }

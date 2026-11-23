@@ -37,7 +37,47 @@ pub const SMASH_ISO_WINDOW: Param<Option<ObjectRef>> =
     Param::new(ids::SMASH_WINDOW, "iso_window", || None);
 /// `SmashWindowState.VEHICLE_WINDOW`, `VEHICLE` and `VEHICLE_PART`: the
 /// vehicle (`vehicleId`) and the window's part id.
-pub const SMASH_VEHICLE_WINDOW: Param<Option<(i16, String)>> =
+pub trait VehicleWindowTarget {
+    fn facing_position(&self, x: f32, y: f32, z: f32) -> Option<(f32, f32)>;
+    fn destroyed(&self) -> Option<bool>;
+    fn hit(&self);
+}
+
+#[derive(Clone)]
+pub enum VehicleWindowRef {
+    Part { vehicle: i16, part: String },
+    Retained(std::rc::Rc<dyn VehicleWindowTarget>),
+}
+
+impl VehicleWindowRef {
+    fn destroyed<I: 'static>(&self, cx: &StateCx<'_, I>) -> Option<bool> {
+        match self {
+            Self::Part { vehicle, part } => cx.world.vehicle_window_destroyed(*vehicle, part),
+            Self::Retained(window) => window.destroyed(),
+        }
+    }
+
+    fn face<I: 'static>(&self, owner: &mut GameCharacter<I>) {
+        match self {
+            Self::Part { vehicle, .. } => PathMover::face_this_object(owner, FaceTarget::Vehicle(*vehicle)),
+            Self::Retained(window) => {
+                let (x, y, z) = (owner.vars.x, owner.vars.y, owner.vars.z);
+                if let Some((fx, fy)) = window.facing_position(x, y, z) {
+                    owner.set_forward_direction(fx - x, fy - y);
+                }
+            }
+        }
+    }
+
+    fn hit<I: 'static>(&self, owner: &GameCharacter<I>, cx: &mut StateCx<'_, I>) {
+        match self {
+            Self::Part { vehicle, part } => cx.world.vehicle_window_hit(*vehicle, part, owner),
+            Self::Retained(window) => window.hit(),
+        }
+    }
+}
+
+pub const SMASH_VEHICLE_WINDOW: Param<Option<VehicleWindowRef>> =
     Param::new(ids::SMASH_WINDOW, "vehicle_window", || None);
 /// `SmashWindowState.CLIMB_THROUGH_WINDOW`.
 pub const SMASH_CLIMB_THROUGH_WINDOW: Param<bool> =
@@ -205,8 +245,12 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `smashCarWindow(part)`: the window of `part` on `vehicle`.
     pub fn smash_car_window(&mut self, vehicle: i16, part: &str) {
+        self.request_vehicle_window_smash(VehicleWindowRef::Part { vehicle, part: part.to_string() });
+    }
+
+    pub fn request_vehicle_window_smash(&mut self, target: VehicleWindowRef) {
         self.state.params.clear(ids::SMASH_WINDOW);
-        SMASH_VEHICLE_WINDOW.set(&mut self.state.params, Some((vehicle, part.to_string())));
+        SMASH_VEHICLE_WINDOW.set(&mut self.state.params, Some(target));
         self.report_event("EventSmashWindow");
     }
 
@@ -647,7 +691,7 @@ impl<I: 'static> State<I> for SmashWindowState {
         let iso = info(cx, SMASH_ISO_WINDOW.get(&mut owner.state.params));
         let vehicle = SMASH_VEHICLE_WINDOW
             .get(&mut owner.state.params)
-            .and_then(|(v, p)| cx.world.vehicle_window_destroyed(v, &p).map(|d| (v, d)));
+            .and_then(|window| window.destroyed(cx).map(|destroyed| (window, destroyed)));
         if iso.is_none() && vehicle.is_none() {
             owner.set_var_bool("bSmashWindow", false);
             return;
@@ -665,8 +709,8 @@ impl<I: 'static> State<I> for SmashWindowState {
                 return;
             }
             face_window(owner, &w);
-        } else if let Some((v, destroyed)) = vehicle {
-            PathMover::face_this_object(owner, FaceTarget::Vehicle(v));
+        } else if let Some((window, destroyed)) = vehicle {
+            window.face(owner);
             if destroyed && !owner.variable_boolean("OwnerSmashedIt") {
                 owner.set_var_bool("bSmashWindow", false);
             }
@@ -704,15 +748,15 @@ impl<I: 'static> State<I> for SmashWindowState {
                     owner.climb_through_window(window, cx);
                 }
             }
-        } else if let Some((v, part)) = SMASH_VEHICLE_WINDOW.get(&mut owner.state.params) {
-            if cx.world.vehicle_window_destroyed(v, &part).is_none() {
+        } else if let Some(window) = SMASH_VEHICLE_WINDOW.get(&mut owner.state.params) {
+            if window.destroyed(cx).is_none() {
                 return;
             }
             if name.eq_ignore_ascii_case("AttackCollisionCheck") {
                 owner.set_var_bool("OwnerSmashedIt", true);
                 owner.player.context_panic = 0.0;
                 if owner.is_local_player(cx.ctx) && !cx.ctx.is_client() {
-                    cx.world.vehicle_window_hit(v, &part, owner);
+                    window.hit(owner, cx);
                     if owner.no_hand_weapon() {
                         let _ = owner.set_scratched_window(cx.sm, cx.chars, cx.ctx);
                         cx.ctx.event(SimEvent::PlayerVoiceSound("PainFromGlassCut"));

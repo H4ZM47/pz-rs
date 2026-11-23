@@ -45,7 +45,7 @@ fn aim_at_object(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<()> {
         }
     }
     if let Some(vehicle) = pz_vehicles::lua::vehicle_from_value(&value) {
-        if vehicle.square_coords().is_some() {
+        if vehicle.st().added_to_world && vehicle.st().current.is_some() {
             let point = vehicle.facing_position(x, y, z);
             actor.try_borrow_mut().map_err(|_| borrowed("facing character"))?
                 .set_forward_direction(point.x - x, point.y - y);
@@ -105,6 +105,29 @@ fn face_this_object(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<()> {
     Ok(())
 }
 
+/// The original state keeps the part and its vehicle alive until the next
+/// request replaces its parameters. A recycled VehicleManager ID may name
+/// a different vehicle by the time the animation delivers its hit.
+struct SmashVehiclePart {
+    vehicle: pz_vehicles::vehicle::VehicleRef,
+    part: pz_vehicles::part::PartRef,
+}
+
+impl pz_characters::character::states::window::VehicleWindowTarget for SmashVehiclePart {
+    fn facing_position(&self, x: f32, y: f32, z: f32) -> Option<(f32, f32)> {
+        let v = self.vehicle.st();
+        if !v.added_to_world || v.current.is_none() { return None }
+        drop(v);
+        let point = self.vehicle.facing_position(x, y, z);
+        Some((point.x, point.y))
+    }
+    fn destroyed(&self) -> Option<bool> {
+        let part = self.part.st();
+        part.window.map(|_| part.condition == 0)
+    }
+    fn hit(&self) { self.part.hit_window(); }
+}
+
 pub(super) fn register(b: &ClassBuilder) {
     use pz_characters::character::states::window::WindowAction;
     b.method("faceThisObject", |c| {
@@ -131,6 +154,22 @@ pub(super) fn register(b: &ClassBuilder) {
             Ok(0)
         });
     }
+    b.method("smashCarWindow", |c| {
+        let value = c.arg(1);
+        if value.is_nil() {
+            return Err(LuaError::Runtime { class: "java.lang.NullPointerException", message: String::new() });
+        }
+        let part = pz_vehicles::lua::part_from_value(&value)
+            .ok_or_else(|| crate::bind_java_util::class_cast(&value, pz_vehicles::lua::VEHICLE_PART_CLASS))?;
+        let vehicle = part.vehicle_weak().upgrade()
+            .ok_or_else(|| crate::bind_world_object::unsupported("vehicle part has no owner"))?;
+        let target = pz_characters::character::states::window::VehicleWindowRef::Retained(
+            std::rc::Rc::new(SmashVehiclePart { vehicle, part })
+        );
+        chr_of(c)?.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("smashing character"))?
+            .request_vehicle_window_smash(target);
+        Ok(0)
+    });
     // `climbOverFence(dir)`.
     b.method("climbOverFence", |c| {
         let dir = direction_arg(c, 1)?;
