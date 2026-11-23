@@ -7,6 +7,8 @@
 //! ids mapped to the loaded scripts), which the chunk loads and
 //! `IsoPlayer.load` take as their item environment.
 
+mod script_registers;
+
 use std::path::Path;
 
 use pz_inventory::component::{ComponentBlob, ComponentCodec, EntityCodec, FactoryRng};
@@ -178,7 +180,7 @@ fn save_data(save_dir: &Path, dictionary: &WorldDictionary) -> Result<(), String
 /// creates usable in-memory ids but neither reads nor writes a file.
 ///
 /// TODO(port): register the Generic strings from XUI/FluidFilter and
-/// component script registers (including their original version hashes)
+/// other string registers
 /// when those script-loading hooks are implemented. Existing register
 /// records are preserved. Readable/log/error-backup files remain unported.
 pub fn init(
@@ -202,18 +204,7 @@ pub fn init(
                 ..Default::default()
             });
         }
-        for name in [
-            "SpriteConfigs",
-            "SpriteOverlayConfigs",
-            "ContextMenuConfigs",
-        ] {
-            if dictionary.script_register(name).is_none() {
-                dictionary.script_registers.push(Register {
-                    name: name.into(),
-                    ..Default::default()
-                });
-            }
-        }
+        script_registers::register(&mut dictionary, sm)?;
         if !no_save {
             save_data(save_dir, &dictionary)?;
         }
