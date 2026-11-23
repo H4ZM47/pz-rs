@@ -124,9 +124,13 @@ fn new_generator(c: &mut NativeCall<'_>) -> LuaResult<usize> {
         total_power_using: 0.,
     };
     let mut body = IsoObject::new(0, ObjectKind::Generator(state), None);
+    let cell = if c.nargs() == 1 { c.arg(0) } else { c.arg(1) };
+    if !cell.is_nil() && !cell.raw_equals(&crate::bind_world::current_cell()) {
+        return Err(LuaError::runtime("expected IsoCell"));
+    }
     let square = if c.nargs() == 1 {
         None
-    } else {
+    } else if c.nargs() == 3 {
         let item = crate::bind_items::item_arg(c, 0)?;
         let (pos, sq) = get_square(&c.arg(2))?;
         let sm = crate::bind_registry::shared_script_manager();
@@ -138,6 +142,8 @@ fn new_generator(c: &mut NativeCall<'_>) -> LuaResult<usize> {
         update_from_item(&mut body, &item)?;
         body.replace_square(Some(&sq), &mut pz_entity::RetiredComponents::new());
         Some(pos)
+    } else {
+        return Err(LuaError::runtime("invalid IsoGenerator constructor"));
     };
     let owner = ObjectSlot::new(body).ref_handle();
     if let Some(pos) = square {

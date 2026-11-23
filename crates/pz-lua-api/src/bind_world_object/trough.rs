@@ -204,7 +204,8 @@ pub fn restore_fluid(obj: &IsoObjectRef) -> LuaResult<()> {
         .map_err(runtime_error)?;
     if p.promoted {
         let owner = EntityOwner::from_ref(obj);
-        p.component.borrow_mut().replace_owner(Some(&owner));
+        let old=p.component.borrow_mut().replace_owner(Some(&owner));
+        if let Some(previous)=old { p.retired.push_owner(previous); }
         drop(b);
         pz_world::object_slot::observe_object(obj, CLASS);
         p.retired.push_owner(owner);

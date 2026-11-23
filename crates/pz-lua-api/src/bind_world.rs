@@ -2081,6 +2081,12 @@ fn register_grid_square(thread: &mut Thread) {
             Ok(())
         });
     }
+    for (method, transmit) in [("RemoveTileObject", false), ("transmitRemoveItemFromSquare", true)] {
+        get(&b, method, move |c| {
+            let pos=self_square(c)?;
+            crate::bind_map_objects::remove_tile(c,pos,transmit)
+        });
+    }
     square_queries::register(&b);
     power::register(&b);
     for (method, local) in [("playSound", false), ("playSoundLocal", true)] {
