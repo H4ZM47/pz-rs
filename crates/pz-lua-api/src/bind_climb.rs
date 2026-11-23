@@ -80,6 +80,31 @@ fn with_query_world<T>(f: impl FnOnce(&pz_world_states::StatesWorldAdapter<'_>) 
     })
 }
 
+/// Read-only `StateWorld` queries against the live `bind_world` cell when a
+/// world and sprite manager are loaded. Returns `Ok(None)` when no live world
+/// is loaded so callers can fall back to `bind_states::with_state_cx`.
+pub(crate) fn with_live_state_world<T>(
+    f: impl FnOnce(&mut dyn pz_characters::character::state::StateWorld<crate::bind_characters::LuaItem>) -> LuaResult<T>,
+) -> LuaResult<Option<T>> {
+    let Ok(sprites) = crate::bind_sprites::manager() else {
+        return Ok(None);
+    };
+    let mut sprites = sprites.try_borrow_mut().map_err(|_| borrowed("IsoSpriteManager"))?;
+    crate::bind_world::with_world_state_cell(|w| {
+        let mut w = w.try_borrow_mut().map_err(|_| borrowed("IsoWorld"))?;
+        let state = &mut *w;
+        let (Some(cell), Some(meta)) = (state.cell.as_mut(), state.meta_grid.as_ref()) else {
+            return Ok(None);
+        };
+        let mut runtime = pz_world_states::StatesRuntime::default();
+        let mut engine = QueryEngine(QueryRand, crate::bind_players::closing_windows());
+        let mut adapter = pz_world_states::StatesWorldAdapter::new(
+            cell, meta, &mut sprites, pz_world_states::ThumpSettings::default(), &mut runtime, &mut engine,
+        );
+        f(&mut adapter).map(Some)
+    })
+}
+
 /// Resolve a retained Lua receiver against the actual cell before translating
 /// its identity into the coordinate and object ID used by character states.
 pub(crate) fn with_live_object<T>(

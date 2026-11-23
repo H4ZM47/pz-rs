@@ -445,6 +445,11 @@ impl PathHost {
         self.slots.flushed(id, chr, &NoSeating).behavior.cancel();
     }
 
+    /// `getPathFindBehavior2().reset()`.
+    pub fn path_reset(&mut self, id: CharacterId, chr: &mut dyn PathMover) {
+        self.slots.flushed(id, chr, &NoSeating).behavior.reset(chr);
+    }
+
     /// `getPathFindBehavior2().walkingOnTheSpot.reset(x, y)`.
     pub fn walking_on_the_spot_reset(&mut self, id: CharacterId, x: f32, y: f32) {
         self.slots.get(id).behavior.walking_on_the_spot.reset(x, y);

@@ -527,4 +527,30 @@ mod tests {
         }
         assert_eq!(stiff(&c, "Head"), 0.0);
     }
+
+    #[test]
+    fn queued_sheet_rope_requests_run_through_path_requests() {
+        use crate::character::path_mover::PathMoverRequest;
+        let (sm, mut chars) = fixture();
+        let ctx = Recorder::default();
+        // Climb up from z = 0.
+        let mut w = Climbs { rope: rope(), ..Default::default() };
+        let mut c = climber(&sm, &mut chars);
+        c.path.requests.push(PathMoverRequest::ClimbSheetRope);
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+        c.run_path_requests(&mut cx);
+        drop(cx);
+        assert!(c.path.requests.is_empty());
+        assert!(c.state.action_context.has_event_occurred("EventClimbRope", None));
+        // Climb down from z = 2.
+        let mut w = Climbs { rope: rope(), ..Default::default() };
+        let mut c = climber(&sm, &mut chars);
+        c.path.current_square = Some((4, 5, 2));
+        c.path.requests.push(PathMoverRequest::ClimbDownSheetRope);
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+        c.run_path_requests(&mut cx);
+        drop(cx);
+        assert!(c.path.requests.is_empty());
+        assert!(c.state.action_context.has_event_occurred("EventClimbDownRope", None));
+    }
 }

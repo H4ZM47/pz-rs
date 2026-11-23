@@ -198,12 +198,12 @@ fn floor_world() -> Option<FloorWorldRef> {
 
 /// Capture one service identity for the whole action. Borrow its body only at
 /// an actual native floor operation, after native no-op checks have run.
-struct FloorAccess {
+pub(super) struct FloorAccess {
     service: Option<FloorWorldRef>,
 }
 
 impl FloorAccess {
-    fn capture() -> HostResult<Self> {
+    pub(super) fn capture() -> HostResult<Self> {
         FLOOR
             .try_with(|slot| {
                 Ok(Self {
@@ -214,6 +214,10 @@ impl FloorAccess {
                 })
             })
             .map_err(|_| Self::unavailable())?
+    }
+
+    pub(super) fn has_service(&self) -> bool {
+        self.service.is_some()
     }
 
     fn unavailable() -> RuntimeHostError {
@@ -1961,6 +1965,7 @@ fn register_character(
         let sub = expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
         if class == ISO_PLAYER_CLASS || class == ISO_ANIMAL_CLASS {
             control::register_player(&sub);
+            climb::register_player(&sub);
         }
     }
     control::register(&b);

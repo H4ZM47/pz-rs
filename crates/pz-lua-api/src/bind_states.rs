@@ -62,6 +62,11 @@ pub fn install_state_world(world: SharedWorld) {
     WORLD.with(|w| *w.borrow_mut() = world);
 }
 
+/// The currently installed Lua state world.
+pub(crate) fn current_state_world() -> SharedWorld {
+    WORLD.with(|w| w.borrow().clone())
+}
+
 /// Retire the installed world and the old environment's state wrappers.
 /// The actual state registry remains the engine's existing singleton set.
 pub(crate) fn reset_session_handles() {
