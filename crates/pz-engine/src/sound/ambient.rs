@@ -7,7 +7,7 @@ use pz_world::{IsoMetaGrid, ZoneId};
 use std::cell::Cell;
 use std::rc::Rc;
 
-const NAMES: [&str; 12] = [
+const NAMES: [&str; 14] = [
     "FogIntensity",
     "RainIntensity",
     "Season",
@@ -20,6 +20,8 @@ const NAMES: [&str; 12] = [
     "WindIntensity",
     "CharacterElevation",
     "RoomSize",
+    "Electricity",
+    "Water",
 ];
 
 // ParameterZone uses these exact map types, including the spelling of Vegitation.
@@ -250,6 +252,14 @@ fn values(time: &GameTime, streamer: bool, elevation: f32, room_size: i32) -> [f
         (cm.get_wind_intensity() * 1000.0) as i32 as f32 / 1000.0,
         elevation,
         room_size as f32,
+        f32::from(bind_world::power::hydro_power_on()),
+        f32::from(
+            pz_lua_api::bind_sandbox::with_current(|sb| {
+                time.world_age_days_since_begin(sb.time_since_apo())
+                    < f64::from(sb.water_shut_modifier())
+            })
+            .unwrap_or(false),
+        ),
     ]
 }
 

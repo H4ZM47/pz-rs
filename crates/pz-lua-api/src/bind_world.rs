@@ -125,6 +125,7 @@ pub fn set_meta_grid(grid: Option<IsoMetaGrid>) {
 
 /// Install (or clear) `IsoWorld.instance.currentCell`.
 pub fn set_cell(cell: Option<IsoCell>) {
+    if cell.is_none() { power::set_hydro_power_on(false); }
     let retired = with_world_state_cell(|w| {
         let mut w = w.borrow_mut();
         w.meta_tracker = None;
@@ -2211,6 +2212,15 @@ fn self_world(c: &NativeCall<'_>) -> LuaResult<()> {
 fn register_iso_world(thread: &mut Thread) {
     let b = expose_class(thread, "zombie.iso.IsoWorld", Some("java.lang.Object"));
     b.field("instance", obj(Key::World));
+    get(&b, "isHydroPowerOn", |c| {
+        self_world(c)?;
+        Ok(power::hydro_power_on().into())
+    });
+    b.method("setHydroPowerOn", |c| {
+        self_world(c)?;
+        power::set_hydro_power_on(bool_arg(c, 1));
+        Ok(0)
+    });
     get(&b, "getWorldAgeDays", |c| {
         self_world(c)?;
         Ok(Value::Num(crate::bind_climate::world_age_days_since_begin() as f32 as f64))

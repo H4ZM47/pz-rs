@@ -424,13 +424,26 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         local age = 60 + clock:getWorldAgeHours() / 24
         assert(math.abs(clock:getWorldAgeDaysSinceBegin() - age) < 0.000001)
         assert(math.abs(getWorld():getWorldAgeDays() - age) < 0.00001)
+        assert(sb:doesPowerGridExist() == (age <= sb:getElecShutModifier()))
+        assert(sb:doesPowerGridExist(70) == (age <= sb:getElecShutModifier() + 70))
+        local world = getWorld()
+        local originalPower = world:isHydroPowerOn()
+        world:setHydroPowerOn(not originalPower)
+        assert(world:isHydroPowerOn() ~= originalPower)
+        world:setHydroPowerOn(originalPower)
         sb:set("TimeSinceApo", original)
+        rustAmbientPower = originalPower and 1 or 0
+        rustAmbientWater = clock:getWorldAgeDaysSinceBegin() < sb:getWaterShutModifier() and 1 or 0
         local square = getPlayer():getCurrentSquare()
         local room = square:getRoomDef()
         rustAmbientRoom = room and room:getArea() or math.max(0, square:getRoomSize())
     "#);
     let room = app.lua.as_ref().unwrap().thread.globals().get_str("rustAmbientRoom").as_num().unwrap() as f32;
     let ambient = &app.world.as_ref().unwrap().ambient_parameters;
+    for (parameter, global) in [("Water", "rustAmbientWater"), ("Electricity", "rustAmbientPower")] {
+        let expected = app.lua.as_ref().unwrap().thread.globals().get_str(global).as_num().unwrap() as f32;
+        assert_eq!(ambient.current_value(parameter), Some(expected));
+    }
     assert_eq!(ambient.current_value("RoomSize"), Some(room));
     assert_eq!(ambient.current_value("CharacterElevation"), Some(player.borrow().vars.z));
     assert_eq!(ambient.current_value("StreamerMode"), Some(f32::from(!streamer)));

@@ -131,8 +131,6 @@ pub struct IsoWorld {
     pub lua_traits: Vec<Option<Rc<pz_scripts::registry::RegistryKey>>>,
     /// The development stand-in for the menu's `OnInitWorld` handler.
     pub new_game_setup: Option<NewGameSetup>,
-    /// `hydroPowerOn`.
-    pub hydro_power_on: bool,
     /// `IsoWorld.worldX/worldY`: the chunk player 0's map starts on.
     pub world_x: i32,
     pub world_y: i32,
@@ -294,7 +292,6 @@ impl IsoWorld {
             lua_player_desc: None,
             lua_traits: Vec::new(),
             new_game_setup: None,
-            hydro_power_on: false,
             world_x: 0,
             world_y: 0,
             world_xa: (0, 0, 0),
@@ -627,12 +624,12 @@ impl IsoWorld {
         // which the original runs a few steps later from the same
         // options).
         pz_lua_api::bind_item_picker::parse(&lua.thread, sb.clone());
-        self.hydro_power_on = {
+        {
             let gt = pz_lua_api::bind_climate::shared_game_time();
             let options = sb.borrow();
             let days = gt.borrow().world_age_days_since_begin(options.time_since_apo()) as f32;
-            options.does_power_grid_exist(days, 0)
-        };
+            pz_lua_api::bind_world::power::set_hydro_power_on(options.does_power_grid_exist(days, 0));
+        }
         // TODO(port): `ZomboidGlobals.toLua()`, `survivorDescriptors.clear()`.
         // `LoadTileDefinitions*` (property strings, custom values, lookup
         // tables, the definitions), `PostTileDefinitions`, then
@@ -769,7 +766,7 @@ impl IsoWorld {
             let s = sb.borrow();
             let alarm = opt_int(&s, "Alarm");
             let alarm_decay = opt_int(&s, "AlarmDecay");
-            let power = self.hydro_power_on;
+            let power = pz_lua_api::bind_world::power::hydro_power_on();
             let rand = &mut self.rand;
             with_world(|w| {
                 if let Some(g) = w.meta_grid.as_mut() {

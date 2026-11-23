@@ -9,7 +9,17 @@ use pz_world::world_state::{self, WorldState as NativeWorldState};
 type SandboxRef = Rc<RefCell<SandboxOptions>>;
 
 thread_local! {
+    static HYDRO_POWER_ON: Cell<bool> = const { Cell::new(false) };
     static SANDBOX: RefCell<Option<SandboxRef>> = const { RefCell::new(None) };
+}
+
+/// IsoWorld's grid supply can be read while a square or cell is borrowed.
+pub fn hydro_power_on() -> bool {
+    HYDRO_POWER_ON.with(Cell::get)
+}
+
+pub fn set_hydro_power_on(on: bool) {
+    HYDRO_POWER_ON.with(|power| power.set(on));
 }
 
 /// Install the same sandbox owner used by the engine, before streaming

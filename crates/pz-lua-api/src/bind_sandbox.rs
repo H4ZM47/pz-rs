@@ -427,6 +427,13 @@ pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>, loader: Rc<RefCell
             });
         };
     }
+    b.method("doesPowerGridExist", |c| {
+        let options = this_opts(c)?;
+        let days = crate::bind_climate::world_age_days_since_begin() as f32;
+        let offset = int_arg(c, 1);
+        let on = options.borrow().does_power_grid_exist(days, offset);
+        Ok(c.push(on))
+    });
     int_getter!("getFirstYear", first_year);
     int_getter!("getTemperatureModifier", temperature_modifier);
     int_getter!("getRainModifier", rain_modifier);
