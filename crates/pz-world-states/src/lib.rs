@@ -71,6 +71,21 @@ use pz_world::{
     VisionEnv,
 };
 
+/// A character already in CloseWindowState at the start of a world query.
+#[derive(Clone, Copy)]
+pub struct ClosingWindow {
+    pub actor: i32,
+    pub target: ObjectRef,
+    pub success: bool,
+}
+
+impl ClosingWindow {
+    pub fn of<I: 'static>(chr: &GameCharacter<I>) -> Option<Self> {
+        let target = pz_characters::character::states::window::closing_window(chr)?;
+        Some(Self { actor: chr.id, target, success: chr.variable_string("CloseWindowOutcome").eq_ignore_ascii_case("success") })
+    }
+}
+
 /// What a thumper or a character the thump code looks at is, as the world
 /// code reads it (`IsoGameCharacter` / `IsoZombie` fields).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -293,11 +308,8 @@ pub trait StatesEngine {
     fn character_eating_count(&self, _chr: i32) -> usize {
         0
     }
-    /// `IsoWindow.getFirstCharacterClosing()` has `CloseWindowOutcome` of
-    /// `success`.
-    fn window_closing_success(&self, _window: ObjectRef) -> bool {
-        false
-    }
+    /// Active close-window actions, captured before the world borrows its actors.
+    fn closing_windows(&self) -> &[ClosingWindow] { &[] }
     /// The zombies among `square.getMovingObjects()` (the squares'
     /// moving-object lists are the character owner's), in list order.
     fn zombies_on_square(&self, _sq: (i32, i32, i32)) -> Vec<i32> {
@@ -1053,7 +1065,12 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     }
 
     fn window_closing(&self, window: ObjectRef) -> bool {
-        self.engine.window_closing_success(window)
+        if self.engine.closing_windows().is_empty() { return false }
+        let Some((square, object)) = self.find(window) else { return false };
+        let object = object.borrow();
+        let pz_world::objects::ObjectKind::Window(w) = &object.kind else { return false };
+        let square = square.borrow();
+        self.first_window_closer_succeeds(&square, window, w.north)
     }
 
     fn reroute_collide(&self, obj: ObjectRef) -> bool {

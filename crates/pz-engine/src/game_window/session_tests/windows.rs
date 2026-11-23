@@ -59,6 +59,7 @@ pub(super) fn check(app: &mut App) {
         "#);
         let mut entered = false;
         let mut changed = false;
+        let mut blocked_during_close = false;
         let mut last_state = String::new();
         for frame in 1..=300 {
             run_frames(app, 1);
@@ -70,16 +71,26 @@ pub(super) fn check(app: &mut App) {
                 last_state = name.to_owned();
             }
             entered |= p.is_current_state_id(state);
+            let closing = !open && p.is_current_state_id(state)
+                && p.variable_string("CloseWindowOutcome").eq_ignore_ascii_case("success");
             drop(p);
             let lua = app.lua.as_mut().unwrap();
             lua_check(lua, "rustSessionWindowOpen = rustSessionWindow:IsOpen()");
-            changed |= lua.thread.globals().get_str("rustSessionWindowOpen").truthy() == open;
+            let actual_open = lua.thread.globals().get_str("rustSessionWindowOpen").truthy();
+            if actual_open && closing {
+                lua_check(lua, "assert(not rustSessionWindow:canClimbThrough(nil))");
+                blocked_during_close = true;
+            }
+            changed |= actual_open == open;
             if entered && changed && last_state.eq_ignore_ascii_case("idle") {
                 break;
             }
         }
         assert!(entered && changed && last_state.eq_ignore_ascii_case("idle"),
             "window at ({x},{y}), requested open={open}, entered={entered}, changed={changed}, last state={last_state}");
+        if !open {
+            assert!(blocked_during_close, "no successful close observed while the pane was still open");
+        }
         let assertion = if open { "assert(rustSessionWindow:canClimbThrough(getPlayer()))" }
                         else { "assert(not rustSessionWindow:canClimbThrough(getPlayer()))" };
         lua_check(app.lua.as_mut().unwrap(), assertion);

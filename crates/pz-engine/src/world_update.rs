@@ -127,6 +127,7 @@ mod animation_bridge_tests {
         {
             let mut engine = EngineStates {
                 sim: None,
+                closing_windows: Vec::new(),
                 rand: StandardRand,
                 movers: Vec::new(),
                 models: RefCell::new(Some(&mut models)),
@@ -189,6 +190,7 @@ mod animation_bridge_tests {
 /// host) keeps its defaults: TODO(port): those owners.
 struct EngineStates<'a> {
     sim: Option<&'a FrameSim>,
+    closing_windows: Vec<pz_world_states::ClosingWindow>,
     rand: StandardRand,
     /// The squares the local players stand on (`getCurrentSquare()`),
     /// taken before the frame lends any of them out. TODO(port): animals.
@@ -202,6 +204,8 @@ struct EngineStates<'a> {
 }
 
 impl StatesEngine for EngineStates<'_> {
+    fn closing_windows(&self) -> &[pz_world_states::ClosingWindow] { &self.closing_windows }
+
     fn on_container_update(&mut self) {
         if let Some(sim) = self.sim {
             pz_characters::character::SimContext::event(sim, SimEvent::ContainerUpdate);
@@ -478,9 +482,17 @@ fn with_states_characters_and_path<R>(
     f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
 ) -> Option<R> {
     let mut movers = player_squares();
+    let mut closing_windows = pz_lua_api::bind_players::closing_windows();
     // The players lent to `characters` (their cells hold stand-ins).
     if let Some(list) = characters.as_ref() {
-        movers.extend(list.iter().filter(|c| c.is_player()).filter_map(|c| c.path.current_square));
+        for actor in list.iter() {
+            if actor.is_player() {
+                movers.extend(actor.path.current_square);
+            }
+            if let Some(action) = pz_world_states::ClosingWindow::of(actor) {
+                closing_windows.push(action);
+            }
+        }
     }
     let animation_time_delta = sim
         .game_time
@@ -492,6 +504,7 @@ fn with_states_characters_and_path<R>(
         };
         let mut engine = EngineStates {
             sim: Some(sim),
+            closing_windows,
             rand: StandardRand,
             movers,
             models: RefCell::new(models),
@@ -1652,6 +1665,7 @@ impl IsoWorld {
         let mut sprites = sprites.borrow_mut();
         let water_flag = sprites.tables.flag.water;
         let movers = player_squares();
+        let closing_windows = pz_lua_api::bind_players::closing_windows();
         with_world(|w| {
             let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else {
                 return None;
@@ -1675,6 +1689,7 @@ impl IsoWorld {
                 .get_time_delta(&pz_lua_api::bind_climate::LuaClimateContext::new());
             let mut engine = EngineStates {
                 sim: Some(sim),
+                closing_windows,
                 rand: StandardRand,
                 movers,
                 models: RefCell::new(models.as_mut()),

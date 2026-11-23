@@ -81,6 +81,15 @@ pub fn player(i: usize) -> Option<LuaGameCharacterRef> {
     STATICS.with(|s| s.borrow().players.get(i).cloned().flatten())
 }
 
+/// Snapshot the actions while local actors are accessible. The engine adds
+/// players temporarily lent to its character list before updating that list.
+pub fn closing_windows() -> Vec<pz_world_states::ClosingWindow> {
+    (0..MAX_PLAYERS).filter_map(player).filter_map(|actor| {
+        let actor = actor.try_borrow().ok()?;
+        pz_world_states::ClosingWindow::of(&actor)
+    }).collect()
+}
+
 /// `IsoPlayer.numPlayers = n`.
 pub fn set_num_players(n: i32) {
     STATICS.with(|s| s.borrow_mut().num_players = n);

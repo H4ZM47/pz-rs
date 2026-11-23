@@ -250,11 +250,13 @@ struct Engine {
     noises: Vec<(i32, (i32, i32, i32))>,
     cancelled: Vec<MoverId>,
     toggled: Vec<ObjectRef>,
+    closing_windows: Vec<ClosingWindow>,
     replace_toggled_square: bool,
     moving: Vec<(i32, i32, i32)>,
 }
 
 impl StatesEngine for Engine {
+    fn closing_windows(&self) -> &[ClosingWindow] { &self.closing_windows }
     fn rand(&mut self) -> &mut dyn GameRand {
         &mut self.rand
     }
@@ -1254,6 +1256,32 @@ fn climber(x: f32, y: f32) -> Thumper {
         current_square: Some((x as i32, y as i32, 0)),
         ..Default::default()
     }
+}
+
+#[test]
+fn first_window_closer_uses_near_then_far_moving_object_order() {
+    let mut world = World::new();
+    let window = world.add(12, 12, "window_w", window(&world, 0), true);
+    let near = world.cell.get_grid_square(12, 12, 0).unwrap();
+    let far = world.cell.get_grid_square(11, 12, 0).unwrap();
+    near.borrow_mut().moving_objects.extend([99, 2, 1]);
+    far.borrow_mut().moving_objects.push(3);
+    for (actor, success) in [(1, true), (2, false), (3, true)] {
+        world.engine.closing_windows.push(ClosingWindow { actor, target: window, success });
+    }
+    let can_climb = |world: &mut World| {
+        let adapter = world.adapter();
+        let (sq, obj) = adapter.find(window).unwrap();
+        let result = adapter.portal_can_climb_through(&sq.borrow(), &obj.borrow(), None);
+        result
+    };
+    assert!(can_climb(&mut world));
+    near.borrow_mut().moving_objects.swap(1, 2);
+    assert!(!can_climb(&mut world));
+    near.borrow_mut().moving_objects.clear();
+    assert!(!can_climb(&mut world));
+    far.borrow_mut().moving_objects.clear();
+    assert!(can_climb(&mut world));
 }
 
 #[test]

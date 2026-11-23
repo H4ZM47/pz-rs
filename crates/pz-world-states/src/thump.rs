@@ -248,6 +248,18 @@ impl StatesWorldAdapter<'_> {
         true
     }
 
+    /// Search the near square before the opposite one, respecting each
+    /// square's moving-object order even when two actors are closing the pane.
+    pub(crate) fn first_window_closer_succeeds(&self, square: &IsoGridSquare, window: ObjectRef, north: bool) -> bool {
+        let actions = self.engine.closing_windows();
+        if actions.is_empty() { return false }
+        let first = |sq: &IsoGridSquare| {
+            sq.moving_objects.iter().find_map(|id|
+                actions.iter().find(|c| c.actor == *id && c.target == window).map(|c| c.success))
+        };
+        first(square).or_else(|| self.opposite(square, north).and_then(|sq| first(&sq.borrow()))).unwrap_or(false)
+    }
+
     pub(crate) fn window_can_climb_through(
         &self,
         sq: &IsoGridSquare,
@@ -273,7 +285,7 @@ impl StatesWorldAdapter<'_> {
                 return false;
             }
         }
-        if self.engine.window_closing_success(oref(sq, &o)) {
+        if self.first_window_closer_succeeds(sq, oref(sq, o), w.north) {
             return false;
         }
         if w.health <= 0 || w.destroyed {

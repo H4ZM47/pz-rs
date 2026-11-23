@@ -52,9 +52,10 @@ impl pz_world::java::GameRand for QueryRand {
     }
 }
 
-struct QueryEngine(QueryRand);
+struct QueryEngine(QueryRand, Vec<pz_world_states::ClosingWindow>);
 
 impl pz_world_states::StatesEngine for QueryEngine {
+    fn closing_windows(&self) -> &[pz_world_states::ClosingWindow] { &self.1 }
     fn rand(&mut self) -> &mut dyn pz_world::java::GameRand {
         &mut self.0
     }
@@ -72,7 +73,7 @@ fn with_query_world<T>(f: impl FnOnce(&pz_world_states::StatesWorldAdapter<'_>) 
             return Err(unsupported("window query without a world"));
         };
         let mut runtime = pz_world_states::StatesRuntime::default();
-        let mut engine = QueryEngine(QueryRand);
+        let mut engine = QueryEngine(QueryRand, crate::bind_players::closing_windows());
         f(&pz_world_states::StatesWorldAdapter::new(
             cell, meta, &mut sprites, pz_world_states::ThumpSettings::default(), &mut runtime, &mut engine,
         ))
