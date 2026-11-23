@@ -35,6 +35,7 @@ use crate::ui_models::Assets;
 
 mod corpses;
 pub use corpses::{CorpseDraw, CorpseSquare};
+mod world_items;
 
 /// Camera-dependent character state. Lighting comes from the actual
 /// square's lighting result, rather than a fixed white model light.
@@ -87,6 +88,7 @@ pub struct WorldModels {
     assets: Option<Assets>,
     characters: HashMap<i32, CharacterModel>,
     corpses: corpses::Corpses,
+    world_items: world_items::WorldItems,
     retired_textures: Vec<Texture>,
 }
 
@@ -99,6 +101,7 @@ impl WorldModels {
             assets: None,
             characters: HashMap::new(),
             corpses: corpses::Corpses::default(),
+            world_items: world_items::WorldItems::default(),
             retired_textures: Vec::new(),
         }
     }
@@ -340,6 +343,8 @@ impl WorldModels {
                 &mut tm,
             );
         }
+        self.world_items
+            .prepare(&fs, combiner, &mut tm, &mut self.retired_textures);
     }
 
     /// Append the existing pose to the iso object's pass, with that
@@ -407,6 +412,7 @@ impl WorldModels {
             retire(model, &mut self.retired_textures);
         }
         self.corpses.retire(&mut self.retired_textures);
+        self.world_items.clear();
     }
 
     /// Release the world's composites while its GPU still exists.
