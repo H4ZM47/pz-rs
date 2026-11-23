@@ -99,6 +99,21 @@ fn craft_recipe_lookup(
     move |name| sm.get_script(ScriptType::CraftRecipe, name).and_then(|r| r.downcast())
 }
 
+/// `IsoPlayer.isFavouriteRecipe(name)`: the player's mod data entry under
+/// `BaseCraftingLogic.getFavouriteModDataString(name)`, cast to `Boolean`.
+pub(crate) fn is_favourite_recipe(t: &mut Thread, player: &pz_kahlua::Value, name: &str) -> LuaResult<bool> {
+    use pz_kahlua::Value;
+    let data = crate::item_tooltip::chr::call_or(t, player, "getModData", &[], Value::Nil)?;
+    let Value::Table(data) = data else {
+        return Err(crate::bind_java_util::npe());
+    };
+    match data.get_str(&format!("recipeFavourite:{name}")) {
+        Value::Nil => Ok(false),
+        Value::Bool(b) => Ok(b),
+        v => Err(crate::bind_java_util::class_cast(&v, "java.lang.Boolean")),
+    }
+}
+
 fn key_args(c: &NativeCall<'_>, from: usize) -> LuaResult<Vec<Option<Rc<pz_scripts::registry::RegistryKey>>>> {
     (from..c.nargs().max(from)).map(|i| key_arg(c, i)).collect()
 }
@@ -190,11 +205,43 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         })?;
         Ok(string_list(v))
     });
-    method(&b, "isUsedInRecipes", |c, h| {
-        if !c.arg(1).is_nil() {
-            return Err(pz_kahlua::LuaError::runtime("TODO(IsoGameCharacter): isUsedInRecipes(character)"));
+    let s = sm.clone();
+    method(&b, "isUsedInRecipes", move |c, h| {
+        let chr = c.arg(1);
+        let names = h.read(|i: &Item| i.used_in_recipes().to_vec())?;
+        if chr.is_nil() || names.is_empty() {
+            return Ok((!names.is_empty()).into_lua());
         }
-        h.read(|i: &Item| i.is_used_in_recipes().into_lua())
+        let lookup = craft_recipe_lookup(&s);
+        let v = crate::bind_character_sim::with_recipe_knowledge(c, &chr, &s, |k| {
+            super::item_recipes::used_in_recipes(&names, &lookup, k)
+        })?;
+        Ok((!v.is_empty()).into_lua())
+    });
+    // `isFavouriteRecipeInput(player)`: whether the player marked any recipe
+    // of `getUsedInRecipes(player)` as a favourite. With no player that list
+    // is the whole `usedInRecipes`, so a non-empty one faults on the null
+    // player's favourite check.
+    let s = sm.clone();
+    method(&b, "isFavouriteRecipeInput", move |c, h| {
+        let player = c.arg(1);
+        let names = h.read(|i: &Item| i.used_in_recipes().to_vec())?;
+        if names.is_empty() {
+            return Ok(false.into_lua());
+        }
+        if player.is_nil() {
+            return Err(crate::bind_java_util::npe());
+        }
+        let lookup = craft_recipe_lookup(&s);
+        let usable = crate::bind_character_sim::with_recipe_knowledge(c, &player, &s, |k| {
+            super::item_recipes::used_in_recipes(&names, &lookup, k)
+        })?;
+        for name in &usable {
+            if is_favourite_recipe(c.thread, &player, name)? {
+                return Ok(true.into_lua());
+            }
+        }
+        Ok(false.into_lua())
     });
 
     let s = sm.clone();

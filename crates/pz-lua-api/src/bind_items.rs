@@ -1223,20 +1223,19 @@ fn register_inventory_item(thread: &mut Thread) {
         Ok(Value::Nil)
     });
     // `isFavouriteRecipeInput(player)`: false without a script item, else
-    // whether `player.isFavouriteRecipe(name)` for a name of
-    // `scriptItem.getUsedInRecipes(player)`. That list is empty until the
-    // craft recipes are linked to their inputs (not ported); a non-empty
-    // one needs `isRecipeActuallyKnown`, which is not ported either.
+    // the script item's `isFavouriteRecipeInput(player)` (bind_scripts).
     b.method("isFavouriteRecipeInput", |c| {
-        let r = this(c)?;
-        let script = crate::item_tooltip::script(&r.borrow());
-        let used = script.is_some_and(|s| s.borrow().is_used_in_recipes());
-        if !used {
+        let script = this(c)?.borrow().template.script.clone();
+        let Some(script) = script else {
             return Ok(c.push(false));
+        };
+        let handle = crate::bind_scripts::script_value(Some(&pz_scripts::ScriptRef::from_shared(script.0)));
+        let player = c.arg(1);
+        let v = crate::item_tooltip::chr::call_or(c.thread, &handle, "isFavouriteRecipeInput", &[player], Value::Nil)?;
+        if v.is_nil() {
+            return Err(LuaError::runtime("Item.isFavouriteRecipeInput is not bound (ScriptManager bindings missing)"));
         }
-        Err(LuaError::runtime(
-            "TODO(IsoGameCharacter): isFavouriteRecipeInput needs getUsedInRecipes(character)",
-        ))
+        Ok(c.push(v))
     });
     with!(b, "setFavorite", |i, c| {
         i.favorite = bool_arg(c, 1);
