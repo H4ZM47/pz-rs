@@ -54,11 +54,7 @@ fn aim_at_object(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<()> {
     }
     crate::bind_climb::with_live_object(&value, |adapter, square, object, _| {
         let mut actor = actor.try_borrow_mut().map_err(|_| borrowed("facing character"))?;
-        let north = match object.kind {
-            pz_world::objects::ObjectKind::WindowFrame { north } => Some(north),
-            _ => pz_world::world_state::barricade_able_north(object),
-        };
-        if let Some(north) = north {
+        if let Some(north) = pz_world::world_state::barricade_able_north(object) {
             let pos = (square.x, square.y, square.z);
             let opposite = (square.x - i32::from(!north), square.y - i32::from(north), square.z);
             if current == Some(pos) {
@@ -70,7 +66,9 @@ fn aim_at_object(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<()> {
                 return Ok(());
             }
         }
-        let (fx, fy) = adapter.closest_facing_position(square, object, x, y);
+        let (fx, fy) = adapter.try_closest_facing_position(square, object, x, y)
+            .map_err(crate::bind_world_object::host_error)?
+            .ok_or_else(|| LuaError::Runtime { class: "java.lang.NullPointerException", message: String::new() })?;
         let (dx, dy) = (fx - x, fy - y);
         if dx == 0.0 && dy == 0.0 {
             PathMover::direction_from_vector(&mut *actor, dx, dy);

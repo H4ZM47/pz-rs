@@ -2133,3 +2133,43 @@ fn the_states_find_paths_through_the_host() {
     StateWorld::<()>::path_to_character(&mut a, &mut other, gone);
     assert!(StateWorld::<()>::path_behavior(&a, 30).map_or(true, |b| !b.is_goal_character()));
 }
+
+#[test]
+fn facing_uses_frame_sprite_and_resolves_the_closest_live_grid_member() {
+    use pz_entity::runtime_load::RuntimeHostError;
+    use pz_world::sprite::{runtime::{create_runtime_sprite, ObjectSprite}, IsoSpriteGrid};
+    use std::{cell::RefCell, rc::Rc};
+
+    let mut w = World::new();
+    let first = w.add(10, 10, "crate", ObjectKind::WindowFrame { north: true }, false);
+    let second = w.add(11, 10, "wall_w", ObjectKind::Object, false);
+    let frame = w.object(first).unwrap();
+    let second = w.object(second).unwrap();
+    let square = w.cell.get_grid_square(10, 10, 0).unwrap();
+    let square = square.borrow();
+    assert_eq!(pz_world::world_state::barricade_able_north(&frame.borrow()), Some(true));
+    assert_eq!(w.adapter().try_closest_facing_position(&square, &frame.borrow(), 14.0, 10.0).unwrap(),
+        Some((10.5, 10.5)));
+
+    let tile = w.m.named_map["crate"];
+    let mut grid = IsoSpriteGrid::new(2, 1, 1);
+    grid.set_sprite(0, 0, 0, tile);
+    let group = w.m.grids.len();
+    w.m.grids.push(grid);
+    w.m.sprites[tile].sprite_grid = Some(group);
+    let manager = Rc::new(RefCell::new(manager()));
+    let actual = create_runtime_sprite(&manager, &w.m.tables, &mut pz_entity::RetiredComponents::new()).unwrap();
+    actual.borrow_mut().data = w.m.sprites[w.m.named_map["wall_w"]].clone();
+    actual.borrow_mut().data.sprite_grid = Some(group);
+    second.borrow_mut().sprite = ObjectSprite::Native(actual.clone());
+
+    let query = |w: &mut World, x| w.adapter().try_closest_facing_position(&square, &frame.borrow(), x, 10.5);
+    assert_eq!(query(&mut w, 11.0).unwrap(), Some((10.5, 10.5)), "first member wins the tie");
+    assert_eq!(query(&mut w, 11.75).unwrap(), Some((11.0, 10.5)), "native sprite supplies the west wall edge");
+    let held = actual.borrow_mut();
+    assert!(matches!(query(&mut w, 11.75), Err(RuntimeHostError::Borrowed(_))));
+    drop(held);
+    let second_square = w.cell.get_grid_square(11, 10, 0).unwrap();
+    assert_eq!(w.adapter().try_closest_facing_position(&second_square.borrow(), &second.borrow(), 14.0, 10.0).unwrap(),
+        None, "an unindexed sprite has offsets (-1,-1,-1) and its search finds no upstairs member");
+}

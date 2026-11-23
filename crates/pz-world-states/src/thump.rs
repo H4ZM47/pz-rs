@@ -7,6 +7,7 @@
 
 use pz_characters::character::state::{ThumpInfo, ThumpKind, ThumpTarget};
 use pz_pathfind::mover::ObjectRef;
+use pz_entity::runtime_load::{HostResult, RuntimeHostError};
 use pz_world::java::parse_int;
 use pz_world::object_slot::{IsoObjectRef, ObjectSlot};
 use pz_world::objects::{IsoObject, ObjectKind};
@@ -590,53 +591,97 @@ impl StatesWorldAdapter<'_> {
 
     /// Pick the closest member of the sprite grid by square-centre distance.
     /// The Z/Y/X scan and strict comparison preserve the original tie order.
-    pub fn closest_facing_position(&self, sq: &IsoGridSquare, object: &IsoObject, x: f32, y: f32)
-        -> (f32, f32)
-    {
-        let Some(tile) = object.sprite.tile_projection() else { return self.facing_position(sq, object) };
-        let Some(group) = self.sprites.sprites[tile].sprite_grid else { return self.facing_position(sq, object) };
-        let grid = &self.sprites.grids[group];
-        let Some((ox, oy, oz)) = grid.sprite_pos(tile) else { return self.facing_position(sq, object) };
+    pub fn try_closest_facing_position(
+        &self,
+        sq: &IsoGridSquare,
+        object: &IsoObject,
+        x: f32,
+        y: f32,
+    ) -> HostResult<Option<(f32, f32)>> {
+        let Some(group) = object
+            .sprite
+            .try_read(self.sprites)?
+            .and_then(|s| s.sprite_grid)
+        else {
+            return self.try_facing_position(sq, object).map(Some);
+        };
+        let grid = self
+            .sprites
+            .grids
+            .get(group)
+            .ok_or(RuntimeHostError::InvalidHostState("sprite grid index"))?;
+        let (ox, oy, oz) = object
+            .sprite
+            .tile_projection()
+            .and_then(|tile| grid.sprite_pos(tile))
+            .unwrap_or((-1, -1, -1));
         let mut closest = None;
-        let mut distance = f32::INFINITY;
+        let mut distance = f32::MAX;
         for gz in 0..grid.levels {
             for gy in 0..grid.height {
                 for gx in 0..grid.width {
-                    let Some(square) = self.cell.get_grid_square(sq.x - ox + gx, sq.y - oy + gy, sq.z - oz + gz)
-                        else { continue };
-                    let square = square.borrow();
-                    let dx = square.x as f32 + 0.5 - x;
-                    let dy = square.y as f32 + 0.5 - y;
+                    let Some(square) =
+                        self.cell
+                            .get_grid_square(sq.x - ox + gx, sq.y - oy + gy, sq.z - oz + gz)
+                    else {
+                        continue;
+                    };
+                    let body = square
+                        .try_borrow()
+                        .map_err(|_| RuntimeHostError::Borrowed("sprite grid square"))?;
+                    let dx = body.x as f32 + 0.5 - x;
+                    let dy = body.y as f32 + 0.5 - y;
                     let dist = dx * dx + dy * dy;
-                    if dist >= distance { continue }
-                    for slot in &square.objects {
-                        let candidate = slot.borrow();
-                        if candidate.sprite.tile_projection().is_some_and(|i| self.sprites.sprites[i].sprite_grid == Some(group)) {
+                    if !(dist < distance) {
+                        continue;
+                    }
+                    for slot in &body.objects {
+                        let candidate = slot
+                            .try_borrow()
+                            .map_err(|_| RuntimeHostError::Borrowed("sprite grid object"))?;
+                        if candidate
+                            .sprite
+                            .try_read(self.sprites)?
+                            .is_some_and(|s| s.sprite_grid == Some(group))
+                        {
                             distance = dist;
-                            closest = Some(self.facing_position(&square, &candidate));
+                            closest = Some((square.clone(), slot.ref_handle()));
                             break;
                         }
                     }
                 }
             }
         }
-        closest.unwrap_or_else(|| self.facing_position(sq, object))
+        closest
+            .map(|(square, target)| {
+                let square = square
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("sprite grid square"))?;
+                let target = target
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("sprite grid object"))?;
+                self.try_facing_position(&square, &target)
+            })
+            .transpose()
     }
 
-    pub fn facing_position(&self, sq: &IsoGridSquare, o: &IsoObject) -> (f32, f32) {
+    fn try_facing_position(&self, sq: &IsoGridSquare, o: &IsoObject) -> HostResult<(f32, f32)> {
         let (x, y) = (sq.x as f32, sq.y as f32);
         let edge = |north: bool| if north { (x + 0.5, y) } else { (x, y + 0.5) };
-        match &o.kind {
+        Ok(match &o.kind {
             ObjectKind::Door(d) => edge(d.north),
             ObjectKind::Window(w) => edge(w.north),
-            ObjectKind::WindowFrame { north } => edge(*north),
             ObjectKind::Thumpable(t) => {
-                let env = self.env();
                 let f = &self.sprites.tables.flag;
-                let collide = env
-                    .props(o)
-                    .is_some_and(|p| p.has(f.collideN) || p.has(f.collideW));
-                if t.is_door || t.is_door_frame || env.is_window(o) || t.is_hoppable || collide {
+                if t.is_door
+                    || t.is_door_frame
+                    || t.is_hoppable
+                    || o.sprite.try_read(self.sprites)?.is_some_and(|s| {
+                        [f.WindowN, f.WindowW, f.collideN, f.collideW]
+                            .iter()
+                            .any(|flag| s.properties.has(*flag))
+                    })
+                {
                     edge(t.north)
                 } else {
                     (x + 0.5, y + 0.5)
@@ -650,41 +695,88 @@ impl StatesWorldAdapter<'_> {
                 _ => (x, y + 0.5),
             },
             ObjectKind::Fireplace(_) => {
-                if o.main_container_type().is_some_and(|ty| ty.eq_ignore_ascii_case("campfire")) {
+                if o.try_main_container_type()?
+                    .is_some_and(|ty| ty.eq_ignore_ascii_case("campfire"))
+                {
                     (x + 0.5, y + 0.5)
                 } else {
-                    edge(self.env().obj_has_flag(o, "collideN"))
+                    edge(self.env().try_obj_has_flag(o, "collideN")?)
                 }
             }
             ObjectKind::Curtain(curtain) => {
-                let ty = self.env().metadata(o).map(|s| s.tile_type);
-                if ty == Some(self.sprites.tables.ty.curtainS) { (x + 0.5, y + 1.0) }
-                else if ty == Some(self.sprites.tables.ty.curtainE) { (x + 1.0, y + 0.5) }
-                else { edge(curtain.north) }
+                let ty = o.sprite.try_read(self.sprites)?.map(|s| s.tile_type);
+                if ty == Some(self.sprites.tables.ty.curtainS) {
+                    (x + 0.5, y + 1.0)
+                } else if ty == Some(self.sprites.tables.ty.curtainE) {
+                    (x + 1.0, y + 0.5)
+                } else {
+                    edge(curtain.north)
+                }
             }
             _ => {
-                let Some(sprite) = self.env().metadata(o) else { return (x + 0.5, y + 0.5) };
+                let Some(sprite) = o.sprite.try_read(self.sprites)? else {
+                    return Ok((x + 0.5, y + 0.5));
+                };
                 let tables = &self.sprites.tables;
                 let props = &sprite.properties;
                 if sprite.tile_type == tables.ty.wall {
                     let n = props.has(tables.flag.collideN);
                     let w = props.has(tables.flag.collideW);
-                    if n && w { return (x, y) }
-                    if n { return edge(true) }
-                    if w { return edge(false) }
+                    if n && w {
+                        return Ok((x, y));
+                    }
+                    if n {
+                        return Ok(edge(true));
+                    }
+                    if w {
+                        return Ok(edge(false));
+                    }
                     for (flag, north) in [("DoorWallN", true), ("DoorWallW", false)] {
-                        if tables.flag_from_string(flag).is_some_and(|f| props.has(f)) { return edge(north) }
+                        if tables.flag_from_string(flag).is_some_and(|f| props.has(f)) {
+                            return Ok(edge(north));
+                        }
                     }
                 } else {
                     let flags = &tables.flag;
-                    if props.has(flags.attachedN) { return edge(true) }
-                    if tables.flag_from_string("attachedS").is_some_and(|f| props.has(f)) { return (x + 0.5, y + 1.0) }
-                    if props.has(flags.attachedW) { return edge(false) }
-                    if tables.flag_from_string("attachedE").is_some_and(|f| props.has(f)) { return (x + 1.0, y + 0.5) }
+                    if props.has(flags.attachedN) {
+                        return Ok(edge(true));
+                    }
+                    if tables
+                        .flag_from_string("attachedS")
+                        .is_some_and(|f| props.has(f))
+                    {
+                        return Ok((x + 0.5, y + 1.0));
+                    }
+                    if props.has(flags.attachedW) {
+                        return Ok(edge(false));
+                    }
+                    if tables
+                        .flag_from_string("attachedE")
+                        .is_some_and(|f| props.has(f))
+                    {
+                        return Ok((x + 1.0, y + 0.5));
+                    }
                 }
                 (x + 0.5, y + 0.5)
             }
-        }
+        })
+    }
+
+    pub fn facing_position(&self, sq: &IsoGridSquare, object: &IsoObject) -> (f32, f32) {
+        self.try_facing_position(sq, object)
+            .expect("state facing query requires resolved, unborrowed object geometry")
+    }
+
+    pub fn closest_facing_position(
+        &self,
+        sq: &IsoGridSquare,
+        object: &IsoObject,
+        x: f32,
+        y: f32,
+    ) -> (f32, f32) {
+        self.try_closest_facing_position(sq, object, x, y)
+            .expect("state facing query requires resolved, unborrowed object geometry")
+            .unwrap_or_else(|| self.facing_position(sq, object))
     }
 
     /// What the zombie code reads about `r` as `chr` sees it.

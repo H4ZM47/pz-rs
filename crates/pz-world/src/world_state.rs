@@ -237,11 +237,12 @@ pub fn get_barricade_on_square(
 }
 
 /// `getNorth()` of a `BarricadeAble` (`IsoDoor`, `IsoWindow`,
-/// `IsoThumpable`); `None` for other objects.
+/// `IsoThumpable`, `IsoWindowFrame`); `None` for other objects.
 pub fn barricade_able_north(obj: &IsoObject) -> Option<bool> {
     match &obj.kind {
         ObjectKind::Door(d) => Some(d.north),
         ObjectKind::Window(w) => Some(w.north),
+        ObjectKind::WindowFrame { north } => Some(*north),
         ObjectKind::Thumpable(t) => Some(t.north),
         _ => None,
     }
