@@ -215,6 +215,7 @@ fn matches_draw_oracle() {
                     fill: [0.858_823_54, 0.843_137_26, 0.752_941_2, 1.0],
                     files: &Muldraugh,
                     debug: false,
+                    visited: None,
                 };
                 let mut d = Drawer::new(&r, &inp);
                 out.push(format!("case {iso} {grid} {} {} {}", jf(cx), jf(cy), jf(z)));
@@ -375,6 +376,7 @@ fn matches_pyramid_oracle() {
                     fill: [1.0; 4],
                     files: &Muldraugh,
                     debug: false,
+                    visited: None,
                 };
                 let d = Drawer::new(&r, &inp);
                 let adj = d.zoom_adjusted(&images);
