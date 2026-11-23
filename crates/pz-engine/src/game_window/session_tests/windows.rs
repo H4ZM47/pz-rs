@@ -229,7 +229,15 @@ pub(super) fn check(app: &mut App) {
             if foundX then break end
         end
         assert(foundX, "no snow-covered ground around the installed player")
-        assert(not cell:getGridSquare(foundX,foundY,0):isInARoom())
+        local outside = cell:getGridSquare(foundX,foundY,0)
+        assert(not outside:isInARoom() and outside:getRoomSize() == -1)
+        local floor = outside:getFloor()
+        assert(floor and floor:getSquare() == outside)
+        local objects, foundFloor = outside:getObjects(), false
+        for i=0,objects:size()-1 do
+            if objects:get(i) == floor then foundFloor = true break end
+        end
+        assert(foundFloor)
         assert(not cell:gridSquareIsSnow(foundX, foundY, 30))
         cell:setSnowTarget(0)
         assert(not cell:gridSquareIsSnow(foundX, foundY, 0))

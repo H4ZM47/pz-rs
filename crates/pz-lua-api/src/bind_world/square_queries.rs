@@ -71,6 +71,14 @@ fn with_square<R>(
     })
 }
 
+fn square_object_value(owner: &pz_world::IsoObjectRef, (x, y, z): (i32, i32, i32)) -> LuaResult<Value> {
+    let value = crate::bind_world_object::object_value(owner)?;
+    let square = crate::bind_world::square_value(x, y, z);
+    crate::bind_world_object::adopt_square(&value, owner, &square)?;
+    crate::bind_world_object::remember_square(&value, [x, y, z]);
+    Ok(value)
+}
+
 /// The Lua object of the moving object with `id`: a local player
 /// (`IsoPlayer.players`).
 fn moving_object_value(id: i32) -> LuaResult<Value> {
@@ -272,6 +280,17 @@ pub(super) fn register(b: &ClassBuilder) {
         }
         Ok(crate::bind_java_util::list_value(items))
     });
+    get(b, "getFloor", |c| {
+        let (x, y, z) = self_square(c)?;
+        let sprites = crate::bind_sprites::manager()?;
+        let floor = with_square(x, y, z, |square| {
+            let sprites = sprites.try_borrow().map_err(|_| crate::bind_world_object::borrowed("IsoSpriteManager"))?;
+            let index = square.try_floor_index(&sprites).map_err(crate::bind_world_object::host_error)?;
+            Ok(index.map(|i| square.objects[i].ref_handle()))
+        })?;
+        let Some(floor) = floor else { return Ok(Value::Nil) };
+        square_object_value(&floor, (x, y, z))
+    });
     // `getObjects()`: the square's main object list in order, as a
     // snapshot ArrayList.
     get(b, "getObjects", |c| {
@@ -279,15 +298,9 @@ pub(super) fn register(b: &ClassBuilder) {
         let objects = with_square(x, y, z, |square| {
             Ok(square.objects.iter().map(|slot| slot.ref_handle()).collect::<Vec<_>>())
         })?;
-        let square = crate::bind_world::square_value(x, y, z);
         let items = objects
             .iter()
-            .map(|object| {
-                let value = crate::bind_world_object::object_value(object)?;
-                crate::bind_world_object::adopt_square(&value, object, &square)?;
-                crate::bind_world_object::remember_square(&value, [x, y, z]);
-                Ok(value)
-            })
+            .map(|object| square_object_value(object, (x, y, z)))
             .collect::<LuaResult<Vec<_>>>()?;
         Ok(crate::bind_java_util::list_value(items))
     });
