@@ -1401,7 +1401,7 @@ registered):
       `addReanimatedPlayersToChunk` (chunk load moves a tracked zombie into
       the cell's zombie list) and `removeReanimatedPlayerFromWorld` (chunk
       unload moves it back) (#178).
-- [ ] `IsoWorld.init`, after `VehiclesDB2.init` and before
+- [x] `IsoWorld.init`, after `VehiclesDB2.init` and before
       `WorldStreamer.create` / the cell load:
       `let regions = IsoRegions::init_world(save_dir, chunk_grid_width,
       core.no_save)` (`IsoRegions.init`: reads and queues every
@@ -1411,7 +1411,10 @@ registered):
       original's first `IsoRegions.update` swaps them in. Give the same
       `IsoRegions` to the region readers (puddles, weather mask, square
       edits through `set_previous_flags` / `square_changed`). Quit:
-      `IngameState` calls `IsoRegions.reset()`; drop it.
+      `IngameState` calls `IsoRegions.reset()`; drop it (wired in
+      `world_regions.rs` + `world_update.rs`; remaining `RegionWorldHooks`
+      TODOs: `FMODAmbientWalls` and runtime `IsoRoom` generator toxicity /
+      `lightSwitches`).
 - [x] Local player at world init: `VehicleStore::create` (`VehiclesDB2.init`),
       `savefile::is_player_alive`, `PlayerDb::new`; `load_player_for_info`
       gives `SWorldX/SWorldY` for the chunk map; later `load_local_player_1`
@@ -1696,9 +1699,10 @@ registered):
       items), the power / fluid / piped-fuel / sprite-config queries,
       `FMODAmbientWalls`, `DesignationZoneAnimal.addNewRoof`, corpse
       registries, room lights, `IsoRoom.clear` (#97).
-- [ ] Regions: call `IsoRegions::update_with_buildings(BuildingCtx { .. })`
+- [x] Regions: call `IsoRegions::update_with_buildings(BuildingCtx { .. })`
       once per frame instead of `update`, so player rooms become meta-grid
-      buildings (`WorldRegionToMetaGrid`) (#97).
+      buildings (`WorldRegionToMetaGrid`) (#97; wired in `world_regions.rs` +
+      `world_update.rs`).
 - [ ] Bullet world ownership: the world/engine owns the one `PzBullet`
       (`WorldSimulation`) and counts its steps (`getBulletFrameNo`); the
       characters reach it through `StateWorld::physics()` (`PzBullet`
