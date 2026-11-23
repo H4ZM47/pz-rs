@@ -347,6 +347,62 @@ fn verify_utilities_and_ambience(app: &mut super::App, streamer: bool) {
     assert_eq!(ambient.current_value("Temperature"), Some((temperature * 100.0) as i32 as f32 / 100.0));
 }
 
+fn verify_authored_replacements(lua:&mut LuaManager,create:bool) {
+    if create {
+        lua_check(lua,r#"
+            local sq = getSquare(10679,9374,0)
+            local tile = IsoObject.new(sq, "fencing_01_1", "map-removal-probe")
+            sq:AddTileObject(tile)
+            local index = tile:getObjectIndex()
+            local before,after = 0,0
+            local function removing(o)
+                if o ~= tile then return end
+                assert(o:getObjectIndex() == index and o:getSquare() == sq)
+                before = before + 1
+                sq:AddTileObject(IsoObject.new(sq,"fencing_01_1","removal-observer"))
+            end
+            local function removed(o)
+                if o == tile then
+                    assert(before == 1 and o:getObjectIndex() == -1)
+                    after = after + 1
+                end
+            end
+            Events.OnObjectAboutToBeRemoved.Add(removing)
+            Events.OnTileRemoved.Add(removed)
+            assert(sq:RemoveTileObject(tile,false) == index)
+            assert(sq:transmitRemoveItemFromSquare(tile,false) == -1)
+            assert(before == 1 and after == 1)
+            Events.OnObjectAboutToBeRemoved.Remove(removing)
+            Events.OnTileRemoved.Remove(removed)
+            local def = HutchDefinitions.hutchs.hutchhen
+            local x,y=10678,9377
+            for _,part in ipairs(def.extraSprites) do
+                local dest=getSquare(x+part.xoffset,y+part.yoffset,0)
+                dest:AddTileObject(IsoObject.new(dest,part.sprite,nil))
+            end
+            local original=getSquare(x,y,0):addTileObject(def.baseSprite)
+            assert(original:getObjectIndex() == -1)
+            getSquare(10680,9377,0):addTileObject("location_farm_accesories_01_14")
+            getSquare(10680,9376,0):addTileObject("appliances_misc_01_0")
+            getSquare(10680,9375,0):addTileObject("camping_01_6")
+        "#);
+    }
+    lua_check(lua,r#"
+        local function find(x,y,pred)
+            local objs=getSquare(x,y,0):getObjects()
+            for i=0,objs:size()-1 do if pred(objs:get(i)) then return objs:get(i) end end
+        end
+        local h=getHutch(10678,9377,0)
+        assert(h and h:isOpen() and not h:isSlave(), "original hen hutch callback")
+        local t=find(10680,9377,function(o) return instanceof(o,"IsoFeedingTrough") end)
+        assert(t and t:getMaxFeed() == FeedingTroughDef.simple.maxFeed, "original trough callback")
+        local g=find(10680,9376,function(o) return instanceof(o,"IsoGenerator") end)
+        assert(g and g:getModData().generatorFullType == "Base.Generator" and g:getCondition() == 100, "original generator callback")
+        local fire=find(10680,9375,function(o) return o:getName() == "Campfire" end)
+        assert(fire and fire:getSprite():getName() == "camping_01_6", "original campfire callback")
+    "#);
+}
+
 fn verify_feeding_trough(lua: &mut LuaManager, create: bool) {
     if create {
         lua_check(lua, r#"
@@ -762,6 +818,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     verify_pump_supply(&mut app);
     verify_hutch(app.lua.as_mut().unwrap(), true);
     verify_feeding_trough(app.lua.as_mut().unwrap(), true);
+    verify_authored_replacements(app.lua.as_mut().unwrap(), true);
     app.core.borrow_mut().set_option_streamer_mode(streamer);
     let late_start = late_start.expect("captured held-W frame 40");
     let held_end = {
@@ -879,6 +936,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     verify_tile_definitions(reloaded.lua.as_mut().unwrap());
     verify_hutch(reloaded.lua.as_mut().unwrap(), false);
     verify_feeding_trough(reloaded.lua.as_mut().unwrap(), false);
+    verify_authored_replacements(reloaded.lua.as_mut().unwrap(), false);
     lua_check(reloaded.lua.as_mut().unwrap(), r#"
         local saved = getPlayer():getModData().rustRoofCollector
         assert(saved and saved.z == 1)
