@@ -142,3 +142,78 @@ fn surface_passes_read_current_lua_quality_settings() {
     assert_eq!(settings.blood_decals, 7);
     assert!(!settings.water_shader() && !settings.puddles_shader());
 }
+
+#[test]
+fn collect_object_outlines_emits_sprite_overlay_attached_and_clears_after_render_last() {
+    use pz_iso_render::frame::ChunkInput;
+    use pz_iso_render::world::{
+        AttachedSprite, ObjectKind as RenderKind, Overlay, RenderObject, RenderSquare, SpriteInfo,
+    };
+    use pz_render::Texture;
+    use pz_world::chunk::{IsoChunk, IsoGridSquare};
+    use pz_world::objects::{IsoObject, ObjectKind};
+    use std::rc::Rc;
+
+    let mut cell = pz_world::chunk::IsoCell::default();
+    let mut chunk = IsoChunk::new(0, 0);
+    let mut sq = IsoGridSquare::new(2, 3, 0);
+    let mut obj = IsoObject::new(42, ObjectKind::Object, None);
+    obj.outline.set(0, true, (0, 0));
+    obj.outline.set_attached(0, true);
+    obj.outline.set_col(0, 1.0, 0.5, 0.0, 1.0);
+    sq.objects.push(pz_world::ObjectSlot::new(obj));
+    chunk.set_square(2, 3, 0, Some(pz_world::SquareSlot::new(sq)));
+    cell.chunks.insert((0, 0), chunk);
+
+    let mut t_main = Texture::empty("main");
+    t_main.width = 64;
+    t_main.height = 128;
+    let mut t_ov = Texture::empty("overlay");
+    t_ov.width = 64;
+    t_ov.height = 128;
+    let mut t_att = Texture::empty("attached");
+    t_att.width = 64;
+    t_att.height = 128;
+
+    let mut ro = RenderObject::new(
+        RenderKind::Plain,
+        Some(Rc::new(SpriteInfo {
+            texture: Some(t_main),
+            ..Default::default()
+        })),
+    );
+    ro.id = 42;
+    ro.overlay = Some(Overlay {
+        sprite: Rc::new(SpriteInfo {
+            texture: Some(t_ov),
+            ..Default::default()
+        }),
+        color: None,
+    });
+    ro.attached.push(AttachedSprite {
+        sprite: Rc::new(SpriteInfo {
+            texture: Some(t_att),
+            ..Default::default()
+        }),
+        alpha: 1.0,
+    });
+    let mut rsq = RenderSquare::new(2, 3, 0);
+    rsq.objects.push(ro);
+    let mut level: [Option<&RenderSquare>; 64] = [None; 64];
+    level[0] = Some(&rsq);
+    let inputs = [ChunkInput {
+        wx: 0,
+        wy: 0,
+        min_level: 0,
+        max_level: 0,
+        levels: vec![(0, level)],
+    }];
+    let cam = pz_iso_render::Camera::player(2.5, 3.5, 0.0, 320, 240, 1.0);
+    let mut out = Vec::new();
+    super::collect_object_outlines(&inputs, &cell, 0, &cam, &mut out);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].textures.len(), 3);
+    // Non-UI highlight is cleared by render_last after drawing.
+    let cell_sq = cell.get_grid_square(2, 3, 0).unwrap();
+    assert!(!cell_sq.borrow().objects[0].borrow().outline.is_on(0, true));
+}

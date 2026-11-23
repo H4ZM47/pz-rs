@@ -1967,18 +1967,17 @@ registered):
       `WorldItemAtlas::render_with(out, |p| world_item::atlas_smart_texture(..))`
       and hand the returned textures to `Combiner::release` after
       `render_frame` (#94).
-- [ ] Object outlines: per highlighted non-character object
-      (`IsoObject.isOutlineHighlight(player)`, colour from
-      `getOutlineHighlightCol`, alpha times `Core.blinkAlpha` when
-      blinking) push an `ObjectOutline` into `FrameObjects.object_outlines`:
-      `corpse(entry)` with the corpse's `BodyTexture` entry,
-      `mannequin(entry, ..)` with the mannequin's atlas entry
-      (`DeadBodyAtlas::body_texture` of `Mannequin::atlas_body()` keyed by
-      `posed_body_key(.., standing)`), `world_item_atlas` /
-      `world_item_sprite` for placed items, `sprites(..)` for other sprite
-      objects (sprite, then overlay and attached sprites when
-      `isOutlineHlAttached`). Objects with a sprite model are skipped, as
-      are objects whose render layer is none or alpha 0 (#125).
+- [x] Object outlines: `IsoObject` carries per-player `ObjectOutlineState`
+      and Lua methods (`setOutlineHighlight`, `isOutlineHighlight`,
+      `setOutlineHighlightCol`, `getOutlineHighlightCol`,
+      `setOutlineHlBlink`, `isOutlineHlBlink`, `setOutlineHlAttached`,
+      `isOutlineHlAttached`, `unsetOutlineHighlight`); `WorldRender` calls
+      `collect_object_outlines` into `FrameObjects.object_outlines` using
+      `ObjectOutline::sprites` (main sprite + overlay/attached sprites when
+      `isOutlineHlAttached`, alpha scaled by `Core.blink_alpha` when
+      blinking, skipping `sprite_model_name`, `Fire`, `Layer::None`, and
+      zero alpha, then running `render_last`). Remaining: atlas-backed
+      corpse/mannequin/world-item outline variants (#125).
 - [x] Mannequin data activation: map/file factories allocate a real visual
       with the installed blood-body-part count. `init` is an outfit flag,
       not the presence of an entire mannequin body. Ordinary saves can write
