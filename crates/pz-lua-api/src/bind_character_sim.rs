@@ -83,6 +83,7 @@ mod sleeping;
 pub(crate) use sleeping::update_asleep_player;
 pub use sleeping::wake_up_ui as sleeping_event_wake_up_ui;
 mod key_ring;
+pub mod outline;
 pub(crate) mod known_poison;
 pub(crate) use known_poison::with_recipe_knowledge;
 mod reading;
@@ -108,6 +109,8 @@ mod definition_texture_tests;
 mod traits_tests;
 #[cfg(test)]
 mod gender_tests;
+#[cfg(test)]
+mod outline_tests;
 #[cfg(test)]
 mod unwanted_tests;
 #[cfg(test)]
@@ -1965,6 +1968,7 @@ fn register_character(
     }
     control::register(&b);
     climb::register(&b);
+    outline::register(&b);
     control::register_globals(thread);
     known_poison::register(&b, sm, chars);
     reading::register(&b);
