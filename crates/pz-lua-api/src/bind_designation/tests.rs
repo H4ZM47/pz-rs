@@ -153,6 +153,8 @@ fn real_lua_queries_over_offline_fixture_and_native_base_constructors_preserve_i
         vec![Some(3.0), Some(4.0), Some(6.0), Some(4.0)]
     );
     assert_eq!(result[9].as_str(), Some("AnimalZone"));
+    let edges = call(&mut thread, "return DesignationZoneAnimal.getZoneF(3.1,7.9,2.99), DesignationZoneAnimal.getZoneF(2.99,5,2), DesignationZoneAnimal.getZoneF(4,5,1.99)").unwrap();
+    assert!(edges[0].raw_equals(&result[0]) && edges[1].is_nil() && edges[2].is_nil());
     assert!(
         calls.borrow().is_empty(),
         "querying the offline fixture must not invent constructor host calls"
