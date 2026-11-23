@@ -99,15 +99,44 @@ fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Val
     let stress = n > a + 6 && bool_arg(c, a + 6);
     let (ignore, stress_mod) = if n > a + 8 { (num_arg(c, a + 7) as f32, num_arg(c, a + 8) as f32) } else { (0.0, 1.0) };
     let source = source_of(&receiver)?;
-    // WorldSound.init runs the callback before adding the sound to its
-    // chunks and population. The callback may add another sound.
-    crate::bind_character_sim::fire_event(c.thread, "OnWorldSound",
-        &[x.into(), y.into(), z.into(), radius.into(), volume.into(), receiver]);
     let request = WorldSoundRequest {
         source, x, y, z, radius, volume, stress_humans: stress,
         zombie_ignore_dist: ignore, stress_mod,
     };
-    Ok(sound_value(register_world_sound(request, repeating)?))
+    Ok(sound_value(emit_world_sound(c.thread, request, receiver, repeating)?))
+}
+
+/// Fire the original callback with the live receiver before inserting into the
+/// sound list. The listener can safely raise a second sound or move the source.
+pub fn emit_world_sound(thread: &mut Thread, request: WorldSoundRequest<SoundSource>,
+    receiver: Value, repeating: bool) -> LuaResult<Option<SoundId>> {
+    if request.radius <= 0 { return Ok(None); }
+    crate::bind_character_sim::fire_event(thread, "OnWorldSound", &[request.x.into(), request.y.into(),
+        request.z.into(), request.radius.into(), request.volume.into(), receiver]);
+    register_world_sound(request, repeating)
+}
+
+/// Apply character noises from body damage, wake-up and Lua character actions.
+pub(crate) fn character_noise(thread: &mut Thread, actor: &crate::bind_character_sim::LuaGameCharacterRef,
+    event: &pz_characters::character::SimEvent) -> LuaResult<bool> {
+    use pz_characters::character::SimEvent;
+    if !matches!(event, SimEvent::InteractionNoise(_) | SimEvent::AddSound { .. }
+        | SimEvent::SneezeCoughSound { .. } | SimEvent::WorldSound { .. }) { return Ok(false); }
+    let player = actor.try_borrow().map_err(|_| crate::bind_world_object::borrowed("character noise source"))?;
+    let request = match *event {
+        SimEvent::InteractionNoise(request) if request.source == Some(player.id) => request,
+        SimEvent::AddSound { radius, volume } | SimEvent::SneezeCoughSound { radius, volume } =>
+            player.world_sound_request(radius, volume, false),
+        SimEvent::WorldSound { radius, volume } => {
+            if player.is_ghost_mode(&*crate::bind_character_sim::current_sim_context()) { return Ok(true); }
+            player.world_sound_request(radius, volume, false)
+        }
+        _ => return Ok(false),
+    };
+    let source = player.sound_source();
+    drop(player);
+    emit_world_sound(thread, request.with_source(Some(source)), crate::bind_character_sim::character_value(actor), false)?;
+    Ok(true)
 }
 
 /// Register the noise after its Lua callbacks have finished. Embedders may
@@ -395,6 +424,18 @@ pub fn register(thread: &mut Thread) {
     b.method("pathToSound", |c| {
         let (x, y, zz) = (int_arg(c, 1), int_arg(c, 2), int_arg(c, 3));
         with_state_cx(c, |z, cx| z.zombie_path_to_sound(x, y, zz, cx))?;
+        Ok(0)
+    });
+
+    let character = expose_class(thread, ISO_GAME_CHARACTER_CLASS, None);
+    character.method("addWorldSoundUnlessInvisible", |c| {
+        let actor = chr_of(c)?;
+        let this = c.arg(0);
+        let (radius, volume, stress) = (int_arg(c, 1), int_arg(c, 2), bool_arg(c, 3));
+        with_ctx(c, &this, |ctx| {
+            actor.borrow().add_world_sound_unless_invisible(ctx, radius, volume, stress);
+            Ok(())
+        })?;
         Ok(0)
     });
 

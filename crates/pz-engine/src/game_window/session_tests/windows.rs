@@ -179,6 +179,32 @@ pub(super) fn check(app: &mut App) {
     "#);
     lua_check(app.lua.as_mut().unwrap(), "assert(not rustAlarmBuilding:isAlarmed())");
     assert_eq!(app.world.as_ref().unwrap().meta_tracker.borrow().alarms.len(), 2);
+    // A cough goes through the body-damage binding even for an invisible actor.
+    // Combat noise uses the explicit invisibility guard before registering.
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        rustCharacterNoises = {}
+        rustObserveCharacterNoise = function(x, y, z, radius, volume, source)
+            if source == getPlayer() then
+                assert(x == math.floor(source:getX()) and y == math.floor(source:getY()) and z == math.floor(source:getZ()))
+                table.insert(rustCharacterNoises, {radius, volume})
+            end
+        end
+        Events.OnWorldSound.Add(rustObserveCharacterNoise)
+        getPlayer():addWorldSoundUnlessInvisible(14, 9, false)
+        assert(#rustCharacterNoises == 0)
+        local damage = getPlayer():getBodyDamage()
+        damage:setSneezeCoughActive(0)
+        damage:TriggerSneezeCough()
+        assert(#rustCharacterNoises == 1)
+        local noise = rustCharacterNoises[1]
+        assert((noise[1] == 20 and noise[2] == 25) or (noise[1] == 35 and noise[2] == 40))
+    "#);
+    player.borrow_mut().cheats.set(&sim, "INVISIBLE", false);
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        getPlayer():addWorldSoundUnlessInvisible(14, 9, false)
+        Events.OnWorldSound.Remove(rustObserveCharacterNoise)
+        assert(#rustCharacterNoises == 2 and rustCharacterNoises[2][1] == 14 and rustCharacterNoises[2][2] == 9)
+    "#);
     player.borrow_mut().cheats.set(&sim, "INVISIBLE", previous_invisible);
     app.core.borrow_mut().debug = previous_debug;
 }

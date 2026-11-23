@@ -1182,13 +1182,16 @@ impl IsoWorld {
             (None, Some(Value::Nil))
         };
 
-        if let Some(receiver) = receiver {
-            lua.trigger_event("OnWorldSound", &[request.x.into(), request.y.into(), request.z.into(),
-                request.radius.into(), request.volume.into(), receiver]);
-        } else if lua.events.callbacks("OnWorldSound") > 0 {
-            self.log_update_error("unsupported: OnWorldSound for a zombie without Lua userdata".into());
-        }
-        if let Err(error) = pz_lua_api::bind_zombie::register_world_sound(request.with_source(source), false) {
+        let request = request.with_source(source);
+        let result = if let Some(receiver) = receiver {
+            pz_lua_api::bind_zombie::emit_world_sound(&mut lua.thread, request, receiver, false)
+        } else {
+            if lua.events.callbacks("OnWorldSound") > 0 {
+                self.log_update_error("unsupported: OnWorldSound for a zombie without Lua userdata".into());
+            }
+            pz_lua_api::bind_zombie::register_world_sound(request, false)
+        };
+        if let Err(error) = result {
             self.log_update_error(format!("WorldSoundManager.addSound: {error}"));
         }
     }
@@ -1210,6 +1213,12 @@ impl IsoWorld {
                         let p = p.borrow();
                         pz_lua_api::bind_audio::intensity_config().borrow()
                             .trigger(Some(id), &p.player.music_intensity_events);
+                    }
+                }
+                SimEvent::AddSound { radius, volume } | SimEvent::SneezeCoughSound { radius, volume } => {
+                    if let Some(actor) = chr {
+                        let request = actor.borrow().world_sound_request(radius, volume, false);
+                        self.interaction_noise(lua, request);
                     }
                 }
                 SimEvent::InteractionNoise(request) => self.interaction_noise(lua, request),

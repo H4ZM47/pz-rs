@@ -770,7 +770,7 @@ impl<I: 'static> GameCharacter<I> {
             self.vars.no_damage = false;
         }
         self.vars.stagger_time_mod = wielder.weapon_stagger_back_time_mod(sm, chars, &w, self.is_zombie());
-        ctx.event(SimEvent::WorldSound { radius: 5, volume: 1 });
+        wielder.add_world_sound_unless_invisible(ctx, 5, 1, false);
         self.calculate_hit_direction(&w, wielder.vars.x, wielder.vars.y);
         self.vars.attacked_by = Some(wielder.id);
         let damage = self.process_hit_damage(sm, chars, &w, wielder, damage_split, ignore_damage, mod_delta);

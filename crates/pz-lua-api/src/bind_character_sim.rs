@@ -525,55 +525,56 @@ fn with_ctx_result<R, E>(
     let r = f(c.thread, &ctx);
     let events = ctx.events.into_inner();
     let sink = SINK.with(|s| s.borrow().clone());
-    {
-        for e in events {
-            if let Value::Object(o) = chr {
-                if o.as_any().downcast_ref::<CharacterObject>().is_some_and(|c| crate::bind_eat::apply_audio_event(&c.0, &e)) { continue; }
+    for e in events {
+        if let Value::Object(o) = chr {
+            if let Some(actor) = o.as_any().downcast_ref::<CharacterObject>() {
+                if crate::bind_eat::apply_audio_event(&actor.0, &e)
+                    || crate::bind_zombie::character_noise(c.thread, &actor.0, &e)? { continue; }
             }
-            let Some(sink) = &sink else { continue };
-            let (name, args) = match e {
-                SimEvent::LevelPerk {
-                    perk,
-                    level,
-                    increased,
-                } => (
-                    "LevelPerk",
-                    vec![
-                        chr.clone(),
-                        perk_value(Some(&perk)),
-                        Value::from(level),
-                        Value::Bool(increased),
-                    ],
-                ),
-                SimEvent::LogLevelPerk { perk, level } => (
-                    "LogLevelPerk",
-                    vec![
-                        chr.clone(),
-                        perk_value(Some(&perk)),
-                        Value::from(level),
-                        Value::Bool(false),
-                    ],
-                ),
-                SimEvent::AddXp { perk, amount } => (
-                    "AddXP",
-                    vec![
-                        chr.clone(),
-                        perk_value(Some(&perk)),
-                        Value::Num(f64::from(amount)),
-                    ],
-                ),
-                SimEvent::PlayerGetDamage { kind, amount } => (
-                    "OnPlayerGetDamage",
-                    vec![chr.clone(), Value::str(kind), Value::Num(f64::from(amount))],
-                ),
-                SimEvent::ContainerUpdate => ("OnContainerUpdate", vec![]),
-                SimEvent::ItemFall(item) => {
-                    ("onItemFall", vec![crate::bind_items::item_value(&item)])
-                }
-                _ => continue,
-            };
-            sink(c.thread, name, &args);
         }
+        let Some(sink) = &sink else { continue };
+        let (name, args) = match e {
+            SimEvent::LevelPerk {
+                perk,
+                level,
+                increased,
+            } => (
+                "LevelPerk",
+                vec![
+                    chr.clone(),
+                    perk_value(Some(&perk)),
+                    Value::from(level),
+                    Value::Bool(increased),
+                ],
+            ),
+            SimEvent::LogLevelPerk { perk, level } => (
+                "LogLevelPerk",
+                vec![
+                    chr.clone(),
+                    perk_value(Some(&perk)),
+                    Value::from(level),
+                    Value::Bool(false),
+                ],
+            ),
+            SimEvent::AddXp { perk, amount } => (
+                "AddXP",
+                vec![
+                    chr.clone(),
+                    perk_value(Some(&perk)),
+                    Value::Num(f64::from(amount)),
+                ],
+            ),
+            SimEvent::PlayerGetDamage { kind, amount } => (
+                "OnPlayerGetDamage",
+                vec![chr.clone(), Value::str(kind), Value::Num(f64::from(amount))],
+            ),
+            SimEvent::ContainerUpdate => ("OnContainerUpdate", vec![]),
+            SimEvent::ItemFall(item) => {
+                ("onItemFall", vec![crate::bind_items::item_value(&item)])
+            }
+            _ => continue,
+        };
+        sink(c.thread, name, &args);
     }
     r.map_err(convert)
 }
