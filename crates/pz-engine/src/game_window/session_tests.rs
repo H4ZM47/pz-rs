@@ -403,7 +403,7 @@ fn verify_authored_replacements(lua:&mut LuaManager,create:bool) {
         assert(g and g:getModData().generatorFullType == "Base.Generator" and g:getCondition() == 100, "original generator callback")
         local compost=find(10680,9374,function(o) return instanceof(o,"IsoCompost") end)
         assert(compost and compost:getCompost() >= 10 and compost:getContainer():getType() == "composter","original composter callback")
-        for _,spec in ipairs({{9376,"carpentry_02_122",600},{9377,"carpentry_02_54",300}}) do
+        for _,spec in ipairs({{9376,"carpentry_02_122",600},{9377,"carpentry_02_54",400}}) do
             local barrel=find(10682,spec[1],function(o) return o:getName() == "Rain Collector Barrel" end)
             assert(barrel and barrel:getSprite():getName() == spec[2], "missing authored barrel "..spec[2])
             local fluid=barrel:getFluidContainer()
