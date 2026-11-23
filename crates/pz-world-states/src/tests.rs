@@ -503,6 +503,35 @@ fn zombie(x: f32, y: f32, strength: i32) -> GameCharacter<()> {
     z
 }
 
+#[test]
+fn loaded_zombie_hears_player_across_chunk_boundary_and_rooms() {
+    use pz_audio::world_sound::{SoundSource, WorldSoundManager};
+    use pz_characters::character::{context::DefaultSimContext, state::StateCx};
+    use pz_world_sound::{NoEffects, WorldSoundAdapter};
+
+    let mut world = World::new();
+    let source = SoundSource { id: 51, is_player: true, ..Default::default() };
+    let mut sounds = WorldSoundManager::new();
+    let mut effects = NoEffects;
+    let mut host = WorldSoundAdapter::new(&world.cell, 2, &mut effects);
+    sounds.add_sound(&mut host, Some(source), 17, 11, 0, 30, 40).unwrap();
+    let scripts = ScriptManager::new();
+    let characters = pz_characters::Characters::default();
+    let hear = |world: &mut World| {
+        let mut zombie = zombie(14.5, 11.5, 1);
+        zombie.zombie.hearing = 2;
+        let mut adapter = world.adapter().with_world_sounds(&sounds);
+        zombie.respond_to_sound(&mut StateCx::new(&scripts, &characters, &DefaultSimContext, &mut adapter));
+        assert_eq!(zombie.zombie.sound_source_target, Some(51));
+        assert!(zombie.zombie.sound_source_is_player);
+        zombie.zombie.sound_attract
+    };
+    let open = hear(&mut world);
+    world.cell.get_grid_square(17, 11, 0).unwrap().borrow_mut().room_id = 4;
+    let muffled = hear(&mut world);
+    assert!(0.0 < muffled && muffled < open);
+}
+
 fn special(w: &mut World, from: (i32, i32, i32), to: (i32, i32, i32)) -> Option<ObjectRef> {
     w.adapter().special_object_ref(from, to)
 }

@@ -74,6 +74,15 @@ impl<'a> WorldSoundAdapter<'a> {
     }
 }
 
+/// The room used for distance attenuation at a loaded square.
+pub fn sound_room_at(cell: &IsoCell, x: i32, y: i32, z: i32) -> RoomAt {
+    match cell.get_grid_square(x, y, z).map(|sq| sq.borrow().room_id) {
+        None => RoomAt::NoSquare,
+        Some(-1) => RoomAt::Outside,
+        Some(id) => RoomAt::Room(id as u64),
+    }
+}
+
 impl SoundWorld for WorldSoundAdapter<'_> {
     fn hearing_option(&self) -> i32 {
         self.hearing
@@ -91,11 +100,7 @@ impl SoundWorld for WorldSoundAdapter<'_> {
     /// `getGridSquare(x, y, z).getRoom()`: `getRoom` is null when
     /// `roomId == -1`.
     fn room_at(&self, x: i32, y: i32, z: i32) -> RoomAt {
-        match self.cell.get_grid_square(x, y, z) {
-            None => RoomAt::NoSquare,
-            Some(sq) if sq.borrow().room_id == -1 => RoomAt::Outside,
-            Some(sq) => RoomAt::Room(sq.borrow().room_id as u64),
-        }
+        sound_room_at(self.cell, x, y, z)
     }
     fn on_world_sound(
         &mut self,

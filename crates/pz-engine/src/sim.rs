@@ -92,6 +92,7 @@ impl FrameSim {
 pub(crate) struct PlayerSim<'a>(&'a FrameSim);
 
 impl SimContext for PlayerSim<'_> {
+    fn lore_hearing(&self) -> i32 { self.0.lore_hearing() }
     fn is_listener_in_range(&self, x: f32, y: f32, range: f32) -> bool { self.0.is_listener_in_range(x, y, range) }
     fn easy_climbing(&self) -> bool { self.0.easy_climbing() }
     fn is_debug(&self) -> bool {
@@ -162,6 +163,9 @@ impl SimContext for PlayerSim<'_> {
 }
 
 impl SimContext for FrameSim {
+    fn lore_hearing(&self) -> i32 {
+        pz_lua_api::bind_sandbox::current_double("ZombieLore.Hearing").unwrap_or(2.0) as i32
+    }
     fn is_listener_in_range(&self, x: f32, y: f32, range: f32) -> bool { self.hearing_players.in_range(x, y, range) }
     fn easy_climbing(&self) -> bool { pz_lua_api::bind_sandbox::current_bool("EasyClimbing").unwrap_or(false) }
     fn is_debug(&self) -> bool {

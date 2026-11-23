@@ -558,6 +558,8 @@ fn with_states_characters_and_path<R>(
             floor_world: floor_world.cloned(),
         };
         let mut sprites = sprites.borrow_mut();
+        let sounds = pz_lua_api::bind_zombie::shared_world_sounds();
+        let sounds = sounds.borrow();
         let mut adapter = StatesWorldAdapter::new(
             cell,
             meta,
@@ -565,7 +567,7 @@ fn with_states_characters_and_path<R>(
             ThumpSettings { trigger_house_alarm: engine.zombie_triggers_house_alarm(), ..Default::default() },
             runtime,
             &mut engine,
-        );
+        ).with_world_sounds(&sounds);
         if let Some(characters) = characters {
             adapter = adapter.with_characters(characters);
         }

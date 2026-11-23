@@ -329,6 +329,7 @@ struct CallContext {
 }
 
 impl SimContext for CallContext {
+    fn lore_hearing(&self) -> i32 { self.base.lore_hearing() }
     fn is_listener_in_range(&self, x: f32, y: f32, range: f32) -> bool { self.base.is_listener_in_range(x, y, range) }
     fn zomboid_globals(&self) -> &pz_characters::character::ZomboidGlobals {
         self.base.zomboid_globals()

@@ -545,12 +545,12 @@ impl WorldSoundManager {
 
     /// The list a listener searches: its chunk's, or the global one on a
     /// server or when the square has no chunk.
-    fn list_for(&self, world: &dyn SoundWorld, l: Option<&Listener>) -> Vec<SoundId> {
+    fn list_for(&self, world: &dyn SoundWorld, l: Option<&Listener>) -> &[SoundId] {
         match l.map(|l| l.square) {
             Some(ListenerSquare::Chunk(cx, cy)) if !world.is_server() => {
-                self.chunk_sounds(cx, cy).to_vec()
+                self.chunk_sounds(cx, cy)
             }
-            _ => self.sound_list.clone(),
+            _ => &self.sound_list,
         }
     }
 
@@ -560,7 +560,7 @@ impl WorldSoundManager {
         if zombie.square == ListenerSquare::None {
             return None;
         }
-        self.list_for(world, Some(zombie)).into_iter().find(|id| {
+        self.list_for(world, Some(zombie)).iter().copied().find(|id| {
             let s = &self.pool[id.0];
             s.source.map(|src| src.id) == Some(target) && s.stress_zombies
         })
@@ -573,7 +573,7 @@ impl WorldSoundManager {
         }
         let mut loudest = None;
         let mut loudest_volume = 0.0f32;
-        for id in self.list_for(world, Some(animal)) {
+        for &id in self.list_for(world, Some(animal)) {
             let s = &self.pool[id.0];
             if !s.stress_humans && !s.stress_animals {
                 continue;
@@ -638,7 +638,7 @@ impl WorldSoundManager {
         let mut largest_sound = -1_000_000.0f32;
         let mut largest = None;
         let mult = Self::zombie_hearing_multiplier(zombie);
-        for id in self.list_for(world, zombie) {
+        for &id in self.list_for(world, zombie) {
             let s = &self.pool[id.0];
             if !s.stress_zombies || s.radius == 0 {
                 continue;

@@ -569,6 +569,8 @@ pub struct StatesWorldAdapter<'a> {
     pub settings: ThumpSettings,
     pub runtime: &'a mut StatesRuntime,
     pub engine: &'a mut dyn StatesEngine,
+    /// The shared gameplay sound list for character hearing.
+    sounds: Option<&'a pz_audio::world_sound::WorldSoundManager>,
     /// The other characters the states reach by id (the owner's
     /// `Vec<GameCharacter<I>>`, set with [`Self::with_characters`]); `None`:
     /// no other characters.
@@ -592,6 +594,11 @@ impl<I: 'static> CharacterLookup for ListLookup<'_, I> {
 }
 
 impl<'a> StatesWorldAdapter<'a> {
+    pub fn with_world_sounds(mut self, sounds: &'a pz_audio::world_sound::WorldSoundManager) -> Self {
+        self.sounds = Some(sounds);
+        self
+    }
+
     /// Lets the states reach `characters` by id (`character_mut`,
     /// `take_character`, `characters_near`).
     pub fn with_characters<I: 'static>(mut self, characters: &'a mut Vec<GameCharacter<I>>) -> Self {
@@ -650,6 +657,7 @@ impl<'a> StatesWorldAdapter<'a> {
             settings,
             runtime,
             engine,
+            sounds: None,
             characters: None,
             taken: Vec::new(),
             path: None,
@@ -852,7 +860,22 @@ pub fn corpse_pos(id: i64) -> (i32, i32, i32, usize) {
     )
 }
 
+// Hearing queries need the same loaded square and room a character occupies.
+// Mutations register through StatesEngine after the state releases its cell.
+impl pz_audio::world_sound::SoundWorld for StatesWorldAdapter<'_> {
+    fn is_server(&self) -> bool { self.settings.server }
+    fn is_client(&self) -> bool { self.settings.client }
+    fn chunk_loaded(&self, wx: i32, wy: i32) -> bool { self.cell.chunks.contains_key(&(wx, wy)) }
+    fn room_at(&self, x: i32, y: i32, z: i32) -> pz_audio::world_sound::RoomAt {
+        pz_world_sound::sound_room_at(self.cell, x, y, z)
+    }
+}
+
 impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
+    fn world_sounds(&self) -> Option<(&pz_audio::world_sound::WorldSoundManager, &dyn pz_audio::world_sound::SoundWorld)> {
+        Some((self.sounds?, self))
+    }
+
     fn character_mut(&mut self, id: i32) -> Option<&mut GameCharacter<I>> {
         self.character_list::<I>()?.iter_mut().find(|c| c.id == id)
     }

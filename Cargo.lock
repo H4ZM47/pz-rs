@@ -2356,6 +2356,7 @@ name = "pz-world-states"
 version = "0.1.0"
 dependencies = [
  "pz-anim",
+ "pz-audio",
  "pz-characters",
  "pz-classfile",
  "pz-core",
@@ -2368,6 +2369,7 @@ dependencies = [
  "pz-vehicles",
  "pz-world",
  "pz-world-popman",
+ "pz-world-sound",
 ]
 
 [[package]]
