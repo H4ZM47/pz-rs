@@ -58,6 +58,7 @@ impl Fixture {
     fn window(&self, locked: bool, perma_locked: bool) {
         let window = pz_world::objects::IsoWindow {
             north: true,
+            health: 50,
             locked,
             perma_locked,
             closed_sprite: Some(self.closed),
@@ -164,4 +165,50 @@ fn square_get_adjacent_square_steps_one_tile_and_answers_nil_when_not_loaded() {
          check(north ~= nil and north:getX() == 1 and north:getY() == 1)
          check(north:getAdjacentSquare(IsoDirections.N) == nil)",
     );
+}
+
+#[test]
+fn window_frame_and_thumpable_climb_checks_use_the_live_object_and_actor() {
+    use crate::bind_character_sim::{character_value, LuaGameCharacter};
+    use pz_characters::character::CharacterKind;
+    let mut f = Fixture::new();
+    f.window(false, false);
+    let manager = crate::bind_sprites::manager().unwrap();
+    let mut sprites = manager.borrow_mut();
+    let flag = sprites.tables.flag.WindowN;
+    sprites.sprites[f.closed].properties.set_flag(flag);
+    drop(sprites);
+    with_world(|world| {
+        let square = world.cell.as_mut().unwrap().get_grid_square_mut(1, 2, 0).unwrap();
+        let mut square = square.borrow_mut();
+        for (id, kind, sprite) in [
+            (41, ObjectKind::WindowFrame { north: true }, None),
+            (42, ObjectKind::Thumpable(Default::default()), Some(f.closed.into())),
+            (43, ObjectKind::Thumpable(Default::default()), Some(f.open.into())),
+        ] {
+            square.objects.push(ObjectSlot::new(IsoObject::new(id, kind, sprite)));
+        }
+    });
+    let sm = pz_scripts::ScriptManager::new();
+    let animal = Rc::new(RefCell::new(LuaGameCharacter::new(&sm, CharacterKind::Animal)));
+    let player = Rc::new(RefCell::new(LuaGameCharacter::new(&sm, CharacterKind::Player)));
+    f.thread.globals().set_str("animal", character_value(&animal));
+    f.thread.globals().set_str("player", character_value(&player));
+    f.run(r#"
+        local objects = IsoCell.getInstance():getGridSquare(1,2,0):getObjects()
+        w, frame, wall, other = objects:get(0), objects:get(1), objects:get(2), objects:get(3)
+        check(w:isWindow() and wall:isWindow() and not other:isWindow())
+        check(not w:canClimbThrough(nil))
+        w:ToggleWindow(nil)
+        check(w:canClimbThrough(nil) and w:canClimbThrough(player))
+        check(frame:canClimbThrough(nil) and frame:canClimbThrough(player))
+        check(wall:canClimbThrough(nil) and not other:canClimbThrough(nil))
+        check(not frame:canClimbThrough(animal) and not w:canClimbThrough(animal))
+        check(not wall:canClimbThrough(animal))
+    "#);
+    with_world(|world| {
+        let square = world.cell.as_mut().unwrap().get_grid_square_mut(1, 2, 0).unwrap();
+        square.borrow_mut().objects.remove(1);
+    });
+    f.run("check(not frame:canClimbThrough(nil))");
 }

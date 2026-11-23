@@ -18,18 +18,19 @@ fn receiver(c: &NativeCall<'_>) -> LuaResult<IsoObjectRef> {
         .ok_or_else(|| crate::bind_java_util::class_cast(&this, ISO_OBJECT))
 }
 
-/// The sprite's property flag named `flag` (`false` without a sprite).
-fn sprite_has(object: &IsoObjectRef, flag: &str) -> LuaResult<bool> {
+/// Archived unmanaged sprites have an ID but no property body.
+fn sprite_has_either(object: &IsoObjectRef, flags: [&str; 2]) -> LuaResult<bool> {
     let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
-    let ObjectSprite::Tile(idx) = &body.sprite else {
+    if matches!(body.sprite, ObjectSprite::None | ObjectSprite::ArchiveUnmanaged(_)) {
         return Ok(false);
-    };
+    }
     let sprites = crate::bind_sprites::manager()?;
     let sprites = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
-    Ok(sprites
-        .tables
-        .flag_from_string(flag)
-        .is_some_and(|f| sprites.sprites[*idx].properties.has(f)))
+    let sprite = body.sprite.try_read(&sprites).map_err(crate::bind_world_object::host_error)?;
+    Ok(sprite.is_some_and(|sprite| {
+        flags.into_iter().filter_map(|name| sprites.tables.flag_from_string(name))
+            .any(|flag| sprite.properties.has(flag))
+    }))
 }
 
 fn window_field(c: &NativeCall<'_>, f: fn(&pz_world::objects::IsoWindow) -> bool) -> LuaResult<bool> {
@@ -59,43 +60,52 @@ impl pz_world_states::StatesEngine for QueryEngine {
     }
 }
 
-/// `IsoWindow.canClimbThrough(chr)` of a window on the map, answered by the
-/// character states' world over the current cell.
-fn can_climb_through(c: &NativeCall<'_>) -> LuaResult<bool> {
-    let this = c.arg(0);
-    if crate::bind_world_object::object_from_value(&this).is_none() {
-        return Err(crate::bind_java_util::class_cast(&this, ISO_WINDOW));
-    }
-    let Some(object) = crate::bind_world_object::object_ref(&this)? else {
-        return Ok(false);
-    };
-    let thumper = match c.arg(1) {
-        Value::Nil => return Err(crate::bind_world_object::unsupported("IsoWindow.canClimbThrough(null)")),
-        Value::Object(o) => match o.as_any().downcast_ref::<crate::bind_character_sim::CharacterObject>() {
-            Some(chr) => pz_world_states::Thumper::of(&chr.0.borrow()),
-            None => return Err(unsupported("IsoWindow.canClimbThrough of a non-character")),
-        },
-        _ => return Err(unsupported("IsoWindow.canClimbThrough of a non-character")),
-    };
+/// Read-only character-state queries against the current world, including
+/// the sprite properties and barricades on either side of a window.
+fn with_query_world<T>(f: impl FnOnce(&pz_world_states::StatesWorldAdapter<'_>) -> LuaResult<T>) -> LuaResult<T> {
     let sprites = crate::bind_sprites::manager()?;
     let mut sprites = sprites.try_borrow_mut().map_err(|_| borrowed("IsoSpriteManager"))?;
     crate::bind_world::with_world_state_cell(|w| {
         let mut w = w.try_borrow_mut().map_err(|_| borrowed("IsoWorld"))?;
         let state = &mut *w;
         let (Some(cell), Some(meta)) = (state.cell.as_mut(), state.meta_grid.as_ref()) else {
-            return Err(unsupported("IsoWindow.canClimbThrough without a world"));
+            return Err(unsupported("window query without a world"));
         };
         let mut runtime = pz_world_states::StatesRuntime::default();
         let mut engine = QueryEngine(QueryRand);
-        let adapter = pz_world_states::StatesWorldAdapter::new(
-            cell,
-            meta,
-            &mut sprites,
-            pz_world_states::ThumpSettings::default(),
-            &mut runtime,
-            &mut engine,
-        );
-        Ok(adapter.window_climb_for(&thumper, object).is_some_and(|climb| climb.portal_can_climb))
+        f(&pz_world_states::StatesWorldAdapter::new(
+            cell, meta, &mut sprites, pz_world_states::ThumpSettings::default(), &mut runtime, &mut engine,
+        ))
+    })
+}
+
+fn can_climb_through(c: &NativeCall<'_>) -> LuaResult<bool> {
+    let this = c.arg(0);
+    let world = crate::bind_world_object::object_from_value(&this)
+        .ok_or_else(|| crate::bind_java_util::class_cast(&this, ISO_OBJECT))?;
+    let square = crate::bind_world_object::object_square(world)?;
+    let Some((x, y, z)) = crate::bind_world::square_coords(&square) else {
+        return Ok(false);
+    };
+    let arg = c.arg(1);
+    let chr = match &arg {
+        Value::Nil => None,
+        Value::Object(value) => {
+            let character = value.as_any().downcast_ref::<crate::bind_character_sim::CharacterObject>()
+                .ok_or_else(|| crate::bind_java_util::class_cast(&arg, "zombie.characters.IsoGameCharacter"))?;
+            let body = character.0.try_borrow().map_err(|_| borrowed("IsoGameCharacter"))?;
+            Some(pz_world_states::Thumper::of(&body))
+        }
+        _ => return Err(crate::bind_java_util::class_cast(&arg, "zombie.characters.IsoGameCharacter")),
+    };
+    with_query_world(|adapter| {
+        let Some(square) = adapter.cell.get_grid_square(x, y, z) else { return Ok(false) };
+        let square = square.try_borrow().map_err(|_| borrowed("IsoGridSquare"))?;
+        if !square.objects.iter().any(|slot| std::rc::Rc::ptr_eq(&slot.ref_handle(), &world.object)) {
+            return Ok(false);
+        }
+        let body = world.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
+        Ok(adapter.portal_can_climb_through(&square, &body, chr.as_ref()))
     })
 }
 
@@ -187,8 +197,13 @@ pub(crate) fn register(thread: &mut Thread) {
     // `isTallHoppable()`: `TallHoppableN` or `TallHoppableW` on the sprite.
     object.method("isTallHoppable", |c| {
         let object = receiver(c)?;
-        let tall = sprite_has(&object, "TallHoppableN")? || sprite_has(&object, "TallHoppableW")?;
+        let tall = sprite_has_either(&object, ["TallHoppableN", "TallHoppableW"])?;
         Ok(c.push(tall))
+    });
+
+    object.method("isWindow", |c| {
+        let is_window = sprite_has_either(&receiver(c)?, ["WindowN", "WindowW"])?;
+        Ok(c.push(is_window))
     });
 
     let window = expose_class(thread, ISO_WINDOW, Some(ISO_OBJECT));
@@ -196,10 +211,12 @@ pub(crate) fn register(thread: &mut Thread) {
         toggle_window(c)?;
         Ok(0)
     });
-    window.method("canClimbThrough", |c| {
-        let can = can_climb_through(c)?;
-        Ok(c.push(can))
-    });
+    for class in [ISO_WINDOW, "zombie.iso.objects.IsoThumpable", "zombie.iso.objects.IsoWindowFrame"] {
+        expose_class(thread, class, Some(ISO_OBJECT)).method("canClimbThrough", |c| {
+            let can = can_climb_through(c)?;
+            Ok(c.push(can))
+        });
+    }
     window.method("IsOpen", |c| Ok(c.push(window_field(c, |w| w.open)?)));
     window.method("isOpen", |c| Ok(c.push(window_field(c, |w| w.open)?)));
     window.method("getNorth", |c| Ok(c.push(window_field(c, |w| w.north)?)));
