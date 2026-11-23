@@ -347,6 +347,51 @@ fn verify_utilities_and_ambience(app: &mut super::App, streamer: bool) {
     assert_eq!(ambient.current_value("Temperature"), Some((temperature * 100.0) as i32 as f32 / 100.0));
 }
 
+fn verify_feeding_trough(lua: &mut LuaManager, create: bool) {
+    if create {
+        lua_check(lua, r#"
+            local sq = getSquare(10685,9377,0)
+            local def = FeedingTroughDef.simple
+            local name = def.spriteW[1]
+            local t = IsoFeedingTrough.new(sq,name,nil)
+            sq:AddSpecialObject(t)
+            assert(t:getSquare() == sq and t:getMasterTrough() == t)
+            assert(t:getFluidContainer():getOwner() == t and t:getMaxWater() == def.maxWater)
+            assert(t:getMaxFeed() == def.maxFeed and t:getCurrentFeedAmount() == 0)
+            assert(t:getContainer() and t:getWater() == 0)
+            local upper = getSquare(10685,9378,0)
+            local child = IsoFeedingTrough.new(upper,name,sq)
+            upper:AddSpecialObject(child)
+            assert(child:getMasterTrough() == t and not child:getContainer() and not child:getFluidContainer())
+            assert(child:getLinkedX() == sq:getX() and child:getLinkedY() == sq:getY())
+            local events = 0
+            local changed = function() events = events + 1 end
+            Events.OnContainerUpdate.Add(changed)
+            t:addWater(FluidType.TaintedWater, 12.5)
+            assert(events == 1 and not t:getContainer() and t:getWater() == 12.5)
+            assert(t:getOverlaySprite():getName() == def.spriteWaterOverlay1[name])
+            t:addWater(FluidType.Water, def.maxWater)
+            assert(events == 1 and t:getWater() == def.maxWater)
+            Events.OnContainerUpdate.Remove(changed)
+        "#);
+    }
+    lua_check(lua, r#"
+        local function find(x,y)
+            local objects = getSquare(x,y,0):getObjects()
+            for j=0,objects:size()-1 do
+                local o=objects:get(j)
+                if instanceof(o,'IsoFeedingTrough') then return o end
+            end
+        end
+        local t,child = find(10685,9377),find(10685,9378)
+        local def = FeedingTroughDef.simple
+        assert(t and child and child:getMasterTrough() == t)
+        assert(t:getWater() == def.maxWater and t:getMaxWater() == def.maxWater)
+        assert(not t:getContainer() and t:getFluidContainer():getOwner() == t)
+        assert(t:getOverlaySprite():getName() == def.spriteWaterOverlay2[def.spriteW[1]])
+    "#);
+}
+
 fn verify_hutch(lua: &mut LuaManager, create: bool) {
     if create {
         lua_check(lua, r#"
@@ -711,6 +756,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     verify_utilities_and_ambience(&mut app, !streamer);
     verify_pump_supply(&mut app);
     verify_hutch(app.lua.as_mut().unwrap(), true);
+    verify_feeding_trough(app.lua.as_mut().unwrap(), true);
     app.core.borrow_mut().set_option_streamer_mode(streamer);
     let late_start = late_start.expect("captured held-W frame 40");
     let held_end = {
@@ -827,6 +873,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     assert_eq!(reloaded.current_state(), Some(INGAME), "saved session never entered gameplay; cache: {}", cache_dir.display());
     verify_tile_definitions(reloaded.lua.as_mut().unwrap());
     verify_hutch(reloaded.lua.as_mut().unwrap(), false);
+    verify_feeding_trough(reloaded.lua.as_mut().unwrap(), false);
     lua_check(reloaded.lua.as_mut().unwrap(), r#"
         local saved = getPlayer():getModData().rustRoofCollector
         assert(saved and saved.z == 1)
