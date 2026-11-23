@@ -196,24 +196,7 @@ fn construct(c: &mut NativeCall<'_>) -> LuaResult<usize> {
                 }
             })?;
             register_master(&obj, pos)?;
-            if let Some(zone) = crate::bind_designation::animal_zone_at(pos)? {
-                let list = zone
-                    .try_borrow()
-                    .map_err(|_| borrowed("animal zone"))?
-                    .hutchs
-                    .clone();
-                if let Some(list) = list {
-                    let mut list = list
-                        .try_borrow_mut()
-                        .map_err(|_| borrowed("zone hutches"))?;
-                    if let pz_world::designation::DesignationList::Owners(owners) = &mut *list {
-                        let owner = EntityOwner::from_ref(&obj);
-                        if !owners.iter().any(|it| it.ptr_eq(&owner)) {
-                            owners.push(owner);
-                        }
-                    }
-                }
-            }
+            crate::bind_designation::register_farm_object(pos, &obj, true)?;
             for (_, v) in extras.entries() {
                 let entry = v
                     .as_table()
@@ -253,7 +236,7 @@ fn construct(c: &mut NativeCall<'_>) -> LuaResult<usize> {
     Ok(c.push(object_value(&obj)?))
 }
 
-fn register_master(obj: &IsoObjectRef, pos: SquarePos) -> LuaResult<()> {
+pub fn register_master(obj: &IsoObjectRef, pos: SquarePos) -> LuaResult<()> {
     try_with_world(|w| {
         for old in &w.hutches {
             let mut old = old

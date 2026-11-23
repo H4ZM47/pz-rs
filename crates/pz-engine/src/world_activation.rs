@@ -137,6 +137,10 @@ impl IsoWorld {
                             }
                             for (receiver, call) in calls.0 {
                                 match call {
+                                    WorldCall::HutchManager { add: true } => {
+                                        pz_lua_api::bind_world_object::hutch::register_master(&receiver, pos)
+                                            .map_err(|e| format!("adding hutch at {pos:?}: {e}"))?;
+                                    }
                                     WorldCall::MannequinInit => {
                                         let sandbox = sandbox(lua).ok_or(
                                             "mannequin activation requires sandbox options",

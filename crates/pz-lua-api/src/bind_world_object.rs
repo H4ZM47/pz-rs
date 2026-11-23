@@ -833,4 +833,4 @@ mod tests;
 
 mod sprite_edit;
 mod thumpable;
-mod hutch;
+pub mod hutch;

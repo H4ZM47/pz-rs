@@ -2126,6 +2126,18 @@ impl IsoWorld {
 
     /// `IsoChunk.removeFromWorld` for a chunk that left the cell.
     fn chunk_removed(&mut self, wx: i32, wy: i32) {
+        // The stream reports this after the chunk has detached. Retire the
+        // matching manager references outside the world borrow.
+        let retired = with_world(|w| {
+            w.hutches.extract_if(.., |object| {
+                object.borrow().square_slot().is_some_and(|sq| {
+                    let sq = sq.borrow();
+                    let size = pz_world::chunk::CHUNK_WIDTH;
+                    sq.x.div_euclid(size) == wx && sq.y.div_euclid(size) == wy
+                })
+            }).collect::<Vec<_>>()
+        });
+        drop(retired);
         if let Some(h) = self.pathfind.as_mut() {
             h.service_mut().remove_chunk_from_world(wx, wy);
         }
