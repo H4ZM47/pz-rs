@@ -282,6 +282,19 @@ fn feed(obj: &IsoObjectRef) -> LuaResult<f32> {
 pub(super) fn register(t: &mut Thread) {
     let class = expose_class(t, CLASS, Some(ISO_OBJECT));
     class.static_fn("new", construct);
+    class.method("removeFluidContainer", |c| {
+        remove_fluid(&receiver_object(c)?)?;
+        Ok(0)
+    });
+    class.method("checkWaterFromRain", |c| {
+        check_water_from_rain(&receiver_object(c)?)?;
+        Ok(0)
+    });
+    class.method("update", |c| {
+        let obj = receiver_object(c)?;
+        update(c.thread, &obj)?;
+        Ok(0)
+    });
     class.method("addWater", |c| {
         let object = receiver_object(c)?;
         let value = c.arg(1);
@@ -493,6 +506,45 @@ fn recalculate_water(thread: &mut Thread, obj: &IsoObjectRef, f: &ComponentRef) 
     Ok(())
 }
 
+fn remove_fluid(obj: &IsoObjectRef) -> LuaResult<()> {
+    use pz_world::floor_object::runtime::{connect_world, release_detached, remove_world_component};
+    let mut retired = RetiredComponents::new();
+    let result = (|| {
+        if let Some(component) = fluid(obj)? {
+            if let Some(removed) = remove_world_component(obj, &component, &mut retired).map_err(host_error)? {
+                release_detached(&removed, &mut retired).map_err(host_error)?;
+            }
+        }
+        connect_world(obj).map_err(host_error)
+    })();
+    pz_inventory::component_host::retire_components(retired);
+    result
+}
+
+fn check_water_from_rain(obj: &IsoObjectRef) -> LuaResult<()> {
+    let has_items = {
+        let body = obj.try_borrow().map_err(|_| borrowed("feeding trough inventory"))?;
+        if let Some(runtime) = &body.runtime_containers {
+            match &runtime.main {
+                Some(main) => !main.try_borrow().map_err(|_| borrowed("trough contents"))?.is_empty(),
+                None => false,
+            }
+        } else {
+            body.container.as_ref().is_some_and(|c| !c.items.is_empty())
+        }
+    };
+    if has_items && fluid(obj)?.is_some() {
+        remove_fluid(obj)?;
+    }
+    Ok(())
+}
+
+/// IsoFeedingTrough.update. The installed checkIsoRegion has no further work.
+pub fn update(thread: &mut Thread, obj: &IsoObjectRef) -> LuaResult<()> {
+    check_water_from_rain(obj)?;
+    check_container(thread, obj)
+}
+
 fn check_container(thread: &mut Thread, obj: &IsoObjectRef) -> LuaResult<()> {
     if inspect(obj, |t| t.linked_x > 0 && t.linked_y > 0)? {
         return Ok(());
@@ -502,11 +554,11 @@ fn check_container(thread: &mut Thread, obj: &IsoObjectRef) -> LuaResult<()> {
         .transpose()?
         .unwrap_or(0.)
         != 0.;
-    let value = object_value(obj)?;
-    let (main, _) = object_containers(&value, obj)?;
-    if main.is_some() != wet {
+    if obj.try_borrow().map_err(|_| borrowed("IsoFeedingTrough"))?.has_main_container() != wet {
         return Ok(());
     }
+    let value = object_value(obj)?;
+    object_containers(&value, obj)?;
     let new = if wet {
         None
     } else {

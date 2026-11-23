@@ -93,3 +93,36 @@ impl ProcessObjects {
         retired
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{IsoObject, ObjectKind, ObjectSlot};
+
+    #[test]
+    fn deferred_removal_preserves_order_and_readd_cancels_by_identity() {
+        let tile = || ObjectSlot::new(IsoObject::new(7, ObjectKind::Object, None)).ref_handle();
+        let (a, b, c) = (tile(), tile(), tile());
+        let mut lists = ProcessObjects::default();
+        lists.queue_remove(&a);
+        lists.add(&a);
+        lists.add(&b);
+        lists.add(&a);
+        lists.queue_remove(&b);
+        lists.queue_remove(&a);
+        lists.add(&a);
+        lists.add(&c);
+        assert_eq!(lists.process().len(), 3);
+        let retired = lists.drain_removed();
+        assert_eq!(retired.len(), 1);
+        assert!(Rc::ptr_eq(&retired[0], &b));
+        assert!(Rc::ptr_eq(&lists.process()[0], &a));
+        assert!(Rc::ptr_eq(&lists.process()[1], &c));
+        lists.static_updater(&a, true);
+        lists.static_updater(&b, true);
+        lists.static_updater(&a, true);
+        lists.static_updater(&b, false);
+        assert_eq!(lists.static_updaters.objects.len(), 1);
+        assert!(Rc::ptr_eq(&lists.static_updaters.objects[0], &a));
+    }
+}

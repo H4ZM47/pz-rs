@@ -707,9 +707,7 @@ impl IsoWorld {
         // TODO(port): `ProcessItems`: dispatch real item update/finishupdate
         // and world-item updates. Saved codec items are not runtime ItemRefs.
         self.process_remove_items();
-        let retired = with_world(|w| w.cell.as_ref().map(|cell| cell.process_objects.borrow_mut().drain_removed()));
-        drop(retired);
-        // TODO(port): subclass updates from IsoCell.ProcessIsoObject.
+        self.process_iso_objects(lua);
         self.update_characters(lua, sim)?;
         // TODO(port): `ProcessStaticUpdaters`, `ObjectDeletionAddition`,
         // `IsoDeadBody.updateBodies`, `FishSchoolManager.update` and the
@@ -765,6 +763,26 @@ impl IsoWorld {
         };
         let Ok(mut fx) = fx.try_borrow_mut() else { return };
         pz_core::random::with_standard(|rand| fx.update(rand, &frame));
+    }
+
+    fn process_iso_objects(&mut self, lua: &mut LuaManager) {
+        let lists = with_world(|w| w.cell.as_ref().map(|c| c.process_objects.clone()));
+        let Some(lists) = lists else { return };
+        let retired = lists.borrow_mut().drain_removed();
+        drop(retired);
+        // Pending removal is applied on the next frame. Additions during
+        // update run next frame too, matching the native captured list size.
+        let size = lists.borrow().process().len();
+        for index in 0..size {
+            let object = lists.borrow().process().get(index).cloned();
+            let Some(object) = object else { break };
+            if matches!(object.borrow().kind, pz_world::ObjectKind::FeedingTrough(_)) {
+                if let Err(error) = pz_lua_api::bind_world_object::trough::update(&mut lua.thread, &object) {
+                    self.log_update_error(format!("feeding trough update: {error}"));
+                }
+            }
+            // Other updater subclasses have their own simulation systems.
+        }
     }
 
     /// `IsoCell.ProcessRemoveItems`, before and after its item-update phase.
