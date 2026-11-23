@@ -284,6 +284,27 @@ impl IsoBarricade {
 }
 
 impl IsoThumpable {
+    pub fn furniture_break_sound(sprite: Option<&crate::sprite::IsoSprite>, manager: &IsoSpriteManager) -> &'static str {
+        let Some(sprite) = sprite else { return "BreakFurniture"; };
+        let props = &sprite.properties;
+        if props.property_equals(&manager.alias, "MoveType", "Vegitation") { return "BreakPlant"; }
+        for key in ["SinkType", "FenceTypeLow", "FenceTypeHigh", "MaterialType"] {
+            let Some(value) = props.get(&manager.alias, key) else { continue; };
+            return match (key, value) {
+                ("SinkType" | "MaterialType", "Ceramic") => "BreakFurnitureCeramic",
+                (_, "Metal") | ("FenceTypeLow" | "FenceTypeHigh", "MetalGate")
+                    | ("FenceTypeLow", "Barbwire")
+                    | ("MaterialType", "Metal_Large" | "Metal_Light" | "Metal_Solid") => "BreakFurnitureMetal",
+                _ => "BreakFurniture",
+            };
+        }
+        "BreakFurniture"
+    }
+
+    pub fn custom_break_sound(&self) -> Option<&str> {
+        self.break_sound.as_deref().filter(|s| !s.eq_ignore_ascii_case("BreakObject"))
+    }
+
     /// `isBlockedDoor()` given `isBarricaded()`.
     pub fn is_blocked_door(&self, barricaded: bool) -> bool {
         self.is_door && (!self.open || barricaded)

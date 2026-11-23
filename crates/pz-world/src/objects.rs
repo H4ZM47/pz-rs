@@ -349,6 +349,8 @@ pub struct IsoThumpable {
     pub can_be_lock_by_padlock: bool,
     pub locked_by_code: i32,
     pub thump_sound: String,
+    /// Lua-set override. The original does not serialize this field.
+    pub break_sound: Option<String>,
     pub last_update_hours: f32,
     pub have_fuel: bool,
     pub light_source_on: bool,
@@ -396,6 +398,7 @@ impl Default for IsoThumpable {
             can_be_lock_by_padlock: false,
             locked_by_code: 0,
             thump_sound: "ZombieThumpGeneric".to_string(),
+            break_sound: None,
             last_update_hours: -1.0,
             have_fuel: false,
             light_source_on: false,

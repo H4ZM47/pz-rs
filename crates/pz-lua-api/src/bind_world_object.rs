@@ -404,6 +404,15 @@ pub(crate) fn register_classes(thread: &mut Thread) {
         });
         Ok(c.push(crate::bind_sprites::sprite_value(idx, false)))
     });
+    object.method("setSpecialTooltip", |c| {
+        let flag = crate::expose::bool_arg(c, 1);
+        receiver_object(c)?.try_borrow_mut().map_err(|_| borrowed("IsoObject"))?.special_tooltip = flag;
+        Ok(0)
+    });
+    object.method("haveSpecialTooltip", |c| {
+        let flag = receiver_object(c)?.try_borrow().map_err(|_| borrowed("IsoObject"))?.special_tooltip;
+        Ok(c.push(flag))
+    });
     object.method("setName", |c| {
         let object = receiver_object(c)?;
         let name = crate::expose::str_arg(c, 1).map(|s| ObjectName::Str(s.to_string()));

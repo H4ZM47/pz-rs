@@ -96,6 +96,33 @@ fn construct(c: &mut NativeCall<'_>) -> LuaResult<usize> {
 pub(super) fn register(thread: &mut Thread) {
     let class = expose_class(thread, CLASS, Some(ISO_OBJECT));
     class.static_fn("new", construct);
+    class.method("setBreakSound", |c| {
+        let sound = str_arg(c, 1).map(|s| s.to_string());
+        with_thumpable(c, |t| {
+            t.break_sound = sound;
+            Ok(())
+        })?;
+        Ok(0)
+    });
+    class.method("getBreakSound", |c| {
+        let object = receiver_object(c)?;
+        let manager = crate::bind_sprites::manager()?;
+        let manager = manager
+            .try_borrow()
+            .map_err(|_| borrowed("IsoSpriteManager"))?;
+        let body = object.try_borrow().map_err(|_| borrowed("IsoThumpable"))?;
+        let ObjectKind::Thumpable(t) = &body.kind else {
+            return Err(crate::bind_java_util::class_cast(&c.arg(0), CLASS));
+        };
+        let sound = match t.custom_break_sound() {
+            Some(sound) => sound,
+            None => {
+                let sprite = body.sprite.try_read(&manager).map_err(host_error)?;
+                IsoThumpable::furniture_break_sound(sprite.as_deref(), &manager)
+            }
+        };
+        Ok(c.push(Value::str(sound)))
+    });
     class.method("getTable", |c| {
         let value = with_thumpable(c, |t| {
             Ok(t.table

@@ -1020,7 +1020,12 @@ impl StatesWorldAdapter<'_> {
             return;
         };
         let destroyed = th.health <= 0;
-        let break_sound = (destroyed && !breakable).then(|| self.engine.thumpable_break_sound(&o));
+        let break_sound = (destroyed && !breakable).then(|| {
+            if let Some(sound) = th.custom_break_sound() { return sound.to_owned(); }
+            let sprite = o.sprite.metadata_projection(self.sprites).expect("unborrowed thumpable sprite");
+            let sound = pz_world::objects::IsoThumpable::furniture_break_sound(sprite.as_ref(), self.sprites);
+            if sound == "BreakFurniture" { self.engine.thumpable_break_sound(&o) } else { sound.to_owned() }
+        });
         drop(o);
         if destroyed {
             if let Some(s) = break_sound {
