@@ -1205,12 +1205,13 @@ registered):
       `WorldPopulation::remove_chunk_from_world(&mut host, wx, wy,
       &real_zombies.chunk_zombies(wx, wy, in_room))` (needs the chunk's rooms:
       decide `in_room` before the chunk leaves the cell).
-- [ ] After the cell load: `ClimateManager.postCellLoadSetSnow()` =
+- [x] After the cell load: `ClimateManager.postCellLoadSetSnow()` =
       `bind_climate::post_cell_load_set_snow(thread)`; apply the returned
       `SnowEffects`: `IsoCell.setSnowTarget(target)` (0 unless sandbox
       `EnableSnowOnGround`) and `ErosionIceQueen::set_snow(ice_queen)`. The
       climate update's own snow effects collect in the same slot: apply
-      `bind_climate::take_snow_effects()` after `update_game_time` each frame (#147).
+      `bind_climate::take_snow_effects()` after `update_game_time` each frame (#147;
+      wired in `iso_world.rs` + `world_update.rs`).
 - [x] Zombie dressing (`ModelManager.Add`/`Reset` call
       `ModelManager.dressInRandomOutfit`): when a zombie gets its model,
       `GameCharacter::model_manager_dress_in_random_outfit(&mut
@@ -1382,7 +1383,7 @@ registered):
       then `IngameState.exit`: `streamer.stop(&mut cell, ctx)`, the other
       stops, `world_save::close_stores(Some(&mut player_db), &mut
       vehicle_store)` (#150).
-- [ ] Session save, characters side: for each local player build its row
+- [x] Session save, characters side: for each local player build its row
       with `world_save::local_player_data(&mut player, sql_id, sm, chars,
       ctx, &SaveEnv { .. })` (`PlayerData.set`: `IsoPlayer.save` bytes from
       `GameCharacter::save_player`) and pass them to `save_on_quit`; keep the
@@ -1391,16 +1392,16 @@ registered):
       `character::save::reanimated_players_to_save(sm, chars, ctx, &env,
       &mut tracked, &mut cell_zombies, &|z| stairs_at(z))` (the manager's
       list, then the cell's live reanimated players); on `Err` log it and
-      pass `None` (no `reanimated.bin`) (#178).
-- [ ] `IsoWorld.init` (`ReanimatedPlayers.loadReanimatedPlayers`): read
+      pass `None` (no `reanimated.bin`) (#178; wired in `world_update.rs`).
+- [x] `IsoWorld.init` (`ReanimatedPlayers.loadReanimatedPlayers`): read
       `reanimated.bin` (missing: none) into the tracked list with
       `character::save::load_reanimated_players(.., new_zombie, set_on_fire,
       &mut tracked)`; `new_zombie` is `new IsoZombie(cell)`
       (`GameCharacter::new_zombie` with no descriptor). Call each zombie's
-      `set_default_state(cx)` once the world exists. Not ported yet:
+      `set_default_state(cx)` once the world exists. Chunk handoff
       `addReanimatedPlayersToChunk` (chunk load moves a tracked zombie into
       the cell's zombie list) and `removeReanimatedPlayerFromWorld` (chunk
-      unload moves it back) (#178).
+      unload moves it back) wired in `iso_world.rs` + `world_update.rs` (#178).
 - [x] `IsoWorld.init`, after `VehiclesDB2.init` and before
       `WorldStreamer.create` / the cell load:
       `let regions = IsoRegions::init_world(save_dir, chunk_grid_width,
@@ -1626,8 +1627,9 @@ registered):
         `FloorWorld` that builds a `FloorDropEnv` per call, for Lua's
         `setWornItem` / `removeWornItem` / `setClothingItem_*` and the new
         `dropHandItems` / `dropHeavyItems` (without one nothing drops);
-      - `Use`'s `Unwear` (`apply_use_outcome`) passes no world yet, so a
-        used-up worn item never drops (#189).
+      - `Use`'s `Unwear` (`apply_use_outcome_with_floor` /
+        `use_held_item_with_floor`) forwards `FloorCx` from `FloorAccess`
+        (`bind_eat.rs`) so used-up worn items drop when too heavy (#189).
 - [ ] Wall and sheet-rope climbs, landings and player death (#214, on
       #208): the climb states read the world through #208's hooks
       (`sheet_rope_square`, `chunk_levels`, `sheet_rope_exit`,
@@ -2164,10 +2166,9 @@ registered):
       world's actual MapFiles. The default host is `CurrentMapFiles`
       (`MapFiles.getCurrentMapFiles()`): the meta grid's `IsoLot.MapFiles`
       when non-empty, else the standalone list loaded from `Core.gameMap`'s
-      lot directories and reloaded when the map changes. Remaining:
-      `MapFiles.Reset` from `WorldMap.Reset` (IngameState.exit and
-      Core.ResetLua) is exposed as `host::reset_current_map_files` but not
-      called yet.
+      lot directories and reloaded when the map changes. `MapFiles.Reset`
+      (`host::reset_current_map_files`) is wired in `IngameState::exit` and
+      `Core.ResetLua`.
 - [x] Move `WorldMapImages.startFrame/endFrame` from each UI map draw to the
       global SpriteRenderer frame boundary: `App::frame` brackets
       `states.render` with `worldmap::start_frame/end_frame`, so every map in

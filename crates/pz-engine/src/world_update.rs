@@ -2134,9 +2134,51 @@ impl IsoWorld {
                 add_chunk_to_pathfinder(h, cell, meta, &sp.borrow(), wx, wy, load_id);
             }
         });
-        // TODO(port): the chunk's vehicles (`AddVehicles`), reanimated
-        // players, erosion and the lighting thread's chunk add.
+        // TODO(port): the chunk's vehicles (`AddVehicles`), erosion and
+        // the lighting thread's chunk add.
+        self.add_reanimated_players_to_chunk(wx, wy);
         self.render_chunks.added.push((wx, wy));
+    }
+
+    /// `ReanimatedPlayers.addReanimatedPlayersToChunk`: moves any tracked
+    /// reanimated player whose square lies in chunk `(wx, wy)` into the
+    /// cell's live zombie list.
+    pub(crate) fn add_reanimated_players_to_chunk(&mut self, wx: i32, wy: i32) {
+        if self.reanimated_players.is_empty() {
+            return;
+        }
+        let size = pz_world::chunk::CHUNK_WIDTH;
+        let mut remaining = Vec::with_capacity(self.reanimated_players.len());
+        for z in self.reanimated_players.drain(..) {
+            let cx = pz_world::java::fastfloor(z.vars.x).div_euclid(size);
+            let cy = pz_world::java::fastfloor(z.vars.y).div_euclid(size);
+            if (cx, cy) == (wx, wy) {
+                self.zombies.push(z);
+            } else {
+                remaining.push(z);
+            }
+        }
+        self.reanimated_players = remaining;
+    }
+
+    /// `ReanimatedPlayers.removeReanimatedPlayerFromWorld`: moves live
+    /// reanimated players in an unloading chunk `(wx, wy)` back to
+    /// [`Self::reanimated_players`] before population unload runs.
+    pub(crate) fn remove_reanimated_players_from_chunk(&mut self, wx: i32, wy: i32) {
+        let size = pz_world::chunk::CHUNK_WIDTH;
+        let mut keep = Vec::with_capacity(self.zombies.len());
+        for z in self.zombies.drain(..) {
+            let cx = pz_world::java::fastfloor(z.vars.x).div_euclid(size);
+            let cy = pz_world::java::fastfloor(z.vars.y).div_euclid(size);
+            if z.zombie.reanimated_player && !z.is_dead() && (cx, cy) == (wx, wy) {
+                if !self.reanimated_players.iter().any(|r| r.id == z.id) {
+                    self.reanimated_players.push(z);
+                }
+            } else {
+                keep.push(z);
+            }
+        }
+        self.zombies = keep;
     }
 
     /// `IsoChunk.removeFromWorld` for a chunk that left the cell.
@@ -2158,6 +2200,7 @@ impl IsoWorld {
         if let Some(h) = self.pathfind.as_mut() {
             h.service_mut().remove_chunk_from_world(wx, wy);
         }
+        self.remove_reanimated_players_from_chunk(wx, wy);
         let sim = FrameSim::capture();
         // TODO(port): `in_room` needs the chunk's rooms, which are gone
         // once the streamer reports the unload: every zombie counts as
@@ -2385,6 +2428,7 @@ fn with_save_game<R>(
     world: &mut IsoWorld,
     sandbox: &[u8],
     can_save_players: bool,
+    reanimated: Option<&[Vec<u8>]>,
     f: impl FnOnce(&mut pz_lua_api::world_save::SaveGame<'_>) -> R,
 ) -> Option<R> {
     let gt = pz_lua_api::bind_climate::shared_game_time();
@@ -2409,7 +2453,7 @@ fn with_save_game<R>(
             uuids: &mut world.uuids,
             players: world.player_db.as_mut(),
             can_save_players,
-            reanimated: None,
+            reanimated,
             world_gen: &world_gen_params,
             instance_tracker: &world.instance_tracker,
             cache_dir: Some(&world.cache_dir),
@@ -2544,6 +2588,52 @@ impl IsoWorld {
             .unwrap_or_default()
     }
 
+    /// `ReanimatedPlayers.saveReanimatedPlayers`: encodes every tracked
+    /// reanimated player plus any live reanimated player in `self.zombies`
+    /// for `reanimated.bin`. Returns `None` if save tables/items are absent
+    /// or serialization throws (logged).
+    pub(crate) fn reanimated_players_to_save(&mut self, sim: &FrameSim) -> Option<Vec<Vec<u8>>> {
+        let (Some(tables), Some(items)) = (self.save_tables.as_ref(), self.items.as_ref()) else {
+            return None;
+        };
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let chars = shared_characters();
+        let chars_ref = chars.borrow();
+        let env = pz_characters::character::save::SaveEnv { items, tables };
+        let sprites = self.sprites.clone();
+        let on_stairs = |z: &LuaGameCharacter| {
+            let Some(sp) = sprites.as_ref() else { return false };
+            let Ok(sp) = sp.try_borrow() else { return false };
+            let (x, y, z_lvl) = (
+                pz_world::java::fastfloor(z.vars.x),
+                pz_world::java::fastfloor(z.vars.y),
+                pz_world::java::fastfloor(z.vars.z),
+            );
+            with_world(|w| {
+                w.cell
+                    .as_ref()
+                    .and_then(|c| c.get_grid_square(x, y, z_lvl))
+                    .is_some_and(|sq| sq.borrow().has_stairs(&sp))
+            })
+        };
+        match pz_characters::character::save::reanimated_players_to_save(
+            &sm,
+            &chars_ref,
+            sim,
+            &env,
+            &mut self.reanimated_players,
+            &mut self.zombies,
+            &on_stairs,
+        ) {
+            Ok(records) => Some(records),
+            Err(e) => {
+                drop(chars_ref);
+                self.log_exception(format!("ReanimatedPlayers.saveReanimatedPlayers: {e}"));
+                None
+            }
+        }
+    }
+
     /// `GameWindow.save`: the files before `OnSave`, the event, the cell,
     /// the population and the rest (`world_save`).
     fn game_window_save(
@@ -2555,7 +2645,7 @@ impl IsoWorld {
         use pz_lua_api::world_save::{
             save_game_before_event, save_game_cell_actual as save_game_cell, save_game_finish, SaveReport,
         };
-        let report = match with_save_game(self, sandbox, can_save_players, |g| save_game_before_event(g)) {
+        let report = match with_save_game(self, sandbox, can_save_players, None, |g| save_game_before_event(g)) {
             Some(Ok(mut report)) => {
                 if report.saved {
                     lua.trigger_event("OnSave", &[]);
@@ -2564,16 +2654,17 @@ impl IsoWorld {
                         s.save_chunk_maps(cell, ctx);
                     });
                     self.hand_off_events();
+                    let sim = FrameSim::capture();
+                    let reanimated = self.reanimated_players_to_save(&sim);
                     let mut hooks = QuitSaveHooks;
-                    match with_save_game(self, sandbox, can_save_players, |g| save_game_cell(g,&mut hooks,&mut report)) {
+                    match with_save_game(self, sandbox, can_save_players, reanimated.as_deref(), |g| save_game_cell(g,&mut hooks,&mut report)) {
                         Some(Ok(()))=>{},
                         Some(Err(error))=>return Err(error.into()),
                         None=>return Err(pz_inventory::floor_drop::RuntimeHostError::InvalidHostState("actual save world disappeared after OnSave").into()),
                     }
-                    let sim = FrameSim::capture();
                     self.with_population(&sim, &mut |pop, host, _| pop.save(&host.zombies.infos()));
                     self.update_regions(None);
-                    with_save_game(self, sandbox, can_save_players, |g| {
+                    with_save_game(self, sandbox, can_save_players, None, |g| {
                         save_game_finish(g, &mut hooks, &mut report)
                     });
                 }
@@ -2636,6 +2727,7 @@ impl IsoWorld {
             self.log_update_error(format!("VehiclesDB2.Reset: {e}"));
         }
         self.clear_regions();
+        self.reanimated_players.clear();
         // IngameState.exit retires both global-object registries. Native
         // close also takes this path without rebuilding the Lua environment.
         pz_lua_api::global_objects::reset_single_player_packets();
@@ -2983,5 +3075,34 @@ mod quit_save_tests {
                 fail_prefix
             );
         }
+    }
+
+    #[test]
+    fn reanimated_players_chunk_handoff_moves_between_tracked_and_cell() {
+        let (_fixture, mut world, _lua) = Fixture::new(false, "Sandbox", true);
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let mut z = LuaGameCharacter::new(&sm, pz_characters::CharacterKind::Zombie);
+        z.id = 77;
+        z.zombie.reanimated_player = true;
+        z.vars.x = 18.5; // chunk (2, 3) for CHUNK_WIDTH = 8
+        z.vars.y = 26.5;
+        world.reanimated_players.push(z);
+
+        // Unrelated chunk leaves it tracked.
+        world.add_reanimated_players_to_chunk(0, 0);
+        assert_eq!(world.reanimated_players.len(), 1);
+        assert!(world.zombies.is_empty());
+
+        // Matching chunk moves it into the live cell zombie list.
+        world.add_reanimated_players_to_chunk(2, 3);
+        assert!(world.reanimated_players.is_empty());
+        assert_eq!(world.zombies.len(), 1);
+        assert_eq!(world.zombies[0].id, 77);
+
+        // Unloading that chunk moves the live reanimated player back to tracked.
+        world.remove_reanimated_players_from_chunk(2, 3);
+        assert!(world.zombies.is_empty());
+        assert_eq!(world.reanimated_players.len(), 1);
+        assert_eq!(world.reanimated_players[0].id, 77);
     }
 }

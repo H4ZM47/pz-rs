@@ -286,3 +286,21 @@ fn worn_swap_reports_typed_host_fault_after_worn_and_removal_prefix_before_later
     assert!(floor.put.is_empty());
     assert!(ctx.events.borrow().is_empty(), "no later clothing callback or drop sound");
 }
+
+#[test]
+fn apply_use_outcome_with_floor_drops_unworn_item_when_too_heavy() {
+    let (sm, mut chars) = fixture();
+    let ctx = ctx();
+    let mut floor = TestFloor::default();
+    let (mut c, jacket) = dressed(&sm, &mut chars);
+    c.set_worn_item(&sm, None, Some(jacket), Some(1), false, None).unwrap();
+    c.items.inventory.borrow_mut().capacity = 2;
+    let mut out = pz_inventory::gameplay::UseOutcome {
+        unwear: true,
+        ..Default::default()
+    };
+    c.apply_use_outcome_with_floor(&sm, &ctx, 1, &mut out, Some(FloorCx::new(&ctx, &mut floor)));
+    assert_eq!(floor.put, [((10, 20, 0), 1, 0.5, 0.5, 0.0)]);
+    assert!(c.items.item(1).is_none());
+    assert!(c.items.worn_ids().is_empty());
+}
