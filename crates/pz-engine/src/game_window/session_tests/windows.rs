@@ -234,6 +234,31 @@ pub(super) fn check(app: &mut App) {
         assert(not cell:gridSquareIsSnow(foundX, foundY, 0))
         cell:setSnowTarget(before)
         core:setForceSnow(forced)
+        local performance, puddles = getPerformance(), getPuddlesManager()
+        local originalQuality, originalPerf = performance:getPuddlesQuality(), core:getPerfPuddles()
+        local size = puddles:getPuddlesFloat(3)
+        local wasAdmin, previous = size:isEnableAdmin(), size:getAdminValue()
+        size:setEnableAdmin(true)
+        core:setPerfPuddles(1)
+        for _, quality in ipairs({0, 2}) do
+            performance:setPuddlesQuality(quality)
+            size:setAdminValue(0)
+            assert(cell:getGridSquare(foundX,foundY,0):getPuddlesInGround() < 0)
+            size:setAdminValue(1)
+            local deepest = -1
+            for y=foundY-4,foundY+4 do
+                for x=foundX-4,foundX+4 do
+                    local sq = cell:getGridSquare(x,y,0)
+                    if sq then deepest = math.max(deepest, sq:getPuddlesInGround()) end
+                end
+            end
+            assert(deepest > 0.5, "quality " .. tostring(quality) .. " maximum depth " .. tostring(deepest))
+        end
+        size:setAdminValue(previous)
+        size:setEnableAdmin(wasAdmin)
+        performance:setPuddlesQuality(originalQuality)
+        core:setPerfPuddles(originalPerf)
+
     "#);
     player.borrow_mut().cheats.set(&sim, "INVISIBLE", previous_invisible);
     app.core.borrow_mut().debug = previous_debug;
