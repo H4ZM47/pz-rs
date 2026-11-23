@@ -5,6 +5,8 @@
 //! translucent floors in the per-level pass
 //! (`renderPuddlesTranslucentFloorsOnly`).
 
+pub mod ground;
+
 use pz_render::iso::{chunk_depth_data, coordmodulof, fastfloor, square_depth, x_to_screen, y_to_screen, LEVEL_DEPTH, PIXELS_PER_LEVEL};
 use pz_render::{gl, DrawCmd, SurfaceDraw, SurfaceProgram, SurfaceUniforms, SurfaceVertex};
 
