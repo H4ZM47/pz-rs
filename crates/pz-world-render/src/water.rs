@@ -59,3 +59,48 @@ impl RenderWorld {
         changed
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pz_iso_render::world::{ObjectKind, RenderObject, SpriteFlags, SpriteInfo};
+    use std::rc::Rc;
+
+    fn floor(x: i32, y: i32, water: bool) -> RenderSquare {
+        let mut sq = RenderSquare::new(x,y,0);
+        let sprite = SpriteInfo { name: "blends_natural_01_0".into(),
+            flags: SpriteFlags { solidfloor: true, exterior: true, water, ..Default::default() },
+            ..Default::default() };
+        sq.objects.push(RenderObject::new(ObjectKind::Plain, Some(Rc::new(sprite))));
+        sq
+    }
+
+    #[test]
+    fn shore_reacts_to_streamed_neighbours_flow_zones_and_quality() {
+        let mut w = RenderWorld::default();
+        let mut flow = IsoWaterFlow::default();
+        w.chunks.insert((0,0),(0,0));
+        for x in 6..=7 { for y in 1..=3 { w.squares.insert((x,y,0), floor(x,y,false)); } }
+        w.refresh_water(&flow,true);
+        assert!(w.squares[&(7,2,0)].water.is_none());
+        w.chunks.insert((1,0),(0,0));
+        for y in 1..=3 { w.squares.insert((8,y,0), floor(8,y,y == 2)); }
+        w.water_changed(1,0);
+        assert_eq!(w.refresh_water(&flow,true), [(0,0),(1,0)]);
+        let shore = w.squares[&(7,2,0)].water.unwrap();
+        assert!(shore.shore && shore.shader);
+        assert_eq!(shore.depth, [0.,0.,1.,1.]);
+        assert!(w.squares[&(8,2,0)].water.unwrap().has_water);
+        assert!(w.refresh_water(&flow,true).is_empty());
+        flow.add_zone(7.,2.,7.,2.,0.,0.);
+        w.refresh_water(&flow, false);
+        assert!(w.squares[&(7,2,0)].water.is_none());
+        assert!(!w.squares[&(8,2,0)].water.unwrap().shader);
+        flow.reset();
+        w.refresh_water(&flow, true);
+        assert!(w.squares[&(7,2,0)].water.unwrap().shore);
+        w.remove_chunk(1,0);
+        w.refresh_water(&flow,true);
+        assert!(w.squares[&(7,2,0)].water.is_none());
+    }
+}
