@@ -437,6 +437,11 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         local square = getPlayer():getCurrentSquare()
         local room = square:getRoomDef()
         rustAmbientRoom = room and room:getArea() or math.max(0, square:getRoomSize())
+        assert(square:hasGridPower() == (not square:isNoPower() and sb:doesPowerGridExist()))
+        assert(square:hasGridPower(-999) == false)
+        assert(square:getFloor():hasGridPower() == square:hasGridPower())
+        assert(type(square:isNoWater()) == "boolean")
+        assert(not square:isDerelict() or (square:isNoPower() and square:isNoWater()))
     "#);
     let room = app.lua.as_ref().unwrap().thread.globals().get_str("rustAmbientRoom").as_num().unwrap() as f32;
     let ambient = &app.world.as_ref().unwrap().ambient_parameters;

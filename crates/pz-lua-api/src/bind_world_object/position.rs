@@ -120,6 +120,15 @@ pub(super) fn register(thread: &mut Thread) {
         let z = square_coord(c, 2)?;
         Ok(c.push(Value::Num(z)))
     });
+    object.method("hasGridPower", |c| {
+        let this = c.arg(0);
+        let get_square = c.thread.table_get(&this, &Value::str("getSquare"))?;
+        let square = c.thread.call1(&get_square, &[this])?;
+        if square.is_nil() { return Ok(c.push(false)); }
+        let method = c.thread.table_get(&square, &Value::str("hasGridPower"))?;
+        let powered = c.thread.call1(&method, &[square])?;
+        Ok(c.push(powered))
+    });
     object.method("isGrave", |c| {
         let grave = is_grave(&receiver(c)?)?;
         Ok(c.push(Value::Bool(grave)))

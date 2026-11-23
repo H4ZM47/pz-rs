@@ -94,7 +94,31 @@ pub fn trigger_room_alarm(room: i64) -> LuaResult<()> {
     })
 }
 
+fn square_utility(c: &NativeCall<'_>, check: fn(&IsoMetaGrid, &pz_world::IsoGridSquare) -> bool) -> LuaResult<bool> {
+    let (x, y, z) = self_square(c)?;
+    with_world_state_cell(|w| {
+        let w = w.try_borrow().map_err(|_| LuaError::runtime("IsoWorld is in use"))?;
+        let meta = w.meta_grid.as_ref().ok_or_else(|| LuaError::runtime("IsoMetaGrid is not loaded"))?;
+        let square = w.cell.as_ref().and_then(|cell| cell.get_grid_square(x, y, z))
+            .ok_or_else(|| LuaError::runtime("IsoGridSquare is no longer loaded"))?;
+        let square = square.try_borrow().map_err(|_| LuaError::runtime("IsoGridSquare is in use"))?;
+        Ok(check(meta, &square))
+    })
+}
+
 pub(super) fn register(b: &ClassBuilder) {
+    get(b, "isDerelict", |c| Ok(square_utility(c, world_state::square_is_derelict)?.into()));
+    get(b, "isNoPower", |c| Ok(square_utility(c, world_state::square_has_no_power)?.into()));
+    get(b, "isNoWater", |c| Ok(square_utility(c, world_state::square_has_no_water)?.into()));
+    get(b, "hasGridPower", |c| {
+        if square_utility(c, world_state::square_has_no_power)? { return Ok(false.into()); }
+        let options = sandbox()?;
+        let sb = options.try_borrow().map_err(|_| LuaError::runtime("SandboxOptions is in use"))?;
+        let time = crate::bind_climate::shared_game_time();
+        let clock = time.try_borrow().map_err(|_| LuaError::runtime("GameTime is in use"))?;
+        let days = clock.world_age_days_since_begin(sb.time_since_apo());
+        Ok(sb.does_power_grid_exist(days as f32, int_arg(c, 1)).into())
+    });
     get(b, "haveElectricity", |c| {
         let (x, y, z) = self_square(c)?;
         // Resolve external owners and read settings before WORLD: this path

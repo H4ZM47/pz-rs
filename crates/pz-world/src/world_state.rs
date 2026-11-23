@@ -112,10 +112,24 @@ pub fn trigger_room_alarm(cell: &IsoCell, meta: &mut IsoMetaGrid, room_id: i64, 
     Ok(powered.then_some(center))
 }
 
-fn square_has_no_power(meta: &IsoMetaGrid, sq: &IsoGridSquare) -> bool {
-    sq.room_def(meta).is_some_and(|r| r.name.to_lowercase().contains("derelict") || r.user_defined)
-        || meta.get_zones_at(sq.x, sq.y, 0).into_iter()
-            .any(|id| matches!(meta.zone(id).zone_type.as_str(), "NoPower" | "NoPowerOrWater"))
+pub fn square_is_derelict(meta: &IsoMetaGrid, sq: &IsoGridSquare) -> bool {
+    sq.room_def(meta).is_some_and(|r| r.name.to_lowercase().contains("derelict"))
+}
+
+fn blocked_by_zone(meta: &IsoMetaGrid, sq: &IsoGridSquare, kind: &str) -> bool {
+    meta.get_zones_at(sq.x, sq.y, 0).into_iter().any(|id| {
+        let zone = &meta.zone(id).zone_type;
+        zone == kind || zone == "NoPowerOrWater"
+    })
+}
+
+pub fn square_has_no_power(meta: &IsoMetaGrid, sq: &IsoGridSquare) -> bool {
+    square_is_derelict(meta, sq) || sq.room_def(meta).is_some_and(|r| r.user_defined)
+        || blocked_by_zone(meta, sq, "NoPower")
+}
+
+pub fn square_has_no_water(meta: &IsoMetaGrid, sq: &IsoGridSquare) -> bool {
+    square_is_derelict(meta, sq) || blocked_by_zone(meta, sq, "NoWater")
 }
 
 /// The class-static ranges read by `IsoGenerator.isPoweringSquare`.
