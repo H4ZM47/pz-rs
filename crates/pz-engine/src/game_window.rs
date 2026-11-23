@@ -459,7 +459,13 @@ impl App {
             .borrow_mut()
             .with(|m, ctx| {
                 m.set_music_inputs(crate::sound::music_inputs(&self.core.borrow()));
-                m.update(toggle_music, ctx);
+                m.update_with_ambient(toggle_music, ctx, |backend| {
+                    if !game_paused {
+                        if let Some(world) = &mut self.world {
+                            world.ambient_parameters.update(backend, self.core.borrow().get_option_streamer_mode());
+                        }
+                    }
+                });
             });
         if let Some(world) = self.world.as_mut() { world.update_house_alarms(lua); }
         pz_ui::with_ui(|m| m.mouse.end_frame());

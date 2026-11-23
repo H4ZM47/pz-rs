@@ -714,6 +714,10 @@ impl SoundManager {
     /// `Update()`. `toggle_music_pressed` is
     /// `GameKeyboard.isKeyPressed(KeybindId.TOGGLE_MUSIC)`.
     pub fn update(&mut self, toggle_music_pressed: bool, ctx: &mut Ctx) {
+        self.update_with_ambient(toggle_music_pressed, ctx, |_| {});
+    }
+
+    pub fn update_with_ambient(&mut self, toggle_music_pressed: bool, ctx: &mut Ctx, ambient: impl FnOnce(&mut dyn AudioBackend)) {
         if !self.initialized {
             self.initialized = true;
             self.in_game_group_bus = ctx.backend.get_bus("bus:/InGame");
@@ -733,6 +737,7 @@ impl SoundManager {
         if ui.is_empty() {
             ui.clear_parameters();
         }
+        ambient(ctx.backend);
         if !self.allow_music() {
             self.stop_music_all(ctx.backend);
         }
