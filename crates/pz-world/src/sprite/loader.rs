@@ -321,6 +321,8 @@ impl IsoSpriteManager {
         let mut has_load_errors = false;
         // `Reset()`.
         self.sprite_configs.clear();
+        self.sprite_config_for_tile.clear();
+        let mut config_names = Vec::new();
         self.sprite_config_scripts.clear();
         let mut registered = std::collections::HashSet::new();
         let flag = self.tables.flag.EntityScript;
@@ -336,7 +338,7 @@ impl IsoSpriteManager {
             // The faces: the first tile of each is its master; a sprite twice
             // in one face ("double entry for sprite in face map") or a cell
             // outside the face fails the parse.
-            let mut info = SpriteConfigInfo::default();
+            let mut info = SpriteConfigInfo { entity_name: e.entity_name.clone(), faces: Vec::new() };
             let mut parsed = !e.faces_out_of_bounds;
             for tiles in &e.faces {
                 let mut face = HashMap::new();
@@ -352,7 +354,8 @@ impl IsoSpriteManager {
                 has_load_errors = true;
                 continue;
             }
-            self.sprite_configs.insert(e.config_name.clone(), info);
+            config_names.push(e.config_name.as_str());
+            self.sprite_configs.insert(e.config_name.clone(), std::rc::Rc::new(info));
             // `parseSpriteConfigScript` looks every tile up.
             let sprites: Vec<SpriteIdx> = e
                 .tile_names
@@ -373,6 +376,12 @@ impl IsoSpriteManager {
                     true,
                 );
                 props.set_flag(flag);
+            }
+        }
+        for name in hashmap_order(&config_names) {
+            let info = &self.sprite_configs[name];
+            for tile in info.faces.iter().flat_map(|face| face.keys()) {
+                self.sprite_config_for_tile.entry(tile.clone()).or_insert_with(|| info.clone());
             }
         }
         has_load_errors

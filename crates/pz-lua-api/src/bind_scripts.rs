@@ -20,6 +20,7 @@
 //! and `searchFolders` (file system), `resolveGetItemTypes` (mutates Java
 //! lists from Lua callbacks). TODO(inventory, IsoGameCharacter, Texture).
 
+mod sprite_config;
 mod crafting;
 mod item;
 mod item_recipes;
@@ -928,6 +929,9 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     });
 
     let b = expose_class(thread, COMPONENT_SCRIPT_CLASS, Some(BASE_SCRIPT_OBJECT_CLASS));
+    method(&b, "getParent", |_, h| {
+        Ok(h.parent().cloned().map(canonical).unwrap_or(Value::Nil))
+    });
     let s = sm.clone();
     method(&b, "getName", move |_, h| {
         h.read_any(|a| a.downcast_ref::<Box<dyn ComponentScript>>().map(|c| c.component().name(&s)))?
@@ -1427,6 +1431,7 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
     register_script_type(thread);
     register_module(thread, &sm);
     register_base(thread, &sm);
+    sprite_config::register(thread, &sm);
     register_manager(thread, &sm);
     item::register(thread, &sm);
     recipes::register(thread, &sm);
