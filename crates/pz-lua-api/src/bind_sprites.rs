@@ -10,7 +10,8 @@
 use crate::expose::{expose_class, int_arg, str_arg, JavaEnum};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
-use pz_world::sprite::{IsoSpriteManager, PropertyContainer, SpriteIdx};
+use pz_world::sprite::{IsoSprite, IsoSpriteManager, PropertyContainer, SpriteIdx};
+use pz_world::sprite::runtime::ObjectSprite;
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -89,27 +90,32 @@ impl LuaObject for ManagerObj {
 /// weak cache gives name and ID lookups the same Lua identity.
 struct SpriteRegistry {
     manager: Rc<RefCell<IsoSpriteManager>>,
-    handles: RefCell<HashMap<(SpriteIdx, bool), Weak<SpriteObj>>>,
+    handles: RefCell<HashMap<(SpriteKey, bool), Weak<SpriteObj>>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+enum SpriteKey { Tile(SpriteIdx), Native(usize) }
+
 struct SpriteObj {
     owner: Option<Rc<SpriteRegistry>>,
-    idx: SpriteIdx,
+    body: ObjectSprite,
     props: bool,
 }
 
 impl SpriteObj {
-    fn with_manager<R>(&self, f: impl FnOnce(&mut IsoSpriteManager) -> LuaResult<R>) -> LuaResult<R> {
-        let _collection_deferral = pz_kahlua::gc::defer_collection();
-        let owner = self.owner.as_ref()
-            .ok_or_else(|| LuaError::runtime("IsoSpriteManager: tile definitions are not loaded"))?;
-        let mut manager = owner.manager.try_borrow_mut()
-            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
-        if self.idx >= manager.sprites.len() {
-            return Err(LuaError::runtime("IsoSprite index is outside its tile definitions"));
+    fn edit<R>(&self, f: impl FnOnce(&pz_world::sprite::SpriteTables, &pz_world::sprite::TilePropertyAliasMap, &mut IsoSprite) -> LuaResult<R>) -> LuaResult<R> {
+        let _deferral = pz_kahlua::gc::defer_collection();
+        let registry = self.owner.as_ref().ok_or_else(|| LuaError::runtime("IsoSpriteManager is not installed"))?;
+        let mut m = registry.manager.try_borrow_mut().map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        let IsoSpriteManager { tables, alias, sprites, .. } = &mut *m;
+        match &self.body {
+            ObjectSprite::Tile(idx) => f(tables, alias, sprites.get_mut(*idx).ok_or_else(|| LuaError::runtime("invalid tile sprite"))?),
+            ObjectSprite::Native(slot) => {
+                let mut sprite = slot.try_borrow_mut().map_err(|_| LuaError::runtime("IsoSprite is in use"))?;
+                f(tables, alias, &mut sprite.data)
+            }
+            _ => Err(LuaError::runtime("IsoSprite is unavailable")),
         }
-        f(&mut manager)
     }
 }
 
@@ -146,33 +152,58 @@ pub(crate) fn square_props_value(props: PropertyContainer) -> Value {
 /// Run `f` on the `PropertyContainer` that receives `has` or `get`.
 fn with_props<R>(
     c: &NativeCall<'_>,
-    f: impl FnOnce(&IsoSpriteManager, &PropertyContainer) -> LuaResult<R>,
+    f: impl FnOnce(&pz_world::sprite::SpriteTables, &pz_world::sprite::TilePropertyAliasMap, &PropertyContainer) -> LuaResult<R>,
 ) -> LuaResult<R> {
     if let Value::Object(o) = c.arg(0) {
         if let Some(square) = o.as_any().downcast_ref::<SquareProps>() {
-            return with_manager(|m| f(m, &square.0));
+            return with_manager(|m| f(&m.tables, &m.alias, &square.0));
         }
     }
     let sprite = self_sprite(c, true)?;
-    sprite.with_manager(|m| f(m, &m.sprites[sprite.idx].properties))
+    sprite.edit(|tables, alias, s| f(tables, alias, &s.properties))
 }
 
 pub(crate) fn sprite_value(idx: Option<SpriteIdx>, props: bool) -> Value {
     idx.map_or(Value::Nil, |idx| {
-        sprite_handle(SPRITES.with_borrow(Clone::clone), idx, props)
+        sprite_handle(SPRITES.with_borrow(Clone::clone), ObjectSprite::Tile(idx), props)
     })
 }
 
-fn sprite_handle(owner: Option<Rc<SpriteRegistry>>, idx: SpriteIdx, props: bool) -> Value {
+pub(crate) fn object_sprite_value(body: &ObjectSprite, props: bool) -> LuaResult<Value> {
+    match body {
+        ObjectSprite::None => Ok(Value::Nil),
+        ObjectSprite::ArchiveUnmanaged(_) => Err(LuaError::runtime("sprite has no runtime body")),
+        body => Ok(sprite_handle(SPRITES.with_borrow(Clone::clone), body.retained(), props)),
+    }
+}
+
+pub(crate) fn object_sprite_argument(arg: &Value) -> LuaResult<ObjectSprite> {
+    let Value::Object(o) = arg else {
+        return if arg.is_nil() { Ok(ObjectSprite::None) } else { Err(LuaError::runtime("expected IsoSprite")) };
+    };
+    let sprite = o.as_any().downcast_ref::<SpriteObj>().filter(|s| !s.props)
+        .ok_or_else(|| LuaError::runtime("expected IsoSprite"))?;
+    if matches!(sprite.body, ObjectSprite::Tile(_)) && !SPRITES.with_borrow(|s|
+        s.as_ref().zip(sprite.owner.as_ref()).is_some_and(|(a,b)| Rc::ptr_eq(a,b))) {
+        return Err(LuaError::runtime("tile sprite belongs to another world"));
+    }
+    Ok(sprite.body.retained())
+}
+
+fn sprite_handle(owner: Option<Rc<SpriteRegistry>>, body: ObjectSprite, props: bool) -> Value {
+    let key = (match &body {
+        ObjectSprite::Tile(idx) => SpriteKey::Tile(*idx),
+        ObjectSprite::Native(slot) => SpriteKey::Native(Rc::as_ptr(slot) as usize),
+        _ => return Value::Nil,
+    }, props);
     let Some(registry) = &owner else {
-        return Value::Object(Rc::new(SpriteObj { owner, idx, props }));
+        return Value::Object(Rc::new(SpriteObj { owner, body, props }));
     };
     let mut handles = registry.handles.borrow_mut();
-    let key = (idx, props);
     if let Some(handle) = handles.get(&key).and_then(Weak::upgrade) {
         return Value::Object(handle);
     }
-    let handle = Rc::new(SpriteObj { owner: owner.clone(), idx, props });
+    let handle = Rc::new(SpriteObj { owner: owner.clone(), body, props });
     handles.insert(key, Rc::downgrade(&handle));
     Value::Object(handle)
 }
@@ -180,7 +211,7 @@ fn sprite_handle(owner: Option<Rc<SpriteRegistry>>, idx: SpriteIdx, props: bool)
 fn self_sprite(c: &NativeCall<'_>, props: bool) -> LuaResult<SpriteObj> {
     match c.arg(0) {
         Value::Object(o) => match o.as_any().downcast_ref::<SpriteObj>() {
-            Some(s) if s.props == props => Ok(s.clone()),
+            Some(s) if s.props == props => Ok(SpriteObj { owner: s.owner.clone(), body: s.body.retained(), props }),
             _ => Err(LuaError::runtime(format!(
                 "Expected {} but got {}",
                 if props { PROPS } else { SPRITE },
@@ -236,16 +267,16 @@ pub fn register(thread: &mut Thread) {
     let s = expose_class(thread, SPRITE, Some("java.lang.Object"));
     s.method("getProperties", |c| {
         let sprite = self_sprite(c, false)?;
-        Ok(c.push(sprite_handle(sprite.owner, sprite.idx, true)))
+        Ok(c.push(sprite_handle(sprite.owner, sprite.body, true)))
     });
     s.method("getName", |c| {
         let sprite = self_sprite(c, false)?;
-        let n = sprite.with_manager(|m| Ok(m.sprites[sprite.idx].name.clone()))?;
+        let n = sprite.edit(|_, _, s| Ok(s.name.clone()))?;
         Ok(c.push(n.map_or(Value::Nil, |n| Value::str(&n))))
     });
     s.method("getID", |c| {
         let sprite = self_sprite(c, false)?;
-        let id = sprite.with_manager(|m| Ok(m.sprites[sprite.idx].id))?;
+        let id = sprite.edit(|_, _, s| Ok(s.id))?;
         Ok(c.push(id))
     });
     let p = expose_class(thread, PROPS, Some("java.lang.Object"));
@@ -260,14 +291,8 @@ pub fn register(thread: &mut Thread) {
         } else {
             Some(String::new())
         };
-        sprite.with_manager(|m| {
-            let IsoSpriteManager {
-                tables,
-                alias,
-                sprites,
-                ..
-            } = m;
-            let props = &mut sprites[sprite.idx].properties;
+        sprite.edit(|tables, alias, s| {
+            let props = &mut s.properties;
             if let Some(f) = flag_name(&key) {
                 if let Some(flag) = tables.flag_from_string(f) {
                     props.set_flag(flag);
@@ -286,14 +311,8 @@ pub fn register(thread: &mut Thread) {
     p.method("unset", |c| {
         let sprite = self_sprite(c, true)?;
         let key = c.arg(1);
-        sprite.with_manager(|m| {
-            let IsoSpriteManager {
-                tables,
-                alias,
-                sprites,
-                ..
-            } = m;
-            let props = &mut sprites[sprite.idx].properties;
+        sprite.edit(|tables, alias, s| {
+            let props = &mut s.properties;
             if let Some(f) = flag_name(&key) {
                 if let Some(flag) = tables.flag_from_string(f) {
                     props.unset_flag(flag);
@@ -310,21 +329,19 @@ pub fn register(thread: &mut Thread) {
     // `has(String)` / `has(IsoFlagType)` / `has(IsoPropertyType)`.
     p.method("has", |c| {
         let key = c.arg(1);
-        let r = with_props(c, |m, props| {
+        let r = with_props(c, |tables, alias, props| {
             Ok(match flag_name(&key) {
-                Some(f) => m
-                    .tables
-                    .flag_from_string(f)
+                Some(f) => tables.flag_from_string(f)
                     .is_some_and(|flag| props.has(flag)),
-                None => key_name(c, 1).is_some_and(|n| props.has_name(&m.alias, &n)),
+                None => key_name(c, 1).is_some_and(|n| props.has_name(alias, &n)),
             })
         })?;
         Ok(c.push(r))
     });
     // `get(String)` / `get(IsoPropertyType)`.
     p.method("get", |c| {
-        let v = with_props(c, |m, props| {
-            Ok(key_name(c, 1).and_then(|n| props.get(&m.alias, &n).map(str::to_string)))
+        let v = with_props(c, |_, alias, props| {
+            Ok(key_name(c, 1).and_then(|n| props.get(alias, &n).map(str::to_string)))
         })?;
         Ok(c.push(v.map_or(Value::Nil, |v| Value::str(&v))))
     });

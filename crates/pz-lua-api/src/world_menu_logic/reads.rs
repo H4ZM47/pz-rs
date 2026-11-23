@@ -50,21 +50,19 @@ pub(super) fn register(thread: &mut Thread) {
     // getProperties(): `sprite == null ? null : sprite.getProperties()`.
     object.method("getProperties", |c| {
         let this = c.arg(0);
-        let sprite = tile_sprite(receiver(&this)?, "IsoObject.getProperties")?;
-        Ok(c.push(crate::bind_sprites::sprite_value(sprite, true)))
+        let body = receiver(&this)?.object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
+        let props = crate::bind_sprites::object_sprite_value(&body.sprite, true)?;
+        Ok(c.push(props))
     });
-    // getProperty(String): `getProperties()`, then its `get(key)`; null
-    // without a sprite.
     object.method("getProperty", |c| {
         let this = c.arg(0);
-        let sprite = tile_sprite(receiver(&this)?, "IsoObject.getProperty")?;
-        let props = crate::bind_sprites::sprite_value(sprite, true);
-        if props.is_nil() {
-            return Ok(c.push(Value::Nil));
-        }
-        let get = c.thread.table_get(&props, &Value::str("get"))?;
-        let v = c.thread.call1(&get, &[props, c.arg(1)])?;
-        Ok(c.push(v))
+        let mut cx = Cx { t: c.thread };
+        let props = cx.call(&this, "getProperties", &[])?;
+        let value = if props.is_nil() { Value::Nil } else {
+            let key = c.arg(1);
+            Cx { t: c.thread }.call(&props, "get", &[key])?
+        };
+        Ok(c.push(value))
     });
     // getAttachedAnimSprite(): `attachedAnimSprite`, as a copy.
     object.method("getAttachedAnimSprite", |c| {

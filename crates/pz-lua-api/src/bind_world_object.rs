@@ -375,19 +375,13 @@ pub(crate) fn register_classes(thread: &mut Thread) {
             .map_err(|e| LuaError::runtime(e.0))?;
         Ok(c.push(Value::Bool(has)))
     });
-    // getSprite(). STUB: a runtime or unmanaged archive sprite has no Lua
-    // object yet.
     object.method("getSprite", |c| {
         let object = receiver_object(c)?;
         let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
-        match &body.sprite {
-            pz_world::objects::ObjectSprite::None => Ok(c.push(Value::Nil)),
-            pz_world::objects::ObjectSprite::Tile(idx) => {
-                Ok(c.push(crate::bind_sprites::sprite_value(Some(*idx), false)))
-            }
-            _ => Err(unsupported("IsoObject.getSprite: the sprite has no Lua object")),
-        }
+        let value = crate::bind_sprites::object_sprite_value(&body.sprite, false)?;
+        Ok(c.push(value))
     });
+    sprite_edit::register(&object);
     // getOverlaySprite(): `overlaySprite`. STUB: a `WorldDictionary` name
     // id is not resolved.
     object.method("getOverlaySprite", |c| {
@@ -400,6 +394,12 @@ pub(crate) fn register_classes(thread: &mut Thread) {
         let sprites = crate::bind_sprites::manager()?;
         let idx = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?.named_map.get(name.as_str()).copied();
         Ok(c.push(crate::bind_sprites::sprite_value(idx, false)))
+    });
+    object.method("setName", |c| {
+        let object = receiver_object(c)?;
+        let name = crate::expose::str_arg(c, 1).map(|s| ObjectName::Str(s.to_string()));
+        object.try_borrow_mut().map_err(|_| borrowed("IsoObject body"))?.name = name;
+        Ok(0)
     });
     // getName(): `name`. STUB: a `WorldDictionary` name id is not resolved.
     object.method("getName", |c| {
@@ -811,3 +811,5 @@ mod position;
 mod master_object;
 #[cfg(test)]
 mod tests;
+
+mod sprite_edit;
