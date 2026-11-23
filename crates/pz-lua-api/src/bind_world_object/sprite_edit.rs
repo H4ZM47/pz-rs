@@ -15,19 +15,16 @@ pub(super) fn register(class: &crate::expose::ClassBuilder) {
     }
     class.method("setSpriteFromName", |c| {
         let name = crate::expose::str_arg(c, 1).ok_or_else(|| LuaError::runtime("expected sprite name"))?;
-        let manager = crate::bind_sprites::manager()?;
-        let idx = {
-            let mut manager = manager.try_borrow_mut().map_err(|_| borrowed("IsoSpriteManager"))?;
-            manager.named_map.get(name.as_ref()).copied().unwrap_or_else(|| manager.add_sprite_named(&name))
-        };
-        let this = c.arg(0);
-        let set = c.thread.table_get(&this, &Value::str("setSprite"))?;
-        c.thread.call1(&set, &[this, crate::bind_sprites::sprite_value(Some(idx), false)])?;
-        Ok(0)
+        set_named(c, &name)
     });
     class.method("setSprite", |c| {
         let this = c.arg(0);
         let arg = c.arg(1);
+        if let Value::Str(name) = &arg {
+            if matches!(receiver_object(c)?.try_borrow().map_err(|_| borrowed("IsoObject"))?.kind, ObjectKind::Thumpable(_)) {
+                return set_named(c, name);
+            }
+        }
         let mut retired = pz_entity::RetiredComponents::new();
         let result = (|| {
             let (sprite, name) = match &arg {
@@ -66,4 +63,22 @@ pub(super) fn register(class: &crate::expose::ClassBuilder) {
         pz_inventory::component_host::retire_components(retired);
         result
     });
+}
+
+fn set_named(c: &mut pz_kahlua::NativeCall<'_>, name: &str) -> LuaResult<usize> {
+    let object = receiver_object(c)?;
+    let manager = crate::bind_sprites::manager()?;
+    let idx = {
+        let mut manager = manager.try_borrow_mut().map_err(|_| borrowed("IsoSpriteManager"))?;
+        manager.named_map.get(name).copied().unwrap_or_else(|| manager.add_sprite_named(name))
+    };
+    let this = c.arg(0);
+    let set = c.thread.table_get(&this, &Value::str("setSprite"))?;
+    c.thread.call1(&set, &[this, crate::bind_sprites::sprite_value(Some(idx), false)])?;
+    let mut body = object.try_borrow_mut().map_err(|_| borrowed("IsoObject"))?;
+    let closed = body.sprite.tile_projection();
+    if let ObjectKind::Thumpable(t) = &mut body.kind {
+        t.closed_sprite = closed;
+    }
+    Ok(0)
 }

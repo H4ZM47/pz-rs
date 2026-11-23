@@ -264,6 +264,10 @@ fn verify_utilities_and_ambience(app: &mut super::App, streamer: bool) {
                         tank:setModData(meta)
                         assert(tank:getModData() == meta and meta["need:Base.Plank"] == nil)
                         assert(tank:hasBuildMaterials() and tank:getBuildMaterials()["Base.Plank"] == 2)
+                        tank:setSprite("fencing_01_1")
+                        assert(tank:getSprite() == IsoSpriteManager.instance:getSprite("fencing_01_1"))
+                        tank:setSpriteFromName(object:getSprite():getName())
+                        assert(tank:getSprite() == object:getSprite())
                         target:AddSpecialObject(tank)
                         assert(tank:getObjectIndex() >= 0 and tank:getFluidAmount() == amount)
                         return tank

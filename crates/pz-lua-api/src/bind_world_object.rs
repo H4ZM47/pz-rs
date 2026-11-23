@@ -620,21 +620,18 @@ pub(crate) fn adopt_square(this: &Value, object: &IsoObjectRef, square: &Value) 
 }
 
 /// `isPropaneBBQ()`: an IsoBarbecue whose sprite has `propaneTank`.
-/// STUB: a runtime or unmanaged archive sprite is not read.
 fn is_propane_bbq(object: &IsoObjectRef) -> LuaResult<bool> {
     let body = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?;
     if !matches!(body.kind, ObjectKind::Barbecue(_)) {
         return Ok(false);
     }
-    match &body.sprite {
-        pz_world::objects::ObjectSprite::None => Ok(false),
-        pz_world::objects::ObjectSprite::Tile(idx) => {
-            let sprites = crate::bind_sprites::manager()?;
-            let sprites = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
-            Ok(sprites.has_prop(&sprites.sprites[*idx], "propaneTank"))
-        }
-        _ => Err(unsupported("IsoObject.isPropaneBBQ: the sprite is not read")),
+    if body.sprite.is_none() {
+        return Ok(false);
     }
+    let sprites = crate::bind_sprites::manager()?;
+    let sprites = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
+    let sprite = body.sprite.try_read(&sprites).map_err(host_error)?;
+    Ok(sprite.as_deref().is_some_and(|s| sprites.has_prop(s, "propaneTank")))
 }
 
 fn receiver_object(c: &pz_kahlua::NativeCall<'_>) -> LuaResult<IsoObjectRef> {
