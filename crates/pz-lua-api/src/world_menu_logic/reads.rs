@@ -5,7 +5,7 @@ use std::any::Any;
 use std::rc::Rc;
 
 use pz_kahlua::value::LuaObject;
-use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
+use pz_kahlua::{ LuaResult, NativeCall, Thread, Value};
 
 use super::Cx;
 use crate::bind_world_object::{borrowed, object_from_value, object_square, LuaWorldObject, ISO_OBJECT};

@@ -307,6 +307,10 @@ fn verify_pump_supply(app: &mut super::App) {
         set("AllowExteriorGenerator", false)
         set("ElecShutModifier", -1)
         set("FuelStationGasInfinite", false)
+        assert(getSquare(10689.75, 9377.25, 0) == sq)
+        local plant = sq:addTileObject('vegetation_indoor_01_7')
+        local suffix = tonumber(string.match(plant:getSprite():getName(), 'vegetation_indoor_01_(%d+)'))
+        assert(suffix and suffix >= 7 and suffix <= 12)
         local tile = 'fencing_01_1'
         local sign = sq:addTileObject(tile)
         local shared = sign:getSprite()

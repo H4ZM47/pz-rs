@@ -3,6 +3,16 @@ use super::*;
 use pz_world::sprite::runtime::{create_runtime_sprite, load_single_texture, ObjectSprite};
 
 pub(super) fn register(class: &crate::expose::ClassBuilder) {
+    for method in ["transmitUpdatedSpriteToClients", "transmitCompleteItemToClients"] {
+        class.method(method, move |c| {
+            receiver_object(c)?;
+            // Both IsoObject methods enter the UDP send branch only on a server.
+            if crate::bind_core::shared_core().borrow().is_server {
+                return Err(unsupported(format!("{method}: server object replication")));
+            }
+            Ok(0)
+        });
+    }
     class.method("setSpriteFromName", |c| {
         let name = crate::expose::str_arg(c, 1).ok_or_else(|| LuaError::runtime("expected sprite name"))?;
         let manager = crate::bind_sprites::manager()?;

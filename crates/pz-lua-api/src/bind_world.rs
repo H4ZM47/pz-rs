@@ -598,6 +598,11 @@ fn register_world(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::even
     register_grid_square(thread);
     register_iso_world(thread);
     crate::expose::global(thread, "getCell", |c| Ok(c.push(current_cell())));
+    crate::expose::global(thread, "getSquare", |c| {
+        if current_cell().is_nil() { return Err(crate::world_menu_logic::null_pointer()); }
+        let [x, y, z] = [0, 1, 2].map(|i| fastfloor_d(num_arg(c, i)));
+        Ok(c.push(square_value(x, y, z)))
+    });
     lua_world::register_zone(thread);
 }
 
