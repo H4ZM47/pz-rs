@@ -1112,7 +1112,7 @@ mod tests {
         fn instance_stop(&mut self, inst: i64, _immediate: bool) {
             self.0.borrow_mut().push(format!("stop {inst}"));
         }
-        fn instance_release(&mut self, _inst: i64) {}
+        fn instance_release(&mut self, inst: i64) { self.0.borrow_mut().push(format!("release {inst}")); }
         fn instance_playback_state(&mut self, _inst: i64) -> pz_sound::backend::PlaybackState {
             pz_sound::backend::PlaybackState::Playing
         }
@@ -1166,6 +1166,44 @@ mod tests {
         assert_eq!(log[..2], ["create", "start 42"], "{log:?}");
         assert!(log.contains(&"param 42 (7, 9) 1.25".to_string()), "{log:?}");
         assert!(log.contains(&"stop 42".to_string()), "{log:?}");
+    }
+
+    #[test]
+    fn positioned_audio_handles_follow_playback_and_world_disposal() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let system = Rc::new(RefCell::new(pz_sound::system::SoundSystem::new(
+            Box::new(VoiceBackend(log.clone())), Default::default(), 1,
+        )));
+        let previous = sound_system();
+        install_sound_system(system.clone());
+        let mut t = setup();
+        let result = run(&mut t, r#"
+            local sm = getSoundManager()
+            kept = sm:PlayWorldSoundImpl("VoiceMaleShoutHey", false, 7, 9, 2, 0, 10, 1, false)
+            kept:setVolume(0.25)
+            kept:pause()
+            kept:start()
+            return kept:isPlaying(), kept:getName(), sm:PlaySound("Missing", false, 1)
+        "#).unwrap();
+        assert_eq!(strs(&result), ["true", "null", "null"]);
+        system.borrow_mut().with_world_emitters(|pool, ctx| {
+            let owner = pool.current()[0].borrow();
+            assert_eq!([owner.x, owner.y, owner.z], [7.5, 9.5, 2.0]);
+            drop(owner);
+            pool.update(1, ctx);
+        });
+        assert!(log.borrow().contains(&"start 42".into()));
+        let result = run(&mut t, r#"
+            local sm = getSoundManager()
+            sm:StopSound(kept)
+            queued = sm:PlaySound("VoiceMaleShoutHey", false, 1)
+            return kept:isPlaying(), queued:isPlaying()
+        "#).unwrap();
+        assert_eq!(strs(&result), ["false", "true"]);
+        drop(system.borrow_mut().with_world_emitters(|pool, ctx| pool.stop_and_reset(ctx)));
+        assert_eq!(strs(&run(&mut t, "return queued:isPlaying()").unwrap()), ["false"]);
+        assert_eq!(log.borrow().iter().filter(|s| *s == "release 42").count(), 2);
+        install_sound_system(previous);
     }
 
     #[test]

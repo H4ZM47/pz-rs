@@ -264,6 +264,12 @@ impl WorldSoundManager {
         }
     }
 
+    /// KillCell followed by IsoCell.Dispose drops the chunk-owned sound lists.
+    pub fn dispose_cell(&mut self) {
+        self.kill_cell();
+        self.chunk_lists.clear();
+    }
+
     /// `getHearingMultiplier(int)`.
     pub fn hearing_multiplier(hearing: i32) -> f32 {
         match hearing {
@@ -974,6 +980,18 @@ mod tests {
         assert!(m.chunk_sounds(1, 1).is_empty());
         // Released sounds are reused.
         assert_eq!(m.add_sound(&mut w, None, 5, 5, 0, 5, 10), Some(id));
+    }
+
+    #[test]
+    fn cell_disposal_drops_chunk_links_before_reusing_sound_ids() {
+        let mut world = TestWorld::default();
+        let mut manager = WorldSoundManager::new();
+        let id = manager.add_sound(&mut world, None, 5, 5, 0, 5, 10).unwrap();
+        assert!(manager.chunk_sounds(0, 0).contains(&id));
+        manager.dispose_cell();
+        assert!(manager.sound_list.is_empty());
+        assert_eq!(manager.add_sound(&mut world, None, 105, 105, 0, 5, 10), Some(id));
+        assert!(manager.chunk_sounds(0, 0).is_empty());
     }
 
     #[test]

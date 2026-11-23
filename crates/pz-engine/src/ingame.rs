@@ -420,6 +420,7 @@ impl GameState for IngameState {
         // `VehicleIDMap`, `IsoChunk`, `ChunkChecksum`,
         // the atlases and `FBORenderChunkManager.Reset`.
         // `IsoWorld.instance.KillCell()`: the cell and the world's state go.
+        pz_lua_api::bind_zombie::shared_world_sounds().borrow_mut().dispose_cell();
         pz_lua_api::bind_world::set_cell(None);
         pz_lua_api::bind_sprites::install_sprite_manager(None);
         pz_lua_api::bind_world::square_queries::install_square_light(None);
@@ -436,8 +437,7 @@ impl GameState for IngameState {
         *cx.world = None;
         let retired_emitters = pz_lua_api::bind_audio::sound_system()
             .borrow_mut()
-            .world_emitters
-            .reset();
+            .with_world_emitters(|pool, ctx| pool.stop_and_reset(ctx));
         drop(retired_emitters);
         pz_lua_api::item_sound::reset();
         // `BaseSoundManager.stop`, before the new menu environment starts.

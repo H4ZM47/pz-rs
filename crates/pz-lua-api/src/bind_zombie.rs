@@ -6,9 +6,7 @@
 //! `WorldSoundManager:addSound/addSoundRepeating/getStressFromSounds`)
 //! over `pz_audio::world_sound`.
 //!
-//! The sound manager is one shared instance with the cell installed by
-//! the world's owner ([`install_world_sounds`]); without one the cell is
-//! empty (`pz_audio::world_sound::NoWorld`).
+//! Sounds use the active cell, or the host supplied by [`install_world_sounds`].
 
 use crate::bind_character_sim::{chr_of, with_ctx, CharacterObject, ISO_GAME_CHARACTER_CLASS, ISO_ZOMBIE_CLASS};
 use crate::bind_states::with_state_cx;
@@ -28,13 +26,13 @@ type SharedSoundWorld = Rc<RefCell<dyn SoundWorld>>;
 
 thread_local! {
     static SOUNDS: RefCell<SharedSounds> = RefCell::new(Rc::new(RefCell::new(WorldSoundManager::new())));
-    static SOUND_WORLD: RefCell<SharedSoundWorld> = RefCell::new(Rc::new(RefCell::new(NoWorld)));
+    static SOUND_WORLD: RefCell<Option<SharedSoundWorld>> = const { RefCell::new(None) };
 }
 
 /// Installs the shared `WorldSoundManager.instance` and the cell it reads.
 pub fn install_world_sounds(sounds: SharedSounds, world: SharedSoundWorld) {
     SOUNDS.with(|s| *s.borrow_mut() = sounds);
-    SOUND_WORLD.with(|w| *w.borrow_mut() = world);
+    SOUND_WORLD.with(|w| *w.borrow_mut() = Some(world));
 }
 
 /// `WorldSoundManager.instance`.
@@ -72,16 +70,17 @@ thread_local! {
 
 /// A Lua value as a sound source: a character by its stable id; any other
 /// object by identity.
-fn source_of(v: &Value) -> Option<SoundSource> {
-    match v {
+fn source_of(v: &Value) -> LuaResult<Option<SoundSource>> {
+    Ok(match v {
         Value::Object(o) => {
             if let Some(c) = o.as_any().downcast_ref::<CharacterObject>() {
-                return Some(c.0.borrow().sound_source());
+                let character = c.0.try_borrow().map_err(|_| crate::bind_world_object::borrowed("world sound source"))?;
+                return Ok(Some(character.sound_source()));
             }
             Some(SoundSource { id: (Rc::as_ptr(o) as *const () as usize as u64) | (1 << 63), ..Default::default() })
         }
         _ => None,
-    }
+    })
 }
 
 fn sound_value(id: Option<SoundId>) -> Value {
@@ -98,7 +97,7 @@ fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Val
     let n = c.nargs();
     let stress = n > a + 6 && bool_arg(c, a + 6);
     let (ignore, stress_mod) = if n > a + 8 { (num_arg(c, a + 7) as f32, num_arg(c, a + 8) as f32) } else { (0.0, 1.0) };
-    let source = source_of(&receiver);
+    let source = source_of(&receiver)?;
     // WorldSound.init runs the callback before adding the sound to its
     // chunks and population. The callback may add another sound.
     crate::bind_character_sim::fire_event(c.thread, "OnWorldSound",
@@ -112,6 +111,10 @@ fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Val
             manager.add_sound_stress(world, source, x, y, z, radius, volume, stress, ignore, stress_mod)
         }
     };
+    if let Some(world) = SOUND_WORLD.with(|w| w.borrow().clone()) {
+        let mut world = world.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound host"))?;
+        return Ok(sound_value(add(&mut manager, &mut *world)));
+    }
     let id = crate::bind_world::with_world_state_cell(|w| -> LuaResult<_> {
         let mut state = w.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound cell"))?;
         if let Some(cell) = state.cell.as_ref() {
@@ -125,9 +128,7 @@ fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Val
             }
             Ok(id)
         } else {
-            let world = SOUND_WORLD.with(|w| w.borrow().clone());
-            let mut world = world.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound host"))?;
-            Ok(add(&mut manager, &mut *world))
+            Ok(add(&mut manager, &mut NoWorld))
         }
     })?;
     Ok(sound_value(id))

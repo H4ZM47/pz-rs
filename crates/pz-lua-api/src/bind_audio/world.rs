@@ -17,6 +17,10 @@ fn emitter(c: &NativeCall<'_>) -> LuaResult<EmitterRef> {
     Ok(down::<WorldAudio>(&obj::<WorldAudio>(c, 0)?).0.clone())
 }
 
+fn stop(emitter: EmitterRef) {
+    sound_system().borrow_mut().with_world_emitters(|_, ctx| emitter.borrow_mut().stop_all(ctx));
+}
+
 pub(super) fn register_audio(thread: &mut Thread) {
     let b = expose_class(thread, FMOD_AUDIO, None);
     b.method("isPlaying", |c| {
@@ -30,10 +34,7 @@ pub(super) fn register_audio(thread: &mut Thread) {
         Ok(0)
     });
     b.method("stop", |c| {
-        let emitter = emitter(c)?;
-        sound_system()
-            .borrow_mut()
-            .with_world_emitters(|_, ctx| emitter.borrow_mut().stop_all(ctx));
+        stop(emitter(c)?);
         Ok(0)
     });
     b.method("getName", |c| {
@@ -49,6 +50,11 @@ pub(super) fn register_audio(thread: &mut Thread) {
 }
 
 pub(super) fn register_manager(b: &crate::expose::ClassBuilder) {
+    b.method("StopSound", |c| {
+        sm_this(c)?;
+        stop(down::<WorldAudio>(&obj::<WorldAudio>(c, 1)?).0.clone());
+        Ok(0)
+    });
     b.method("PlaySound", |c| {
         sm_this(c)?;
         // The four-parameter overload returns null.
@@ -95,6 +101,7 @@ pub(super) fn register_manager(b: &crate::expose::ClassBuilder) {
                     2
                 };
                 let Some(pos) = crate::bind_world::square_coords(&c.arg(i)) else {
+                    if method == "PlayWorldSoundWavImpl" { return Err(npe("IsoGridSquare.getX()")); }
                     return if choices {
                         Ok(0)
                     } else {

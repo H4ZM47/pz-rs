@@ -83,6 +83,14 @@ impl WorldEmitters {
         self.free.len()
     }
 
+    /// Stop queued and playing backend instances before discarding this world.
+    pub fn stop_and_reset(&mut self, ctx: &mut crate::emitter::Ctx) -> Vec<EmitterRef> {
+        for emitter in &self.current {
+            emitter.borrow_mut().stop_all(ctx);
+        }
+        self.reset()
+    }
+
     /// `KillCell` replaces IsoWorld with a new instance. Return the old
     /// owning slots so their payloads drop after the caller's system borrow.
     pub fn reset(&mut self) -> Vec<EmitterRef> {
