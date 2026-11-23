@@ -14,8 +14,21 @@ fn current_square(chr: &LuaGameCharacterRef) -> LuaResult<Option<pz_world::Squar
         .map_err(host_error)
 }
 
+/// FMODManager counts occupied local player slots, including deaf listeners.
+fn upstairs(chr: &LuaGameCharacterRef) -> LuaResult<bool> {
+    let mut locals = (0..crate::bind_players::num_players().clamp(0, crate::bind_players::MAX_PLAYERS as i32) as usize)
+        .filter_map(crate::bind_players::player);
+    let Some(listener) = locals.next() else { return Ok(false) };
+    if locals.next().is_some() || Rc::ptr_eq(&listener, chr) { return Ok(false); }
+    let listener = listener.try_borrow().map_err(|_| borrowed("IsoPlayer listener"))?;
+    let sm = crate::bind_registry::shared_script_manager();
+    Ok(pz_world::java::fastfloor(listener.vars.z) < pz_world::java::fastfloor(chr.borrow().vars.z)
+        && !listener.has_trait(&sm, "DEAF").map_err(crate::bind_registry::java_error)?)
+}
+
 fn materials(chr: &LuaGameCharacterRef) -> LuaResult<(usize, u8)> {
-    let Some(square) = current_square(chr)? else { return Ok((2, 0)) };
+    let above = upstairs(chr)?;
+    let Some(square) = current_square(chr)? else { return Ok((if above { 0 } else { 2 }, 0)) };
     let manager = crate::bind_sprites::manager()?;
     let manager = manager.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
     let square = square.try_borrow().map_err(|_| borrowed("IsoGridSquare"))?;
@@ -39,7 +52,8 @@ fn materials(chr: &LuaGameCharacterRef) -> LuaResult<(usize, u8)> {
             };
         }
     }
-    Ok((material.unwrap_or_else(|| if square.has_stairs(&manager) { 7 } else { 2 }), overlay))
+    let primary = if above { 0 } else { material.unwrap_or_else(|| if square.has_stairs(&manager) { 7 } else { 2 }) };
+    Ok((primary, overlay))
 }
 
 fn shoe_type(chr: &LuaGameCharacterRef) -> usize {
@@ -63,7 +77,8 @@ pub(super) fn play(chr: &LuaGameCharacterRef, name: &str) -> LuaResult<()> {
     let actor = chr.borrow();
     let position = [actor.vars.x, actor.vars.y, actor.vars.z];
     let params = [("FootstepMaterial", material as f32), ("FootstepMaterial2", f32::from(overlay)),
-        ("ShoeType", shoes as f32), ("CharacterMovementSpeed", f32::from(actor.player.sound_movement_speed))];
+        ("ShoeType", shoes as f32), ("EquippedBaggageContainer", f32::from(actor.player.sound_baggage_container)),
+        ("CharacterMovementSpeed", f32::from(actor.player.sound_movement_speed))];
     drop(actor);
     with_audio(chr, |a| {
         let mut e = a.footsteps.borrow_mut();

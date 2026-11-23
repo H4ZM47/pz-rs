@@ -314,7 +314,8 @@ impl<I: 'static> GameCharacter<I> {
         if self.update_while_dead() {
             return Ok(ControlFlow::Continue(true));
         }
-        // updateAttackLoopSound .. updateEquippedBaggageContainer: sound.
+        // updateAttackLoopSound through updateVocalProperties precede baggage.
+        self.update_equipped_baggage_container(sm, ctx)?;
         self.update_sneak_key(input);
         self.check_is_near_wall(cx);
         // checkIsNearVehicle: TODO(vehicles).

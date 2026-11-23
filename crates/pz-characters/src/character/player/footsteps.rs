@@ -6,6 +6,32 @@ use crate::Characters;
 use pz_scripts::{ScriptManager, ScriptResult};
 
 impl<I: 'static> GameCharacter<I> {
+    /// IsoPlayer.updateEquippedBaggageContainer examines back, secondary and
+    /// primary in that order. A container without a known label retains the
+    /// last parameter value (ParameterEquippedBaggageContainer.setContainerType).
+    pub(super) fn update_equipped_baggage_container(&mut self, sm: &ScriptManager, ctx: &dyn SimContext) -> ScriptResult {
+        if !self.is_local_player(ctx) { return Ok(()); }
+        let back = if self.items.worn_items.as_ref().is_some_and(|w| !w.is_empty()) {
+            self.clothing_item(sm, "BACK")?
+        } else { None };
+        for id in [back, self.items.secondary_hand_item, self.items.primary_hand_item].into_iter().flatten() {
+            let Some(item) = self.items.item(id) else { continue };
+            let item = item.borrow();
+            if !matches!(item.kind, pz_inventory::item::ItemKind::Container(_)) { continue; }
+            if let Some(script) = super::super::items::script_item(sm, &item) {
+                let script = script.borrow();
+                let labels = ["None", "HikingBag", "DuffleBag", "PlasticBag", "SchoolBag", "ToteBag", "GarbageBag"];
+                if let Some(label) = script.sound_parameter("EquippedBaggageContainer")
+                    .and_then(|name| labels.iter().position(|&label| label == name)) {
+                    self.player.sound_baggage_container = label as u8;
+                }
+            }
+            return Ok(());
+        }
+        self.player.sound_baggage_container = 0;
+        Ok(())
+    }
+
     pub fn player_footstep_gait(&mut self, gait: &str) -> f32 {
         let (speed, volume) = match gait {
             "sneak_walk" => (0, 0.25),

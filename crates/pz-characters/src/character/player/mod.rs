@@ -33,6 +33,8 @@ pub use vision::PlayerRenderInputs;
 pub struct PlayerControl {
     /// ParameterCharacterMovementSpeed from the most recent footstep.
     pub sound_movement_speed: u8,
+    /// ParameterEquippedBaggageContainer, refreshed during the local player update.
+    pub sound_baggage_container: u8,
     pub check_nearby_rooms: f32,
     pub num_nearby_buildings_rooms: f32,
     pub music_threat_levels: std::rc::Rc<music::MusicThreatLevels>,
@@ -184,6 +186,7 @@ impl Default for PlayerControl {
     fn default() -> Self {
         PlayerControl {
             sound_movement_speed: 3,
+            sound_baggage_container: 0,
             check_nearby_rooms: 0.0,
             num_nearby_buildings_rooms: 0.0,
             next_rand_xp_check_times: std::collections::HashMap::new(),
