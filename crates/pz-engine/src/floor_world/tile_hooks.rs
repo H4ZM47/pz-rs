@@ -138,7 +138,7 @@ pub(super) fn check_tile_resources(
         return Err(unsupported("removing an ambient sound or powered map tile"));
     }
     if flag("HasLightOnSprite")
-        || ["RedLight", "GreenLight", "BlueLight"]
+        || ["lightR", "lightG", "lightB"]
             .iter()
             .all(|name| sprites.has_prop(&sprite, name))
     {
