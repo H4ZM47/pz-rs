@@ -1,12 +1,13 @@
 //! IsoGridSquare.addTileObject(String) uses the same live mutation resources
 //! as the world's other tile edits. Lua callbacks run after the edit guards end.
 use super::*;
+use pz_lua_api::bind_map_objects::PlacedTile;
 use pz_lua_api::{bind_map_objects, bind_world::square_queries::square_object_value};
 use pz_world::square_mutation::{MutationEnv, NoMutationHooks, RenderSquareHooks};
 use pz_world::{IsoObject, IsoObjectRef, ObjectKind, ObjectSlot, SquareRef};
 
 impl LiveFloorWorld {
-    fn add_tile(&self, pos: SquarePos, name: &str) -> HostResult<(IsoObjectRef, SquareRef)> {
+    fn add_tile(&self, pos: SquarePos, tile: PlacedTile) -> HostResult<(IsoObjectRef, SquareRef)> {
         self.validate()?;
         let sprites = self.sprites.upgrade().ok_or_else(|| unsupported("tile sprites"))?;
         let regions = self.regions.upgrade().ok_or_else(|| unsupported("tile regions"))?;
@@ -26,18 +27,28 @@ impl LiveFloorWorld {
             let cell = world.cell.as_mut().ok_or_else(|| unsupported("tile cell"))?;
             let meta = world.meta_grid.as_ref().ok_or_else(|| unsupported("tile meta grid"))?;
             let square = cell.get_grid_square(pos.0, pos.1, pos.2).ok_or_else(|| unsupported("tile square"))?;
-            let mut object = IsoObject::new(0, ObjectKind::Object, sprites.named_map.get(name).copied());
-            object.tile = Some(name.to_owned());
-            object.replace_square(Some(&square), &mut pz_entity::RetiredComponents::new());
-            let slot = ObjectSlot::new(object);
+            let (slot, index, special) = match tile {
+                PlacedTile::Named(name) => {
+                    let mut object = IsoObject::new(0, ObjectKind::Object, sprites.named_map.get(&name).copied());
+                    object.tile = Some(name);
+                    object.replace_square(Some(&square), &mut pz_entity::RetiredComponents::new());
+                    (ObjectSlot::new(object), -1, false)
+                }
+                PlacedTile::Existing { object, index, special } => (ObjectSlot::retain(&object), index, special),
+            };
             let object = slot.ref_handle();
             let mut pathfind = NoMutationHooks;
             let mut hooks = NoMutationHooks;
-            MutationEnv {
+            let mut env = MutationEnv {
                 cell, meta, sprites: &mut sprites, regions: &mut regions, doors: &doors,
                 rand: &mut StandardRand, world: &mut hooks, pathfind: &mut pathfind, render,
                 num_players: players,
-            }.add_tile_object(pos, slot, -1)?;
+            };
+            if special {
+                env.add_special_object(pos, slot, index)?;
+            } else {
+                env.add_tile_object(pos, slot, index)?;
+            }
             world.geometry.notify(cell, meta, &sprites, pos);
             Ok((object, square))
         })
@@ -49,14 +60,16 @@ impl IsoWorld {
         let service = Rc::downgrade(service);
         // WorldDictionary's persisted sprite-name overrides are loaded at world entry.
         let saved_names = pz_lua_api::bind_world::with_world(|world| world.sprite_names.clone());
-        bind_map_objects::install_tile_placement(Some(Rc::new(move |thread, pos, name| {
+        bind_map_objects::install_tile_placement(Some(Rc::new(move |thread, pos, tile| {
+            let named = matches!(tile, PlacedTile::Named(_));
             let service = service.upgrade().ok_or_else(|| pz_kahlua::LuaError::runtime("tile world has closed"))?;
             let ((object, square), sprites) = {
                 let service = service.try_borrow().map_err(|_| pz_kahlua::LuaError::runtime("tile world is in use"))?;
-                let result = service.add_tile(pos, name).map_err(|e| pz_kahlua::LuaError::runtime(format!("{e:?}")))?;
+                let result = service.add_tile(pos, tile).map_err(|e| pz_kahlua::LuaError::runtime(format!("{e:?}")))?;
                 let sprites = service.sprites.upgrade().ok_or_else(|| pz_kahlua::LuaError::runtime("tile sprites have expired"))?;
                 (result, sprites)
             };
+            if !named { return Ok(pz_kahlua::Value::Nil); }
             for new_objects in [true, false] {
                 bind_map_objects::dispatch_square(thread, &square, &sprites, Some(&saved_names), new_objects)?;
             }

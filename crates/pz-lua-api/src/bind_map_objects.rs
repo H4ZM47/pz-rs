@@ -202,7 +202,12 @@ pub fn dispatch_square(
     Ok(())
 }
 
-pub type TilePlacement = Rc<dyn Fn(&mut Thread, SquarePos, &str) -> LuaResult<Value>>;
+pub enum PlacedTile {
+    Named(String),
+    Existing { object: IsoObjectRef, index: i32, special: bool },
+}
+
+pub type TilePlacement = Rc<dyn Fn(&mut Thread, SquarePos, PlacedTile) -> LuaResult<Value>>;
 
 thread_local! {
     static TILE_PLACEMENT: RefCell<Option<TilePlacement>> = RefCell::new(None);
@@ -212,11 +217,21 @@ pub fn install_tile_placement(place: Option<TilePlacement>) {
     TILE_PLACEMENT.with(|host| host.replace(place));
 }
 
-pub(crate) fn add_tile_object(c: &mut NativeCall<'_>, pos: SquarePos) -> LuaResult<Value> {
-    let name = crate::expose::str_arg(c, 1).ok_or_else(|| LuaError::runtime("expected tile sprite name"))?;
+pub(crate) fn place_tile(c: &mut NativeCall<'_>, pos: SquarePos, special: Option<bool>) -> LuaResult<Value> {
+    let tile = if let Some(special) = special {
+        let value = c.arg(1);
+        if value.is_nil() { return Ok(Value::Nil); }
+        let object = crate::bind_world_object::object_from_value(&value)
+            .ok_or_else(|| crate::bind_java_util::class_cast(&value, crate::bind_world_object::ISO_OBJECT))?;
+        let index = if c.nargs() >= 3 { int_arg(c, 2) } else { -1 };
+        PlacedTile::Existing { object: object.object.clone(), index, special }
+    } else {
+        let name = crate::expose::str_arg(c, 1).ok_or_else(|| LuaError::runtime("expected tile sprite name"))?;
+        PlacedTile::Named(name.to_string())
+    };
     let place = TILE_PLACEMENT.with(|host| host.borrow().clone())
         .ok_or_else(|| LuaError::runtime("tile placement requires a loaded world"))?;
-    place(c.thread, pos, &name)
+    place(c.thread, pos, tile)
 }
 
 /// `MapObjects.Reset()`.

@@ -2071,8 +2071,15 @@ fn register_grid_square(thread: &mut Thread) {
     square_walk::register(&b);
     get(&b, "addTileObject", |c| {
         let pos = self_square(c)?;
-        crate::bind_map_objects::add_tile_object(c, pos)
+        crate::bind_map_objects::place_tile(c, pos, None)
     });
+    for (method, special) in [("AddTileObject", false), ("AddSpecialObject", true)] {
+        void(&b, method, move |c| {
+            let pos = self_square(c)?;
+            crate::bind_map_objects::place_tile(c, pos, Some(special))?;
+            Ok(())
+        });
+    }
     square_queries::register(&b);
     power::register(&b);
     for (method, local) in [("playSound", false), ("playSoundLocal", true)] {
