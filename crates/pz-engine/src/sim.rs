@@ -12,6 +12,7 @@ use std::rc::Rc;
 /// simulation raises are collected in [`FrameSim::events`].
 pub struct FrameSim {
     pub game_time: Rc<RefCell<GameTime>>,
+    input: std::cell::OnceCell<pz_player_input::EnginePlayerInput>,
     /// `Core.bDebug`.
     pub debug: bool,
     /// `Core.getInstance().getGameMode()`.
@@ -57,6 +58,7 @@ impl FrameSim {
             let g = game_time.borrow();
             FrameSim {
                 game_time: game_time.clone(),
+                input: Default::default(),
                 debug,
                 game_mode,
                 multiplier: g.get_multiplier(&ctx),
@@ -73,6 +75,10 @@ impl FrameSim {
         s
     }
 
+    pub(crate) fn player_input(&self) -> &pz_player_input::EnginePlayerInput {
+        self.input.get_or_init(pz_player_input::EnginePlayerInput::capture)
+    }
+
     /// The events raised since the last call.
     pub fn take_events(&self) -> Vec<SimEvent> {
         std::mem::take(&mut self.events.borrow_mut())
@@ -84,6 +90,7 @@ impl FrameSim {
 pub(crate) struct PlayerSim<'a>(&'a FrameSim);
 
 impl SimContext for PlayerSim<'_> {
+    fn easy_climbing(&self) -> bool { self.0.easy_climbing() }
     fn is_debug(&self) -> bool {
         self.0.is_debug()
     }
@@ -152,6 +159,7 @@ impl SimContext for PlayerSim<'_> {
 }
 
 impl SimContext for FrameSim {
+    fn easy_climbing(&self) -> bool { pz_lua_api::bind_sandbox::current_bool("EasyClimbing").unwrap_or(false) }
     fn is_debug(&self) -> bool {
         self.debug
     }

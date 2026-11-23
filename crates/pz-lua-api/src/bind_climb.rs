@@ -123,7 +123,7 @@ fn can_climb_through(c: &NativeCall<'_>) -> LuaResult<bool> {
 
 /// Toggle the pane unless it is permanently locked, smashed or barricaded
 /// on the supplied actor's side. Dispatch after releasing world and sprite borrows.
-/// TODO(port): alarms, pathfinder invalidation and local music intensity.
+/// TODO(port): alarms and pathfinder invalidation.
 fn toggle_window(c: &mut NativeCall<'_>) -> LuaResult<()> {
     let this = c.arg(0);
     let world = crate::bind_world_object::object_from_value(&this)
@@ -145,7 +145,26 @@ fn toggle_window(c: &mut NativeCall<'_>) -> LuaResult<()> {
             .map_err(crate::bind_world_object::host_error)
     })?;
     drop(sprites);
-    if changed { crate::bind_character_sim::fire_container_update(c.thread); }
+    if changed {
+        crate::bind_character_sim::fire_container_update(c.thread);
+        if let Value::Object(handle) = c.arg(1) {
+            if let Some(actor) = handle.as_any().downcast_ref::<crate::bind_character_sim::CharacterObject>() {
+                window_music(&actor.0, &world.object)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The pane and local-player status are read after OnContainerUpdate returns.
+pub fn window_music(player: &crate::bind_character_sim::LuaGameCharacterRef, window: &pz_world::IsoObjectRef) -> LuaResult<()> {
+    let player = player.try_borrow().map_err(|_| borrowed("window music player"))?;
+    if !player.is_player() || !player.in_players { return Ok(()) }
+    let window = window.try_borrow().map_err(|_| borrowed("window music target"))?;
+    if let pz_world::objects::ObjectKind::Window(pane) = &window.kind {
+        let id = if pane.open { "WindowOpen" } else { "WindowClose" };
+        crate::bind_audio::intensity_config().borrow().trigger(Some(id), &player.player.music_intensity_events);
+    }
     Ok(())
 }
 

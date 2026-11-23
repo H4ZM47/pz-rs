@@ -411,6 +411,9 @@ pub trait StatesEngine {
     fn object_removed(&mut self, _sq: (i32, i32, i32), _obj: &IsoObjectRef, _destroyed: bool) {}
     /// `LuaEventManager.triggerEvent("OnContainerUpdate")`.
     fn on_container_update(&mut self) {}
+    fn on_window_toggled(&mut self, _actor: i32, _window: &IsoObjectRef) {
+        self.on_container_update();
+    }
     /// `building.forceAwake()`.
     fn force_awake(&mut self, _building: BuildingIdx) {}
     /// `AmbientStreamManager.instance.doAlarm(def)` for an alarmed building.
@@ -430,7 +433,7 @@ pub trait StatesEngine {
             if pz_world::world_state::toggle_window(cell, meta, sprites, (window.x, window.y, window.z),
                 &object, Some((actor.x, actor.y)))? {
                 self.square_changed((window.x, window.y, window.z));
-                self.on_container_update();
+                self.on_window_toggled(actor.id, &object);
             }
         }
         Ok(())

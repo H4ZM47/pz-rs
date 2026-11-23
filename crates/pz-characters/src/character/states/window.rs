@@ -47,6 +47,7 @@ pub const SMASH_CLIMB_THROUGH_WINDOW: Param<bool> =
 pub enum WindowAction {
     Open,
     Close,
+    Smash,
 }
 
 /// `OpenWindowState`.
@@ -187,6 +188,7 @@ impl<I: 'static> GameCharacter<I> {
         let (state, param, event) = match action {
             WindowAction::Open => (ids::OPEN_WINDOW, OPEN_WINDOW, "EventOpenWindow"),
             WindowAction::Close => (ids::CLOSE_WINDOW, CLOSE_WINDOW, "EventCloseWindow"),
+            WindowAction::Smash => (ids::SMASH_WINDOW, SMASH_ISO_WINDOW, "EventSmashWindow"),
         };
         self.state.params.clear(state);
         param.set(&mut self.state.params, Some(window));
@@ -198,12 +200,7 @@ impl<I: 'static> GameCharacter<I> {
         let Some(w) = cx.world.window_info(window) else {
             return;
         };
-        if w.invincible {
-            return;
-        }
-        self.state.params.clear(ids::SMASH_WINDOW);
-        SMASH_ISO_WINDOW.set(&mut self.state.params, Some(window));
-        self.report_event("EventSmashWindow");
+        self.request_window_action(window, w, WindowAction::Smash);
     }
 
     /// `smashCarWindow(part)`: the window of `part` on `vehicle`.

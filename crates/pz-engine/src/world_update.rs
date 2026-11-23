@@ -204,6 +204,16 @@ struct EngineStates<'a> {
 }
 
 impl StatesEngine for EngineStates<'_> {
+    fn player_input(&self) -> Option<&dyn pz_characters::character::player::PlayerInput> {
+        self.sim.map(|sim| sim.player_input() as &dyn pz_characters::character::player::PlayerInput)
+    }
+
+    fn on_window_toggled(&mut self, actor: i32, window: &pz_world::IsoObjectRef) {
+        if let Some(sim) = self.sim {
+            pz_characters::character::SimContext::event(sim, SimEvent::WindowToggled { actor, window: window.clone() });
+        }
+    }
+
     fn closing_windows(&self) -> &[pz_world_states::ClosingWindow] { &self.closing_windows }
 
     fn on_container_update(&mut self) {
@@ -729,7 +739,7 @@ impl IsoWorld {
     /// levels (`frameMod` buckets by distance); everything updates every
     /// frame.
     fn update_characters(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
-        let input = pz_player_input::EnginePlayerInput::capture();
+        let input = sim.player_input();
         let sm = pz_lua_api::bind_registry::shared_script_manager();
         let chars = shared_characters();
         let player_sim = sim.player_context();
@@ -755,7 +765,7 @@ impl IsoWorld {
                     let mut chr = p.borrow_mut();
                     if first_phase {
                         chr.preupdate_player();
-                        chr.frame_step(&input);
+                        chr.frame_step(input);
                     }
                     let IsoWorld {
                         sprites,
@@ -785,7 +795,7 @@ impl IsoWorld {
                                 let mut cx = StateCx::new(&sm, &chars, &player_sim, w);
                                 let step = chr.advance_player_update(
                                     phase,
-                                    &input,
+                                    input,
                                     reg,
                                     action_groups,
                                     &mut u,
@@ -1129,6 +1139,16 @@ impl IsoWorld {
                         let p = p.borrow();
                         pz_lua_api::bind_audio::intensity_config().borrow()
                             .trigger(Some(id), &p.player.music_intensity_events);
+                    }
+                }
+                SimEvent::WindowToggled { actor, window } => {
+                    let player = chr.filter(|p| p.borrow().id == actor).cloned()
+                        .or_else(|| local_players().into_iter().flatten().find(|p| p.borrow().id == actor));
+                    lua.trigger_event("OnContainerUpdate", &[]);
+                    if let Some(player) = player {
+                        if let Err(error) = pz_lua_api::bind_climb::window_music(&player, &window) {
+                            self.log_update_error(format!("IsoWindow.ToggleWindow: {error}"));
+                        }
                     }
                 }
                 SimEvent::ContainerUpdate => {

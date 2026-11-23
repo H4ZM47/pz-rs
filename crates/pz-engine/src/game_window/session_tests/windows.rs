@@ -51,6 +51,7 @@ pub(super) fn check(app: &mut App) {
         p.vars.last_square = p.path.current_square;
     }
     super::queue::wait_for_idle(app);
+    cancel_open_with_movement(app);
     for (state, open) in [(ids::OPEN_WINDOW, true), (ids::CLOSE_WINDOW, false)] {
         let lua = app.lua.as_mut().unwrap();
         lua_check(lua, r#"
@@ -95,11 +96,54 @@ pub(super) fn check(app: &mut App) {
                         else { "assert(not rustSessionWindow:canClimbThrough(getPlayer()))" };
         lua_check(app.lua.as_mut().unwrap(), assertion);
         lua_check(app.lua.as_mut().unwrap(), "assert(#rustWindowEvents > 0 and rustWindowEvents[#rustWindowEvents] == rustSessionWindow:IsOpen())");
+        let id = if open { "WindowOpen" } else { "WindowClose" };
+        lua_check(app.lua.as_mut().unwrap(), &format!(
+            "assert(getPlayer():getMusicIntensityEvents():findEventById('{id}'):getIntensity() == 10)"
+        ));
         if open {
             climb(app, x, y);
         }
     }
     lua_check(app.lua.as_mut().unwrap(), "Events.OnContainerUpdate.Remove(rustObserveWindow)");
+    smash(app);
+}
+
+/// Start the native state directly so the queue cannot cancel on its behalf.
+fn cancel_open_with_movement(app: &mut App) {
+    lua_check(app.lua.as_mut().unwrap(), "getPlayer():openWindow(rustSessionWindow)");
+    let player = bind_players::player(0).unwrap();
+    for _ in 0..30 {
+        run_frames(app, 1);
+        if player.borrow().is_current_state_id(ids::OPEN_WINDOW) { break }
+    }
+    assert!(player.borrow().is_current_state_id(ids::OPEN_WINDOW));
+    pz_input::with_input(|i| i.key(17, 1));
+    run_frames(app, 1);
+    pz_input::with_input(|i| i.key(17, 0));
+    super::queue::wait_for_idle(app);
+    lua_check(app.lua.as_mut().unwrap(), "assert(not rustSessionWindow:IsOpen() and #rustWindowEvents == 0)");
+}
+
+fn smash(app: &mut App) {
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        require "TimedActions/ISSmashWindow"
+        ISTimedActionQueue.add(ISSmashWindow:new(getPlayer(), rustSessionWindow))
+    "#);
+    let player = bind_players::player(0).unwrap();
+    let mut entered = false;
+    for frame in 1..=300 {
+        run_frames(app, 1);
+        assert!(app.error.is_none(), "smash frame failed: {:?}", app.error);
+        let p = player.borrow();
+        entered |= p.is_current_state_id(ids::SMASH_WINDOW);
+        if entered && p.state.action_context.current_state_name().eq_ignore_ascii_case("idle") {
+            drop(p);
+            lua_check(app.lua.as_mut().unwrap(), "assert(rustSessionWindow:isSmashed() and rustSessionWindow:canClimbThrough(nil))");
+            eprintln!("installed smash window returned to idle at frame {frame}");
+            return;
+        }
+    }
+    panic!("shipped window smash failed to finish, entered={entered}");
 }
 
 /// Queue the installed action and observe both the animation state and

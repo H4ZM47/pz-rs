@@ -111,7 +111,7 @@ pub(super) fn register(b: &ClassBuilder) {
         face_this_object(c)?;
         Ok(0)
     });
-    for (name, action) in [("openWindow", WindowAction::Open), ("closeWindow", WindowAction::Close)] {
+    for (name, action) in [("openWindow", WindowAction::Open), ("closeWindow", WindowAction::Close), ("smashWindow", WindowAction::Smash)] {
         b.method(name, move |c| {
             let actor = chr_of(c)?;
             let value = c.arg(1);
@@ -165,6 +165,11 @@ pub(super) fn register(b: &ClassBuilder) {
         let frame = object_arg(c, 1)?;
         PathMover::climb_through_window_frame(&mut *chr_of(c)?.borrow_mut(), frame);
         Ok(0)
+    });
+    b.method("isTurning", |c| {
+        let actor = chr_of(c)?;
+        let actor = actor.try_borrow().map_err(|_| crate::bind_world_object::borrowed("turning character"))?;
+        Ok(c.push(actor.vars.turning))
     });
     // `shouldBeTurning()`.
     b.method("shouldBeTurning", |c| {
