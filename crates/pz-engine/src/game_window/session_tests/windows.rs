@@ -128,6 +128,24 @@ pub(super) fn check(app: &mut App) {
     lua_check(app.lua.as_mut().unwrap(), "Events.OnContainerUpdate.Remove(rustObserveWindow)");
     lua_check(app.lua.as_mut().unwrap(), "rustAlarmBuilding:setAlarmed(true)");
     smash(app);
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        require "TimedActions/ISRemoveBrokenGlass"
+        local action = ISRemoveBrokenGlass:new(getPlayer(), rustSessionWindow)
+        assert(action:isValid())
+        ISTimedActionQueue.add(action)
+    "#);
+    let mut cleared = false;
+    for _ in 0..360 {
+        run_frames(app, 1);
+        assert!(app.error.is_none(), "glass-removal frame failed: {:?}", app.error);
+        let lua = app.lua.as_mut().unwrap();
+        lua_check(lua, "rustWindowCleared = rustSessionWindow:isGlassRemoved()");
+        if lua.thread.globals().get_str("rustWindowCleared").truthy() {
+            cleared = true;
+            break;
+        }
+    }
+    assert!(cleared, "shipped ISRemoveBrokenGlass action did not clear the pane");
     lua_check(app.lua.as_mut().unwrap(), "assert(not rustAlarmBuilding:isAlarmed())");
     assert_eq!(app.world.as_ref().unwrap().meta_tracker.borrow().alarms.len(), 2);
 }

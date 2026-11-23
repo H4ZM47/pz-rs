@@ -1990,6 +1990,22 @@ fn register_grid_square(thread: &mut Thread) {
     square_walk::register(&b);
     square_queries::register(&b);
     power::register(&b);
+    for (method, local) in [("playSound", false), ("playSoundLocal", true)] {
+        get(&b, method, move |c| {
+            let (x, y, z) = self_square(c)?;
+            let name = str_arg(c, 1).unwrap_or_default();
+            let system = crate::bind_audio::sound_system();
+            let mut system = system.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound system"))?;
+            let handle = system.with_world_emitters(|pool, ctx| {
+                let emitter = pool.get_free();
+                let mut emitter = emitter.borrow_mut();
+                emitter.set_pos(x as f32 + 0.5, y as f32 + 0.5, z as f32 + if local { 0.5 } else { 0.0 });
+                if local { emitter.play_sound_impl(&name, pz_sound::emitter::ParentObject::None, ctx) }
+                else { emitter.play_sound(&name, ctx) }
+            });
+            Ok(Value::Num(handle as f64))
+        });
+    }
     static_get(&b, "getMatrixBit", |c| {
         let bit = |i| int_arg(c, i) as i8 as i32;
         let n = bit(1) + bit(2) * 3 + bit(3) * 9;

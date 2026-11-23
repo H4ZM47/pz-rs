@@ -179,6 +179,48 @@ pub fn window_music(player: &crate::bind_character_sim::LuaGameCharacterRef, win
     Ok(())
 }
 
+fn object_index(world: &crate::bind_world_object::LuaWorldObject) -> LuaResult<Option<((i32, i32, i32), usize)>> {
+    let square = crate::bind_world_object::object_square(world)?;
+    let Some(pos) = crate::bind_world::square_coords(&square) else { return Ok(None) };
+    crate::bind_world::try_with_world_read(|w| {
+        let Some(square) = w.cell.as_ref().and_then(|cell| cell.get_grid_square(pos.0, pos.1, pos.2)) else {
+            return Ok(None);
+        };
+        let square = square.try_borrow().map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("IsoGridSquare"))?;
+        Ok(square.objects.iter().position(|s| std::rc::Rc::ptr_eq(&s.ref_handle(), &world.object)).map(|i| (pos, i)))
+    }).map_err(crate::bind_world_object::host_error)
+}
+
+fn set_glass_removed(c: &NativeCall<'_>, removed: bool) -> LuaResult<()> {
+    let this = c.arg(0);
+    let world = crate::bind_world_object::object_from_value(&this)
+        .ok_or_else(|| crate::bind_java_util::class_cast(&this, ISO_WINDOW))?;
+    let old = {
+        let mut body = world.object.try_borrow_mut().map_err(|_| borrowed("IsoWindow body"))?;
+        let ObjectKind::Window(pane) = &mut body.kind else { return Err(unsupported("setGlassRemoved on another object kind")) };
+        if !pane.destroyed { return Ok(()) }
+        pane.glass_removed = removed;
+        let next = if removed { pane.glass_removed_sprite } else { pane.smashed_sprite };
+        std::mem::replace(&mut body.sprite, next.into())
+    };
+    let mut retired = pz_entity::RetiredComponents::new();
+    retired.push_payload(Box::new(old));
+    pz_inventory::component_host::retire_components(retired);
+    pz_world::object_slot::observe_object(&world.object, ISO_WINDOW);
+    if let Some((pos, _)) = object_index(world)? {
+        crate::bind_world::with_world_state_cell(|w| {
+            let state = w.try_borrow().map_err(|_| borrowed("IsoWorld"))?;
+            if let (Some(queue), Some(cell), Some(meta)) = (&state.square_changes, &state.cell, &state.meta_grid) {
+                let sprites = crate::bind_sprites::manager()?;
+                let sprites = sprites.try_borrow().map_err(|_| borrowed("IsoSpriteManager"))?;
+                queue.notify(&sprites, meta, cell, &pz_world::ObjectHooks::new(cell, &sprites), pos);
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
 pub(crate) fn register(thread: &mut Thread) {
     let object = expose_class(thread, ISO_OBJECT, None);
     // `getObjectIndex()`: the position in the square's object list, `-1`
@@ -187,25 +229,7 @@ pub(crate) fn register(thread: &mut Thread) {
         let this = c.arg(0);
         let world = crate::bind_world_object::object_from_value(&this)
             .ok_or_else(|| crate::bind_java_util::class_cast(&this, ISO_OBJECT))?;
-        let square = crate::bind_world_object::object_square(world)?;
-        let Some((x, y, z)) = crate::bind_world::square_coords(&square) else {
-            return Ok(c.push(-1));
-        };
-        let index = crate::bind_world::try_with_world_read(|w| {
-            let Some(square) = w.cell.as_ref().and_then(|cell| cell.get_grid_square(x, y, z)) else {
-                return Ok(-1);
-            };
-            let square = square
-                .try_borrow()
-                .map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("IsoGridSquare"))?;
-            Ok(square
-                .objects
-                .iter()
-                .position(|slot| std::rc::Rc::ptr_eq(&slot.ref_handle(), &world.object))
-                .map_or(-1, |i| i as i32))
-        })
-        .map_err(crate::bind_world_object::host_error)?;
-        Ok(c.push(index))
+        Ok(c.push(object_index(world)?.map_or(-1, |(_, index)| index as i32)))
     });
     // `isTallHoppable()`: `TallHoppableN` or `TallHoppableW` on the sprite.
     object.method("isTallHoppable", |c| {
@@ -265,6 +289,15 @@ pub(crate) fn register(thread: &mut Thread) {
     window.method("isPermaLocked", |c| Ok(c.push(window_field(c, |w| w.perma_locked)?)));
     window.method("isDestroyed", |c| Ok(c.push(window_field(c, |w| w.destroyed)?)));
     window.method("isSmashed", |c| Ok(c.push(window_field(c, |w| w.destroyed)?)));
+    window.method("setGlassRemoved", |c| {
+        let Value::Bool(removed) = c.arg(1) else { return Err(pz_kahlua::LuaError::runtime("expected a boolean glass state")) };
+        set_glass_removed(c, removed)?;
+        Ok(0)
+    });
+    window.method("removeBrokenGlass", |c| {
+        set_glass_removed(c, true)?;
+        Ok(0)
+    });
     window.method("isGlassRemoved", |c| Ok(c.push(window_field(c, |w| w.glass_removed)?)));
 }
 

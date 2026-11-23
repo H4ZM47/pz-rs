@@ -625,8 +625,11 @@ impl IsoWorld {
         self.frame_no += 1;
         // TODO(port): `WorldSimulation.instance.update()`,
         // `HutchManager.updateAll`, `ImprovedFog.update`,
-        // `helicopter.update`, the current emitters' `tick` (every 30 ms),
+        // `helicopter.update`,
         // `metaGrid.getCurrentCellData().checkTriggers()`.
+        pz_lua_api::bind_audio::sound_system().borrow_mut().with_world_emitters(|pool, ctx| {
+            pool.update(pz_lua_api::player_db::current_time_millis(), ctx);
+        });
         // TODO(port): `WorldSoundManager.instance.initFrame()`,
         // `ZombieGroupManager.preupdate`, `OnceEvery.update`,
         // `CollisionManager.initUpdate`.

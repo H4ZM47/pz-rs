@@ -11,6 +11,7 @@ pub struct WorldEmitters {
     free: VecDeque<EmitterRef>,
     current: Vec<EmitterRef>,
     parameter_count: usize,
+    last_update_ms: i64,
 }
 
 impl WorldEmitters {
@@ -19,6 +20,7 @@ impl WorldEmitters {
             free: VecDeque::new(),
             current: Vec::new(),
             parameter_count,
+            last_update_ms: 0,
         }
     }
 
@@ -59,6 +61,21 @@ impl WorldEmitters {
         }
     }
 
+    /// `IsoWorld.updateInternal` starts newly queued sounds immediately
+    /// and advances ongoing ones every 30 ms. Empty emitters are reusable.
+    pub fn update(&mut self, now_ms: i64, ctx: &mut crate::emitter::Ctx) {
+        let due = now_ms.saturating_sub(self.last_update_ms) >= 30;
+        if due { self.last_update_ms = now_ms; }
+        self.current.retain(|owner| {
+            let mut emitter = owner.borrow_mut();
+            if due || emitter.has_sounds_to_start() { emitter.tick(ctx); }
+            if !emitter.is_empty() { return true; }
+            emitter.clear_parameters();
+            self.free.push_front(owner.clone());
+            false
+        });
+    }
+
     pub fn current(&self) -> &[EmitterRef] {
         &self.current
     }
@@ -69,6 +86,7 @@ impl WorldEmitters {
     /// `KillCell` replaces IsoWorld with a new instance. Return the old
     /// owning slots so their payloads drop after the caller's system borrow.
     pub fn reset(&mut self) -> Vec<EmitterRef> {
+        self.last_update_ms = 0;
         let mut retired: Vec<_> = self.free.drain(..).collect();
         retired.append(&mut self.current);
         retired
