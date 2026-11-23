@@ -987,3 +987,47 @@ impl Studio {
         )
     }
 }
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires installed FMOD banks in PZ_GAME_DIR"]
+    fn released_instances_and_nested_events_end_with_their_owner() {
+        let game = std::path::PathBuf::from(std::env::var_os("PZ_GAME_DIR").expect("PZ_GAME_DIR"));
+        let mut studio = Studio::new(SetupHeaders::from_game_dir(&game).unwrap());
+        for bank in crate::startup_bank_paths(&game) { studio.load_bank(&bank).unwrap(); }
+        let smash = studio.event_by_path("event:/Object/Window/Smash").unwrap();
+        let nested = studio.banks.iter().flat_map(|bank| bank.model.instruments.values())
+            .find_map(|instrument| match &instrument.kind {
+                InstrumentKind::Event { event, .. } if *event != smash && instrument.base.probability >= 100.0
+                    && studio.find_event(event).is_some() => Some(instrument.id),
+                _ => None,
+            }).expect("installed nested event instrument");
+        let mut block = [0.0; 128];
+        let parent = studio.create_instance(smash).unwrap();
+        studio.start(parent);
+        studio.start_instrument(parent, nested, None);
+        let child = studio.instances.iter().find(|(_, i)| i.parent == Some(parent)).unwrap().0.to_owned();
+        studio.instances.get_mut(&child).unwrap().start_delay = 1024;
+        studio.instances.get_mut(&parent).unwrap().timeline_finished = true;
+        studio.release(parent);
+        studio.mix(&mut block);
+        assert_eq!(studio.state(parent), PlaybackState::Playing);
+        assert_eq!(studio.state(child), PlaybackState::Playing);
+        studio.stop(parent, true);
+        studio.mix(&mut block);
+        assert!(studio.instances.is_empty());
+        let next = studio.create_instance(smash).unwrap();
+        studio.start(next);
+        studio.stop(parent, true);
+        studio.set_volume(child, 0.0);
+        assert_eq!(studio.state(next), PlaybackState::Playing);
+        studio.stop_all();
+        assert_eq!(studio.state(next), PlaybackState::Stopped);
+        studio.release(next);
+        studio.mix(&mut block);
+        assert!(studio.instances.is_empty());
+    }
+}
