@@ -2161,10 +2161,11 @@ registered):
       global SpriteRenderer frame boundary: `App::frame` brackets
       `states.render` with `worldmap::start_frame/end_frame`, so every map in
       a frame shares each pyramid's required tiles and five-tile budget.
-- [ ] Restore native file-thread queue scheduling
-      (`WorldMapImages.checkLoadingQueue` in `GameWindow.logic`, async
-      `FileTask_LoadImagePyramidTexture`); tiles still decode synchronously
-      in `checkQueue`.
+- [x] Restore native file-thread queue scheduling: `startLoadingFromZip`
+      queues the tile, `App::frame` calls `worldmap::check_loading_queue`
+      (`WorldMapImages.checkLoadingQueue` after `UIManager.resize`), a file
+      thread reads and decodes it, `checkQueue` uploads at most five per
+      frame, and `endFrame`'s cancellations reach the running tasks.
 - [ ] Native request-counter reset ties depend on Java HashMap values order;
       the current Rust map order does not establish that tie behavior. The
       actual Core debug threshold is latched on first production image use;
