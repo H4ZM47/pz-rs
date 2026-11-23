@@ -69,6 +69,9 @@ impl IsoWorld {
                 let sprites = service.sprites.upgrade().ok_or_else(|| pz_kahlua::LuaError::runtime("tile sprites have expired"))?;
                 (result, sprites)
             };
+            if matches!(object.borrow().kind, ObjectKind::FeedingTrough(_)) {
+                pz_lua_api::bind_world_object::trough::added_to_world(thread,&object)?;
+            }
             if !named { return Ok(pz_kahlua::Value::Nil); }
             for new_objects in [true, false] {
                 bind_map_objects::dispatch_square(thread, &square, &sprites, Some(&saved_names), new_objects)?;

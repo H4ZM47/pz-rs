@@ -7,7 +7,7 @@ use pz_entity::runtime_load::RuntimeHostError;
 use pz_kahlua::{LuaError, LuaResult, Thread, Value};
 use std::rc::Rc;
 
-pub(super) fn objects(this: &Value, include_self: bool) -> LuaResult<Vec<Value>> {
+pub(crate) fn objects(this: &Value, include_self: bool) -> LuaResult<Vec<Value>> {
     let receiver = object_from_value(this)
         .ok_or_else(|| crate::bind_java_util::class_cast(this, ISO_OBJECT))?;
     let manager = crate::bind_sprites::manager()?;

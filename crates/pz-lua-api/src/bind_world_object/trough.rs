@@ -7,7 +7,6 @@ use pz_entity::{ComponentType, RetiredComponents};
 use pz_kahlua::NativeCall;
 use pz_world::objects::{IsoFeedingTrough, ItemContainer, SpriteName};
 
-
 const CLASS: &str = "zombie.iso.objects.IsoFeedingTrough";
 const FLUID: ComponentType = ComponentType::FluidContainer;
 
@@ -282,6 +281,79 @@ fn feed(obj: &IsoObjectRef) -> LuaResult<f32> {
 pub(super) fn register(t: &mut Thread) {
     let class = expose_class(t, CLASS, Some(ISO_OBJECT));
     class.static_fn("new", construct);
+    class.method("addWater", |c| {
+        let object = receiver_object(c)?;
+        let value = c.arg(1);
+        let Value::Object(arg) = &value else {
+            return Err(LuaError::runtime("expected FluidType"));
+        };
+        let ty = arg
+            .as_any()
+            .downcast_ref::<crate::expose::JavaEnum>()
+            .filter(|e| e.class == "zombie.entity.components.fluids.FluidType")
+            .and_then(|e| pz_scripts::objects::definitions::FluidType::from_name_lower(e.name))
+            .ok_or_else(|| LuaError::runtime("invalid fluid type"))?;
+        let amount = crate::expose::num_arg(c, 2) as f32;
+        let fluid =
+            fluid(&object)?.ok_or_else(|| LuaError::runtime("trough has no fluid container"))?;
+        let env = crate::bind_items::item_env();
+        let ctx = env
+            .entity()
+            .ok_or_else(|| unsupported("installed fluid registry"))?;
+        // addFluid reads isFull/getAmount before changing the fluid instance.
+        crate::bind_fluid_container::amount(&fluid)?;
+        {
+            let mut component = fluid
+                .try_borrow_mut()
+                .map_err(|_| borrowed("FluidContainer"))?;
+            let f = component
+                .fluid_mut()
+                .ok_or_else(|| LuaError::runtime("expected FluidContainer"))?;
+            f.add_fluid(pz_entity::FluidRef::Type(ty.id()), None, amount, ctx);
+        }
+        recalculate_water(c.thread, &object, &fluid)?;
+        check_container(c.thread, &object)?;
+        overlay(&object, false)?;
+        notify_global(c.thread, &object)?;
+        Ok(0)
+    });
+    class.method("checkContainer", |c| {
+        let o = receiver_object(c)?;
+        check_container(c.thread, &o)?;
+        Ok(0)
+    });
+    class.method("checkOverlayFull", |c| {
+        let o = receiver_object(c)?;
+        overlay(&o, true)?;
+        Ok(0)
+    });
+    class.method("checkOverlayAfterAnimalEat", |c| {
+        let o = receiver_object(c)?;
+        overlay(&o, false)?;
+        Ok(0)
+    });
+    class.method("updateLuaObject", |c| {
+        let o = receiver_object(c)?;
+        notify_global(c.thread, &o)?;
+        Ok(0)
+    });
+    class.method("setDef", |c| {
+        let arg = c.arg(1);
+        let def = if arg.is_nil() {
+            None
+        } else {
+            Some(pz_world::object_mod_data::LiveModData(
+                arg.as_table()
+                    .ok_or_else(|| LuaError::runtime("expected trough definition"))?
+                    .clone(),
+            ))
+        };
+        receiver_object(c)?
+            .try_borrow_mut()
+            .map_err(|_| borrowed("feeding trough"))?
+            .trough_definition = def;
+        Ok(0)
+    });
     class.method("initWithDef", |c| {
         init_definition(c.thread, &receiver_object(c)?)?;
         Ok(0)
@@ -352,4 +424,223 @@ pub(super) fn register(t: &mut Thread) {
             Ok(c.push(value as f64))
         });
     }
+}
+
+fn notify_global(thread: &mut Thread, obj: &IsoObjectRef) -> LuaResult<()> {
+    use crate::global_objects::{system_by_name, Side};
+    let Some(system) = system_by_name(Side::Server, "feedingTrough") else {
+        return Ok(());
+    };
+    let pos = {
+        let obj = obj.try_borrow().map_err(|_| borrowed("IsoFeedingTrough"))?;
+        let sq = obj
+            .square_slot()
+            .ok_or_else(|| LuaError::runtime("trough has no square"))?
+            .borrow();
+        (sq.x, sq.y, sq.z)
+    };
+    if system.get_object_at(pos.0, pos.1, pos.2)?.is_none() {
+        return Ok(());
+    }
+    let callback = system.mod_data.get_str("OnIsoObjectChangedItself");
+    if callback.is_nil() {
+        return Err(LuaError::runtime(
+            "OnIsoObjectChangedItself method undefined for feedingTrough",
+        ));
+    }
+    if let Err((error, trace)) = thread.pcall(
+        &callback,
+        &[Value::Table(system.mod_data.clone()), object_value(obj)?],
+    ) {
+        (thread.log)(&format!(
+            "{}\n{trace}",
+            pz_kahlua::exec::java_value_of(&error)
+        ));
+    }
+    Ok(())
+}
+
+fn recalculate_water(thread: &mut Thread, obj: &IsoObjectRef, f: &ComponentRef) -> LuaResult<()> {
+    let env = crate::bind_items::item_env();
+    let ctx = env
+        .entity()
+        .ok_or_else(|| unsupported("installed fluid registry"))?;
+    let result = f
+        .try_borrow_mut()
+        .map_err(|_| borrowed("FluidContainer"))?
+        .fluid_recalculate_data(ctx, false)
+        .map_err(runtime_error)?;
+    if result.recalculated
+        && result
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.ptr_eq(&EntityOwner::from_ref(obj)))
+    {
+        check_container(thread, obj)?;
+        overlay(obj, false)?;
+    } else {
+        pz_inventory::component_host::notify_fluid_update(&result).map_err(host_error)?;
+    }
+    Ok(())
+}
+
+fn check_container(thread: &mut Thread, obj: &IsoObjectRef) -> LuaResult<()> {
+    if inspect(obj, |t| t.linked_x > 0 && t.linked_y > 0)? {
+        return Ok(());
+    }
+    let wet = fluid(obj)?
+        .map(|f| crate::bind_fluid_container::amount(&f))
+        .transpose()?
+        .unwrap_or(0.)
+        != 0.;
+    let value = object_value(obj)?;
+    let (main, _) = object_containers(&value, obj)?;
+    if main.is_some() != wet {
+        return Ok(());
+    }
+    let new = if wet {
+        None
+    } else {
+        let main = Rc::new(RefCell::new(pz_inventory::shared::SharedContainer::new(
+            0, "trough",
+        )));
+        pz_inventory::shared::observe_container(&main);
+        crate::bind_item_container::set_parent(&main, value);
+        Some(main)
+    };
+    let old = {
+        let mut b = obj
+            .try_borrow_mut()
+            .map_err(|_| borrowed("IsoFeedingTrough"))?;
+        std::mem::replace(
+            &mut b
+                .runtime_containers
+                .as_mut()
+                .expect("container adoption")
+                .main,
+            new,
+        )
+    };
+    drop(old);
+    let trigger = thread.globals().get_str("triggerEvent");
+    thread.call1(&trigger, &[Value::str("OnContainerUpdate")])?;
+    Ok(())
+}
+
+fn overlay(obj: &IsoObjectRef, full: bool) -> LuaResult<()> {
+    let (def, has_container) = {
+        let body = obj.try_borrow().map_err(|_| borrowed("IsoFeedingTrough"))?;
+        (
+            body.trough_definition.as_ref().map(|d| d.0.clone()),
+            body.has_main_container(),
+        )
+    };
+    let Some(def) = def else { return Ok(()) };
+    let mut parts = vec![obj.clone()];
+    for value in crate::world_menu_logic::sprite_grid::objects(&object_value(obj)?, false)? {
+        if let Some(p) = object_from_value(&value) {
+            if matches!(
+                p.object
+                    .try_borrow()
+                    .map_err(|_| borrowed("feeding trough grid"))?
+                    .kind,
+                ObjectKind::FeedingTrough(_)
+            ) {
+                parts.push(p.object.clone())
+            }
+        }
+    }
+    for water in [false, true] {
+        if !full && water == has_container {
+            continue;
+        }
+        let (amount, max) = if water {
+            match fluid(obj)? {
+                Some(f) => (
+                    crate::bind_fluid_container::amount(&f)?,
+                    crate::bind_fluid_container::capacity(&f)?,
+                ),
+                None => (0., 0.),
+            }
+        } else {
+            (feed(obj)?, inspect(obj, |t| t.max_feed as f32)?)
+        };
+        let low = if water { 10. } else { 1. };
+        let field = if amount >= max / 2. {
+            Some(if water {
+                "spriteWaterOverlay2"
+            } else {
+                "spriteFoodOverlay2"
+            })
+        } else if amount > low {
+            Some(if water {
+                "spriteWaterOverlay1"
+            } else {
+                "spriteFoodOverlay1"
+            })
+        } else {
+            None
+        };
+        let overrides = field.and_then(|k| def.get_str(k).as_table().cloned());
+        for part in &parts {
+            let (name, pos) = {
+                let manager = crate::bind_sprites::manager()?;
+                let sprites = manager
+                    .try_borrow()
+                    .map_err(|_| borrowed("IsoSpriteManager"))?;
+                let b = part.try_borrow().map_err(|_| borrowed("trough overlay"))?;
+                let sprite = b.sprite.try_read(&sprites).map_err(host_error)?;
+                let name = if let Some(overrides) = &overrides {
+                    sprite
+                        .as_deref()
+                        .and_then(|s| s.name.as_deref())
+                        .and_then(|name| overrides.get_str(name).as_str().map(str::to_owned))
+                } else if full {
+                    b.overlay_sprite
+                        .as_ref()
+                        .map(|s| resolve_sprite_name(&s.name, &sprites))
+                        .transpose()?
+                        .flatten()
+                } else {
+                    None
+                };
+                let pos = b.square_slot().map(|sq| {
+                    let s = sq.borrow();
+                    (s.x, s.y, s.z)
+                });
+                (name, pos)
+            };
+            crate::bind_tile_overlays::set_overlay_sprite(part, name.as_deref())?;
+            if let Some(pos) = pos {
+                let manager = crate::bind_sprites::manager()?;
+                let sprites = manager
+                    .try_borrow()
+                    .map_err(|_| borrowed("IsoSpriteManager"))?;
+                try_with_world_read(|w| {
+                    if let (Some(c), Some(m)) = (&w.cell, &w.meta_grid) {
+                        w.geometry.notify(c, m, &sprites, pos);
+                    }
+                    Ok(())
+                })
+                .map_err(host_error)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn added_to_world(thread: &mut Thread, obj: &IsoObjectRef) -> LuaResult<()> {
+    if obj
+        .try_borrow()
+        .map_err(|_| borrowed("IsoFeedingTrough"))?
+        .trough_definition
+        .is_none()
+    {
+        init_definition(thread, obj)?;
+    }
+    check_container(thread, obj)?;
+    if let Some(master) = master(obj)? {
+        overlay(&master, false)?;
+    }
+    Ok(())
 }

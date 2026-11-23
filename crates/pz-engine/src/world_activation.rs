@@ -96,6 +96,10 @@ impl IsoWorld {
                             ) else {
                                 return Err("object activation requires sprites, regions and native door tables".into());
                             };
+                            if matches!(object.borrow().kind, pz_world::ObjectKind::FeedingTrough(_)) {
+                                pz_lua_api::bind_world_object::trough::restore_fluid(&object)
+                                    .map_err(|e| format!("restoring trough fluid at {pos:?}: {e}"))?;
+                            }
                             restore_map_sprite(&object, sprites, self.items.as_ref().map(|items| &items.dictionary.sprite_names))
                                 .map_err(|e| format!("restoring object sprite at {pos:?}: {e:?}"))?;
                             {
@@ -137,6 +141,10 @@ impl IsoWorld {
                             }
                             for (receiver, call) in calls.0 {
                                 match call {
+                                    WorldCall::FeedingTroughCheck => {
+                                        pz_lua_api::bind_world_object::trough::added_to_world(&mut lua.thread, &receiver)
+                                            .map_err(|e| format!("placing trough at {pos:?}: {e}"))?;
+                                    }
                                     WorldCall::HutchManager { add: true } => {
                                         pz_lua_api::bind_world_object::hutch::register_master(&receiver, pos)
                                             .map_err(|e| format!("adding hutch at {pos:?}: {e}"))?;

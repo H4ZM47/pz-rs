@@ -16,7 +16,7 @@ mod water;
 mod helpers;
 mod object_power;
 mod reads;
-mod sprite_grid;
+pub(crate) mod sprite_grid;
 
 use pz_kahlua::{LuaError, LuaResult, NativeCall, NativeFunction, TableRef, Thread, Value};
 
