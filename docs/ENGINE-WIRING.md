@@ -1120,7 +1120,7 @@ all installed assets, render paths or foreign platforms.
       set `SharedCameraFrame::offsets[0]` (`cameras[0].rightClickX/Y`,
       `getTOffX/Y` while it differs from `getOffX/Y`, `deferedX/Y`;
       world-render thread) (#203).
-- [ ] Chat (SP): characters thread implements `chat::ChatPlayer` and
+- [x] Chat (SP): characters thread implements `chat::ChatPlayer` and
       `chat::ChatElementOwner` for IsoPlayer (and installs `chat::ChatPlayers`
       for `IsoPlayer.players`/`getInstance`), gives each `IsoGameCharacter` a
       `ChatElement::new(weak_self, 1, Some("character"))` (5 lines in
@@ -1128,11 +1128,11 @@ all installed assets, render paths or foreign platforms.
       `IsoGameCharacter.update` and `ChatElement::render_batched` from
       `renderlast`, and routes `Say`/`SayShout`/`SayRadio`/`addLineChatElement`/
       `SayDebug` to it and `with_chat_manager`; `GameLoadingState` calls
-      `chat::set_allowed_chat_icons(..)` (`Texture.collectAllIcons`) then
-      `with_chat_manager(|m| m.init(true, player))`; `IngameState.renderframeui`
-      calls `ChatElement::render_batch(player)` right after
-      `text_draw::render_batch`; Rust callers of the chat fire its queued Lua
-      events with `chat::fire_pending_events(thread)` (#190).
+      `chat::set_allowed_chat_icons(..)` (`TextureManager::collect_all_icons`)
+      and `set_static_sounds`, then `with_chat_manager(|m| m.init(true, player))`;
+      `IngameState.renderframeui` calls `ChatElement::render_batch(player)`
+      right after `text_draw::render_batch`; Rust callers of the chat fire its
+      queued Lua events with `chat::fire_pending_events(thread)` (#190).
 - [ ] WorldMarkers: `with_markers(WorldMarkers::init)` when the game starts
       (`IngameState.enter`) and `reset()` on exit; `hud::world_markers::render`
       per player in `IngameState.renderframeui` (before `render_batch`); the
@@ -1144,7 +1144,7 @@ all installed assets, render paths or foreign platforms.
       `HudPicking::square_coords` (world thread) (#193; `WorldPicking`
       implements it from the square handle, #197).
       events with `chat::fire_pending_events(thread)` (#TBD-chat).
-- [ ] Chat, characters side (`pz_lua_api::chat::characters`): create each
+- [x] Chat, characters side (`pz_lua_api::chat::characters`): create each
       character's chat element with `attach_chat_element(&chr)` when the
       character is made (the constructor's `chatElement`;
       `character_value` and `bind_players::set_player` also attach). After
@@ -1158,7 +1158,8 @@ all installed assets, render paths or foreign platforms.
       camCharacter == chr)` at `getNameCoords` (above the name tag,
       progress bar and halo note). `GameLoadingState`'s
       `ChatManager.init(true, player)` takes `bind_players::player_instance()`
-      as the `Rc<dyn ChatPlayer>` (#195).
+      as the `Rc<dyn ChatPlayer>` (#195; wired in `game_loading.rs`,
+      `world_update.rs`, `world_render.rs`, `ingame.rs`).
 - [x] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).

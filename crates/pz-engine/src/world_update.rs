@@ -2201,6 +2201,14 @@ fn fill_square_environment(
     e.square_have_roof = sq.as_ref().is_some_and(|s| s.have_roof);
     e.square_z = sq.as_ref().map_or(0, |s| s.z);
     e.square_has_chunk = sq.is_some();
+    e.square_can_see = cur.is_some_and(|(x, y, z)| {
+        pz_lua_api::bind_world::square_queries::square_vis(0, x, y, z) & 2 != 0
+    });
+    e.square_building = sq
+        .as_ref()
+        .and_then(|s| s.room_def(meta))
+        .and_then(|r| r.building)
+        .map(|b| b.0 as u64);
     e.square_room = sq
         .as_ref()
         .filter(|s| s.room_id != -1)

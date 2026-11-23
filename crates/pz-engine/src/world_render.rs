@@ -1152,17 +1152,39 @@ impl IsoWorld {
             Ok(())
         })?;
         // `renderlast()` of each character the frame drew: an outline
-        // highlight not set during this UI frame ends with the frame.
+        // highlight not set during this UI frame ends with the frame, and
+        // each drawn player's chat element queues its world-anchored lines.
         {
             if let Some(r) = render.as_ref() {
                 use pz_lua_api::bind_character_sim::outline::{ui_frame_times, RENDER_CONTAINER_HIGHLIGHT};
                 let now = ui_frame_times();
                 let p = view.player;
+                let cam = Camera::player(
+                    view.x,
+                    view.y,
+                    view.z,
+                    view.width as i32,
+                    view.height as i32,
+                    view.zoom,
+                );
                 for (n, drawn) in r.drawn_players.iter().enumerate() {
                     let player = pz_lua_api::bind_players::player(n).filter(|_| *drawn);
                     if let Some(player) = player {
-                        if let Ok(mut c) = player.try_borrow_mut() {
+                        let coords = if let Ok(mut c) = player.try_borrow_mut() {
                             c.outline.render_last(p, RENDER_CONTAINER_HIGHLIGHT, now);
+                            let sx = (pz_render::iso::x_to_screen(c.vars.x, c.vars.y)
+                                - cam.off_x as f32)
+                                / cam.zoom;
+                            let sy = (pz_render::iso::y_to_screen(c.vars.x, c.vars.y, c.vars.z, 0)
+                                - cam.off_y as f32
+                                - 140.0)
+                                / cam.zoom;
+                            Some((sx as i32, sy as i32))
+                        } else {
+                            None
+                        };
+                        if let Some((sx, sy)) = coords {
+                            pz_lua_api::chat::characters::render_last(&player, sx, sy, false, n == p);
                         }
                     }
                 }
