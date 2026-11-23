@@ -701,6 +701,7 @@ impl IsoWorld {
         self.process_remove_items();
         self.process_iso_objects(lua);
         self.update_characters(lua, sim)?;
+        self.update_vehicles(lua, sim);
         // TODO(port): `ProcessStaticUpdaters`, `ObjectDeletionAddition`,
         // `IsoDeadBody.updateBodies`, `FishSchoolManager.update` and the
         // rain scroll.
@@ -2079,10 +2080,9 @@ impl IsoWorld {
         } = self;
         let Some(h) = pathfind.as_mut() else { return };
         h.update_thread();
-        // TODO(port): the cell's vehicles and `SeatingManager`.
         let mut movers = Movers { zombies };
         h.update_main(
-            &pz_pathfind::game_vehicle::NoVehicles,
+            &crate::world_vehicles::PathfindVehicles,
             &pz_pathfind::behavior::hooks::NoSeating,
             &mut movers,
         );
@@ -2097,6 +2097,11 @@ impl IsoWorld {
         };
         for e in events {
             match e {
+                StreamEvent::Served { wx, wy, source } => {
+                    if let Some(wv) = self.vehicles_runtime.as_mut() {
+                        wv.note_chunk_served(wx, wy, &source);
+                    }
+                }
                 StreamEvent::HandedOff { wx, wy } => self.chunk_added(wx, wy),
                 StreamEvent::Unloaded { wx, wy } | StreamEvent::Removed { wx, wy } => {
                     self.chunk_removed(wx, wy)
@@ -2134,8 +2139,9 @@ impl IsoWorld {
                 add_chunk_to_pathfinder(h, cell, meta, &sp.borrow(), wx, wy, load_id);
             }
         });
-        // TODO(port): the chunk's vehicles (`AddVehicles`), reanimated
-        // players, erosion and the lighting thread's chunk add.
+        if let Some(wv) = self.vehicles_runtime.as_mut() {
+            wv.note_chunk_handed_off(wx, wy);
+        }
         self.render_chunks.added.push((wx, wy));
     }
 
@@ -2166,6 +2172,9 @@ impl IsoWorld {
             let cz = host.zombies.chunk_zombies(wx, wy, &|_| false);
             pop.remove_chunk_from_world(host, wx, wy, &cz);
         });
+        if let Some(wv) = self.vehicles_runtime.as_mut() {
+            wv.chunk_removed(wx, wy);
+        }
         self.render_chunks.removed.push((wx, wy));
     }
 }
@@ -2449,6 +2458,8 @@ impl IsoWorld {
         if let Some(db) = self.player_db.as_mut() {
             db.can_save_players = false;
         }
+        // Queue active virtual vehicles onto the streamer before saving chunks.
+        self.save_virtual_vehicles();
         // `saveLocalPlayersForce` above already queued them.
         let mut report = self.game_window_save(lua, &sandbox, false)?;
         // Ordinary quitting keeps its callback even when saving is disabled

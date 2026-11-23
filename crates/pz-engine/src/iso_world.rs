@@ -242,6 +242,8 @@ pub struct IsoWorld {
     pub(crate) floor_session: Option<Rc<()>>,
     /// Live character models and animation players for this world.
     pub models: Option<crate::world_models::WorldModels>,
+    /// Bullet physics, runtime vehicles and vehicle rendering state.
+    pub vehicles_runtime: Option<crate::world_vehicles::WorldVehicles>,
     /// Errors of steps that failed without stopping the load (the
     /// original's `ExceptionLogger.logException` calls).
     pub errors: Vec<String>,
@@ -364,6 +366,7 @@ impl IsoWorld {
             floor_world: None,
             floor_session: None,
             models: None,
+            vehicles_runtime: None,
             errors: Vec::new(),
         }
     }
@@ -399,6 +402,7 @@ impl IsoWorld {
             fix2x,
             rand,
             vehicles,
+            vehicles_runtime,
             streamer,
             world_gen,
             items,
@@ -457,6 +461,11 @@ impl IsoWorld {
                 let mut sounds = sounds.borrow_mut();
                 let mut chunk_hook = pz_world_sound::ClearSoundsOnUnload::new(&mut sounds,
                     erosion_hook.as_mut().map(|h| h as &mut dyn pz_world::save::chunk_file::ChunkLoadHook));
+                let vehicle_saver = crate::world_vehicles::WorldVehicles::saver();
+                let mut vehicle_meta = crate::world_vehicles::WorldVehicles::meta_hook();
+                let mut vehicle_ids_guard = vehicles_runtime
+                    .as_ref()
+                    .and_then(|wv| wv.ids().try_borrow_mut().ok());
                 let mut ctx = StreamCtx {
                     save_dir,
                     meta,
@@ -478,11 +487,9 @@ impl IsoWorld {
                     chunk_hook: Some(&mut chunk_hook),
                     no_save,
                     vehicles_db: vehicles.conn.as_mut(),
-                    // TODO(port): the vehicle runtime's savers, meta and ids
-                    // (`RuntimeVehicleSaver`, `VirtualVehicleMeta`, `VehicleIds`).
-                    vehicle_saver: None,
-                    vehicle_meta: None,
-                    vehicle_ids: None,
+                    vehicle_saver: vehicles_runtime.is_some().then_some(&vehicle_saver as &dyn pz_world::save::vehicles_db::ChunkVehicleSaver),
+                    vehicle_meta: vehicles_runtime.is_some().then_some(&mut vehicle_meta as &mut dyn pz_world::save::vehicles_db::VehicleMetaHook),
+                    vehicle_ids: vehicle_ids_guard.as_deref_mut(),
                 };
                 let result = Some(f(streamer, cell, &mut ctx));
                 let mut chunks = streamer.take_retired_chunks();
@@ -894,6 +901,11 @@ impl IsoWorld {
         });
         self.install_floor_world()?;
         let (wx, wy) = (self.world_x, self.world_y);
+        self.init_vehicles(
+            lua,
+            &sb,
+            (wx - chunk_grid_width / 2, wy - chunk_grid_width / 2, chunk_grid_width),
+        );
         self.with_stream(|s, cell, ctx| s.stage_initial_world(wx, wy, cell, ctx));
         // `ClimateManager.postCellLoadSetSnow()`.
         let snow = pz_lua_api::bind_climate::post_cell_load_set_snow(&mut lua.thread);

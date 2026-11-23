@@ -345,9 +345,9 @@ impl GameState for IngameState {
                 w.errors.push(error);
             }
             w.hand_off_events();
-            // TODO(port): `VehiclesDB2.instance.loadVehiclesInMeta()`
-            // (`vehicles_db::load_vehicles_in_meta`), and
-            // `LightingThread.instance.GameLoadingUpdate()`.
+            w.process_pending_vehicle_chunks(cx.lua);
+            w.load_vehicles_in_meta(cx.lua);
+            // TODO(port): `LightingThread.instance.GameLoadingUpdate()`.
         }
         self.loading = false;
         if let Some(w) = cx.world.as_mut() {
@@ -398,6 +398,7 @@ impl GameState for IngameState {
             if let Some(models) = w.models.take() {
                 cx.retired_models.push(models);
             }
+            w.reset_vehicles();
             w.stop();
         }
         // TODO(port): `ModelManager.Reset`, `ZombieSpawnRecorder.quit`,

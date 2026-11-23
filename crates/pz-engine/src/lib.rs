@@ -24,6 +24,7 @@ pub mod world_pick;
 pub mod world_regions;
 pub mod world_render;
 pub mod world_update;
+pub mod world_vehicles;
 pub mod zone_clipper;
 mod zombie_dress;
 
