@@ -721,9 +721,7 @@ impl WorldRender {
             });
             pz_input::set_world_mouse(hit);
         }
-        // TODO(port): world items, the water and sky surfaces
-        // (`SkyBox`, `SurfaceChecks`) and the
-        // `FrameExtras` (flies, highlights, markers, vision cone, fog).
+        // TODO(port): world items and the remaining FrameExtras passes.
         let mut objects = FrameObjects::default();
         // `DeadBodyAtlas.render()`'s jobs, drawn before the world.
         let mut corpse_jobs = Vec::new();
@@ -881,7 +879,7 @@ impl WorldRender {
         // Sample the previous sky targets before the end-of-frame sky pass.
         let (settings, world_age_hours) = surface_values();
         let perf_skybox = pz_lua_api::bind_core::shared_core().borrow().get_perf_skybox();
-        let night = pz_lua_api::bind_climate::shared_game_time().borrow().get_night();
+        let night = v.climate.climate.game_night;
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default().as_millis() as i64;
         let (water, puddles, sky) = {

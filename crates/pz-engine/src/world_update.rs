@@ -2155,9 +2155,10 @@ fn fill_square_environment(
     let regions = regions.map(|r| r.try_borrow()).transpose().map_err(|_| RuntimeHostError::Borrowed("IsoRegions"))?;
     let inside = sq.as_ref().is_some_and(|s| s.room_def(meta).is_some() ||
         regions.as_deref().and_then(|r| s.player_room_size(r)).is_some());
-    let size = if chr.is_player() && inside {
-        sq.as_ref().unwrap().room_size(cell, Some(meta), regions.as_deref())?
-    } else { -1 };
+    let size = match &sq {
+        Some(square) if chr.is_player() && inside => square.room_size(cell, Some(meta), regions.as_deref())?,
+        _ => -1,
+    };
     let stress = cur.map_or(0.0, |(x, y, z)| {
         pz_lua_api::bind_zombie::shared_world_sounds()
             .borrow()

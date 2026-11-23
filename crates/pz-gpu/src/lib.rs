@@ -2122,6 +2122,10 @@ impl Gpu {
     /// `TextureID.generateHwId` + `assignFilteringFlags`: uploads the image
     /// (every mip level for `MIPMAPS` textures) and picks the sampler.
     fn ensure_texture(&mut self, id: u32, textures: &mut TextureManager) {
+        if pz_render::SKYBOX_TEXTURE_IDS.contains(&id) {
+            self.ensure_sky_target(id);
+            return;
+        }
         let Some(d) = textures.data(id) else { return };
         let one = d.width == 1 && d.height == 1;
         let filter = (d.min_nearest() || one, d.mag_nearest() || one, d.mipmaps() && !one, d.clamp_to_edge());
