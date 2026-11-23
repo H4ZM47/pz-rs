@@ -29,6 +29,8 @@ pub enum PathMoverRequest {
     ClimbThroughWindowFrame(ObjectRef),
     ToggleDoor(ObjectRef),
     ClimbOverWall(IsoDirections),
+    ClimbSheetRope,
+    ClimbDownSheetRope,
     FaceObject(FaceTarget),
 }
 
@@ -104,6 +106,8 @@ impl<I: 'static> GameCharacter<I> {
                     | PathMoverRequest::ClimbThroughWindowAtFrame(_)
                     | PathMoverRequest::ClimbThroughWindowFrame(_)
                     | PathMoverRequest::ClimbOverWall(_)
+                    | PathMoverRequest::ClimbSheetRope
+                    | PathMoverRequest::ClimbDownSheetRope
             )
         }) {
             return;
@@ -120,6 +124,8 @@ impl<I: 'static> GameCharacter<I> {
                 PathMoverRequest::ClimbOverWall(d) => {
                     self.climb_over_wall(d, cx);
                 }
+                PathMoverRequest::ClimbSheetRope => self.climb_sheet_rope(cx),
+                PathMoverRequest::ClimbDownSheetRope => self.climb_down_sheet_rope(cx),
                 other => rest.push(other),
             }
             if cx.has_host_error() {

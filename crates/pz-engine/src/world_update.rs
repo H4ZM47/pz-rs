@@ -1327,6 +1327,9 @@ impl IsoWorld {
                 SimEvent::CharacterDeath if chr.is_some() => {
                     lua.trigger_event("OnCharacterDeath", std::slice::from_ref(&cv));
                 }
+                SimEvent::FadeIn(seconds) => {
+                    pz_ui::with_ui(|m| m.fade(f64::from(seconds), false));
+                }
                 // The rest of `IsoPlayer.OnDeath()`: `OnPlayerDeath` for a
                 // local player, which opens the death screen
                 // (`ISPostDeathUI`). TODO(port): the `PlayerDied` music once

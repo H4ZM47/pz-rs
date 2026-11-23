@@ -92,7 +92,73 @@ pub fn perform(lua: &mut LuaManager, chr: &LuaGameCharacterRef, action: &Context
             let dir = action.dir.ok_or("ClimbOverWall has no direction")?;
             PlayerMover::climb_over_wall(&mut *chr.borrow_mut(), dir);
         }
+        K::ClimbSheetRope => {
+            let (x, y, z) = action.square.ok_or("ClimbSheetRope has no square")?;
+            let args = [crate::bind_world::square_value(x, y, z), Value::Bool(false)];
+            trigger(lua, chr, "ClimbSheetRope", &args);
+        }
         other => return Err(format!("performContextualAction({other:?}) is not ported")),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bind_character_sim::LuaGameCharacter;
+    use pz_characters::character::CharacterKind;
+    use pz_world::square::IsoDirections;
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+    use std::rc::Rc;
+
+    #[test]
+    fn perform_climb_sheet_rope_triggers_contextual_action_hook_with_square_and_false() {
+        struct RestoreCell(Option<pz_world::IsoCell>);
+        impl Drop for RestoreCell {
+            fn drop(&mut self) {
+                crate::bind_world::set_cell(self.0.take());
+            }
+        }
+        let _restore = RestoreCell(crate::bind_world::with_world(|w| w.cell.take()));
+        let mut chunk = pz_world::IsoChunk::new(1, 4);
+        chunk.set_square(4, 2, 0, Some(pz_world::IsoGridSquare::new(12, 34, 0).into()));
+        let mut cell = pz_world::IsoCell::default();
+        cell.chunks.insert((1, 4), chunk);
+        crate::bind_world::set_cell(Some(cell));
+
+        let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(PathBuf::new())));
+        let mut lua = LuaManager::init(fs).unwrap();
+        let sm = crate::bind_registry::shared_script_manager();
+        let player = Rc::new(RefCell::new(LuaGameCharacter::new(&sm, CharacterKind::Player)));
+        lua.thread.globals().set_str("player", character_value(&player));
+        crate::bind_character_sim::tests::run(
+            &mut lua.thread,
+            r#"
+            captured = nil
+            Hook.ContextualAction.Add(function(action, chr, sq, down)
+                captured = { action = action, same = (chr == player), x = sq:getX(), y = sq:getY(), z = sq:getZ(), down = down }
+            end)
+            "#,
+        )
+        .unwrap();
+        let action = ContextualAction::new(
+            ContextualActionKind::ClimbSheetRope,
+            Some(IsoDirections::N),
+            Some((12, 34, 0)),
+            None,
+        );
+        perform(&mut lua, &player, &action).unwrap();
+        crate::bind_character_sim::tests::run(
+            &mut lua.thread,
+            r#"
+            if captured == nil then error("captured is nil") end
+            if captured.action ~= "ClimbSheetRope" then error("wrong action") end
+            if captured.same ~= true then error("wrong player") end
+            if captured.x ~= 12 or captured.y ~= 34 or captured.z ~= 0 then error("wrong square") end
+            if captured.down ~= false then error("wrong down flag") end
+            "#,
+        )
+        .unwrap();
+    }
 }

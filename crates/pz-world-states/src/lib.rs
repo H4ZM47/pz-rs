@@ -906,6 +906,11 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             host.path_cancel(character_id(chr), chr);
         }
     }
+    fn path_reset(&mut self, chr: &mut dyn PathMover) {
+        if let Some((host, _)) = self.path.as_mut() {
+            host.path_reset(character_id(chr), chr);
+        }
+    }
     fn path_behavior(&self, id: i32) -> Option<&PathFindBehavior2> {
         self.path.as_ref()?.0.behavior(id)
     }

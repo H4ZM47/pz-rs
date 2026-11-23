@@ -1527,9 +1527,9 @@ registered):
       movement-speed parameter). Owners that drive player paths call
       `GameCharacter::run_path_requests` after `path_update` and give
       players a `PathMoverState::window_hook` (`IsoWindow.canClimbThrough`).
-- [ ] Saved windows: `IsoChunk::apply_window_load_sprites(&mut sprites)` for
-      every chunk the streamer loads, before its squares' properties and
-      matrices are recalculated (#95).
+- [x] Saved windows: `apply_loaded_window_sprites` runs in
+      `prepare_chunk_load` (`WorldStreamer`) for every loaded chunk before
+      its squares' properties and matrices are recalculated (#95).
 - [ ] States path host hooks (#95): `StatesEngine::resolve_collision`,
       `resolve_collision_radius` (PathHost over the `WorldView`) and
       `path_cancel_request` (`PathfindService::cancel_request`).
@@ -1632,31 +1632,30 @@ registered):
       #208): the climb states read the world through #208's hooks
       (`sheet_rope_square`, `chunk_levels`, `sheet_rope_exit`,
       `can_climb_over_wall`, `climb_wall_fence_type`); `pz-world-states`
-      also implements the new `floor_sprite_name` (the landing's natural
-      floor). The engine must:
-      - implement `StateWorld::path_reset` (`PathFindBehavior2.reset()`, a
-        failed wall climb; `pz-world-states` leaves the no-op default, as
-        for `path_cancel`);
-      - start the climbs: `GameCharacter::climb_over_wall(dir, cx)` from
-        the player's wall-climb input (the `PathMoverRequest::ClimbOverWall`
-        handler in `run_path_requests` already calls it),
-        `climb_sheet_rope` / `climb_down_sheet_rope` from the rope input,
-        and `fall_from_rope` where the original lets go;
-      - call `GameCharacter::do_land(impact_iso_speed, cx)` when a falling
-        character lands (`IsoGameCharacter.updateFalling`, not yet ported)
-        and `player_on_death(cx)` from `IsoPlayer.OnDeath`;
-      - answer `SimContext::debug_always_trip_over_fence` (`DebugOptions`;
-        `easy_climbing` is #208's line);
-      - handle `SimEvent::MusicIntensityEvent`, `FallingItem`
-        (`createFallingItem`), `FallenHat`
-        (`PersistentOutfits.setFallenHat`), `StopPlayerVoiceSound`,
-        `CharacterDeath` (`OnCharacterDeath`), `FadeIn` and `PlayerDeath`
-        (the rest of `IsoPlayer.OnDeath`: death music, `OnPlayerDeath`,
-        leaving the vehicle, `removeSaveFile`, `setDrag`);
-      - bind the new calls to Lua (`climbSheetRope`, `canClimbSheetRope`,
-        `canClimbOverWall`, `climbOverWall`, `isClimbingRope`,
-        `fallFromRope`, `getClimbingFailChanceInt`, `fallenOnKnees`, ...)
-        where the Lua API needs them; none is bound yet.
+      also implements `floor_sprite_name` and `StateWorld::path_reset`
+      (`PathHost::path_reset` -> `PathFindBehavior2::reset`).
+      Wired:
+      - `StateWorld::path_reset` (`PathFindBehavior2.reset()`);
+      - `PathMoverRequest::{ClimbOverWall, ClimbSheetRope, ClimbDownSheetRope}`
+        through `GameCharacter::run_path_requests` and
+        `ContextualActionKind::ClimbSheetRope` in `contextual_action::perform`;
+      - `SimContext::debug_always_trip_over_fence` (`Core.debug &&
+        DebugOptions["Character.Debug.AlwaysTripOverFence"]`) in `FrameSim` /
+        `PlayerSim`;
+      - `SimEvent::{MusicIntensityEvent, CharacterDeath, FadeIn, PlayerDeath}`
+        in `world_update::fire_sim_events`;
+      - Build 42.22 climb and landing Lua bindings (`climb`, `climbDown`,
+        `canClimbSheetRope`, `canClimbDownSheetRope`,
+        `canClimbDownSheetRopeInCurrentSquare`, `canClimbOverWall`,
+        `climbOverWall` returning `bool`, `isClimbOverWallSuccess/Struggle` +
+        setters, `isClimbingRope`, `fallFromRope`, `getClimbRopeSpeed`,
+        `getClimbingFailChanceInt`, `getClimbingFailChanceFloat`,
+        `nearbyZombieClimbPenalty`, `isClimbing`/`setbClimbing`,
+        `getClimbRopeTime`/`setClimbRopeTime`, `fallenOnKnees`, `DoLand`).
+      Still open:
+      - `IsoGameCharacter.updateFalling` calling `GameCharacter::do_land`;
+      - `SimEvent::{FallingItem, FallenHat, StopPlayerVoiceSound}`, and
+        `PlayerDeath`'s remaining vehicle/savefile/death-music/drag cleanup.
 - [ ] Collision code fills `IsoChunk::collision` through
       `ChunkCollision::init(z, build)` (`CollideWithObstaclesPoly` /
       `LineClearCollide`) and drops levels with `take` on vehicle moves; the
