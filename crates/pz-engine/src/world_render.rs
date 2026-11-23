@@ -97,7 +97,8 @@ pub struct WorldRender {
     drop_shadow: Option<Texture>,
     /// The `blood_floor_*` tiles (`Texture.getSharedTexture` in
     /// `renderOneLevel_Blood`).
-    blood_textures: BloodTextures,
+    surface_textures: GroundTextures,
+    snow_state: [(i32, bool); MAX_PLAYERS],
     sprites: SpriteCache,
     pub world: RenderWorld,
     pub lighting: WorldLighting,
@@ -184,10 +185,13 @@ impl WorldRender {
             seams,
             cutaway_stencils,
             drop_shadow: tm.shared_texture_flags(fs, "media/textures/NewShadow.png", 0),
-            blood_textures: BloodTextures(
+            snow_state: Default::default(),
+            surface_textures: GroundTextures(
                 pz_iso_render::blood::FLOOR_BLOOD_TYPES
                     .iter()
-                    .filter_map(|&name| Some((name, tm.shared_texture(fs, name)?)))
+                    .map(|&name| name.to_owned())
+                    .chain((0..48).map(|index| format!("e_newsnow_ground_1_{index}")))
+                    .filter_map(|name| tm.shared_texture(fs, &name).map(|tex| (name, tex)))
                     .collect(),
             ),
             sprites: SpriteCache::new(),
@@ -829,6 +833,12 @@ impl WorldRender {
             .collect();
         let inputs = self.world.chunk_inputs(&order);
         let mut cmds = corpse_jobs;
+        let target = view.cell.snow_target;
+        let winter = target > 0 && pz_lua_api::bind_world::snow::winter();
+        if self.snow_state[p] != (target, winter) {
+            self.caches[p].invalidate_all(dirty::REDRAW);
+            self.snow_state[p] = (target, winter);
+        }
         let chunks = plan_chunks(&mut self.caches[p], &cam, size, &inputs, &mut cmds);
         let maps = pz_iso_render::seam::WorldDepthMaps {
             tiles: &self.depth,
@@ -857,20 +867,18 @@ impl WorldRender {
             state: &state,
             world: &self.world,
         };
-        // TODO(port): the climate, water, puddles, sky reflection, rain
-        // and fish splash inputs; with their defaults only the floor blood
-        // draws.
+        // Water, puddle reflections and rain/fish splashes have separate inputs.
         let (settings, world_age_hours) = surface_values();
         let surfaces = Surfaces {
             settings,
-            climate: Default::default(),
+            climate: pz_iso_render::weather::ClimateInputs { snow_target: target, winter, ..Default::default() },
             water: Default::default(),
             puddles: Default::default(),
             sky: Default::default(),
             world_age_hours,
-            meta_grid_min_x: 0,
+            meta_grid_min_x: view.meta.min_x,
             world: &self.world,
-            textures: &self.blood_textures,
+            textures: &self.surface_textures,
             frame: Default::default(),
             rain: None,
             fish: None,
@@ -948,9 +956,9 @@ impl WorldRender {
 }
 
 /// The floor blood tiles by name.
-struct BloodTextures(std::collections::HashMap<&'static str, Texture>);
+struct GroundTextures(std::collections::HashMap<String, Texture>);
 
-impl SurfaceTextures for BloodTextures {
+impl SurfaceTextures for GroundTextures {
     fn texture(&self, name: &str) -> Option<Texture> {
         self.0.get(name).cloned()
     }

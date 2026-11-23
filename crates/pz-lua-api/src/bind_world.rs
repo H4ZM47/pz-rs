@@ -1858,10 +1858,10 @@ fn register_iso_cell(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::e
         self_cell(c)?;
         Ok(Value::from(with_world(|w| w.cell.as_ref().map_or(0, |cell| cell.snow_target))))
     });
-    get(&b, "setSnowTarget", |c| {
+    b.method("setSnowTarget", |c| {
         self_cell(c)?;
         set_snow_target(int_arg(c, 1));
-        Ok(Value::Nil)
+        Ok(0)
     });
     get(&b, "gridSquareIsSnow", |c| {
         self_cell(c)?;
