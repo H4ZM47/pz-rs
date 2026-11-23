@@ -110,12 +110,12 @@ fn view3d_frame_makes_no_corpse_atlas_entry() {
     let regions = pz_world::isoregion::IsoRegions::new(0);
 
     renderer.view3d.mode = pz_world3d::ViewMode::FirstPerson;
-    renderer.render_player(&view, &mut v, Some(&mut models), &[], &regions, None, &mut out);
+    renderer.render_player(&view, &mut v, Some(&mut models), &[], &regions, None, None, &mut out);
     assert_eq!(renderer.corpse_error, None);
 
     // The isometric frame does reach the corpse.
     renderer.view3d.mode = pz_world3d::ViewMode::Iso;
-    renderer.render_player(&view, &mut v, Some(&mut models), &[], &regions, None, &mut out);
+    renderer.render_player(&view, &mut v, Some(&mut models), &[], &regions, None, None, &mut out);
     assert!(renderer.corpse_error.is_some());
 }
 

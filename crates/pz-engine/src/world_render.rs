@@ -641,6 +641,7 @@ impl WorldRender {
         zombies: &[LuaGameCharacter],
         regions: &IsoRegions,
         weather_fx: Option<&RefCell<IsoWeatherFx>>,
+        designation_registry: Option<&pz_world::designation::DesignationRegistryRef>,
         out: &mut Vec<DrawCmd>,
     ) {
         let p = v.player;
@@ -974,9 +975,14 @@ impl WorldRender {
             render_weather_fx(&mut fx, mask, &fx_chars, &fx_sprites, &fx_view, &fx_frame, out);
         };
         self.extras.drain_vispoly(&mut self.pending);
-        let mut extras = self
-            .extras
-            .build_frame(view, &cam, v, &self.lighting, &order);
+        let mut extras = self.extras.build_frame(
+            view,
+            &cam,
+            v,
+            &self.lighting,
+            &order,
+            designation_registry,
+        );
         let cmds = world_frame_extras(
             &r,
             size,
@@ -1054,8 +1060,10 @@ impl IsoWorld {
             regions,
             models,
             zombies,
+            meta_world,
             ..
         } = self;
+        let designation_registry = meta_world.designation_zones.live_slot().cloned();
         let regions_owner = regions.as_ref().ok_or(RuntimeHostError::Unsupported {
             operation: "actual render regions owner",
             kind: None,
@@ -1133,13 +1141,31 @@ impl IsoWorld {
                 r.update_view3d(view.dir.delta());
             }
             let weather_fx = w.weather_fx.clone();
-            r.render_player(&wv, view, models.as_mut(), zombies, regions, weather_fx.as_deref(), out);
+            r.render_player(
+                &wv,
+                view,
+                models.as_mut(),
+                zombies,
+                regions,
+                weather_fx.as_deref(),
+                designation_registry.as_ref(),
+                out,
+            );
             check_changed_buildings(&mut r.lighting, &mut r.caches, &mut r.pending, num_players);
             Ok(())
         })?;
-        // TODO(port): `Gizmos.render`, `DrawIsoCursorHelper`, the
-        // pathfinding/sound/vocals debug renders, `FBORenderAreaHighlights`,
-        // `LineDrawer.render`.
         Ok(())
+    }
+
+    /// Consumes the valid `(x, y, z)` tile selected for
+    /// `RenderOpaqueObjectsInWorld` during the last [`Self::render`] call.
+    pub fn take_opaque_event_square(&self) -> Option<(i32, i32, i32)> {
+        self.render
+            .try_borrow_mut()
+            .ok()?
+            .as_mut()?
+            .extras
+            .pending_opaque_square
+            .take()
     }
 }

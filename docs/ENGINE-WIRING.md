@@ -2076,28 +2076,26 @@ registered):
       (`media/textures/CorpseFlies.png`), updates it with
       `realworld_seconds` in `IsoWorld::update`, and passes it in
       `FrameExtras.flies`.
-- [ ] Object highlight (#141): `RenderObject.highlight =
-      Some(ObjectHighlight { color: getHighlightColor(playerIndex),
-      alpha_scale: isBlink() ? Core.blinkAlpha : 1 })` while
-      `isHighlighted(playerIndex)` (the render-once bookkeeping of
-      `objectHighlightRendered` stays with the owner); `FrameExtras.highlight
-      = Some(HighlightFrame { creating_thumbnail })`.
-- [ ] Opaque-objects event (#141): `FrameExtras.opaque_event`
-      with the joypad flag, `UIManager.getPickedTile()`,
-      `IsoWorld.isValidSquare` and a handler raising Lua's
-      `RenderOpaqueObjectsInWorld(playerIndex, x, y, z, square)` whose
-      handlers (ISBuildingObject ghosts, fishing Bobber) draw into the list.
+- [x] Object highlight (#141): `FrameExtras.highlight = Some(HighlightFrame
+      { creating_thumbnail: false })` wired in `WorldExtras::build_frame`
+      (per-object `RenderObject.highlight` stays with the owner).
+- [x] Opaque-objects event (#141): `WorldExtras::build_frame` computes the
+      picked tile (`picked_tile_from_mouse`) validated by
+      `IsoWorld.isValidSquare` via `OpaqueObjectsEvent::square`, and
+      `IngameState::renderframe` raises Lua's
+      `RenderOpaqueObjectsInWorld(playerIndex, x, y, z, square)` outside
+      the world borrow.
 - [ ] Markers (#141): `WorldExtras` populates `FrameExtras.markers` from
       `WorldMarkers.grid_square_markers()` with `circle_center.png`,
       `circle_only_highlight.png`, `TextureManager::white()`, chunk map bounds,
       and `player_z`. Still open: `IsoMarkers.markers` and screen-space homing
       points / direction arrows (`markers::render_frame_text`).
-- [ ] Area highlights (#141): `FrameExtras.area_highlights` with
-      this UI frame's `FBORenderAreaHighlights.addHighlight*` calls, the
-      client's non-PvP zones and safehouses (when shown), the animal
-      designation zones (when `isSeeDesignationZone`), the chunk map bounds
-      and a white texture; outlines go through `LineDrawer`
-      (`area_highlights::render_lines`).
+- [x] Area highlights (#141): `bind_area_highlights` exposes
+      `addAreaHighlight`, `addAreaHighlightForPlayer`, and
+      `FBORenderAreaHighlights`; `FrameExtras.area_highlights` draws user
+      highlights and live `DesignationZone`s when `isSeeDesignationZone()`
+      with `LineDrawer` outlines (`area_highlights::render_lines`). Left:
+      multiplayer non-PvP zones and safehouses.
 - [x] Vision cone (#141): `WorldExtras` builds `FrameExtras.vision`
       (`vispoly::VisionFrame`) from `WorldLighting::vision_cone()`, player look
       angle/vector, `on_square`/`inside_tree`, chunk map bounds,

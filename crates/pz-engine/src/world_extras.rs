@@ -7,15 +7,20 @@
 
 use crate::world_render::RenderView;
 use pz_fs::GameFs;
+use pz_iso_render::area_highlights::{
+    AreaHighlightsFrame, DesignationZone as RenderDesignationZone,
+};
 use pz_iso_render::flies::CorpseFlies;
 use pz_iso_render::fog::{FogClimate, FogFrame, FogPlayer, ImprovedFog};
 use pz_iso_render::frame::FrameExtras;
-use pz_iso_render::markers::{GridSquareMarker, MarkersFrame};
+use pz_iso_render::highlight::HighlightFrame;
+use pz_iso_render::markers::{GridSquareMarker, MarkersFrame, OpaqueObjectsEvent};
 use pz_iso_render::vispoly::{ChunkLevelData, VisPolyChunks, VisSquare, VisionFrame};
 use pz_iso_render::Camera;
 use pz_render::{Texture, TextureManager};
-use pz_world::objects::ObjectKind;
+use pz_world::designation::{DesignationList, DesignationRegistryRef};
 use pz_world::los::TestResults;
+use pz_world::objects::ObjectKind;
 use pz_world::square::{SquareHooks, VisionEnv};
 use pz_world_render::{PendingRender, WorldLighting, WorldView};
 
@@ -39,6 +44,11 @@ pub struct WorldExtras {
     pub circle_only_highlight: Option<Texture>,
     /// `Texture.getWhite()`.
     pub white: Option<Texture>,
+    /// The square selected by `OpaqueObjectsEvent::square` on the most recent
+    /// `render_player` call, consumed after `IsoWorld::render` releases the
+    /// world borrow so Lua `RenderOpaqueObjectsInWorld` handlers can safely
+    /// query `getCell():getGridSquare(...)`.
+    pub pending_opaque_square: Option<(i32, i32, i32)>,
 }
 
 impl WorldExtras {
@@ -62,6 +72,7 @@ impl WorldExtras {
             circle_center: tm.shared_texture(fs, "media/textures/worldMap/circle_center.png"),
             circle_only_highlight: tm.shared_texture(fs, "media/textures/worldMap/circle_only_highlight.png"),
             white: Some(tm.white()),
+            pending_opaque_square: None,
         }
     }
 
@@ -103,7 +114,8 @@ impl WorldExtras {
         self.vispoly.remove_chunk(wx, wy);
     }
 
-    /// Builds this player's [`FrameExtras`] for `world_frame_extras`.
+    /// Builds this player's [`FrameExtras`] for `world_frame_extras`,
+    /// recording any pending `RenderOpaqueObjectsInWorld` target square.
     pub fn build_frame(
         &mut self,
         view: &WorldView<'_>,
@@ -111,6 +123,7 @@ impl WorldExtras {
         v: &RenderView,
         lighting: &WorldLighting,
         order: &[(i32, i32)],
+        designation_registry: Option<&DesignationRegistryRef>,
     ) -> FrameExtras<'static> {
         let (fog_quality, view_cone_opacity, num_players) = pz_lua_api::bind_core::shared_core()
             .try_borrow()
@@ -231,16 +244,99 @@ impl WorldExtras {
             lines: Vec::new(),
         };
 
+        let see_designation_zone = pz_lua_api::bind_players::player(v.player)
+            .and_then(|p| p.try_borrow().ok().map(|c| c.player.see_designation_zone))
+            .unwrap_or(false);
+        let designation_zones = if see_designation_zone {
+            collect_designation_zones(designation_registry)
+        } else {
+            Vec::new()
+        };
+        let area_highlights = AreaHighlightsFrame {
+            white: self.white.clone(),
+            player_index: v.player as i32,
+            chunk_map: Some(chunk_map),
+            user_defined: pz_lua_api::bind_area_highlights::snapshot(),
+            non_pvp_zones: Vec::new(),
+            safehouses: Vec::new(),
+            designation_zones,
+        };
+
+        // Compute the `RenderOpaqueObjectsInWorld` square using Build 42.22's
+        // `OpaqueObjectsEvent::square` rules (joypad -> player square, else
+        // mouse picked tile; validated by `IsoWorld.isValidSquare`).
+        let picked_tile = picked_tile_from_mouse(cam);
+        let valid_square = |x: i32, y: i32, z: i32| {
+            (-32..=31).contains(&z) && view.meta.is_valid_square(x, y)
+        };
+        let mut noop = |_x: i32, _y: i32, _z: i32, _out: &mut Vec<pz_render::DrawCmd>| {};
+        let opaque_probe = OpaqueObjectsEvent {
+            joypad: false,
+            picked_tile,
+            valid_square: &valid_square,
+            handler: &mut noop,
+        };
+        self.pending_opaque_square = opaque_probe.square(cam);
+
         FrameExtras {
             flies: Some(self.flies.clone()),
-            highlight: None,
+            highlight: Some(HighlightFrame {
+                creating_thumbnail: false,
+            }),
             opaque_event: None,
             vision: Some(vision),
             markers: Some(markers),
             fog: Some(fog),
-            area_highlights: None,
+            area_highlights: Some(area_highlights),
         }
     }
+}
+
+/// Converts the current mouse screen position into an isometric tile coordinate
+/// on `floor(cam.z)` (`UIManager.getTileFromMouse`).
+pub(crate) fn picked_tile_from_mouse(cam: &Camera) -> Option<[f32; 2]> {
+    let (mx, my) = pz_input::with_input(|i| (i.cursor_x as f32, i.cursor_y as f32));
+    let px = mx * cam.zoom + cam.off_x as f32;
+    let py = my * cam.zoom + cam.off_y as f32;
+    let floor = pz_render::iso::fastfloor(cam.z) as f32;
+    let ix = pz_render::iso::x_to_iso(px, py, floor);
+    let iy = pz_render::iso::y_to_iso(px, py, floor);
+    (ix.is_finite() && iy.is_finite()).then_some([ix, iy])
+}
+
+/// Collects live `DesignationZone` bounds for `FBORenderAreaHighlights`.
+fn collect_designation_zones(
+    registry: Option<&DesignationRegistryRef>,
+) -> Vec<RenderDesignationZone> {
+    let Some(registry) = registry else {
+        return Vec::new();
+    };
+    let Ok(reg) = registry.try_borrow() else {
+        return Vec::new();
+    };
+    let Some(slot) = reg.all_zones_slot() else {
+        return Vec::new();
+    };
+    let Ok(list) = slot.try_borrow() else {
+        return Vec::new();
+    };
+    let DesignationList::Zones(zones) = &*list else {
+        return Vec::new();
+    };
+    zones
+        .iter()
+        .filter_map(|z| {
+            let z = z.try_borrow().ok()?;
+            Some(RenderDesignationZone {
+                x: z.x,
+                y: z.y,
+                w: z.w,
+                h: z.h,
+                z: z.z,
+                selected: false,
+            })
+        })
+        .collect()
 }
 
 /// 4-neighbour chunk presence bitmask used as `adjacentChunkLoadedCounter` so
