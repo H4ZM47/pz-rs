@@ -403,16 +403,23 @@ fn game_keyboard_update(mgr: &mut LuaManager) {
 }
 
 fn mouse_update(seconds: f32) {
-    let (mut cx, mut cy, wheel, buttons) = with_input(|i| (i.cursor_x, i.cursor_y, i.take_wheel(), i.buttons_down));
+    let (mut cx, mut cy, wheel, mut buttons, look) =
+        with_input(|i| (i.cursor_x, i.cursor_y, i.take_wheel(), i.buttons_down, i.mouse_look));
     // Port extension: while the 3D view's mouse-look holds the cursor, the
     // mouse is where the view's crosshair meets the world, in isometric
     // screen pixels, so world picking and context menus act on it. UI
-    // elements do not take clicks then (`MouseState::world_only`), so no
-    // panel under that point swallows them; freeing the cursor clears it.
-    let world_mouse = pz_input::world_mouse();
-    if let Some((wx, wy)) = world_mouse {
-        cx = f64::from(wx);
-        cy = f64::from(wy) + 1.0;
+    // elements never take clicks then (`MouseState::world_only`), hit or
+    // miss, so no panel under the hidden cursor swallows them; freeing the
+    // cursor clears it. When the crosshair meets nothing (open sky) there
+    // is nothing to act on, so the buttons read as up.
+    let world_mouse = if look { pz_input::world_mouse() } else { None };
+    match world_mouse {
+        Some((wx, wy)) => {
+            cx = f64::from(wx);
+            cy = f64::from(wy) + 1.0;
+        }
+        None if look => buttons = [false; MOUSE_BUTTONS],
+        None => {}
     }
     let core = shared_core();
     let zoom = core.borrow().get_zoom(0);
@@ -448,7 +455,7 @@ fn mouse_update(seconds: f32) {
     });
     let right_delay = mouse_is_right_delay();
     with_ui(|u| {
-        u.mouse.world_only = world_mouse.is_some();
+        u.mouse.world_only = look;
         u.mouse.x = x;
         u.mouse.y = y;
         u.mouse.world_x = (x as f32 * zoom) as i32;
@@ -853,6 +860,31 @@ mod tests {
         mouse_update(0.1);
         assert!(!mouse_is_button_down_ui_check(1));
         assert!(!MS.with(|m| m.borrow().ui_captured[1]), "released clears the capture");
+    }
+
+    #[test]
+    fn mouse_look_keeps_clicks_off_the_ui_on_a_miss() {
+        with_input(|i| {
+            i.mouse_look = true;
+            i.world_mouse = Some((40, 50));
+            i.mouse_button(0, true);
+        });
+        mouse_update(0.1);
+        assert!(with_ui(|u| u.mouse.world_only));
+        assert!(mouse_is_button_down(0), "a crosshair hit clicks the world");
+        assert_eq!(MS.with(|m| (m.borrow().x, m.borrow().y)), (40, 50));
+        // The crosshair meets nothing: the UI still takes no clicks and
+        // the click acts on nothing.
+        with_input(|i| i.world_mouse = None);
+        mouse_update(0.1);
+        assert!(with_ui(|u| u.mouse.world_only));
+        assert!(!mouse_is_button_down(0));
+        // Freeing the cursor hands clicks back to the UI.
+        with_input(|i| i.mouse_look = false);
+        mouse_update(0.1);
+        assert!(!with_ui(|u| u.mouse.world_only));
+        assert!(mouse_is_button_down(0));
+        with_input(|i| i.mouse_button(0, false));
     }
 }
 
