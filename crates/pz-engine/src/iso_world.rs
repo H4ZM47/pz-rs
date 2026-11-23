@@ -183,6 +183,7 @@ pub struct IsoWorld {
     /// `ErosionMain.getInstance()`, shared with its Lua object.
     pub erosion: Option<Rc<RefCell<pz_erosion::erosion_main::ErosionMain>>>,
     pub instance_tracker: InstanceTracker,
+    pub(crate) house_alarms: crate::sound::house_alarms::HouseAlarms,
     pub meta_tracker: Rc<RefCell<MetaTracker>>,
     pub statistics: Statistics,
     /// The sandbox preset `map_sand.bin` named.
@@ -311,6 +312,7 @@ impl IsoWorld {
             pathfind: None,
             erosion: None,
             instance_tracker: InstanceTracker::default(),
+            house_alarms: Default::default(),
             meta_tracker: Default::default(),
             statistics: Statistics::default(),
             preset: String::new(),

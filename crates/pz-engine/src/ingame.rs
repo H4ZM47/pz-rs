@@ -433,6 +433,7 @@ impl GameState for IngameState {
                 }
             }
         }
+        if let Some(world) = cx.world.as_mut() { world.house_alarms.stop(); }
         *cx.world = None;
         let retired_emitters = pz_lua_api::bind_audio::sound_system()
             .borrow_mut()

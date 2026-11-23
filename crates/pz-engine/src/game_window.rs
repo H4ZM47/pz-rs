@@ -461,6 +461,7 @@ impl App {
                 m.set_music_inputs(crate::sound::music_inputs(&self.core.borrow()));
                 m.update(toggle_music, ctx);
             });
+        if let Some(world) = self.world.as_mut() { world.update_house_alarms(lua); }
         pz_ui::with_ui(|m| m.mouse.end_frame());
         // The avatars' texture jobs (ModelInstanceTextureCreator) before
         // the UI draws them.

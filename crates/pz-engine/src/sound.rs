@@ -2,6 +2,8 @@
 //! Studio banks through the pz-audio studio, played on the system's
 //! audio device.
 
+pub(crate) mod house_alarms;
+
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
