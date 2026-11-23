@@ -42,6 +42,15 @@ pub fn native_floor_add_to_world(
             return Err(unsupported("actual floor inventory addItemsToProcessItems"));
         }
     }
+    native_plain_object_add_to_world(object, retired)
+}
+
+fn native_plain_object_add_to_world(
+    object: &IsoObjectRef,
+    retired: &mut pz_entity::RetiredComponents,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let unsupported = |operation| RuntimeHostError::Unsupported { operation, kind: None };
     // GameEntityManager.RegisterEntity returns for no components. Its
     // nonempty manager branch must not be replaced by a successful trace.
     {
@@ -90,15 +99,17 @@ pub fn native_floor_add_to_world(
     {
         return Err(unsupported("actual floor container processItems registry"));
     }
-    // getPipedFuelAmount first consults actual object ModData, even when
-    // the sprite has no FuelAmount property. Its live table path is pending.
-    if object
-        .try_borrow()
-        .map_err(|_| RuntimeHostError::Borrowed("floor piped fuel ModData"))?
-        .mod_data
-        .is_some()
+    // A restored plant can have a full farming table on an unregistered
+    // sprite. Only a positive fuelAmount would enter generator registration.
     {
-        return Err(unsupported("actual floor piped fuel ModData query"));
+        let mut body = object.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("piped fuel ModData"))?;
+        if body.has_mod_data().map_err(|_| RuntimeHostError::Borrowed("piped fuel ModData"))? {
+            let data = body.install_runtime_mod_data().map_err(|_| unsupported("piped fuel ModData conversion"))?;
+            let fuel = data.get_str("fuelAmount");
+            if !fuel.is_nil() && fuel.as_num().ok_or_else(|| unsupported("nonnumeric piped fuel ModData"))? as i32 > 0 {
+                return Err(unsupported("native object generator registration"));
+            }
+        }
     }
     // With no containers and no property flags the generator, fridge and
     // waterPiped branches are authenticated false. No RNG is consumed.
@@ -116,8 +127,7 @@ pub fn native_floor_add_to_world(
             return Err(unsupported("actual floor tent ambient emitter"));
         }
     }
-    // This entry accepts the actual WorldInventory subclass only, which is
-    // neither Door/Window nor Tree. Empty properties lack AmbientSound/RGB.
+    // Ordinary objects and floor items are neither Door/Window nor Tree.
     {
         let sprite = sprite
             .try_borrow()
@@ -680,6 +690,12 @@ fn try_native_add_to_world_dispatch(
         let body = object
             .try_borrow()
             .map_err(|_| RuntimeHostError::Borrowed("addToWorld sprite authority"))?;
+        if matches!(body.kind, ObjectKind::Object) && body.sprite.native_slot().is_some() {
+            drop(body);
+            retired.push_owner(pz_entity::EntityOwner::from_ref(object));
+            native_plain_object_add_to_world(object, retired)?;
+            return Ok(true);
+        }
         body.sprite
             .native_slot()
             .map(|_| matches!(body.kind, ObjectKind::WorldInventory(_)))
