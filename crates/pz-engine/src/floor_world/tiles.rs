@@ -86,7 +86,7 @@ impl LiveFloorWorld {
                 .get_grid_square(pos.0, pos.1, pos.2)
                 .ok_or_else(|| unsupported("tile square"))?;
             let (slot, index, special) = match tile {
-                PlacedTile::Remove { .. } => {
+                PlacedTile::Remove { .. } | PlacedTile::RecalcNeighbours { .. } => {
                     return Err(unsupported("removing tile through add operation"))
                 }
                 PlacedTile::Named(name) => {
@@ -127,6 +127,15 @@ impl IsoWorld {
             let service = service
                 .upgrade()
                 .ok_or_else(|| pz_kahlua::LuaError::runtime("tile world has closed"))?;
+            if let PlacedTile::RecalcNeighbours { reverse } = tile {
+                let service = service.try_borrow().map_err(|_| pz_kahlua::LuaError::runtime("tile world is in use"))?;
+                service.with_tile_env(|env, geometry| {
+                    env.recalc_neighbours(pos, reverse);
+                    geometry.notify(env.cell, env.meta, env.sprites, pos);
+                    Ok(())
+                }).map_err(|e| pz_kahlua::LuaError::runtime(format!("recalculating square: {e:?}")))?;
+                return Ok(pz_kahlua::Value::Nil);
+            }
             if let PlacedTile::Remove {
                 object,
                 transmit,

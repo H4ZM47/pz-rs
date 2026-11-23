@@ -2081,6 +2081,12 @@ fn register_grid_square(thread: &mut Thread) {
             Ok(())
         });
     }
+    void(&b, "RecalcAllWithNeighbours", |c| {
+        let pos = self_square(c)?;
+        let reverse = bool_arg(c, 1);
+        crate::bind_map_objects::apply_tile(c.thread, pos, crate::bind_map_objects::PlacedTile::RecalcNeighbours { reverse })?;
+        Ok(())
+    });
     for (method, transmit) in [("RemoveTileObject", false), ("transmitRemoveItemFromSquare", true)] {
         get(&b, method, move |c| {
             let pos=self_square(c)?;

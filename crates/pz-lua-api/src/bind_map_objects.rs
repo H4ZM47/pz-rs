@@ -203,6 +203,7 @@ pub fn dispatch_square(
 }
 
 pub enum PlacedTile {
+    RecalcNeighbours { reverse: bool },
     Named(String),
     Remove { object: IsoObjectRef, transmit: bool, safe: Option<bool> },
     Existing { object: IsoObjectRef, index: i32, special: bool },

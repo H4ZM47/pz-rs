@@ -563,6 +563,12 @@ impl MutationEnv<'_> {
     /// recalculates both squares' properties), then the four corner pairs
     /// around it.
     pub fn recalc_all_with_neighbours(&mut self, pos: SquarePos) {
+        self.recalc_neighbours(pos, true);
+    }
+
+    /// The boolean overload only controls reverse updates between the
+    /// receiver and its neighbours. The four corner pairs update both ways.
+    pub fn recalc_neighbours(&mut self, pos: SquarePos, reverse: bool) {
         let Some(sq_owner) = self.sq(pos) else {
             return;
         };
@@ -579,7 +585,7 @@ impl MutationEnv<'_> {
                     if (x, y, z) == pos || self.sq((x, y, z)).is_none() {
                         continue;
                     }
-                    self.recalculate_all(pos, (x, y, z), true);
+                    self.recalculate_all(pos, (x, y, z), reverse);
                 }
             }
         }
