@@ -46,6 +46,8 @@ pub struct IsoGridSquare {
     /// capability is not a substitute for a complete chunk receiver.
     pub chunk_hot_save: Option<ChunkHotSaveRef>,
     pub room_id: i64,
+    /// IsoGridSquare.puddlesCacheSize and puddlesCacheLevel (runtime only).
+    pub puddles_cache: std::cell::Cell<(f32, f32)>,
     /// `roofHideBuilding`: the building of the `emptyoutside` room here.
     pub roof_hide_building: Option<BuildingIdx>,
     /// `associatedBuilding` (`IsoMetaGrid.getAssociatedBuildingAt`, set
@@ -182,6 +184,7 @@ impl IsoGridSquare {
             z,
             chunk_hot_save: None,
             room_id: -1,
+            puddles_cache: std::cell::Cell::new((-1.0, -1.0)),
             roof_hide_building: None,
             associated_building: None,
             has_set_iso_world_region: std::cell::Cell::new(false),

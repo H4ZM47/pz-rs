@@ -5,46 +5,48 @@ use pz_iso_render::puddles::ground::{directions, perlin_level, texture_level};
 use pz_kahlua::LuaResult;
 
 pub fn ground_level((x, y, z): (i32, i32, i32)) -> LuaResult<f32> {
-    let (owner, regions) = crate::bind_world::try_with_world_read(|w| {
-        Ok((
-            w.cell.as_ref().and_then(|c| c.get_grid_square(x, y, z)),
-            w.regions.clone(),
-        ))
-    })
-    .map_err(host_error)?;
-    let Some(owner) = owner else { return Ok(-0.1) };
-    let regions = regions
-        .as_ref()
-        .map(|r| r.try_borrow().map_err(|_| borrowed("IsoRegions")))
-        .transpose()?;
+    let mut owner = None;
     let room = crate::bind_world::try_with_world_read(|w| {
-        let sq = owner
+        owner = w.cell.as_ref().and_then(|c| c.get_grid_square(x, y, z));
+        let Some(sq) = &owner else { return Ok(false) };
+        let sq = sq
             .try_borrow()
             .map_err(|_| RuntimeHostError::Borrowed("puddle square"))?;
-        Ok(w.meta_grid
+        if w.meta_grid
             .as_ref()
             .is_some_and(|m| sq.room_def(m).is_some())
-            || regions.as_ref().is_some_and(|r| {
-                sq.get_iso_world_region(r)
-                    .is_some_and(|id| r.is_player_room(id))
-            }))
+        {
+            return Ok(true);
+        }
+        let Some(regions) = &w.regions else {
+            return Ok(false);
+        };
+        let regions = regions
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("IsoRegions"))?;
+        Ok(sq
+            .get_iso_world_region(&regions)
+            .is_some_and(|id| regions.is_player_room(id)))
     })
     .map_err(host_error)?;
     if room {
         return Ok(-1.0);
     }
+    let Some(owner) = owner else { return Ok(-0.1) };
     let server = crate::bind_character_sim::current_sim_context().is_server();
+    let player = crate::hud::host::with_host(|h| h.camera.frame_player_index());
     let core = crate::bind_core::shared_core();
-    let (perf, low_quality) = {
+    let (perf, enabled, low_quality, width) = {
         let core = core.try_borrow().map_err(|_| borrowed("Core"))?;
         let perf = core.get_perf_puddles();
-        if !core.get_use_shaders()
-            || (!server && (core.get_perf_puddles_on_load() == 3 || perf == 3))
-            || (perf > 0 && z > 0)
-        {
-            return Ok(-0.1);
-        }
-        (perf, !server && core.performance.puddles_quality == 2)
+        (
+            perf,
+            core.get_use_shaders()
+                && (server || (core.get_perf_puddles_on_load() != 3 && perf != 3))
+                && !(perf > 0 && z > 0),
+            !server && core.performance.puddles_quality == 2,
+            core.get_offscreen_width(player as i32) as f32,
+        )
     };
     let size = super::shared_puddles()
         .try_borrow()
@@ -52,10 +54,36 @@ pub fn ground_level((x, y, z): (i32, i32, i32)) -> LuaResult<f32> {
         .state
         .puddles_size
         .get();
-    if size <= 0.0 {
-        return Ok(-0.1);
+    let key = size + perf as f32 + width;
+    let (previous, value) = owner
+        .try_borrow()
+        .map_err(|_| borrowed("puddle square"))?
+        .puddles_cache
+        .get();
+    if !server && (key - previous).abs() < 0.01 {
+        return Ok(value);
     }
+    let level = if enabled && size > 0.0 {
+        compute_level(&owner, (x, y, z), size, perf, low_quality, server)?
+    } else {
+        -0.1
+    };
+    owner
+        .try_borrow()
+        .map_err(|_| borrowed("puddle square"))?
+        .puddles_cache
+        .set((key, level));
+    Ok(level)
+}
 
+fn compute_level(
+    owner: &pz_world::SquareRef,
+    (x, y, z): (i32, i32, i32),
+    size: f32,
+    perf: i32,
+    low_quality: bool,
+    server: bool,
+) -> LuaResult<f32> {
     let mut dir = [0.0, 0.0, 1.0];
     if !server && perf <= 1 {
         let sprites = crate::bind_sprites::manager()?;
@@ -74,21 +102,23 @@ pub fn ground_level((x, y, z): (i32, i32, i32)) -> LuaResult<f32> {
                 .meta_grid
                 .as_ref()
                 .ok_or(RuntimeHostError::InvalidHostState("puddle meta grid"))?;
-            let regions = regions
+            let regions = w
+                .regions
                 .as_ref()
-                .ok_or(RuntimeHostError::InvalidHostState("puddle region graph"))?;
+                .ok_or(RuntimeHostError::InvalidHostState("puddle region graph"))?
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("IsoRegions"))?;
             let view = pz_world_render::WorldView {
                 cell,
                 meta,
                 sprites: &sprites,
             };
             Ok(directions(&pz_world_render::render_world::puddle_geometry(
-                &view, regions, &sq, perf,
+                &view, &regions, &sq, perf,
             )?))
         })
         .map_err(host_error)?;
     }
-    drop(regions);
 
     let (wx, wy) = (
         x as f32 + 0.5 - z as f32 * 3.0,
@@ -111,6 +141,7 @@ pub fn ground_level((x, y, z): (i32, i32, i32)) -> LuaResult<f32> {
         (p, h.camera.camera_offset(p), h.camera.fix_jiggly_square(p))
     });
     let (width, height, scale) = {
+        let core = crate::bind_core::shared_core();
         let core = core.try_borrow().map_err(|_| borrowed("Core"))?;
         (
             core.get_offscreen_width(player as i32).max(1) as f32,

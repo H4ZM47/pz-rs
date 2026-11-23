@@ -58,6 +58,10 @@ pub fn texture_level(
     let [u, v] = uv.map(|p| (p * 0.5).rem_euclid(1.0));
     let x = (u * image.width as f32) as usize;
     let y = (v * image.height as f32) as usize;
+    // ImageData.getPixelDiscard leaves all four components zero outside the backing image.
+    if x >= image.width_hw as usize || y >= image.height_hw as usize {
+        return Some(-0.24);
+    }
     let offset = (x + y * image.width_hw as usize) * 4;
     let pixel = image.data.pixels.get(offset..offset + 3)?;
     let [r, g, b] = [pixel[0], pixel[1], pixel[2]].map(|c| f32::from(c) / 255.0);
