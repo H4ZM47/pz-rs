@@ -137,8 +137,11 @@ pub(super) fn check_tile_resources(
     {
         return Err(unsupported("removing an ambient sound or powered map tile"));
     }
-    if flag("HasLightOnSprite")
-        || ["lightR", "lightG", "lightB"]
+    // HasLightOnSprite only advertises an optional texture. Java allocates
+    // onOverlay lazily when the object is powered, seen and rendered. It
+    // does not create a lamppost. The current render snapshot holds no
+    // per-object instance of that texture.
+    if ["lightR", "lightG", "lightB"]
             .iter()
             .all(|name| sprites.has_prop(&sprite, name))
     {
