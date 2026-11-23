@@ -80,6 +80,7 @@ enum Start {
     Event {
         event: Guid,
         parameters: Vec<Guid>,
+        track: Guid,
         gain: f32,
         delay_ms: f32,
     },
@@ -115,8 +116,8 @@ pub struct EventInstance {
     dsps: HashMap<Guid, Option<Box<dyn crate::dsp::Dsp>>>,
     /// Local parameter values by parameter GUID.
     params: HashMap<Guid, f32>,
-    /// Gain of the routing below the event (cached per block).
-    route: f32,
+    /// Track in the owning event that receives this nested event.
+    parent_track: Guid,
     start_delay: usize,
     /// `EventInstance::setProperty` min/max distance overrides.
     distance_override: (Option<f32>, Option<f32>),
@@ -502,7 +503,7 @@ impl Studio {
             world_position: [0.0; 3],
             dsps: HashMap::new(),
             params: HashMap::new(),
-            route: 1.0,
+            parent_track: Guid::NULL,
             start_delay: 0,
             distance_override: (None, None),
             released: false,
@@ -611,7 +612,7 @@ impl Studio {
                         r.guid()
                     }).ok()
                 }).unwrap_or_default();
-                out.push(Start::Event { event: *event, parameters, gain, delay_ms });
+                out.push(Start::Event { event: *event, parameters, track, gain, delay_ms });
             }
             _ => {}
         }
@@ -646,6 +647,7 @@ impl Studio {
                 Start::Event {
                     event,
                     parameters,
+                    track,
                     gain,
                     delay_ms,
                 } => {
@@ -663,6 +665,7 @@ impl Studio {
                     let c = self.instances.get_mut(&child).unwrap();
                     c.params = inherited;
                     c.parent = Some(inst);
+                    c.parent_track = track;
                     c.released = true;
                     c.gain = gain;
                     c.start_delay = delay_frames(delay_ms);
@@ -695,8 +698,7 @@ impl Studio {
         self.banks.iter().find_map(|b| b.model.buses.get(id))
     }
 
-    /// Gain inside the event: its master bus volume (tracks and event
-    /// effects are not modelled yet).
+    /// Unautomated event master volume for the diagnostic description.
     fn event_gain(&self, e: &Event) -> f32 {
         self.find_bus(&e.master_bus)
             .map_or(1.0, |b| db_to_gain(b.1.body.volume_db))
@@ -877,6 +879,7 @@ impl Studio {
     pub fn mix(&mut self, out: &mut [f32]) {
         let frames = out.len() / 2;
         let mut scratch = vec![0f32; out.len()];
+        let mut event_tracks: BTreeMap<InstanceId, HashMap<Guid, Vec<f32>>> = BTreeMap::new();
         let mut cursor = 0;
         while let Some((&id, instance)) = self.instances.range(cursor..).next() {
             cursor = id + 1;
@@ -894,7 +897,6 @@ impl Studio {
                 let i = &self.instances[&id];
                 (i.bank, self.banks[i.bank].model.events[&i.event].clone())
             };
-            self.instances.get_mut(&id).unwrap().route = self.event_gain(&event);
             if !self.instances[&id].started {
                 self.instances.get_mut(&id).unwrap().started = true;
                 for g in event.instruments.clone() {
@@ -918,16 +920,9 @@ impl Studio {
                     }
                 }
             }
-            let mut tracks: HashMap<Guid, Vec<f32>> = HashMap::new();
-            let mut top = id;
-            let mut g = self.instances[&id].gain;
-            while let Some(parent) = self.instances[&top].parent {
-                top = parent;
-                g *= self.instances[&top].gain * self.instances[&top].route;
-            }
             let inst = self.instances.get_mut(&id).unwrap();
             for v in &mut inst.voices {
-                let buf = tracks
+                let buf = event_tracks.entry(id).or_default()
                     .entry(v.track)
                     .or_insert_with(|| vec![0.0; out.len()]);
                 let ch = v.pcm.channels as usize;
@@ -949,8 +944,8 @@ impl Studio {
                     } else {
                         (v.pcm.data[v.pos * ch], v.pcm.data[v.pos * ch + 1])
                     };
-                    buf[f * 2] += l * v.gain * g;
-                    buf[f * 2 + 1] += r * v.gain * g;
+                    buf[f * 2] += l * v.gain;
+                    buf[f * 2 + 1] += r * v.gain;
                     v.pos += 1;
                 }
             }
@@ -965,19 +960,27 @@ impl Studio {
             if inst.voices.is_empty() && inst.position >= end {
                 inst.timeline_finished = true;
             }
-            // Nested events join their parent's routing.
-            let rel = self.relative(self.instances[&top].world_position);
+        }
+
+        // Child instances have higher IDs. Mix them first, into the track
+        // that owns the event instrument. This lets the parent's spatializer,
+        // automation and volume act on its own voices and its children together.
+        while let Some((id, tracks)) = event_tracks.pop_last() {
+            let instance = &self.instances[&id];
+            let event = self.banks[instance.bank].model.events[&instance.event].clone();
+            let parent = instance.parent;
+            let target = instance.parent_track;
+            let gain = instance.gain;
+            let mut root = id;
+            while let Some(owner) = self.instances[&root].parent { root = owner; }
+            let rel = self.relative(self.instances[&root].world_position);
             self.run_event_buses(id, &event, tracks, &mut scratch, rel);
-            let input = self.banks[self.instances[&top].bank].model.events
-                [&self.instances[&top].event]
-                .input_bus;
-            let dst = self
-                .bus_buffers
-                .entry(input)
-                .or_insert_with(|| vec![0.0; out.len()]);
-            for (o, s) in dst.iter_mut().zip(&scratch) {
-                *o += s;
-            }
+            let dst = if let Some(owner) = parent {
+                event_tracks.entry(owner).or_default().entry(target).or_insert_with(|| vec![0.0; out.len()])
+            } else {
+                self.bus_buffers.entry(event.input_bus).or_insert_with(|| vec![0.0; out.len()])
+            };
+            for (o, s) in dst.iter_mut().zip(&scratch) { *o += s * gain; }
         }
         // A parent remains playing until its last nested event finishes.
         let mut playing_parents = HashSet::new();
