@@ -13,6 +13,7 @@ pub const INTENSITY_EVENTS_CLASS: &str = "zombie.audio.MusicIntensityEvents";
 /// null-safe; both null compare equal).
 pub fn eq_ignore_case(a: Option<&str>, b: Option<&str>) -> bool {
     match (a, b) {
+        (Some(a), Some(b)) if a.is_ascii() && b.is_ascii() => a.eq_ignore_ascii_case(b),
         (Some(a), Some(b)) => {
             a.chars().count() == b.chars().count() && a.to_lowercase() == b.to_lowercase()
         }
@@ -136,5 +137,107 @@ impl LuaObject for MusicIntensityEvents {
 impl Default for MusicIntensityEvents {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub const THREAT_STATUS_CLASS: &str = "zombie.audio.MusicThreatStatus";
+
+#[derive(Debug, PartialEq)]
+pub struct MusicThreatStatus {
+    pub id: Option<Rc<str>>,
+    pub intensity: Cell<f32>,
+}
+
+impl LuaObject for MusicThreatStatus {
+    fn class_name(&self) -> &str {
+        THREAT_STATUS_CLASS
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct MusicThreatLevels {
+    statuses: RefCell<Vec<Rc<MusicThreatStatus>>>,
+    intensity: Cell<f32>,
+}
+
+impl MusicThreatLevels {
+    pub fn set_status(&self, id: Option<Rc<str>>, intensity: f32) -> Rc<MusicThreatStatus> {
+        if let Some(s) = self.find_status_by_id(id.as_deref()) {
+            s.intensity.set(intensity);
+            return s;
+        }
+        let s = Rc::new(MusicThreatStatus {
+            id,
+            intensity: Cell::new(intensity),
+        });
+        self.statuses.borrow_mut().push(s.clone());
+        s
+    }
+
+    pub fn find_status_by_id(&self, id: Option<&str>) -> Option<Rc<MusicThreatStatus>> {
+        self.statuses
+            .borrow()
+            .iter()
+            .find(|s| eq_ignore_case(s.id.as_deref(), id))
+            .cloned()
+    }
+
+    pub fn clear(&self) {
+        self.statuses.borrow_mut().clear();
+    }
+
+    pub fn count(&self) -> usize {
+        self.statuses.borrow().len()
+    }
+
+    pub fn status(&self, index: usize) -> Option<Rc<MusicThreatStatus>> {
+        self.statuses.borrow().get(index).cloned()
+    }
+
+    pub fn intensity(&self) -> f32 {
+        self.intensity.get()
+    }
+
+    pub fn calculate_intensity(&self, contribution: impl Fn(&MusicThreatStatus) -> f32) {
+        self.intensity
+            .set(self.statuses.borrow().iter().map(|s| contribution(s)).sum());
+    }
+
+    fn set_player_status(&self, id: &str, value: f32) {
+        if let Some(status) = self.find_status_by_id(Some(id)) {
+            status.intensity.set(value);
+        } else {
+            self.set_status(Some(id.into()), value);
+        }
+    }
+
+    pub fn update_from_player<I>(&self, player: &crate::character::GameCharacter<I>, panic: i32) {
+        let stats = &player.stats;
+        self.set_player_status("MoodlePanic", panic as f32 / 4.0);
+        self.set_player_status("PlayerHealth", 1.0 - player.health);
+        for (id, count) in [
+            ("ZombiesVisible", stats.music_zombies_visible),
+            (
+                "ZombiesTargeting.DistantNotMoving",
+                stats.music_zombies_targeting_distant_not_moving,
+            ),
+            (
+                "ZombiesTargeting.NearbyNotMoving",
+                stats.music_zombies_targeting_nearby_not_moving,
+            ),
+            (
+                "ZombiesTargeting.DistantMoving",
+                stats.music_zombies_targeting_distant_moving,
+            ),
+            (
+                "ZombiesTargeting.NearbyMoving",
+                stats.music_zombies_targeting_nearby_moving,
+            ),
+        ] {
+            self.set_player_status(id, (count as f32 / 100.0).clamp(0.0, 1.0));
+        }
     }
 }

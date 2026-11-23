@@ -380,6 +380,17 @@ fn has_input_component(kind: CharacterKind) -> bool {
 
 /// The methods only `IsoPlayer` (and `IsoAnimal`) declares.
 pub(super) fn register_player(b: &ClassBuilder) {
+    b.method("getMusicThreatStatuses", |c| {
+        let chr = chr_of(c)?;
+        let player = chr.try_borrow().map_err(|_| crate::bind_world_object::borrowed("player music threat"))?;
+        let levels = player.player.music_threat_levels.clone();
+        drop(player);
+        let key = (super::Handle::MusicThreatStatuses, std::rc::Rc::as_ptr(&chr) as usize, 0);
+        let value = super::canonical(key, || Value::Object(std::rc::Rc::new(
+            crate::bind_audio::MusicThreatStatuses::for_player(chr, levels)
+        )));
+        Ok(c.push(value))
+    });
     b.method("getMusicIntensityEvents", |c| {
         let chr = chr_of(c)?;
         let player = chr.try_borrow().map_err(|_| crate::bind_world_object::borrowed("player music events"))?;

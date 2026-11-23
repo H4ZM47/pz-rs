@@ -632,6 +632,7 @@ impl LuaObject for CharacterObject {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Handle {
     Character,
+    MusicThreatStatuses,
     Stat,
     Stats,
     Moodles,
@@ -2676,6 +2677,40 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn player_threat_tracks_live_stats_and_lua_overrides() {
+        let (mut thread, player, _) = setup();
+        crate::bind_audio::register(&mut thread);
+        {
+            let mut p = player.borrow_mut();
+            p.health = 0.5;
+            p.stats.music_zombies_visible = 25;
+            p.stats.music_zombies_targeting_nearby_moving = 110;
+        }
+        run(&mut thread, r#"
+            local cfg = MusicThreatConfig.getInstance()
+            cfg:initStatuses({
+                {id="PlayerHealth", intensity=2}, {id="ZombiesVisible", intensity=4},
+                {id="ZombiesTargeting.NearbyMoving", intensity=8}
+            })
+            local s = player:getMusicThreatStatuses()
+            assert(s == player:getMusicThreatStatuses())
+            s:update()
+            assert(s:getStatusCount() == 7 and s:getIntensity() == 10)
+            local visible = s:findStatusById("ZombiesVisible")
+            assert(visible:getIntensity() == 0.25)
+            cfg:setStatusIntensityOverride("ZombiesVisible", 0.5)
+            s:update()
+            assert(s:getIntensity() == 11 and visible == s:findStatusById("zombiesvisible"))
+            local separate = MusicThreatStatuses.new(player)
+            separate:update()
+            assert(separate ~= s and separate:getIntensity() == 11)
+            separate:clear()
+            assert(separate:getStatusCount() == 0 and s:getStatusCount() == 7)
+        "#).unwrap();
+        assert_eq!(player.borrow().player.music_threat_levels.intensity(), 11.0);
+    }
+
+    #[test]
     fn seeing_a_bite_records_the_world_age_once_until_full_health() {
         let (mut thread, player, _) = setup();
         crate::bind_audio::register(&mut thread);
@@ -2690,9 +2725,13 @@ pub(crate) mod tests {
             player:setMusicIntensityEventModData("Other", false)
             assert(player:getMusicIntensityEventModData("Other") == false)
         "#).unwrap();
-        let mut part = pz_characters::character::body_part::BodyPart::new(&Default::default(), 0);
-        part.bitten = true;
-        player.borrow_mut().body_damage.parts.push(part);
+        let sm = shared_script_manager();
+        sm.builtin_tables.borrow_mut().body_parts = ["Torso_Upper", "MAX"].map(|field| {
+            pz_scripts::registry::builtin::BodyPartDecl { field: field.into(), ..Default::default() }
+        }).to_vec();
+        let mut body = pz_characters::character::BodyDamage::new(&sm, true);
+        body.parts[0].bitten = true;
+        player.borrow_mut().body_damage = body;
         run(&mut thread, r#"
             cfg:checkHealthPanelVisible(player)
             cfg:checkHealthPanelVisible(player)

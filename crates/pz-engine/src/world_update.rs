@@ -2130,13 +2130,16 @@ fn fire_player_events(
             PlayerEvent::LuaEvent(name) => {
                 lua.trigger_event(name, std::slice::from_ref(&pv));
             }
-            PlayerEvent::UpdateMusic { inside, now_ms } => {
+            PlayerEvent::UpdateMusic { inside, now_ms, panic } => {
                 let p = p.borrow();
                 let events = &p.player.music_intensity_events;
                 if inside {
                     pz_lua_api::bind_audio::intensity_config().borrow().trigger(Some("InsideBuilding"), events);
                 }
                 events.update_at(now_ms);
+                let levels = &p.player.music_threat_levels;
+                levels.update_from_player(&p, panic);
+                pz_lua_api::bind_audio::threat_config().borrow().update_levels(levels);
             }
             PlayerEvent::ContextKey { millis } => {
                 lua.trigger_event("OnContextKey", &[pv.clone(), Value::Num(millis)]);

@@ -315,6 +315,7 @@ impl<I: 'static> GameCharacter<I> {
         self.update_interact_key_panic();
         out.events.push(PlayerEvent::UpdateMusic {
             inside: self.environment.square_in_room,
+            panic: self.moodles.moodle_level_of(sm, "PANIC")?,
             now_ms: self.player.now_ms,
         });
         if self.asleep {

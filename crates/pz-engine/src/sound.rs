@@ -67,7 +67,7 @@ pub(super) fn music_inputs(core: &pz_core::core::Core) -> pz_sound::sound_manage
                 + stats.music_zombies_targeting_nearby_not_moving
                 + stats.music_zombies_targeting_distant_not_moving,
             zombies_visible: stats.music_zombies_visible,
-            ..Default::default()
+            threat: chr.player.music_threat_levels.intensity(),
         }
     })).collect();
     MusicInputs {

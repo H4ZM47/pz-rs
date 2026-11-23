@@ -30,6 +30,7 @@ pub use vision::PlayerRenderInputs;
 /// the player loop uses).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerControl {
+    pub music_threat_levels: std::rc::Rc<music::MusicThreatLevels>,
     pub music_intensity_events: std::rc::Rc<music::MusicIntensityEvents>,
     /// IsoPlayer.isFarming; maintained by Lua farming/timed actions.
     pub is_farming: bool,
@@ -234,6 +235,7 @@ impl Default for PlayerControl {
             collidable: true,
             seen_this_frame: false,
             could_be_seen_this_frame: false,
+            music_threat_levels: Default::default(),
             music_intensity_events: Default::default(),
             is_farming: false,
             inv_page_dirty: false,
@@ -265,7 +267,7 @@ pub enum PlayerEvent {
     /// `OnPlayerUpdate`.
     LuaEvent(&'static str),
     /// Refresh the player's configured events after OnPlayerUpdate.
-    UpdateMusic { inside: bool, now_ms: i64 },
+    UpdateMusic { inside: bool, now_ms: i64, panic: i32 },
     /// `triggerEvent("OnContextKey", player, millis)`.
     ContextKey { millis: f64 },
     /// `triggerEvent("OnPressWalkTo", 0, 0, 0)`.

@@ -21,7 +21,7 @@
 //! whether the player has already seen their bite.
 
 pub use pz_characters::character::player::music::{MusicIntensityEvent, MusicIntensityEvents, INTENSITY_EVENT_CLASS, INTENSITY_EVENTS_CLASS};
-use pz_characters::character::player::music::eq_ignore_case;
+pub use pz_characters::character::player::music::{MusicThreatLevels, MusicThreatStatus, THREAT_STATUS_CLASS};
 use crate::expose::{expose_class, num_arg, str_arg};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, TableRef, Thread, Value};
@@ -31,7 +31,6 @@ use std::rc::Rc;
 
 pub const INTENSITY_CONFIG_CLASS: &str = "zombie.audio.MusicIntensityConfig";
 pub const THREAT_CONFIG_CLASS: &str = "zombie.audio.MusicThreatConfig";
-pub const THREAT_STATUS_CLASS: &str = "zombie.audio.MusicThreatStatus";
 pub const THREAT_STATUSES_CLASS: &str = "zombie.audio.MusicThreatStatuses";
 pub const SOUND_MANAGER_CLASS: &str = "zombie.SoundManager";
 pub const BASE_SOUND_MANAGER_CLASS: &str = "zombie.BaseSoundManager";
@@ -314,61 +313,25 @@ impl LuaObject for ThreatConfigObject {
     }
 }
 
-pub struct MusicThreatStatus {
-    id: Option<Rc<str>>,
-    intensity: Cell<f32>,
-}
-
-impl MusicThreatStatus {
-    pub fn intensity(&self) -> f32 {
-        let cfg = threat_config();
-        let cfg = cfg.borrow();
-        if cfg.is_overridden(self.id.as_deref()) {
-            cfg.status_intensity_override(self.id.as_deref())
-        } else {
-            self.intensity.get()
-        }
-    }
-}
-
-impl LuaObject for MusicThreatStatus {
-    fn class_name(&self) -> &str {
-        THREAT_STATUS_CLASS
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-#[derive(Default)]
 pub struct MusicThreatStatuses {
-    statuses: RefCell<Vec<Rc<MusicThreatStatus>>>,
-    intensity: Cell<f32>,
+    player: Option<crate::bind_character_sim::LuaGameCharacterRef>,
+    levels: Rc<MusicThreatLevels>,
 }
 
 impl MusicThreatStatuses {
-    pub fn set_status(&self, id: Option<Rc<str>>, intensity: f32) -> Rc<MusicThreatStatus> {
-        if let Some(s) = self.find_status_by_id(id.as_deref()) {
-            s.intensity.set(intensity);
-            return s;
-        }
-        let s = Rc::new(MusicThreatStatus { id, intensity: Cell::new(intensity) });
-        self.statuses.borrow_mut().push(s.clone());
-        s
+    pub(crate) fn for_player(player: crate::bind_character_sim::LuaGameCharacterRef, levels: Rc<MusicThreatLevels>) -> Self {
+        Self { player: Some(player), levels }
+    }
+}
+
+impl MusicThreatConfig {
+    fn effective_intensity(&self, status: &MusicThreatStatus) -> f32 {
+        let id = status.id.as_deref();
+        if self.is_overridden(id) { self.status_intensity_override(id) } else { status.intensity.get() }
     }
 
-    pub fn find_status_by_id(&self, id: Option<&str>) -> Option<Rc<MusicThreatStatus>> {
-        self.statuses.borrow().iter().find(|s| eq_ignore_case(s.id.as_deref(), id)).cloned()
-    }
-
-    fn calculate_intensity(&self) -> f32 {
-        let cfg = threat_config();
-        let mut total = 0.0f32;
-        for s in self.statuses.borrow().iter() {
-            let weight = cfg.borrow().status_intensity(s.id.as_deref());
-            total += s.intensity() * weight;
-        }
-        total
+    pub fn update_levels(&self, levels: &MusicThreatLevels) {
+        levels.calculate_intensity(|s| self.effective_intensity(s) * self.status_intensity(s.id.as_deref()));
     }
 }
 
@@ -1001,7 +964,7 @@ pub fn register(thread: &mut Thread) {
     });
     b.method("getIntensity", |c| {
         let o = obj::<MusicThreatStatus>(c, 0)?;
-        Ok(c.push(down::<MusicThreatStatus>(&o).intensity() as f64))
+        Ok(c.push(threat_config().borrow().effective_intensity(down::<MusicThreatStatus>(&o)) as f64))
     });
     b.method("setIntensity", |c| {
         let o = obj::<MusicThreatStatus>(c, 0)?;
@@ -1011,47 +974,57 @@ pub fn register(thread: &mut Thread) {
 
     let b = expose_class(thread, THREAT_STATUSES_CLASS, None);
     // The constructor takes an IsoPlayer; only `update` reads it.
-    b.ctor(|c| Ok(c.push(Value::Object(Rc::new(MusicThreatStatuses::default())))));
+    b.ctor(|c| {
+        let owner = player_arg(c, 0);
+        if owner.is_none() && !c.arg(0).is_nil() {
+            return Err(crate::bind_java_util::class_cast(&c.arg(0), crate::bind_character_sim::ISO_PLAYER_CLASS));
+        }
+        let statuses = MusicThreatStatuses { player: owner, levels: Rc::default() };
+        Ok(c.push(Value::Object(Rc::new(statuses))))
+    });
     b.method("setStatus", |c| {
         let o = obj::<MusicThreatStatuses>(c, 0)?;
-        let s = down::<MusicThreatStatuses>(&o).set_status(str_arg(c, 1), num_arg(c, 2) as f32);
+        let s = down::<MusicThreatStatuses>(&o).levels.set_status(str_arg(c, 1), num_arg(c, 2) as f32);
         Ok(c.push(Value::Object(s)))
     });
     b.method("clear", |c| {
         let o = obj::<MusicThreatStatuses>(c, 0)?;
-        down::<MusicThreatStatuses>(&o).statuses.borrow_mut().clear();
+        down::<MusicThreatStatuses>(&o).levels.clear();
         Ok(0)
     });
     b.method("getStatusCount", |c| {
         let o = obj::<MusicThreatStatuses>(c, 0)?;
-        let n = down::<MusicThreatStatuses>(&o).statuses.borrow().len();
+        let n = down::<MusicThreatStatuses>(&o).levels.count();
         Ok(c.push(n as f64))
     });
     b.method("getStatusByIndex", |c| {
         let o = obj::<MusicThreatStatuses>(c, 0)?;
         let i = idx_arg(c, 1);
-        let list = down::<MusicThreatStatuses>(&o).statuses.borrow();
+        let list = &down::<MusicThreatStatuses>(&o).levels;
         let s =
-            usize::try_from(i).ok().and_then(|i| list.get(i).cloned()).ok_or_else(|| out_of_bounds(i, list.len()))?;
-        drop(list);
+            usize::try_from(i).ok().and_then(|i| list.status(i)).ok_or_else(|| out_of_bounds(i, list.count()))?;
         Ok(c.push(Value::Object(s)))
     });
     b.method("findStatusById", |c| {
         let o = obj::<MusicThreatStatuses>(c, 0)?;
-        let s = down::<MusicThreatStatuses>(&o).find_status_by_id(str_arg(c, 1).as_deref());
+        let s = down::<MusicThreatStatuses>(&o).levels.find_status_by_id(str_arg(c, 1).as_deref());
         Ok(push_obj(c, s))
     });
     b.method("update", |c| {
-        // Reads the player's moodles and stats (IsoPlayer is not ported yet);
-        // the intensity is still recomputed from the current statuses.
         let o = obj::<MusicThreatStatuses>(c, 0)?;
         let s = down::<MusicThreatStatuses>(&o);
-        s.intensity.set(s.calculate_intensity());
+        if let Some(player) = &s.player {
+            let player = player.try_borrow().map_err(|_| crate::bind_world_object::borrowed("player music threat"))?;
+            let panic = player.moodles.moodle_level_of(&crate::bind_registry::shared_script_manager(), "PANIC")
+                .map_err(|e| LuaError::runtime(e.to_string()))?;
+            s.levels.update_from_player(&player, panic);
+        }
+        threat_config().borrow().update_levels(&s.levels);
         Ok(0)
     });
     b.method("getIntensity", |c| {
         let o = obj::<MusicThreatStatuses>(c, 0)?;
-        Ok(c.push(down::<MusicThreatStatuses>(&o).intensity.get() as f64))
+        Ok(c.push(down::<MusicThreatStatuses>(&o).levels.intensity() as f64))
     });
 }
 
