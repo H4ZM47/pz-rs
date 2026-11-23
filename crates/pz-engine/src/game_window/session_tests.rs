@@ -70,6 +70,7 @@ fn observe_tile_definitions(lua: &mut LuaManager) {
         MapObjects.OnLoadWithSprite(floors, function(o)
             local sq = o:getSquare()
             if sq then
+                if not (SFarmingSystem and SFarmingSystem.instance) then rustMapEarly = true end
                 rustMapLoad = rustMapLoad + 1
                 observed = sq
             end
@@ -95,6 +96,7 @@ fn observe_tile_definitions(lua: &mut LuaManager) {
 fn verify_tile_definitions(lua: &mut LuaManager) {
     lua_check(lua, r#"
         assert(rustTileEvents == 1)
+        assert(not rustMapEarly, "map observers ran before global system initialization")
         assert(rustMapLoad > 0 and rustSquareEvents > 0, "square and sprite load observers")
         assert(IsoSpriteManager.instance:getSprite('rust_session_tile_probe'):getProperties():has(IsoFlagType.solid))
     "#);

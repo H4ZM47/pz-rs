@@ -865,16 +865,13 @@ impl IsoWorld {
         });
         self.install_floor_world()?;
         let (wx, wy) = (self.world_x, self.world_y);
-        self.with_stream(|s, cell, ctx| s.load_world(wx, wy, cell, ctx));
-        self.activate_streamed_chunks(lua)?;
-        self.hand_off_events();
+        self.with_stream(|s, cell, ctx| s.stage_initial_world(wx, wy, cell, ctx));
         // `ClimateManager.postCellLoadSetSnow()`.
         let snow = pz_lua_api::bind_climate::post_cell_load_set_snow(&mut lua.thread);
         self.apply_snow_effects(snow);
         // TODO(port): `MapCollisionData.instance.start()` (the worker
         // thread starts in `startGame`); `MapItem.LoadWorldMap()`.
-        // The streamer ran until idle and every chunk was handed off
-        // (`setChunkDirect`, `calculateZExtentsForChunkMap`) in `load_world`.
+        // The initial chunks are visible here. IngameState.enter activates their objects.
         if load_character {
             // `currentCell.LoadPlayer(savedWorldVersion)`.
             self.load_player(&save_dir)?;
