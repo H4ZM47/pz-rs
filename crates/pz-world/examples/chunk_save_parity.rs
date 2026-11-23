@@ -373,11 +373,14 @@ fn object_line(ctx: &SaveCtx<'_>, o: &IsoObject) -> String {
             .map_or(-1, |a| a.len() as i64),
         o.wall_blood_splats.as_ref().map_or(-1, |a| a.len() as i64),
         match &o.kind {
-            // The digest's `md` is the subclass's own `table` field.
-            ObjectKind::Thumpable(t) => t.table.as_ref(),
-            _ => o.mod_data.as_ref(),
-        }
-        .is_some_and(|t| !t.is_empty()) as u8,
+            // The digest's `md` is the subclass's own `table` field. A table
+            // that cannot be read counts as present.
+            ObjectKind::Thumpable(t) => t
+                .table
+                .as_ref()
+                .is_some_and(|t| !t.try_is_empty().unwrap_or(false)),
+            _ => o.mod_data.as_ref().is_some_and(|t| !t.is_empty()),
+        } as u8,
         (o.has_components || !o.components.is_empty()) as u8,
         conts(containers.into_iter())
     )
