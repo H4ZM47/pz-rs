@@ -2096,6 +2096,17 @@ fn register_grid_square(thread: &mut Thread) {
     get(&b, "getCenterY", |c| {
         Ok(Value::Num((self_square(c)?.1 as f32 + 0.5) as f64))
     });
+    get(&b, "isInARoom", |c| {
+        let (x, y, z) = self_square(c)?;
+        let inside = try_with_world_read(|w| {
+            use pz_entity::runtime_load::RuntimeHostError;
+            let owner = w.cell.as_ref().and_then(|cell| cell.get_grid_square(x, y, z))
+                .ok_or(RuntimeHostError::InvalidHostState("IsoGridSquare is no longer loaded"))?;
+            let sq = owner.try_borrow().map_err(|_| RuntimeHostError::Borrowed("IsoGridSquare"))?;
+            w.square_in_room(&sq)
+        }).map_err(crate::bind_world_object::host_error)?;
+        Ok(inside.into())
+    });
     get(&b, "getRoomID", |c| {
         let (x, y, z) = self_square(c)?;
         Ok(long(square_room_id(x, y, z)?))
@@ -2465,6 +2476,7 @@ mod tests {
             check(sq:getBuildingDef() == k:getBuilding() and not sq:isUserDefinedRoom())
             local e = sq:getE()
             check(e:getX() == 260 and e:getW() == sq and e:getRoomDef() == nil and e:getRoomID() == -1)
+            check(sq:isInARoom() and not e:isInARoom())
             check(sq:getN() == nil and sq:getSquareAbove():getZ() == 1 and sq:getSquareBelow() == nil)
             check(e:isEastOf(sq) and sq:isWestOf(e) and not sq:isDiagonalTo(e))
             check(sq:isInsideRectangle(259, 260, 1, 1) and sq:getCenterX() == 259.5)

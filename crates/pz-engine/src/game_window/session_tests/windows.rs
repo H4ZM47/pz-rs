@@ -229,6 +229,7 @@ pub(super) fn check(app: &mut App) {
             if foundX then break end
         end
         assert(foundX, "no snow-covered ground around the installed player")
+        assert(not cell:getGridSquare(foundX,foundY,0):isInARoom())
         assert(not cell:gridSquareIsSnow(foundX, foundY, 30))
         cell:setSnowTarget(0)
         assert(not cell:gridSquareIsSnow(foundX, foundY, 0))
