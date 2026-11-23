@@ -3,6 +3,20 @@ use super::*;
 use pz_world::sprite::runtime::{create_runtime_sprite, load_single_texture, ObjectSprite};
 
 pub(super) fn register(class: &crate::expose::ClassBuilder) {
+    class.method("transmitModData", |c| {
+        let obj = receiver_object(c)?;
+        if obj.try_borrow().map_err(|_| borrowed("IsoObject.square"))?.square_slot().is_none() {
+            return Ok(0);
+        }
+        let core = crate::bind_core::shared_core();
+        let core = core.borrow();
+        if core.is_client || core.is_server {
+            return Err(unsupported("networked map object mod data"));
+        }
+        drop(core);
+        pz_world::square_mutation::try_flag_object_for_hot_save(&obj).map_err(host_error)?;
+        Ok(0)
+    });
     for method in [
         "transmitUpdatedSpriteToClients",
         "transmitCompleteItemToClients",

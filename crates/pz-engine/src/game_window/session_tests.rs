@@ -409,6 +409,17 @@ fn verify_authored_replacements(lua:&mut LuaManager,create:bool) {
 fn verify_feeding_trough(lua: &mut LuaManager, create: bool) {
     if create {
         lua_check(lua, r#"
+            local info = SpriteConfigManager.getObjectInfoFromSprite("carpentry_02_122")
+            assert(info and info == SpriteConfigManager.getObjectInfoFromSprite("carpentry_02_122"))
+            local script = info:getScript()
+            local parent = getScriptManager():getGameEntityScript("Base.RainCollectorRound")
+            assert(script:getParent() == parent and parent:getComponentScriptFor(ComponentType.SpriteConfig) == script)
+            assert(not SpriteConfigManager.getObjectInfoFromSprite("rust_absent_sprite"))
+            local feedSquare = getSquare(10684,9378,0)
+            rustDryTrough = IsoFeedingTrough.new(feedSquare,FeedingTroughDef.simple.spriteW[1],nil)
+            feedSquare:AddSpecialObject(rustDryTrough)
+            assert(rustDryTrough:getContainer():AddItem("Base.Plank"))
+            assert(rustDryTrough:getFluidContainer(), "dry trough lost its fluid before cell update")
             local sq = getSquare(10685,9377,0)
             local def = FeedingTroughDef.simple
             local name = def.spriteW[1]
@@ -835,6 +846,11 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     );
     pz_input::with_input(|i| i.key(17, 0));
     run_frames(&mut app, 1);
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        assert(not rustDryTrough:getFluidContainer(), "cell update retained fluid beside feed")
+        assert(rustDryTrough:getContainer():getItems():size() == 1)
+        rustDryTrough = nil
+    "#);
     queue::wait_for_idle(&mut app);
     let after = {
         let p = player.borrow();
