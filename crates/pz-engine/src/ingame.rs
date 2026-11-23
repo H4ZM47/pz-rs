@@ -412,6 +412,9 @@ impl GameState for IngameState {
         }
         // TODO(port): `IsoMarkers.instance.reset()`.
         pz_lua_api::bind_search_mode::reset();
+        pz_lua_api::bind_world::lua_world::shared_water_flow()
+            .borrow_mut()
+            .reset();
         // TODO(port): `ZomboidRadio.Reset`, `IsoWaveSignal.Reset`,
         // `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,

@@ -22,6 +22,7 @@ pub mod world_hud;
 pub mod world_models;
 pub mod world_pick;
 pub mod world_render;
+pub mod world_surfaces;
 pub mod world_update;
 pub mod zone_clipper;
 mod zombie_dress;

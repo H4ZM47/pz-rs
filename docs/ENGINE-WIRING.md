@@ -887,9 +887,11 @@ all installed assets, render paths or foreign platforms.
       Lua binding); `MapObjects.Reset` on world unload (#224).
 - [ ] Fence bending (`pz-world-states`) reads its `BentFences` from
       `bind_bent_fences::shared_bent_fences()` (#224).
-- [ ] Water rendering reads `IsoWaterFlow` from
+- [x] Water rendering reads `IsoWaterFlow` from
       `lua_world::shared_water_flow()`; `IsoWaterFlow.Reset` on world
-      unload (#224).
+      unload (#224): `WorldRender::apply_pending` calls
+      `RenderWorld::refresh_water` with `shared_water_flow()` and
+      `IngameState::exit` calls `shared_water_flow().borrow_mut().reset()`.
 - [ ] Animal definitions: `pz_animals::AnimalDefinitionTables::load(&env)`
       over `LuaManager.env` once shared Lua is loaded, as `IsoWorld.init`
       calls `AnimalDefinitions.getAnimalDefs()` (which loads the genome
@@ -1896,9 +1898,11 @@ registered):
 ## World render pass
 - [x] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
       allocating every loaded chunk exhausts the GPU device.
-- [ ] Water/sky: `SkyBox::render`, `Surfaces.sky` from `reflection()`;
-      `SurfaceChecks::run` + `apply_surface_checks` before `plan_chunks`;
-      water flow from lot directories; splash state (#53).
+- [x] Water/sky: `SkyBox::render`, `Surfaces.sky` from `reflection()`;
+      `SurfaceChecks::run` + invalidation before `plan_chunks`; water flow
+      from `shared_water_flow()` with `hide_for_water_render` toggling on
+      shore blends; rain & fish splash state (`WorldSplashes`) and full
+      `ClimateInputs` passed into `Surfaces` (#53).
 - [ ] One frame call: `frame::world_frame_full(r, size, chunks, objects,
       drop_shadow, screen, out, late)` with the frame's `FrameObjects` and
       the weather as `late`. It draws `performRenderTiles`' order itself
