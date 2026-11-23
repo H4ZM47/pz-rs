@@ -441,6 +441,42 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         assert(square:hasGridPower(-999) == false)
         assert(square:getFloor():hasGridPower() == square:hasGridPower())
         assert(type(square:isNoWater()) == "boolean")
+        local floor = square:getFloor()
+        local parts = ArrayList.new()
+        parts:add(floor)
+        assert(floor:getSpriteGridObjects(parts) == parts and parts:isEmpty())
+        assert(floor:getSpriteGridObjectsIncludingSelf(parts) == parts and parts:get(0) == floor)
+        local function checkGrid()
+            local others = ArrayList.new()
+            for y = square:getY()-6, square:getY()+6 do
+                for x = square:getX()-6, square:getX()+6 do
+                    local sq = getCell():getGridSquare(x, y, square:getZ())
+                    local objects = sq and sq:getObjects()
+                    if objects then
+                        for i = 0, objects:size()-1 do
+                            local object = objects:get(i)
+                            object:getSpriteGridObjectsExcludingSelf(others)
+                            if others:size() > 0 then
+                                object:getSpriteGridObjects(parts, true)
+                                assert(parts:size() == others:size()+1)
+                                local index = 0
+                                for j = 0, parts:size()-1 do
+                                    local part = parts:get(j)
+                                    assert(part:getSquare() ~= nil)
+                                    if part ~= object then
+                                        assert(others:get(index) == part)
+                                        index = index + 1
+                                    end
+                                end
+                                assert(index == others:size())
+                                return true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        assert(checkGrid(), "no multi-square furniture found near the player")
         assert(not square:isDerelict() or (square:isNoPower() and square:isNoWater()))
     "#);
     let room = app.lua.as_ref().unwrap().thread.globals().get_str("rustAmbientRoom").as_num().unwrap() as f32;

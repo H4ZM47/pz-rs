@@ -71,7 +71,7 @@ fn with_square<R>(
     })
 }
 
-fn square_object_value(owner: &pz_world::IsoObjectRef, (x, y, z): (i32, i32, i32)) -> LuaResult<Value> {
+pub(crate) fn square_object_value(owner: &pz_world::IsoObjectRef, (x, y, z): (i32, i32, i32)) -> LuaResult<Value> {
     let value = crate::bind_world_object::object_value(owner)?;
     let square = crate::bind_world::square_value(x, y, z);
     crate::bind_world_object::adopt_square(&value, owner, &square)?;
