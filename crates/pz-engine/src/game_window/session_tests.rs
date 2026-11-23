@@ -686,6 +686,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     mannequin::install_outfit_fixtures(app.lua.as_mut().unwrap(), &game_dir, parts, &sprites);
     let expected_world_chunks = mannequin::check_live(true);
     let expected_mannequins = mannequin::saved_state();
+    assert!(app.world.as_ref().unwrap().failed_chunk_activation.is_none(), "new map activation stopped");
     assert!(app.error.is_none(), "session failed before native close: {:?}", app.error);
     lua_check(app.lua.as_mut().unwrap(), "getCore():quitToDesktop()");
     run_frames(&mut app, 1);
@@ -694,7 +695,6 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     assert_eq!(app.current_state(), None);
     // `GameWindow.exit` delivers `OnPostSave` twice.
     assert_eq!(save_counts(app.lua.as_ref().unwrap()), (Some(1.0), Some(2.0)));
-    assert!(app.world.as_ref().unwrap().failed_chunk_activation.is_none(), "new map activation stopped");
     app.close();
     assert_eq!(save_counts(app.lua.as_ref().unwrap()), (Some(1.0), Some(2.0)), "second close saved twice");
     mannequin::check_saved(&save_dir, &expected_world_chunks);
