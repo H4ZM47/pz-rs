@@ -1229,6 +1229,10 @@ fn register_inventory_item(thread: &mut Thread) {
         let Some(script) = script else {
             return Ok(c.push(false));
         };
+        // An item used in no recipe answers false before reading the player.
+        if !script.0.borrow().is_used_in_recipes() {
+            return Ok(c.push(false));
+        }
         let handle = crate::bind_scripts::script_value(Some(&pz_scripts::ScriptRef::from_shared(script.0)));
         let player = c.arg(1);
         let v = crate::item_tooltip::chr::call_or(c.thread, &handle, "isFavouriteRecipeInput", &[player], Value::Nil)?;
