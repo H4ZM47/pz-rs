@@ -73,6 +73,7 @@ pub struct WorldState {
     pub geometry: GeometryChanges,
     pub object_names: HashMap<i8, String>,
     pub sprite_names: Rc<HashMap<i32, String>>,
+    pub hutches: Vec<pz_world::IsoObjectRef>,
     /// Region graph for player-built rooms, shared with the engine renderer.
     pub regions: Option<Rc<RefCell<pz_world::isoregion::IsoRegions>>>,
     pub population_sounds: Vec<(pz_audio::world_sound::WorldSound, f32)>,
@@ -139,7 +140,7 @@ pub fn set_cell(cell: Option<IsoCell>) {
         w.population_sounds.clear();
         let weather = w.weather_fx.take();
         let cell = std::mem::replace(&mut w.cell, cell);
-        (weather, cell)
+        (weather, cell, std::mem::take(&mut w.hutches))
     });
     CELL_GEN.with(|g| g.set(g.get() + 1));
     HANDLES.with(|h| {

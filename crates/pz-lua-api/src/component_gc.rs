@@ -369,6 +369,9 @@ impl TraceDescriptor<IsoObject> for ObjectDescriptor {
                 if let Some(table) = data.as_live_slot() { visitor.table(table); }
             }
         }
+        if let Some(table) = object.hutch_runtime.as_ref().and_then(|h| h.definition.as_ref()) {
+            visitor.table(&table.0);
+        }
         if let Some(table) = &object.runtime_mod_data {
             visitor.table(&table.0);
         }
@@ -392,6 +395,7 @@ impl TraceDescriptor<IsoObject> for ObjectDescriptor {
             object.runtime_containers.take(),
             object.runtime_mod_data.take(),
             thumpable_tables,
+            object.hutch_runtime.take(),
         )))
     }
 }

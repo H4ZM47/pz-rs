@@ -392,6 +392,7 @@ pub(crate) fn register_classes(thread: &mut Thread) {
     });
     sprite_edit::register(&object);
     thumpable::register(thread);
+    hutch::register(thread);
     object.method("getOverlaySprite", |c| {
         let object = receiver_object(c)?;
         let overlay = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?.overlay_sprite.clone();
@@ -832,3 +833,4 @@ mod tests;
 
 mod sprite_edit;
 mod thumpable;
+mod hutch;

@@ -229,9 +229,13 @@ pub(crate) fn place_tile(c: &mut NativeCall<'_>, pos: SquarePos, special: Option
         let name = crate::expose::str_arg(c, 1).ok_or_else(|| LuaError::runtime("expected tile sprite name"))?;
         PlacedTile::Named(name.to_string())
     };
+    apply_tile(c.thread, pos, tile)
+}
+
+pub(crate) fn apply_tile(thread: &mut Thread, pos: SquarePos, tile: PlacedTile) -> LuaResult<Value> {
     let place = TILE_PLACEMENT.with(|host| host.borrow().clone())
         .ok_or_else(|| LuaError::runtime("tile placement requires a loaded world"))?;
-    place(c.thread, pos, tile)
+    place(thread, pos, tile)
 }
 
 /// `MapObjects.Reset()`.

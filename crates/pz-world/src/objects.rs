@@ -451,7 +451,7 @@ pub struct NestBox {
 }
 
 /// `IsoHutch` state saved by the master square.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct HutchMaster {
     pub sprite_name: String,
     pub open: bool,
@@ -465,6 +465,22 @@ pub struct HutchMaster {
     pub hutch_dirt: f32,
     pub nest_box_dirt: f32,
     pub nest_boxes: Vec<NestBox>,
+}
+
+/// The actual definition held by a placed hutch. On restore the installed
+/// definition is resolved from the saved sprite. The counters cache nonzero
+/// definition values on their first getter call, as in IsoHutch.
+#[derive(Debug, Default, PartialEq)]
+pub struct HutchRuntime {
+    pub definition: Option<crate::object_mod_data::LiveModData>,
+    pub max_animals: i32,
+    pub max_nest_box: i32,
+    pub enter_spot_x: i32,
+    pub enter_spot_y: i32,
+    pub slave_open: bool,
+    pub slave_egg_open: bool,
+    pub slave_dirt: f32,
+    pub slave_nest_dirt: f32,
 }
 
 /// `IsoHutch`.
@@ -879,6 +895,7 @@ pub struct IsoObject {
     /// Once installed this is authoritative and `mod_data` is empty (see
     /// [`crate::object_mod_data`]).
     pub runtime_mod_data: Option<crate::object_mod_data::LiveModData>,
+    pub hutch_runtime: Option<Box<HutchRuntime>>,
     pub special_tooltip: bool,
     pub key_id: i32,
     pub uses_external_water_source: bool,
@@ -930,6 +947,7 @@ impl Clone for IsoObject {
                 None => self.mod_data.clone(),
             },
             runtime_mod_data: None,
+            hutch_runtime: None,
             special_tooltip: self.special_tooltip.clone(),
             key_id: self.key_id.clone(),
             external_water_source: Default::default(),
@@ -1011,6 +1029,7 @@ impl IsoObject {
             wall_blood_splats: None,
             mod_data: None,
             runtime_mod_data: None,
+            hutch_runtime: None,
             special_tooltip: false,
             key_id: -1,
             external_water_source: Default::default(),
