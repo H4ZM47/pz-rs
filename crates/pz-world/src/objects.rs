@@ -330,9 +330,9 @@ pub struct IsoThumpable {
     pub paintable: bool,
     pub cross_speed: f32,
     /// `table` (separate from the `IsoObject` mod data).
-    pub table: Option<LuaTable>,
+    pub table: Option<pz_inventory::moddata::ItemModData>,
     /// `modData`.
-    pub mod_data: Option<LuaTable>,
+    pub mod_data: Option<pz_inventory::moddata::ItemModData>,
     pub block_all_the_square: bool,
     pub is_thumpable: bool,
     pub is_hoppable: bool,
@@ -352,7 +352,7 @@ pub struct IsoThumpable {
     pub last_update_hours: f32,
     pub have_fuel: bool,
     pub light_source_on: bool,
-    pub build_materials: Option<LuaTable>,
+    pub build_materials: Option<pz_inventory::moddata::ItemModData>,
 }
 
 impl Default for IsoThumpable {

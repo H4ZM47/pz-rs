@@ -202,7 +202,7 @@ fn check_object(
                 &thumpable.mod_data,
                 &thumpable.build_materials,
             ] {
-                check.optional_table(table).map_err(inventory_error)?;
+                check.optional_mod_data(table).map_err(inventory_error)?;
             }
         }
         ObjectKind::Pushable(pushable) => {
