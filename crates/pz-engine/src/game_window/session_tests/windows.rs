@@ -27,8 +27,7 @@ pub(super) fn check(app: &mut App) {
                     local objects = sq:getObjects()
                     for i = 0,objects:size()-1 do
                         local obj = objects:get(i)
-                        if instanceof(obj, "IsoWindow") and not obj:isPermaLocked()
-                            and not obj:isLocked() and not obj:isSmashed() and not obj:IsOpen() then
+                        if instanceof(obj, "IsoWindow") and not obj:isSmashed() and not obj:IsOpen() then
                             local north = obj:getNorth()
                             local opposite = getCell():getGridSquare(x+dx-(north and 0 or 1), y+dy-(north and 1 or 0), z)
                             -- This scenario immediately closes the pane from the landing tile.
@@ -44,7 +43,11 @@ pub(super) fn check(app: &mut App) {
                 end
             end
         end
-        assert(rustSessionWindow, "no intact unlocked map window near the test spawn")
+        assert(rustSessionWindow, "no intact map window with a clear landing near the test spawn")
+        -- Fresh map generation randomizes the locks. The scenario sets and tests
+        -- both locks explicitly, then opens the pane for the climb and close.
+        rustSessionWindow:setIsLocked(false)
+        rustSessionWindow:setPermaLocked(false)
         local obj = rustSessionWindow
         local sq = getCell():getGridSquare(rustWindowX, rustWindowY, z)
         local opposite = getCell():getGridSquare(rustWindowX - (obj:getNorth() and 0 or 1),
