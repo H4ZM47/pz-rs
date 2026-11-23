@@ -1124,6 +1124,13 @@ impl IsoWorld {
         let cv = chr.map(character_value).unwrap_or_default();
         for e in sim.take_events() {
             match e {
+                SimEvent::MusicIntensityEvent(id) => {
+                    if let Some(p) = chr {
+                        let p = p.borrow();
+                        pz_lua_api::bind_audio::intensity_config().borrow()
+                            .trigger(Some(id), &p.player.music_intensity_events);
+                    }
+                }
                 SimEvent::ContainerUpdate => {
                     lua.trigger_event("OnContainerUpdate", &[]);
                 }
@@ -2122,6 +2129,14 @@ fn fire_player_events(
         match e {
             PlayerEvent::LuaEvent(name) => {
                 lua.trigger_event(name, std::slice::from_ref(&pv));
+            }
+            PlayerEvent::UpdateMusic { inside, now_ms } => {
+                let p = p.borrow();
+                let events = &p.player.music_intensity_events;
+                if inside {
+                    pz_lua_api::bind_audio::intensity_config().borrow().trigger(Some("InsideBuilding"), events);
+                }
+                events.update_at(now_ms);
             }
             PlayerEvent::ContextKey { millis } => {
                 lua.trigger_event("OnContextKey", &[pv.clone(), Value::Num(millis)]);

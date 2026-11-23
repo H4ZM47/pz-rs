@@ -457,7 +457,10 @@ impl App {
             && !pz_lua_api::bind_input::was_key_down_named("Toggle Music");
         pz_lua_api::bind_audio::sound_system()
             .borrow_mut()
-            .with(|m, ctx| m.update(toggle_music, ctx));
+            .with(|m, ctx| {
+                m.set_music_inputs(crate::sound::music_inputs(&self.core.borrow()));
+                m.update(toggle_music, ctx);
+            });
         pz_ui::with_ui(|m| m.mouse.end_frame());
         // The avatars' texture jobs (ModelInstanceTextureCreator) before
         // the UI draws them.

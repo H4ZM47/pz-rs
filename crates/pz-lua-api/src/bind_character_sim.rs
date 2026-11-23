@@ -2633,6 +2633,35 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn music_events_belong_to_the_player_across_handles_and_frames() {
+        let (mut thread, player, _) = setup();
+        crate::bind_audio::register(&mut thread);
+        let other = Rc::new(RefCell::new(GameCharacter::new(&shared_script_manager(), CharacterKind::Player)));
+        thread.globals().set_str("otherPlayer", character_value(&other));
+        player.borrow().player.music_intensity_events.update_at(1000);
+        run(&mut thread, r#"
+            MusicIntensityConfig.getInstance():initEvents({
+                {id="SearchNewContainer", intensity=-10, duration=30000, multiple=false}
+            })
+            local events = player:getMusicIntensityEvents()
+            assert(events == player:getMusicIntensityEvents())
+            assert(events ~= otherPlayer:getMusicIntensityEvents())
+            player:triggerMusicIntensityEvent("missing")
+            player:triggerMusicIntensityEvent("SearchNewContainer")
+            local first = events:getEventByIndex(0)
+            player:triggerMusicIntensityEvent("SearchNewContainer")
+            assert(first == events:findEventById("SearchNewContainer") and events:getEventCount() == 1)
+            assert(otherPlayer:getMusicIntensityEvents():getEventCount() == 0)
+        "#).unwrap();
+        let events = player.borrow().player.music_intensity_events.clone();
+        events.update_at(1001);
+        assert_eq!(events.intensity(), 40.0);
+        events.update_at(31000);
+        assert_eq!(events.intensity(), 50.0);
+        assert_eq!(events.count(), 0);
+    }
+
+    #[test]
     fn mod_data_is_live_per_character_and_survives_save_table_import() {
         let (mut thread, player, _) = setup();
         let other = Rc::new(RefCell::new(GameCharacter::new(

@@ -15,6 +15,7 @@ pub mod context;
 pub mod control;
 pub mod input;
 pub mod los;
+pub mod music;
 pub mod update;
 pub mod vision;
 
@@ -29,6 +30,7 @@ pub use vision::PlayerRenderInputs;
 /// the player loop uses).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerControl {
+    pub music_intensity_events: std::rc::Rc<music::MusicIntensityEvents>,
     /// IsoPlayer.isFarming; maintained by Lua farming/timed actions.
     pub is_farming: bool,
     /// `seeDesignationZone`: the designation zone panel is open. Read by
@@ -232,6 +234,7 @@ impl Default for PlayerControl {
             collidable: true,
             seen_this_frame: false,
             could_be_seen_this_frame: false,
+            music_intensity_events: Default::default(),
             is_farming: false,
             inv_page_dirty: false,
             action_blocks_movement: false,
@@ -261,6 +264,8 @@ pub enum PlayerEvent {
     /// `LuaEventManager.triggerEvent(name, player)`: `OnPlayerMove`,
     /// `OnPlayerUpdate`.
     LuaEvent(&'static str),
+    /// Refresh the player's configured events after OnPlayerUpdate.
+    UpdateMusic { inside: bool, now_ms: i64 },
     /// `triggerEvent("OnContextKey", player, millis)`.
     ContextKey { millis: f64 },
     /// `triggerEvent("OnPressWalkTo", 0, 0, 0)`.

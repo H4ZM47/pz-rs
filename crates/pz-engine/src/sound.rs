@@ -51,5 +51,32 @@ pub fn install(game_dir: &Path, cache_dir: &Path, fs: Rc<RefCell<pz_fs::GameFs>>
     Ok(output)
 }
 
+/// Inputs sampled by the global music parameters on SoundManager.Update.
+pub(super) fn music_inputs(core: &pz_core::core::Core) -> pz_sound::sound_manager::MusicInputs {
+    use pz_lua_api::bind_players::{player, MAX_PLAYERS};
+    use pz_sound::sound_manager::{MusicInputs, MusicPlayer};
+    let players = (0..MAX_PLAYERS).map(|i| player(i).map(|chr| {
+        let chr = chr.borrow();
+        let stats = &chr.stats;
+        MusicPlayer {
+            dead: chr.is_dead(),
+            asleep: chr.asleep,
+            intensity: chr.player.music_intensity_events.intensity(),
+            zombies_targeting: stats.music_zombies_targeting_nearby_moving
+                + stats.music_zombies_targeting_distant_moving
+                + stats.music_zombies_targeting_nearby_not_moving
+                + stats.music_zombies_targeting_distant_not_moving,
+            zombies_visible: stats.music_zombies_visible,
+            ..Default::default()
+        }
+    })).collect();
+    MusicInputs {
+        music_action_style: core.get_option_music_action_style(),
+        music_library: core.get_option_music_library(),
+        music_volume_option: core.get_option_music_volume(),
+        players,
+    }
+}
+
 #[cfg(test)]
 mod tests;

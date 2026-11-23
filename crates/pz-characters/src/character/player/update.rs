@@ -313,7 +313,10 @@ impl<I: 'static> GameCharacter<I> {
         let idle_nodes = cx.world.contains_any_idle_nodes(self.id);
         self.update_ext(sm, ctx, idle_nodes);
         self.update_interact_key_panic();
-        // updateMusicIntensityEvents, updateMusicThreatStatuses: music.
+        out.events.push(PlayerEvent::UpdateMusic {
+            inside: self.environment.square_in_room,
+            now_ms: self.player.now_ms,
+        });
         if self.asleep {
             self.player_moving = false;
             self.vars.is_player_moving = false;

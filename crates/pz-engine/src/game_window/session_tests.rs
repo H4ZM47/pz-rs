@@ -542,6 +542,19 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         "starting items or their nested contents/IDs changed across native close and reload"
     );
     inventory_ui_check(reloaded.lua.as_mut().unwrap());
+    lua_check(reloaded.lua.as_mut().unwrap(), r#"
+        local p = getPlayer()
+        local events = p:getMusicIntensityEvents()
+        local count = events:getEventCount()
+        local container = ItemContainer.new("floor", nil, nil)
+        container:setExplored(false)
+        ISInventoryPage:checkExplored(container, p)
+        assert(container:isExplored() and events:getEventCount() == count + 1)
+        local search = events:getEventByIndex(count)
+        assert(search:getId() == "SearchNewContainer" and search:getIntensity() == -10)
+        ISInventoryPage:checkExplored(container, p)
+        assert(events:getEventCount() == count + 1)
+    "#);
     global_systems_check(reloaded.lua.as_mut().unwrap(), true);
     close_survival_guide(reloaded.lua.as_mut().unwrap());
     assert!((loaded_position.0 - after.0).abs() < 0.0001, "reloaded x differs: {} versus {}", loaded_position.0, after.0);
