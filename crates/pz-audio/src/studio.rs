@@ -9,7 +9,7 @@ use crate::bank::{BankModel, BusKind, Event, Instrument, InstrumentKind};
 use crate::reader::Guid;
 use crate::vorbis_setup::SetupHeaders;
 use crate::BankFile;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -44,7 +44,8 @@ pub struct Studio {
     banks: Vec<LoadedBank>,
     setups: SetupHeaders,
     pcm_cache: HashMap<(usize, u32), Arc<Pcm>>,
-    instances: Vec<EventInstance>,
+    instances: BTreeMap<InstanceId, EventInstance>,
+    next_instance: InstanceId,
     rng: u64,
     bus_buffers: HashMap<Guid, Vec<f32>>,
     /// Paths of the loaded strings banks.
@@ -120,6 +121,7 @@ pub struct EventInstance {
     distance_override: (Option<f32>, Option<f32>),
     /// `EventInstance::release`: free once stopped.
     released: bool,
+    timeline_finished: bool,
 }
 
 /// What `EventDescription` queries report.
@@ -142,7 +144,8 @@ impl Studio {
             banks: Vec::new(),
             setups,
             pcm_cache: HashMap::new(),
-            instances: Vec::new(),
+            instances: BTreeMap::new(),
+            next_instance: 0,
             rng: 0x9e37_79b9_7f4a_7c15,
             bus_buffers: HashMap::new(),
             listener: [[0.0; 3], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
@@ -208,22 +211,36 @@ impl Studio {
     /// `EventInstance::stop`. Without modelled release envelopes both
     /// modes stop at once.
     pub fn stop(&mut self, id: InstanceId, _immediate: bool) {
-        if let Some(i) = self.instances.get_mut(id) {
+        let mut stopped = HashSet::new();
+        // Children are allocated after their parents.
+        for (&key, instance) in self.instances.range_mut(id..) {
+            if key == id || instance.parent.is_some_and(|p| stopped.contains(&p)) {
+                instance.state = PlaybackState::Stopped;
+                instance.voices.clear();
+                stopped.insert(key);
+            }
+        }
+    }
+
+    /// The core master channel group owns Studio events and loose channels.
+    pub fn stop_all(&mut self) {
+        for i in self.instances.values_mut() {
             i.state = PlaybackState::Stopped;
             i.voices.clear();
         }
+        self.channels.stop_all();
     }
 
     /// `EventInstance::release`.
     pub fn release(&mut self, id: InstanceId) {
-        if let Some(i) = self.instances.get_mut(id) {
+        if let Some(i) = self.instances.get_mut(&id) {
             i.released = true;
         }
     }
 
     /// `EventInstance::setProperty(MIN/MAX_DISTANCE)`.
     pub fn set_distance_override(&mut self, id: InstanceId, min: Option<f32>, max: Option<f32>) {
-        if let Some(i) = self.instances.get_mut(id) {
+        if let Some(i) = self.instances.get_mut(&id) {
             if min.is_some() {
                 i.distance_override.0 = min;
             }
@@ -248,12 +265,13 @@ impl Studio {
 
     /// `EventInstance::setParameterByID`.
     pub fn set_parameter_by_id(&mut self, id: InstanceId, pid: (u32, u32), value: f32) {
+        if !self.instances.contains_key(&id) { return; }
         let Some(g) = self.parameter_by_id(pid) else { return };
         let Some(p) = self.find_parameter(&g).cloned() else { return };
         let v = value.clamp(p.minimum, p.maximum);
         if p.flags & crate::bank::Parameter::GLOBAL != 0 {
             self.global_params.insert(g, v);
-        } else if let Some(i) = self.instances.get_mut(id) {
+        } else if let Some(i) = self.instances.get_mut(&id) {
             i.params.insert(g, v);
         }
     }
@@ -267,12 +285,12 @@ impl Studio {
 
     /// `EventInstance::getTimelinePosition` (ms).
     pub fn timeline_position_ms(&self, id: InstanceId) -> i64 {
-        self.instances.get(id).map_or(0, |i| (i.position * 1000 / SAMPLE_RATE as u64) as i64)
+        self.instances.get(&id).map_or(0, |i| (i.position * 1000 / SAMPLE_RATE as u64) as i64)
     }
 
     /// `EventInstance::setTimelinePosition` (ms).
     pub fn set_timeline_position_ms(&mut self, id: InstanceId, ms: i32) {
-        if let Some(i) = self.instances.get_mut(id) {
+        if let Some(i) = self.instances.get_mut(&id) {
             i.position = (ms.max(0) as u64) * SAMPLE_RATE as u64 / 1000;
         }
     }
@@ -284,7 +302,7 @@ impl Studio {
 
     /// `EventInstance::set3DAttributes` (position only for now).
     pub fn set_position(&mut self, id: InstanceId, position: [f32; 3]) {
-        self.instances[id].world_position = position;
+        if let Some(i) = self.instances.get_mut(&id) { i.world_position = position; }
     }
 
     fn find_parameter(&self, id: &Guid) -> Option<&crate::bank::Parameter> {
@@ -293,7 +311,8 @@ impl Studio {
 
     /// `EventInstance::setParameterByName` (case-insensitive).
     pub fn set_parameter_by_name(&mut self, id: InstanceId, name: &str, value: f32) -> bool {
-        let e = self.banks[self.instances[id].bank].model.events[&self.instances[id].event].clone();
+        let Some(i) = self.instances.get(&id) else { return false };
+        let e = self.banks[i.bank].model.events[&i.event].clone();
         for sheet in &e.parameter_sheets {
             let Some(s) = self
                 .banks
@@ -311,7 +330,7 @@ impl Studio {
                 if p.flags & crate::bank::Parameter::GLOBAL != 0 {
                     self.global_params.insert(pid, v);
                 } else {
-                    self.instances[id].params.insert(pid, v);
+                    self.instances.get_mut(&id).unwrap().params.insert(pid, v);
                 }
                 return true;
             }
@@ -361,7 +380,7 @@ impl Studio {
             _ if p.flags & crate::bank::Parameter::GLOBAL != 0 => {
                 *self.global_params.get(&p.id).unwrap_or(&p.default)
             }
-            _ => *self.instances[id].params.get(&p.id).unwrap_or(&p.default),
+            _ => *self.instances[&id].params.get(&p.id).unwrap_or(&p.default),
         };
         v.clamp(p.minimum, p.maximum)
     }
@@ -467,7 +486,9 @@ impl Studio {
             .timelines
             .get(&e.timeline)
             .map_or(0, |t| t.instruments.len() + t.instruments_2.len());
-        self.instances.push(EventInstance {
+        let id = self.next_instance;
+        self.next_instance = id.checked_add(1)?;
+        self.instances.insert(id, EventInstance {
             event,
             bank,
             position: 0,
@@ -484,23 +505,29 @@ impl Studio {
             start_delay: 0,
             distance_override: (None, None),
             released: false,
+            timeline_finished: false,
         });
-        Some(self.instances.len() - 1)
+        Some(id)
     }
 
     pub fn start(&mut self, id: InstanceId) {
-        let i = &mut self.instances[id];
+        if !self.instances.contains_key(&id) { return; }
+        self.stop(id, true);
+        let i = self.instances.get_mut(&id).unwrap();
+        i.triggered.fill(false);
+        i.dsps.clear();
+        i.timeline_finished = false;
         i.state = PlaybackState::Playing;
         i.started = false;
         i.position = 0;
     }
 
     pub fn set_volume(&mut self, id: InstanceId, v: f32) {
-        self.instances[id].gain = v;
+        if let Some(i) = self.instances.get_mut(&id) { i.gain = v; }
     }
 
     pub fn state(&self, id: InstanceId) -> PlaybackState {
-        self.instances[id].state
+        self.instances.get(&id).map_or(PlaybackState::Stopped, |i| i.state)
     }
 
     fn random(&mut self) -> f32 {
@@ -596,7 +623,7 @@ impl Studio {
                 } => {
                     if let Some(pcm) = self.pcm(bank, subsound) {
                         let delay = (delay_ms.max(0.0) * SAMPLE_RATE as f32 / 1000.0) as usize;
-                        self.instances[inst].voices.push(Voice {
+                        self.instances.get_mut(&inst).unwrap().voices.push(Voice {
                             pcm,
                             track,
                             pos: 0,
@@ -611,13 +638,19 @@ impl Studio {
                     gain,
                     delay_ms,
                 } => {
+                    let mut ancestor = Some(inst);
+                    while let Some(i) = ancestor {
+                        if self.instances[&i].event == event { break; }
+                        ancestor = self.instances[&i].parent;
+                    }
+                    if ancestor.is_some() { continue; }
                     let Some(child) = self.create_instance(event) else {
                         continue;
                     };
-                    let parent_gain = self.instances[inst].gain * self.instances[inst].route;
-                    let c = &mut self.instances[child];
+                    let c = self.instances.get_mut(&child).unwrap();
                     c.parent = Some(inst);
-                    c.gain = gain * parent_gain;
+                    c.released = true;
+                    c.gain = gain;
                     c.start_delay = (delay_ms.max(0.0) * SAMPLE_RATE as f32 / 1000.0) as usize;
                     c.state = PlaybackState::Playing;
                 }
@@ -699,7 +732,7 @@ impl Studio {
                     ))
                 })
                 .collect();
-            if !self.instances[id].dsps.contains_key(fx) {
+            if !self.instances[&id].dsps.contains_key(fx) {
                 let made = self
                     .banks
                     .iter()
@@ -715,9 +748,9 @@ impl Studio {
                             )
                         }
                     });
-                self.instances[id].dsps.insert(*fx, made);
+                self.instances.get_mut(&id).unwrap().dsps.insert(*fx, made);
             }
-            if let Some(Some(d)) = self.instances[id].dsps.get_mut(fx) {
+            if let Some(Some(d)) = self.instances.get_mut(&id).unwrap().dsps.get_mut(fx) {
                 for (i, v) in &auto {
                     d.set_param(*i, *v);
                 }
@@ -792,7 +825,7 @@ impl Studio {
             let v = db_to_gain(bus.body.volume_db);
             if bus.output.target == Guid::NULL {
                 for (o, s) in out.iter_mut().zip(&buf) {
-                    *o += s * v;
+                    *o += s * v * self.channels.master_volume.unwrap_or(1.0);
                 }
             } else {
                 let dst = self
@@ -811,25 +844,23 @@ impl Studio {
     pub fn mix(&mut self, out: &mut [f32]) {
         let frames = out.len() / 2;
         let mut scratch = vec![0f32; out.len()];
-        let mut id = 0;
-        while id < self.instances.len() {
-            let this = id;
-            id += 1;
-            let id = this;
-            if self.instances[id].state != PlaybackState::Playing {
+        let mut cursor = 0;
+        while let Some((&id, instance)) = self.instances.range(cursor..).next() {
+            cursor = id + 1;
+            if instance.state != PlaybackState::Playing || instance.timeline_finished {
                 continue;
             }
-            if self.instances[id].start_delay >= frames {
-                self.instances[id].start_delay -= frames;
+            if self.instances[&id].start_delay >= frames {
+                self.instances.get_mut(&id).unwrap().start_delay -= frames;
                 continue;
             }
             let (bank, event) = {
-                let i = &self.instances[id];
+                let i = &self.instances[&id];
                 (i.bank, self.banks[i.bank].model.events[&i.event].clone())
             };
-            self.instances[id].route = self.event_gain(&event);
-            if !self.instances[id].started {
-                self.instances[id].started = true;
+            self.instances.get_mut(&id).unwrap().route = self.event_gain(&event);
+            if !self.instances[&id].started {
+                self.instances.get_mut(&id).unwrap().started = true;
                 for g in event.instruments.clone() {
                     self.start_instrument(id, g, None);
                 }
@@ -841,22 +872,27 @@ impl Studio {
                 .get(&event.timeline)
                 .cloned()
             {
-                let pos = self.instances[id].position;
+                let pos = self.instances[&id].position;
                 for (k, p) in t.instruments.iter().chain(&t.instruments_2).enumerate() {
-                    if !self.instances[id].triggered[k] && (p.start as u64) < pos + frames as u64 {
-                        self.instances[id].triggered[k] = true;
+                    if !self.instances[&id].triggered[k] && (p.start as u64) < pos + frames as u64 {
+                        self.instances.get_mut(&id).unwrap().triggered[k] = true;
                         let offset = (p.start as u64).saturating_sub(pos) as usize;
-                        let before = self.instances[id].voices.len();
+                        let before = self.instances[&id].voices.len();
                         self.start_instrument(id, p.instrument, Some(p.length as usize));
-                        for v in &mut self.instances[id].voices[before..] {
+                        for v in &mut self.instances.get_mut(&id).unwrap().voices[before..] {
                             v.delay += offset;
                         }
                     }
                 }
             }
             let mut tracks: HashMap<Guid, Vec<f32>> = HashMap::new();
-            let inst = &mut self.instances[id];
-            let g = inst.gain;
+            let mut top = id;
+            let mut g = self.instances[&id].gain;
+            while let Some(parent) = self.instances[&top].parent {
+                top = parent;
+                g *= self.instances[&top].gain * self.instances[&top].route;
+            }
+            let inst = self.instances.get_mut(&id).unwrap();
             for v in &mut inst.voices {
                 let buf = tracks
                     .entry(v.track)
@@ -894,17 +930,13 @@ impl Studio {
                 .get(&event.timeline)
                 .map_or(0, |t| t.end() as u64);
             if inst.voices.is_empty() && inst.position >= end {
-                inst.state = PlaybackState::Stopped;
+                inst.timeline_finished = true;
             }
-            let rel = self.relative(self.instances[id].world_position);
-            self.run_event_buses(id, &event, tracks, &mut scratch, rel);
             // Nested events join their parent's routing.
-            let mut top = id;
-            while let Some(p) = self.instances[top].parent {
-                top = p;
-            }
-            let input = self.banks[self.instances[top].bank].model.events
-                [&self.instances[top].event]
+            let rel = self.relative(self.instances[&top].world_position);
+            self.run_event_buses(id, &event, tracks, &mut scratch, rel);
+            let input = self.banks[self.instances[&top].bank].model.events
+                [&self.instances[&top].event]
                 .input_bus;
             let dst = self
                 .bus_buffers
@@ -914,6 +946,15 @@ impl Studio {
                 *o += s;
             }
         }
+        // A parent remains playing until its last nested event finishes.
+        let mut playing_parents = HashSet::new();
+        for (&id, i) in self.instances.iter_mut().rev() {
+            if i.timeline_finished && !playing_parents.contains(&id) { i.state = PlaybackState::Stopped; }
+            if i.state != PlaybackState::Stopped {
+                if let Some(parent) = i.parent { playing_parents.insert(parent); }
+            }
+        }
+        self.instances.retain(|_, i| !(i.released && i.state == PlaybackState::Stopped));
         self.process_buses(out);
         let mut channels = std::mem::take(&mut self.channels);
         channels.mix(out, |p| self.relative(p));
@@ -929,7 +970,7 @@ impl Studio {
 impl Studio {
     #[doc(hidden)]
     pub fn debug_instance(&self, id: InstanceId) -> String {
-        let i = &self.instances[id];
+        let Some(i) = self.instances.get(&id) else { return "released".into() };
         let e = &self.banks[i.bank].model.events[&i.event];
         format!(
             "voices={} state={:?} pos={} route={} inst={} tl={:?}",

@@ -236,7 +236,7 @@ impl AudioBackend for StudioBackend {
         self.studio.lock().unwrap().channels.master_volume = Some(volume);
     }
     fn master_channel_group_stop(&mut self) {
-        self.studio.lock().unwrap().channels.stop_all();
+        self.studio.lock().unwrap().stop_all();
     }
     fn channel_set_non_bank_group(&mut self, ch: ChannelHandle) {
         self.channel(ch, |c, i| c.set_non_bank(i));
