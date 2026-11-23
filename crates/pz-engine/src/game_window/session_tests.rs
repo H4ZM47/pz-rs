@@ -58,6 +58,28 @@ fn lua_check(lua: &mut LuaManager, source: &str) {
 fn observe_tile_definitions(lua: &mut LuaManager) {
     lua_check(lua, r#"
         rustTileEvents = 0
+        local floors = {}
+        for _,group in ipairs({"blends_natural_01", "floors_interior_tilesandwood_01", "floors_exterior_natural_01"}) do
+            for i=0,63 do table.insert(floors, group .. "_" .. i) end
+        end
+        rustMapNew, rustMapLoad, rustSquareEvents = 0, 0, 0
+        local observed
+        MapObjects.OnNewWithSprite(floors, function(o)
+            if o:getSquare() then rustMapNew = rustMapNew + 1 end
+        end, 1234)
+        MapObjects.OnLoadWithSprite(floors, function(o)
+            local sq = o:getSquare()
+            if sq then
+                rustMapLoad = rustMapLoad + 1
+                observed = sq
+            end
+        end, 1234)
+        Events.LoadGridsquare.Add(function(sq)
+            if observed == sq then
+                rustSquareEvents = rustSquareEvents + 1
+                observed = nil
+            end
+        end)
         Events.OnLoadedTileDefinitions.Add(function(manager)
             assert(manager == IsoSpriteManager.instance)
             local fence = manager:getSprite('fencing_01_1')
@@ -73,6 +95,7 @@ fn observe_tile_definitions(lua: &mut LuaManager) {
 fn verify_tile_definitions(lua: &mut LuaManager) {
     lua_check(lua, r#"
         assert(rustTileEvents == 1)
+        assert(rustMapLoad > 0 and rustSquareEvents > 0, "square and sprite load observers")
         assert(IsoSpriteManager.instance:getSprite('rust_session_tile_probe'):getProperties():has(IsoFlagType.solid))
     "#);
 }
@@ -461,6 +484,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     }
     assert_eq!(app.current_state(), Some(INGAME), "session never entered gameplay; cache: {}", cache_dir.display());
     verify_tile_definitions(app.lua.as_mut().unwrap());
+    lua_check(app.lua.as_mut().unwrap(), "assert(rustMapNew > 0, 'new sprite callbacks')");
     run_frames(&mut app, 4);
     movement_diagnostics(&mut app, "before W");
     let player = bind_players::player(0).expect("new session created local player 0");

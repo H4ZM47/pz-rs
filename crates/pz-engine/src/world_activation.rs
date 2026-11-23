@@ -184,8 +184,7 @@ impl IsoWorld {
                         ChunkActivationStep::SquareReady { square, x, y, z } => {
                             let (wx, wy) = (cursor.wx, cursor.wy);
                             let result = self.with_stream(|_, cell, ctx| {
-                                // `ErosionMain.LoadGridsquare`. TODO(port): the
-                                // MapObjects/Lua observer adapter after it.
+                                // Erosion precedes the two MapObjects phases.
                                 let hook: Option<
                                     &mut dyn pz_world::save::chunk_file::ChunkLoadHook,
                                 > = match &mut ctx.chunk_hook {
@@ -207,6 +206,24 @@ impl IsoWorld {
                             result
                                 .ok_or("chunk erosion requires streaming state")?
                                 .map_err(|e| e.to_string())?;
+                            let new_objects = with_world(|world| world.cell.as_ref()
+                                .and_then(|cell| cell.chunks.get(&(wx, wy)))
+                                .is_some_and(|chunk| chunk.add_zombies));
+                            let sprites = self.sprites.as_ref().ok_or("MapObjects requires loaded sprites")?;
+                            let dictionary = self.items.as_ref().map(|items| &items.dictionary);
+                            for first_load in [true, false] {
+                                if first_load && !new_objects { continue; }
+                                pz_lua_api::bind_map_objects::dispatch_square(
+                                    &mut lua.thread, &square, sprites, dictionary, first_load,
+                                ).map_err(|e| e.to_string())?;
+                            }
+                            if lua.events.callbacks("LoadGridsquare") != 0 {
+                                let value = {
+                                    let sq = square.borrow();
+                                    pz_lua_api::bind_world::square_value(sq.x, sq.y, sq.z)
+                                };
+                                lua.trigger_event("LoadGridsquare", &[value]);
+                            }
                         }
                         ChunkActivationStep::Complete => {
                             let result = self.with_stream(|streamer, cell, ctx| {
