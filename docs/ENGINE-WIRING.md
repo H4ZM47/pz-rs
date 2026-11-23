@@ -876,9 +876,11 @@ all installed assets, render paths or foreign platforms.
       (`update_sprite_name`, `debris_sprite`, `adjacent_damage`,
       `destroy_adjacent_dirs`, `add_items` drawing `Rand`), then do the
       square changes, sound and recalculation; `Reset()` on unload.
-- [ ] `ItemPickerJava.KeyNamer.nameKey(item, square)` when keys spawn:
-      `bind_key_namer::key_namer().key_name_translation(&square)` with a
-      `pz_inventory::key_namer::KeySquare` over the square.
+- [x] `ItemPickerJava.KeyNamer.nameKey(item, square)` when keys spawn:
+      `bind_key_namer::key_namer().key_name_translation(&square)` with
+      `WorldKeySquare` (`pz_inventory::key_namer::KeySquare` over the cell,
+      meta grid and translator) wired in `bind_key_namer.rs` (`KeyNamer.nameKey`
+      / `getName`) and `bind_item_picker.rs` (`try_add_item_to_container`).
 - [ ] Story clutter: `RandomizedWorldBase.get*ClutterItem()` reads
       `bind_randomized_world::clutter(field)`.
 - [ ] `MapObjects.newGridSquare` / `loadGridSquare` on brand-new / loaded
@@ -1585,17 +1587,11 @@ registered):
       `set_on_fire` is only logged (no `IsoFireManager` on `IsoWorld`),
       `saved_vehicle` seating, and saving through `save_player` (#212).
 - [ ] `WorldDictionary.init()` (#212): `world_dictionary::init` ports
-      `DictionaryData.load()` only. Still to port: `collectObjectNames`,
-      `collectStrings`, `parseInfoLoadList`/`parseCurrentInfoSet` (ids for
-      scripts new since the save, removed or mod-changed items, new games),
-      `parseObjectNameLoadList`, the `StringDictionary`/`ScriptsDictionary`
-      registers, `getDictionaryMods`, `backupCurrentDataSet`, `save()`,
-      `saveAsText("WorldDictionaryReadable.lua")`, `WorldDictionaryLogger`
-      and `createErrorBackups`; then `ScriptManager.PostWorldDictionaryInit`
-      and `WorldDictionary.onWorldLoaded`. A new game has no registry until
-      then (chunk items load raw). `world_dictionary::script_items` still
-      needs `recorded_media` (`ZomboidRadio.getRecordedMedia()`),
-      `channels` and `map_definitions` (#212).
+      `DictionaryData.load()` + script/object-name registration + `save()` +
+      `saveAsText("WorldDictionaryReadable.lua")`; `world_dictionary::script_items`
+      populates `recorded_media` and `channels` from `bind_radio`. Still to port:
+      `WorldDictionaryLogger`, `createErrorBackups`, `ScriptManager.PostWorldDictionaryInit`,
+      `WorldDictionary.onWorldLoaded`, and `map_definitions` (#212).
 - [ ] Square mutations: every object change after load goes through
       `pz_world::square_mutation::MutationEnv` (`add_tile_object`,
       `add_special_object`, `remove_tile_object`,
