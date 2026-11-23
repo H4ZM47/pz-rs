@@ -2068,16 +2068,14 @@ registered):
       The existing error exit reports the graphics cause; retirement cleanup
       runs at the outer boundary. Actual device-loss testing remains open (#120).
 
-- [ ] Frame extras (#141): build the world frame with
-      `frame::world_frame_extras(.., &mut FrameExtras { .. }, ..)`; a field
-      left `None` draws nothing. `ModelOutlines.endFrameMain` now runs after
-      the weather, area highlights and LineDrawer, as in
-      `IngameState.renderframe`.
-- [ ] Corpse flies (#141): `RenderSquare.flies` from
-      `IsoGridSquare.hasFlies` (set by the corpse rot simulation); keep one
-      `flies::CorpseFlies` (texture `media/textures/CorpseFlies.png`), call
-      `update(realworldSecondsSinceLastUpdate)` from `IsoWorld.update` (not
-      on a server) and pass it as `FrameExtras.flies`.
+- [x] Frame extras (#141): `WorldRender::render_player` builds the world
+      frame with `frame::world_frame_extras(.., &mut FrameExtras { .. }, ..)`
+      fed by `WorldExtras` (`crates/pz-engine/src/world_extras.rs`).
+- [x] Corpse flies (#141): `RenderSquare.flies` is populated from
+      `IsoGridSquare.has_flies`; `WorldExtras` keeps `flies::CorpseFlies`
+      (`media/textures/CorpseFlies.png`), updates it with
+      `realworld_seconds` in `IsoWorld::update`, and passes it in
+      `FrameExtras.flies`.
 - [ ] Object highlight (#141): `RenderObject.highlight =
       Some(ObjectHighlight { color: getHighlightColor(playerIndex),
       alpha_scale: isBlink() ? Core.blinkAlpha : 1 })` while
@@ -2089,43 +2087,30 @@ registered):
       `IsoWorld.isValidSquare` and a handler raising Lua's
       `RenderOpaqueObjectsInWorld(playerIndex, x, y, z, square)` whose
       handlers (ISBuildingObject ghosts, fishing Bobber) draw into the list.
-- [ ] Markers (#141): `FrameExtras.markers` with
-      `WorldMarkers.gridSquareMarkers` after `update()`'s fade/blink
-      (`GridSquareMarker`), `IsoMarkers.markers` (`IsoMarker`, with the item
-      model's draws when it has one), `circle_center.png` and
-      `circle_only_highlight.png` from `media/textures/worldMap`, a white
-      texture, the chunk map's world tile bounds and the player's z. Homing
-      points and direction arrows draw in `renderframetext` (screen space)
-      with `markers::render_frame_text`; their placement
-      (`WorldMarkers.update`/`PlayerScreen`) is not ported.
+- [ ] Markers (#141): `WorldExtras` populates `FrameExtras.markers` from
+      `WorldMarkers.grid_square_markers()` with `circle_center.png`,
+      `circle_only_highlight.png`, `TextureManager::white()`, chunk map bounds,
+      and `player_z`. Still open: `IsoMarkers.markers` and screen-space homing
+      points / direction arrows (`markers::render_frame_text`).
 - [ ] Area highlights (#141): `FrameExtras.area_highlights` with
       this UI frame's `FBORenderAreaHighlights.addHighlight*` calls, the
       client's non-PvP zones and safehouses (when shown), the animal
       designation zones (when `isSeeDesignationZone`), the chunk map bounds
       and a white texture; outlines go through `LineDrawer`
       (`area_highlights::render_lines`).
-- [ ] Vision cone (#141): `FrameExtras.vision` = a
-      `vispoly::VisionFrame` each frame: `vision_cone` from
-      `LightingJNI.calculateVisionCone` (pz-lighting), look angle/vector and
-      the reversing-driver flag from the player/pz-vehicles,
-      `inside_tree`/`on_square` from the player's square, `chunk_map` from
-      the cell's chunk map, `view_cone_opacity` from the options, split
-      screen index/count from the game state. Keep a
-      `vispoly::VisPolyChunks`; take each on-screen chunk level at
-      `floor(camZ)` (in `getChunks` order) from `level(wx, wy, z,
-      adjacentChunkLoadedCounter, || ChunkLevelData::recreate(..))` with
-      `VisSquare` flags from pz-world's line of sight, and drain
-      pz-world-render's `PendingRender.vispoly` into
-      `VisPolyChunks::invalidate(wx, wy, level)` each frame.
-- [ ] Cell fog (#141): keep a `fog::ImprovedFog`; the weather
-      owner calls `init(fogIntensity)` at world start and
-      `update(&FogClimate)` once per tick (ClimateManager fog intensity,
-      new-fog exterior colour, wind angle and intensity, `GameTime`
-      multiplier, `PerformanceSettings.fogQuality`). Each frame
-      `FrameExtras.fog = FogFrame { noise:
-      media/textures/weather/fognew/fog_noise.png, player (x, y, z,
-      isInARoom, in a vehicle), storm (tropical storm or thunderstorm
-      running), right_click_off, offscreen_left/top, .. }`.
+- [x] Vision cone (#141): `WorldExtras` builds `FrameExtras.vision`
+      (`vispoly::VisionFrame`) from `WorldLighting::vision_cone()`, player look
+      angle/vector, `on_square`/`inside_tree`, chunk map bounds,
+      `Core.performance.view_cone_opacity`, and `VisPolyChunks` cached per
+      on-screen chunk level via `build_chunk_vispoly` (`test_vision_adjacent` +
+      solid/tree `blocksight`), draining `PendingRender::vispoly` each frame
+      (still open: reversing vehicle driver flag once vehicle driver state is
+      wired).
+- [x] Cell fog (#141): `WorldExtras` owns `fog::ImprovedFog`, calls
+      `init(fog_intensity)` in `WorldRender::new`, updates it per tick in
+      `IsoWorld::update` from `ClimateManager` + `Core.performance.fog_quality`,
+      and passes `FrameExtras.fog` (`FogFrame` with `fog_noise.png`, player
+      room/vehicle/position, storm state, and offscreen offset).
 - [ ] New draw commands (#141): `DrawCmd::ImprovedFog` and
       `DrawCmd::VisibilityPolygon` are executed by pz-gpu (`fog.wgsl`,
       `vispoly.wgsl`); any other backend must handle them.
