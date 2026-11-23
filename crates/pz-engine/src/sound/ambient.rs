@@ -34,12 +34,15 @@ const ZONES: [(&str, &str); 7] = [
     ("ZoneTown", "TownZone"),
     ("ZoneTrailerPark", "TrailerPark"),
 ];
-const PARAM_COUNT: usize = NAMES.len() + ZONES.len();
+const LISTENER_NAMES: [&str; 3] = ["CameraZoom", "HardOfHearing", "MoodlePanic"];
+const END_ZONES: usize = NAMES.len() + ZONES.len();
+const PARAM_COUNT: usize = END_ZONES + LISTENER_NAMES.len();
 
 #[derive(Default)]
 pub(crate) struct AmbientParameters {
     values: Rc<Cell<[f32; PARAM_COUNT]>>,
     nearby_zones: Vec<ZoneId>,
+    hearing_trait_slot: Option<usize>,
     ambiance: Option<FmodSoundEmitter>,
     channel: i64,
     power: super::grid_power::GridPower,
@@ -56,7 +59,12 @@ impl AmbientParameters {
             .map(FmodParameter::current_value)
     }
 
-    pub(crate) fn update(&mut self, ctx: &mut Ctx, parameter_count: usize, streamer: bool) {
+    pub(crate) fn update(
+        &mut self,
+        ctx: &mut Ctx,
+        parameter_count: usize,
+        core: &pz_core::core::Core,
+    ) {
         let scripts = bind_registry::shared_script_manager();
         let mut gate = None;
         let mut gate_deaf = true;
@@ -64,10 +72,21 @@ impl AmbientParameters {
         let mut selected = None;
         let mut selected_dead = true;
         let mut selected_deaf = true;
-        for player in (0..bind_players::MAX_PLAYERS).filter_map(bind_players::player) {
+        let mut first_slot = None;
+        let mut camera = None;
+        let mut camera_dead = false;
+        for slot in 0..bind_players::MAX_PLAYERS {
+            let Some(player) = bind_players::player(slot) else {
+                continue;
+            };
+            first_slot.get_or_insert(slot);
             let actor = player.borrow();
             let deaf = actor.has_trait(&scripts, "DEAF").unwrap_or(false);
             let dead = actor.is_dead();
+            if camera.is_none() || (camera_dead && !dead) {
+                camera = Some(actor.player.player_index);
+                camera_dead = dead;
+            }
             if !deaf && hearing.is_none() {
                 hearing = Some((actor.vars.x, actor.vars.y));
             }
@@ -82,12 +101,16 @@ impl AmbientParameters {
                     actor.vars.x,
                     actor.vars.y,
                     actor.vars.z,
+                    actor
+                        .moodles
+                        .moodle_level_of(&scripts, "PANIC")
+                        .unwrap_or(0),
                 ));
                 selected_dead = dead;
                 selected_deaf = deaf;
             }
         }
-        let Some((square, x, y, elevation)) = selected else {
+        let Some((square, x, y, elevation, panic)) = selected else {
             return;
         };
         if gate.flatten().is_none() {
@@ -119,17 +142,38 @@ impl AmbientParameters {
         let mut current = [0.0; PARAM_COUNT];
         current[..NAMES.len()].copy_from_slice(&values(
             &bind_climate::shared_game_time().borrow(),
-            streamer,
+            core.get_option_streamer_mode(),
             elevation,
             room_size,
         ));
         let distances = bind_world::with_world(|w| {
             zone_distances(w.meta_grid.as_ref(), x, y, &mut self.nearby_zones)
         });
-        current[NAMES.len()..].copy_from_slice(&distances);
+        current[NAMES.len()..END_ZONES].copy_from_slice(&distances);
+        // HardOfHearing retains its player slot until that slot is vacant.
+        self.hearing_trait_slot = self
+            .hearing_trait_slot
+            .filter(|&slot| bind_players::player(slot).is_some())
+            .or(first_slot);
+        let impaired = self
+            .hearing_trait_slot
+            .and_then(bind_players::player)
+            .is_some_and(|p| {
+                p.borrow()
+                    .has_trait(&scripts, "HARD_OF_HEARING")
+                    .unwrap_or(false)
+            });
+        let zoom = camera.map_or(0., |slot| {
+            let min = core.offscreen_buffer.get_min_zoom();
+            (core.get_zoom(slot) - min) / (core.offscreen_buffer.get_max_zoom() - min)
+        });
+        current[END_ZONES..].copy_from_slice(&[zoom, f32::from(impaired), panic as f32 / 4.]);
         self.values.set(current);
         if self.params.parameters.is_empty() {
-            let names = NAMES.into_iter().chain(ZONES.map(|(name, _)| name));
+            let names = NAMES
+                .into_iter()
+                .chain(ZONES.map(|(name, _)| name))
+                .chain(LISTENER_NAMES);
             for (i, name) in names.enumerate() {
                 let inputs = self.values.clone();
                 let description = ctx.backend.parameter_description(name);

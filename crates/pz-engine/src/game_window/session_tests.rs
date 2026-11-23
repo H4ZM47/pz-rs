@@ -512,6 +512,17 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         assert_eq!(ambient.current_value(parameter), Some(expected));
     }
     assert_eq!(ambient.current_value("RoomSize"), Some(room));
+    let scripts = pz_lua_api::bind_registry::shared_script_manager();
+    let actor = player.borrow();
+    assert_eq!(ambient.current_value("HardOfHearing"), Some(f32::from(actor.has_trait(&scripts, "HARD_OF_HEARING").unwrap())));
+    assert_eq!(ambient.current_value("MoodlePanic"), Some(actor.moodles.moodle_level_of(&scripts, "PANIC").unwrap() as f32 / 4.));
+    let zoom = {
+        let core = app.core.borrow();
+        let min = core.offscreen_buffer.get_min_zoom();
+        (core.get_zoom(actor.player.player_index) - min) / (core.offscreen_buffer.get_max_zoom() - min)
+    };
+    assert_eq!(ambient.current_value("CameraZoom").unwrap().to_bits(), zoom.to_bits());
+    drop(actor);
     assert_eq!(ambient.current_value("CharacterElevation"), Some(player.borrow().vars.z));
     assert_eq!(ambient.current_value("StreamerMode"), Some(f32::from(!streamer)));
     let temperature = pz_lua_api::bind_climate::shared_game_time().borrow().climate.get_temperature();

@@ -462,7 +462,7 @@ impl App {
                 let markers = m.update_with_ambient_context(toggle_music, ctx, |ctx, count| {
                     if !game_paused {
                         if let Some(world) = &mut self.world {
-                            world.ambient_parameters.update(ctx, count, self.core.borrow().get_option_streamer_mode());
+                            world.ambient_parameters.update(ctx, count, &self.core.borrow());
                         }
                     }
                 });
