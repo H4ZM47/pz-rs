@@ -702,7 +702,10 @@ impl IsoWorld {
         self.process_iso_objects(lua);
         self.update_characters(lua, sim)?;
         self.update_vehicles(lua, sim);
-        // TODO(port): `ProcessStaticUpdaters`, `ObjectDeletionAddition`,
+        // `ProcessStaticUpdaters`: world `IsoRadio` / `IsoTelevision` and
+        // local players' equipped radio items.
+        self.update_radio_devices(lua);
+        // TODO(port): rest of `ProcessStaticUpdaters`, `ObjectDeletionAddition`,
         // `IsoDeadBody.updateBodies`, `FishSchoolManager.update` and the
         // rain scroll.
         self.update_weather_fx();
@@ -2166,6 +2169,7 @@ impl IsoWorld {
             retired
         });
         drop(retired);
+        self.unregister_radio_chunk(wx, wy);
         if let Some(h) = self.pathfind.as_mut() {
             h.service_mut().remove_chunk_from_world(wx, wy);
         }
@@ -2592,6 +2596,9 @@ impl IsoWorld {
                     // `WorldMapVisited.SaveAll()`: explored areas reach disk
                     // before `IngameState.exit` runs `WorldMap.Reset()`.
                     pz_lua_api::worldmap::visited::save_all();
+                    // `ZomboidRadio.getInstance().Save()`, right after
+                    // `MapCollisionData.save()` and `SGlobalObjects.save()`.
+                    self.save_radio();
                     with_save_game(self, sandbox, can_save_players, |g| {
                         save_game_finish(g, &mut hooks, &mut report)
                     });

@@ -243,6 +243,9 @@ impl IsoWorld {
                                             },
                                         )?;
                                     }
+                                    WorldCall::RadioDevice { add: true } => {
+                                        self.register_radio_object(&receiver, pos);
+                                    }
                                     // The lifecycle's data changes are applied above.
                                     // Other subsystem registries still need their
                                     // actual engine adapters; do not equate these

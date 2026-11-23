@@ -320,16 +320,20 @@ pub struct RegistryInputs<'a> {
     pub sprites: Option<&'a pz_world::IsoSpriteManager>,
     /// `GameTime.getWorldAgeHours()` now.
     pub world_age_hours: f64,
+    /// `ZomboidRadio.getRecordedMedia()` index -> translated item display name.
+    pub recorded_media: Option<std::collections::HashMap<i16, String>>,
+    /// `ZomboidRadio`'s channel lists for device preset generation.
+    pub channels: Option<Box<dyn pz_inventory::device::ChannelLists>>,
 }
 
 /// The save's item registry: `dictionary`'s ids over the shared
 /// `ScriptManager`, with the game's `Rand`, the `ClothingItem` assets and
-/// entity registries the Lua item environment has, the moveable sprites
-/// and item textures (a client has every texture).
+/// entity registries the Lua item environment has, the moveable sprites,
+/// radio channels/recorded media and item textures (a client has every
+/// texture).
 ///
-/// TODO(port): `ZomboidRadio.getRecordedMedia()` (`recorded_media`), the
-/// radio channel lists (`channels`) and `MapDefinitions` (`map_definitions`).
-pub fn script_items(dictionary: WorldDictionary, inputs: &RegistryInputs<'_>) -> ScriptItems {
+/// TODO(port): `MapDefinitions` (`map_definitions`).
+pub fn script_items(dictionary: WorldDictionary, inputs: RegistryInputs<'_>) -> ScriptItems {
     let sm = pz_lua_api::bind_registry::shared_script_manager();
     let names = item_names(&sm);
     let mut items = ScriptItems::new(&sm, dictionary, &names);
@@ -339,6 +343,8 @@ pub fn script_items(dictionary: WorldDictionary, inputs: &RegistryInputs<'_>) ->
         items.world_sprites = pz_world::save::items::moveable_sprites(s);
     }
     items.textures_loaded = true;
+    items.recorded_media = inputs.recorded_media;
+    items.channels = inputs.channels;
     items.rand = std::cell::RefCell::new(Some(Box::new(StandardFactoryRng)));
     items.get_text = Some(Box::new(pz_lua_api::bind_text::translate));
     items.assets = pz_lua_api::bind_items::item_env()

@@ -2018,6 +2018,7 @@ dependencies = [
  "pz-pathfind",
  "pz-player-input",
  "pz-popman",
+ "pz-radio",
  "pz-render",
  "pz-sandbox",
  "pz-scripts",
