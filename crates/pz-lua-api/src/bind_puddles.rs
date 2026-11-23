@@ -8,6 +8,7 @@ pub use ground::ground_level;
 
 use crate::expose::{bool_arg, expose_class, global, int_arg, num_arg, with_this};
 use pz_core::weather::ClimateContext;
+use pz_iso_render::skybox::{SkyBox, SkyInputs};
 use pz_iso_render::weather::{ClimateInputs, PuddlesFloat, PuddlesState, WaterState};
 use pz_iso_render::weather_fx::{IsoWeatherFx, WeatherFxClimate, WeatherFxSandbox, WeatherFxTextures};
 use pz_kahlua::{LuaResult, NativeCall, Thread, Value};
@@ -31,6 +32,8 @@ pub struct PuddlesManager {
     pub state: PuddlesState,
     /// IsoWater is advanced on the same climate update as IsoPuddles.
     pub water: WaterState,
+    /// SkyBox shares the lifetime of the client climate effects.
+    pub sky: SkyBox,
     names: [String; 5],
 }
 
@@ -39,6 +42,7 @@ impl Default for PuddlesManager {
         Self {
             state: PuddlesState::default(),
             water: WaterState::default(),
+            sky: SkyBox::new(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64),
             names: NAME_KEYS.map(|key| crate::bind_text::with_translator(|t| t.get_text(key, &[])).unwrap_or_else(|| key.into())),
         }
     }
@@ -164,7 +168,7 @@ pub(crate) fn update_climate_fx(thread: &mut Thread) {
         return;
     }
     let sandbox = fx_sandbox(thread);
-    let (inputs, particle_inputs, multiplier, thirty_fps_multiplier) = {
+    let (inputs, particle_inputs, sky, multiplier, thirty_fps_multiplier) = {
         let g = gt.borrow();
         let cm = &g.climate;
         if cm.disable_fx_update {
@@ -179,6 +183,20 @@ pub(crate) fn update_climate_fx(thread: &mut Thread) {
                 ..Default::default()
             },
             WeatherFxClimate::from_render_values(&cm.render_values(0, false)),
+            cm.current_day.as_ref().and_then(|day| day.season.as_ref()).map(|season| SkyInputs {
+                time_of_day: g.time_of_day,
+                dawn: season.get_dawn(),
+                dusk: season.get_dusk(),
+                day_high_noon: season.get_day_high_noon(),
+                exterior_light: cm.get_global_light().borrow().exterior,
+                night_strength: cm.get_night_strength(),
+                cloud_intensity: cm.get_cloud_intensity(),
+                precipitation_intensity: cm.get_precipitation_intensity(),
+                temperature: cm.get_temperature(),
+                fog_intensity: cm.get_fog_intensity(),
+                wind_angle_intensity: cm.get_wind_angle_intensity(),
+                wind_intensity: cm.get_wind_intensity(),
+            }),
             g.get_multiplier(&context),
             g.get_thirty_fps_multiplier(&context),
         )
@@ -188,7 +206,10 @@ pub(crate) fn update_climate_fx(thread: &mut Thread) {
     }
     let owner = shared_puddles();
     let mut surface = owner.borrow_mut();
-    if !context.is_server() { surface.water.update(&inputs, multiplier); }
+    if !context.is_server() {
+        if let Some(sky) = sky { surface.sky.update(&sky); }
+        surface.water.update(&inputs, multiplier);
+    }
     surface.state.update(&inputs, multiplier, thirty_fps_multiplier);
 }
 

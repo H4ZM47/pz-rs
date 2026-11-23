@@ -194,7 +194,7 @@ impl WorldRender {
                 pz_iso_render::blood::FLOOR_BLOOD_TYPES
                     .iter()
                     .map(|&name| name.to_owned())
-                    .chain(["media/textures/river_bottom.png", "media/textures/puddles_hm.png"].map(str::to_owned))
+                    .chain(["media/textures/river_bottom.png", "media/textures/puddles_hm.png", "media/textures/CMVehicleReflection/ref_am.png"].map(str::to_owned))
                     .chain((0..48).map(|index| format!("e_newsnow_ground_1_{index}")))
                     .filter_map(|name| tm.shared_texture(fs, &name).map(|tex| (name, tex)))
                     .collect(),
@@ -878,19 +878,23 @@ impl WorldRender {
             state: &state,
             world: &self.world,
         };
-        // Rain/fish splashes and the sky reflection have separate frame inputs.
+        // Sample the previous sky targets before the end-of-frame sky pass.
         let (settings, world_age_hours) = surface_values();
-        let (water, puddles) = {
+        let perf_skybox = pz_lua_api::bind_core::shared_core().borrow().get_perf_skybox();
+        let night = pz_lua_api::bind_climate::shared_game_time().borrow().get_night();
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default().as_millis() as i64;
+        let (water, puddles, sky) = {
             let shared = pz_lua_api::bind_puddles::shared_puddles();
             let state = shared.borrow();
-            (state.water, state.state)
+            (state.water, state.state, state.sky.reflection(now_ms, settings.use_shaders, perf_skybox, night, &self.surface_textures))
         };
         let surfaces = Surfaces {
             settings,
             climate: pz_iso_render::weather::ClimateInputs { snow_target: target, winter, ..Default::default() },
             water,
             puddles,
-            sky: Default::default(),
+            sky,
             world_age_hours,
             meta_grid_min_x: view.meta.min_x,
             world: &self.world,
@@ -899,8 +903,6 @@ impl WorldRender {
             rain: None,
             fish: None,
         };
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default().as_millis() as i64;
         let enable_snow = pz_lua_api::bind_sandbox::current_bool("EnableSnowOnGround").unwrap_or(true);
         let changed = self.surface_checks[p].run(&surfaces, enable_snow, now_ms);
         if changed.all || self.winter[p] != winter {
@@ -979,6 +981,9 @@ impl WorldRender {
             &mut late,
         );
         out.extend(cmds);
+        let effects = pz_lua_api::bind_puddles::shared_puddles();
+        let draw = effects.borrow_mut().sky.render(now_ms, v.multiplier, settings.use_shaders, perf_skybox);
+        out.extend(draw);
     }
 }
 
@@ -1126,7 +1131,7 @@ impl IsoWorld {
         })?;
         // TODO(port): `Gizmos.render`, `DrawIsoCursorHelper`, the
         // pathfinding/sound/vocals debug renders, `FBORenderAreaHighlights`,
-        // `LineDrawer.render`, `SkyBox.render`.
+        // `LineDrawer.render`.
         Ok(())
     }
 }
