@@ -24,6 +24,7 @@ pz-ui.workspace = true
 pz-inventory.workspace = true
 indexmap.workspace = true
 pz-world.workspace = true
+pz-world-sound.workspace = true
 pz-pathfind.workspace = true
 pz-input.workspace = true
 pz-classfile.workspace = true

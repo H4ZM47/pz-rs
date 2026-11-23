@@ -2112,6 +2112,7 @@ dependencies = [
  "pz-vehicles",
  "pz-video",
  "pz-world",
+ "pz-world-sound",
  "pz-world-states",
  "pz-worldgen",
  "pz-worldmap",

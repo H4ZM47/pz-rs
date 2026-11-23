@@ -69,6 +69,7 @@ pub struct WorldState {
     pub meta_grid: Option<IsoMetaGrid>,
     pub cell: Option<IsoCell>,
     pub geometry: GeometryChanges,
+    pub population_sounds: Vec<(pz_audio::world_sound::WorldSound, f32)>,
     pub meta_tracker: Option<Rc<RefCell<pz_core::save_trackers::MetaTracker>>>,
     /// `currentCell.weatherFx`, initialized by `initWeatherFx` and retired
     /// with the cell. The simulation exists independently of GPU drawing.
@@ -103,6 +104,7 @@ pub fn set_cell(cell: Option<IsoCell>) {
         let mut w = w.borrow_mut();
         w.meta_tracker = None;
         w.geometry = GeometryChanges::default();
+        w.population_sounds.clear();
         let weather = w.weather_fx.take();
         let cell = std::mem::replace(&mut w.cell, cell);
         (weather, cell)

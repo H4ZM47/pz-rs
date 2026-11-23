@@ -1844,7 +1844,9 @@ registered):
       update the path service with the loaded chunk ID. Each edit captures
       the eight neighboring squares and the pane before Lua can reverse it.
       The next rendered frame refreshes the modified tile and its cutaways.
-- [ ] Window rendering (#208). Connect the `Hit_Door` effect for a surviving barricade.
+- [x] Surviving barricades shake on impact (#208). The door sprite effect
+      option controls activation. Repeated hits reuse the active phase,
+      and the renderer applies the four corner offsets until expiry.
 
 - [ ] Radio devices: implement `pz_inventory::device_sim::DeviceEnv`
       per device (GameTime minutes stamp / multiplier, `Rand`, the

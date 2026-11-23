@@ -311,8 +311,12 @@ pub fn install_event_sink(sink: EventSink) {
 }
 
 pub(crate) fn fire_container_update(thread: &mut Thread) {
+    fire_event(thread, "OnContainerUpdate", &[])
+}
+
+pub(crate) fn fire_event(thread: &mut Thread, name: &str, args: &[Value]) {
     if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
-        sink(thread, "OnContainerUpdate", &[]);
+        sink(thread, name, args);
     }
 }
 

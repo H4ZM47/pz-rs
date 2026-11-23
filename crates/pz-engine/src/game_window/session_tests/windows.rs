@@ -130,6 +130,14 @@ pub(super) fn check(app: &mut App) {
     smash(app);
     lua_check(app.lua.as_mut().unwrap(), r#"
         require "TimedActions/ISRemoveBrokenGlass"
+        rustGlassSounds = 0
+        rustCheckGlassSound = function(x, y, z, radius, volume, source)
+            if radius == 6 and volume == 1 and source == getPlayer() then
+                rustGlassSounds = rustGlassSounds + 1
+                if rustGlassSounds == 1 then addSound(source, x, y, z, 6, 1) end
+            end
+        end
+        Events.OnWorldSound.Add(rustCheckGlassSound)
         local action = ISRemoveBrokenGlass:new(getPlayer(), rustSessionWindow)
         assert(action:isValid())
         ISTimedActionQueue.add(action)
@@ -146,6 +154,10 @@ pub(super) fn check(app: &mut App) {
         }
     }
     assert!(cleared, "shipped ISRemoveBrokenGlass action did not clear the pane");
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        Events.OnWorldSound.Remove(rustCheckGlassSound)
+        assert(rustGlassSounds == 2, "expected both original and nested glass-removal sounds")
+    "#);
     lua_check(app.lua.as_mut().unwrap(), "assert(not rustAlarmBuilding:isAlarmed())");
     assert_eq!(app.world.as_ref().unwrap().meta_tracker.borrow().alarms.len(), 2);
 }

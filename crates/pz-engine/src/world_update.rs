@@ -1816,6 +1816,13 @@ impl IsoWorld {
     /// `UpdateStuff` catches it around the population and pathfinder
     /// block, so the caller skips the rest of that block.
     pub fn update_population(&mut self, sim: &FrameSim) -> Result<(), String> {
+        let pending = with_world(|w| std::mem::take(&mut w.population_sounds));
+        if let Some(population) = self.population.as_mut() {
+            for (sound, hearing) in pending {
+                population.manager.add_world_sound(sound.x, sound.y, sound.radius, sound.volume,
+                    sound.source_is_zombie, sound.stress_zombies, hearing);
+            }
+        }
         let r = self.with_population(sim, &mut |pop, host, frame| pop.update(host, frame));
         if let Some(Err(e)) = r {
             self.log_exception(e.clone());

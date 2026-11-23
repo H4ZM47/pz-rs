@@ -15,7 +15,7 @@ use crate::bind_states::with_state_cx;
 use crate::expose::{bool_arg, expose_class, global, int_arg, num_arg, str_arg};
 use pz_audio::world_sound::{NoWorld, SoundId, SoundSource, SoundWorld, WorldSoundManager};
 use pz_kahlua::value::LuaObject;
-use pz_kahlua::{NativeCall, Thread, Value};
+use pz_kahlua::{LuaResult, NativeCall, Thread, Value};
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -90,23 +90,47 @@ fn sound_value(id: Option<SoundId>) -> Value {
 
 /// `addSound(source, x, y, z, radius, volume[, stressHumans[,
 /// zombieIgnoreDist, stressMod]])` starting at argument `a`.
-fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> Value {
-    let source = source_of(&c.arg(a));
+fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> LuaResult<Value> {
+    let receiver = c.arg(a);
     let (x, y, z) = (int_arg(c, a + 1), int_arg(c, a + 2), int_arg(c, a + 3));
     let (radius, volume) = (int_arg(c, a + 4), int_arg(c, a + 5));
+    if radius <= 0 { return Ok(Value::Nil); }
     let n = c.nargs();
     let stress = n > a + 6 && bool_arg(c, a + 6);
     let (ignore, stress_mod) = if n > a + 8 { (num_arg(c, a + 7) as f32, num_arg(c, a + 8) as f32) } else { (0.0, 1.0) };
+    let source = source_of(&receiver);
+    // WorldSound.init runs the callback before adding the sound to its
+    // chunks and population. The callback may add another sound.
+    crate::bind_character_sim::fire_event(c.thread, "OnWorldSound",
+        &[x.into(), y.into(), z.into(), radius.into(), volume.into(), receiver]);
     let sounds = shared_world_sounds();
-    let world = SOUND_WORLD.with(|w| w.borrow().clone());
-    let mut world = world.borrow_mut();
-    let mut m = sounds.borrow_mut();
-    let id = if repeating {
-        m.add_sound_repeating(&mut *world, source, x, y, z, radius, volume, stress, ignore, stress_mod)
-    } else {
-        m.add_sound_stress(&mut *world, source, x, y, z, radius, volume, stress, ignore, stress_mod)
+    let mut manager = sounds.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("WorldSoundManager"))?;
+    let mut add = |world: &mut dyn SoundWorld| {
+        if repeating {
+            manager.add_sound_repeating(world, source, x, y, z, radius, volume, stress, ignore, stress_mod)
+        } else {
+            manager.add_sound_stress(world, source, x, y, z, radius, volume, stress, ignore, stress_mod)
+        }
     };
-    sound_value(id)
+    let id = crate::bind_world::with_world_state_cell(|w| -> LuaResult<_> {
+        let mut state = w.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound cell"))?;
+        if let Some(cell) = state.cell.as_ref() {
+            let hearing = crate::bind_sandbox::current_double("ZombieLore.Hearing").unwrap_or(2.0) as i32;
+            let mut effects = pz_world_sound::NoEffects;
+            let mut adapter = pz_world_sound::WorldSoundAdapter::new(cell, hearing, &mut effects);
+            let id = add(&mut adapter);
+            if let Some(id) = id {
+                let hearing_multiplier = WorldSoundManager::hearing_multiplier(hearing);
+                state.population_sounds.push((manager.sound(id).clone(), hearing_multiplier));
+            }
+            Ok(id)
+        } else {
+            let world = SOUND_WORLD.with(|w| w.borrow().clone());
+            let mut world = world.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("world sound host"))?;
+            Ok(add(&mut *world))
+        }
+    })?;
+    Ok(sound_value(id))
 }
 
 macro_rules! zfield {
@@ -365,11 +389,11 @@ pub fn register(thread: &mut Thread) {
     let m = expose_class(thread, WORLD_SOUND_MANAGER_CLASS, None);
     expose_class(thread, WORLD_SOUND_CLASS, None);
     m.method("addSound", |c| {
-        let v = add_sound(c, 1, false);
+        let v = add_sound(c, 1, false)?;
         Ok(c.push(v))
     });
     m.method("addSoundRepeating", |c| {
-        let v = add_sound(c, 1, true);
+        let v = add_sound(c, 1, true)?;
         Ok(c.push(v))
     });
     m.method("getStressFromSounds", |c| {
@@ -388,7 +412,7 @@ pub fn register(thread: &mut Thread) {
     });
     global(thread, "getWorldSoundManager", |c| Ok(c.push(MANAGER.with(|m| m.clone()))));
     global(thread, "addSound", |c| {
-        add_sound(c, 0, false);
+        add_sound(c, 0, false)?;
         Ok(0)
     });
 }
