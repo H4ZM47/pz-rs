@@ -1207,7 +1207,13 @@ impl IsoWorld {
     ) {
         let cv = chr.map(character_value).unwrap_or_default();
         for e in sim.take_events() {
-            if chr.is_some_and(|c| pz_lua_api::bind_eat::apply_audio_event(c, &e)) { continue; }
+            if let Some(actor) = chr {
+                match pz_lua_api::bind_eat::apply_audio_event(actor, &e) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => { eprintln!("ERROR: character audio: {error}"); continue; }
+                }
+            }
             match e {
                 SimEvent::MusicIntensityEvent(id) => {
                     if let Some(p) = chr {

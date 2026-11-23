@@ -10,6 +10,8 @@
 //! Character sounds retain their own emitter, which follows the character
 //! on the world's emitter clock and stops when the owner leaves the world.
 
+mod footsteps;
+
 use crate::bind_character_sim::{character_value, chr_of, with_ctx, LuaGameCharacterRef, ISO_GAME_CHARACTER_CLASS};
 use crate::bind_characters::shared_characters;
 use crate::bind_items::{item_arg, item_env, ItemOutcome};
@@ -39,6 +41,8 @@ impl LuaObject for CharacterEmitterObject {
 struct CharacterAudio {
     owner: Weak<RefCell<crate::bind_character_sim::LuaGameCharacter>>,
     emitter: EmitterRef,
+    footsteps: EmitterRef,
+    steps: [i64; 2],
     handle: Weak<CharacterEmitterObject>,
 }
 
@@ -53,12 +57,19 @@ fn with_audio<R>(chr: &LuaGameCharacterRef, f: impl FnOnce(&mut CharacterAudio) 
         if let Some(entry) = all.iter_mut().find(|a| std::ptr::eq(a.owner.as_ptr(), Rc::as_ptr(chr))) {
             return f(entry);
         }
-        let emitter = crate::bind_audio::sound_system().borrow().world_emitters.new_emitter();
+        let sound = crate::bind_audio::sound_system();
+        let system = sound.borrow();
+        let emitter = system.world_emitters.new_emitter();
+        let footsteps = system.world_emitters.new_emitter();
+        drop(system);
         emitter.borrow_mut().emitter_type = pz_sound::emitter::EmitterType::Extra;
         let actor = chr.borrow();
-        emitter.borrow_mut().parent = if actor.is_player() { pz_sound::emitter::ParentObject::Player { local: actor.in_players } }
+        let parent = if actor.is_player() { pz_sound::emitter::ParentObject::Player { local: actor.in_players } }
             else { pz_sound::emitter::ParentObject::MovingObject };
-        all.push(CharacterAudio { owner: Rc::downgrade(chr), emitter, handle: Weak::new() });
+        drop(actor);
+        footsteps.borrow_mut().parent = parent.clone();
+        emitter.borrow_mut().parent = parent;
+        all.push(CharacterAudio { owner: Rc::downgrade(chr), emitter, footsteps, steps: [0; 2], handle: Weak::new() });
         f(all.last_mut().unwrap())
     })
 }
@@ -67,18 +78,21 @@ pub fn update_emitters(due: bool) {
     EMITTERS.with(|all| {
         crate::bind_audio::sound_system().borrow_mut().with_world_emitters(|_, ctx| {
             all.borrow_mut().retain(|a| {
-                let mut emitter = a.emitter.borrow_mut();
-                let Some(owner) = a.owner.upgrade() else {
-                    emitter.stop_all(ctx);
-                    return false;
-                };
-                if !emitter.is_empty() && (due || emitter.has_sounds_to_start()) {
-                    let actor = owner.borrow();
-                    emitter.set_pos(actor.vars.x, actor.vars.y, actor.vars.z);
-                    drop(actor);
-                    emitter.tick(ctx);
+                let owner = a.owner.upgrade();
+                for emitter in [&a.emitter, &a.footsteps] {
+                    let mut e = emitter.borrow_mut();
+                    if let Some(owner) = &owner {
+                        if !e.is_empty() && (due || e.has_sounds_to_start()) {
+                            let actor = owner.borrow();
+                            e.set_pos(actor.vars.x, actor.vars.y, actor.vars.z);
+                            drop(actor);
+                            e.tick(ctx);
+                        }
+                    } else {
+                        e.stop_all(ctx);
+                    }
                 }
-                true
+                owner.is_some()
             });
         });
     });
@@ -87,7 +101,9 @@ pub fn update_emitters(due: bool) {
 pub fn reset_emitters() {
     let retired = EMITTERS.with(|all| all.take());
     crate::bind_audio::sound_system().borrow_mut().with_world_emitters(|_, ctx| {
-        for entry in &retired { entry.emitter.borrow_mut().stop_all(ctx); }
+        for entry in &retired {
+            for e in [&entry.emitter, &entry.footsteps] { e.borrow_mut().stop_all(ctx); }
+        }
     });
 }
 
@@ -109,6 +125,14 @@ fn with_emitter<R>(
     })
 }
 
+fn for_emitters(chr: &LuaGameCharacterRef,
+    mut f: impl FnMut(&mut pz_sound::emitter::FmodSoundEmitter, &mut pz_sound::emitter::Ctx)) {
+    let emitters = with_audio(chr, |a| [a.emitter.clone(), a.footsteps.clone()]);
+    crate::bind_audio::sound_system().borrow_mut().with_world_emitters(|_, ctx| {
+        for e in emitters { f(&mut e.borrow_mut(), ctx); }
+    });
+}
+
 /// `getEmitter().playSound(name)`: a handle, 0 when the sound is unknown.
 pub fn play(chr: &LuaGameCharacterRef, name: &str) -> i64 {
     let (x, y, z) = {
@@ -127,17 +151,18 @@ pub fn play(chr: &LuaGameCharacterRef, name: &str) -> i64 {
 
 /// Apply the character-owned audio events after releasing the simulation's
 /// mutable character and world borrows.
-pub fn apply_audio_event(chr: &LuaGameCharacterRef, event: &pz_characters::character::SimEvent) -> bool {
+pub fn apply_audio_event(chr: &LuaGameCharacterRef, event: &pz_characters::character::SimEvent) -> LuaResult<bool> {
     use pz_characters::character::SimEvent;
     match event {
+        SimEvent::PlayerFootstep => footsteps::play(chr, "HumanFootstepsCombined")?,
         SimEvent::PlaySound(name) | SimEvent::EmitterPlaySound(name) => { play(chr, name); }
         SimEvent::StopSound(name) => {
-            with_emitter(chr, |e, ctx| e.stop_or_trigger_sound_by_name(name, ctx));
+            for_emitters(chr, |e, ctx| e.stop_or_trigger_sound_by_name(name, ctx));
         }
         SimEvent::ObstacleSound { name, parameter, value, movement_speed } => {
             let actor = chr.borrow();
             if actor.is_player() && actor.vars.remote && actor.is_ghost_mode(&*crate::bind_character_sim::current_sim_context()) {
-                return true;
+                return Ok(true);
             }
             let (x, y, z) = (actor.vars.x, actor.vars.y, actor.vars.z);
             let speed = actor.player.sound_movement_speed;
@@ -149,9 +174,9 @@ pub fn apply_audio_event(chr: &LuaGameCharacterRef, event: &pz_characters::chara
                 if *movement_speed { e.set_parameter_value_by_name(h, "CharacterMovementSpeed", f32::from(speed), ctx); }
             });
         }
-        _ => return false,
+        _ => return Ok(false),
     }
-    true
+    Ok(true)
 }
 
 fn handle_arg(c: &NativeCall<'_>, i: usize) -> i64 {
@@ -181,7 +206,7 @@ pub fn register_shared(thread: &mut Thread) {
     b.method("stopOrTriggerSound", |c| {
         let chr = chr_of(c)?;
         let h = handle_arg(c, 1);
-        with_emitter(&chr, |e, ctx| e.stop_or_trigger_sound(h, ctx));
+        for_emitters(&chr, |e, ctx| e.stop_or_trigger_sound(h, ctx));
         Ok(0)
     });
     expose_class(thread, BASE_EMITTER_CLASS, None);
@@ -194,27 +219,32 @@ pub fn register_shared(thread: &mut Thread) {
     });
     e.method("isPlaying", |c| {
         let chr = emitter_chr(c)?;
-        let v = match c.arg(1) {
-            Value::Str(name) => with_emitter(&chr, |e, _| e.is_playing_name(&name)),
-            _ => {
-                let h = handle_arg(c, 1);
-                with_emitter(&chr, |e, _| e.is_playing(h))
-            }
-        };
+        let v = with_audio(&chr, |a| [&a.emitter, &a.footsteps].into_iter().any(|e| match c.arg(1) {
+            Value::Str(name) => e.borrow().is_playing_name(&name),
+            _ => e.borrow().is_playing(handle_arg(c, 1)),
+        }));
         Ok(c.push(v))
     });
     e.method("stopOrTriggerSound", |c| {
         let chr = emitter_chr(c)?;
         let h = handle_arg(c, 1);
-        with_emitter(&chr, |e, ctx| e.stop_or_trigger_sound(h, ctx));
+        for_emitters(&chr, |e, ctx| e.stop_or_trigger_sound(h, ctx));
         Ok(0)
     });
     e.method("stopAll", |c| {
         let chr = emitter_chr(c)?;
-        with_emitter(&chr, |e, ctx| e.stop_all(ctx));
+        for_emitters(&chr, |e, ctx| e.stop_all(ctx));
         Ok(0)
     });
 
+    e.method("playFootsteps", |c| {
+        let chr = emitter_chr(c)?;
+        let name = str_arg(c, 1).unwrap_or_default();
+        footsteps::play(&chr, &name)?;
+        Ok(0)
+    });
+
+    footsteps::register(thread);
     b.method("Eat", move |c| {
         let chr = chr_of(c)?;
         let item = item_arg(c, 1)?;

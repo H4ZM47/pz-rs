@@ -528,7 +528,7 @@ fn with_ctx_result<R, E>(
     for e in events {
         if let Value::Object(o) = chr {
             if let Some(actor) = o.as_any().downcast_ref::<CharacterObject>() {
-                if crate::bind_eat::apply_audio_event(&actor.0, &e)
+                if crate::bind_eat::apply_audio_event(&actor.0, &e)?
                     || crate::bind_zombie::character_noise(c.thread, &actor.0, &e)? { continue; }
             }
         }

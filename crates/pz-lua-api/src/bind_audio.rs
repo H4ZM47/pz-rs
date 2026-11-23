@@ -1250,7 +1250,7 @@ mod tests {
         assert!(HearingPlayers::capture().in_range(13.0, 24.0, 6.0));
         bind_eat::apply_audio_event(&character, &SimEvent::ObstacleSound {
             name: "TraversalFixture".into(), parameter: "TripObstacleType", value: 9.0, movement_speed: true,
-        });
+        }).unwrap();
         character.borrow_mut().vars.z = 2.0;
         bind_eat::update_emitters(true);
         bind_eat::reset_emitters();
