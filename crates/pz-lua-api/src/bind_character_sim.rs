@@ -1985,6 +1985,20 @@ fn register_character(
         let table = chr_of(c)?.borrow_mut().get_mod_data();
         Ok(c.push(table))
     });
+    b.method("getMusicIntensityEventModData", |c| {
+        let chr = chr_of(c)?;
+        let body = chr.try_borrow().map_err(|_| crate::bind_world_object::borrowed("character music data"))?;
+        let value = str_arg(c, 1).map_or(Value::Nil, |key| body.music_intensity_event_data(&key));
+        Ok(c.push(value))
+    });
+    b.method("setMusicIntensityEventModData", |c| {
+        let chr = chr_of(c)?;
+        if let Some(key) = str_arg(c, 1) {
+            chr.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("character music data"))?
+                .set_music_intensity_event_data(&key, c.arg(2));
+        }
+        Ok(0)
+    });
     b.method("hasModData", |c| {
         let has_data = chr_of(c)?.borrow().has_mod_data();
         Ok(c.push(has_data))
@@ -2659,6 +2673,47 @@ pub(crate) mod tests {
         events.update_at(31000);
         assert_eq!(events.intensity(), 50.0);
         assert_eq!(events.count(), 0);
+    }
+
+    #[test]
+    fn seeing_a_bite_records_the_world_age_once_until_full_health() {
+        let (mut thread, player, _) = setup();
+        crate::bind_audio::register(&mut thread);
+        run(&mut thread, r#"
+            cfg = MusicIntensityConfig.getInstance()
+            cfg:initEvents({{id="HealthPanel_SeeBite", intensity=20, duration=1000}})
+            cfg:checkHealthPanelVisible(player)
+            assert(not player:hasModData())
+            player:setMusicIntensityEventModData("  ", true)
+            player:setMusicIntensityEventModData("missing", nil)
+            assert(not player:hasModData())
+            player:setMusicIntensityEventModData("Other", false)
+            assert(player:getMusicIntensityEventModData("Other") == false)
+        "#).unwrap();
+        let mut part = pz_characters::character::body_part::BodyPart::new(&Default::default(), 0);
+        part.bitten = true;
+        player.borrow_mut().body_damage.parts.push(part);
+        run(&mut thread, r#"
+            cfg:checkHealthPanelVisible(player)
+            cfg:checkHealthPanelVisible(player)
+            assert(type(player:getMusicIntensityEventModData("HealthPanel_SeeBite")) == "number")
+            assert(player:getMusicIntensityEvents():getEventCount() == 1)
+        "#).unwrap();
+        let saved = player.borrow().saved_mod_data().unwrap().unwrap();
+        let reloaded = Rc::new(RefCell::new(GameCharacter::new(&shared_script_manager(), CharacterKind::Player)));
+        reloaded.borrow_mut().load_mod_data(&saved).unwrap();
+        thread.globals().set_str("reloaded", character_value(&reloaded));
+        run(&mut thread, r#"
+            assert(reloaded:getMusicIntensityEventModData("HealthPanel_SeeBite") ==
+                player:getMusicIntensityEventModData("HealthPanel_SeeBite"))
+            cfg:restoreToFullHealth(reloaded)
+            assert(reloaded:getMusicIntensityEventModData("HealthPanel_SeeBite") == nil)
+        "#).unwrap();
+        player.borrow_mut().restore_to_full_health(&shared_characters().borrow()).unwrap();
+        run(&mut thread, r#"
+            assert(player:getMusicIntensityEventModData("HealthPanel_SeeBite") == nil)
+            assert(player:getMusicIntensityEventModData("Other") == false)
+        "#).unwrap();
     }
 
     #[test]

@@ -17,9 +17,8 @@
 //! `getUIEmitter()` returns the manager's `fmod.fmod.FMODSoundEmitter`, the
 //! same one `playUISound` plays on, with the `BaseSoundEmitter` methods.
 //!
-//! Character-dependent parts (`checkHealthPanelVisible`,
-//! `restoreToFullHealth`, `MusicThreatStatuses.update`) only act on an
-//! `IsoPlayer`, which is not ported yet, so they do nothing for now.
+//! The health-panel event uses the character's saved mod data to remember
+//! whether the player has already seen their bite.
 
 pub use pz_characters::character::player::music::{MusicIntensityEvent, MusicIntensityEvents, INTENSITY_EVENT_CLASS, INTENSITY_EVENTS_CLASS};
 use pz_characters::character::player::music::eq_ignore_case;
@@ -385,6 +384,13 @@ impl LuaObject for MusicThreatStatuses {
 // ---------------------------------------------------------------------------
 // Lua glue
 // ---------------------------------------------------------------------------
+
+fn player_arg(c: &NativeCall<'_>, index: usize) -> Option<crate::bind_character_sim::LuaGameCharacterRef> {
+    let Value::Object(object) = c.arg(index) else { return None };
+    let class = crate::bind_character_sim::ISO_PLAYER_CLASS;
+    if object.class_name() != class && !object.super_classes().contains(&class) { return None }
+    object.as_any().downcast_ref::<crate::bind_character_sim::CharacterObject>().map(|player| player.0.clone())
+}
 
 fn obj<T: 'static>(c: &NativeCall<'_>, i: usize) -> LuaResult<Rc<dyn LuaObject>> {
     match c.arg(i) {
@@ -811,13 +817,25 @@ pub fn register(thread: &mut Thread) {
         };
         Ok(push_obj(c, config.trigger(id.as_deref(), down::<MusicIntensityEvents>(&mie))))
     });
-    // Both only act on an IsoPlayer (not ported yet).
     b.method("checkHealthPanelVisible", |c| {
         obj::<IntensityConfigObject>(c, 0)?;
+        if let Some(chr) = player_arg(c, 1) {
+            let mut p = chr.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("health panel player"))?;
+            let id = "HealthPanel_SeeBite";
+            if p.music_intensity_event_data(id).is_nil() && p.body_damage.parts.iter().any(|part| part.bitten) {
+                let age = crate::bind_climate::shared_game_time().borrow().world_age_hours();
+                p.set_music_intensity_event_data(id, Value::Num(age));
+                intensity_config().borrow().trigger(Some(id), &p.player.music_intensity_events);
+            }
+        }
         Ok(0)
     });
     b.method("restoreToFullHealth", |c| {
         obj::<IntensityConfigObject>(c, 0)?;
+        if let Some(chr) = player_arg(c, 1) {
+            chr.try_borrow_mut().map_err(|_| crate::bind_world_object::borrowed("health panel player"))?
+                .clear_health_panel_bite_event();
+        }
         Ok(0)
     });
 

@@ -16,7 +16,6 @@
 //! weapons are `pz-inventory` items; the clothing is the character's worn
 //! items ([`super::items`]).
 //!
-//! TODO(MusicIntensityConfig): `RestoreToFullHealth` does not notify it.
 //! TODO(Thermoregulator): its part of `save`/`load` is the caller's.
 //! TODO(IsoAnimal): `DamageFromAnimal`.
 
@@ -860,6 +859,7 @@ impl<I: 'static> GameCharacter<I> {
         if let Some(t) = &mut bd.thermoregulator {
             t.reset()?;
         }
+        self.clear_health_panel_bite_event();
         Ok(())
     }
 
