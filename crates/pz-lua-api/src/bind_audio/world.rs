@@ -83,6 +83,9 @@ pub(super) fn register_manager(b: &crate::expose::ClassBuilder) {
             let choices = method == "PlayWorldSoundWav"
                 && c.nargs() == 8
                 && matches!(c.arg(6), Value::Num(_));
+            if sound_system().borrow().sounds.env.sound_disabled {
+                return if choices { Ok(0) } else { Ok(c.push(Value::Nil)) };
+            }
             if choices {
                 let n = crate::expose::int_arg(c, 6);
                 let choice = (sound_system().borrow_mut().rand_next)(n) + 1;

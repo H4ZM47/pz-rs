@@ -329,6 +329,7 @@ struct CallContext {
 }
 
 impl SimContext for CallContext {
+    fn is_listener_in_range(&self, x: f32, y: f32, range: f32) -> bool { self.base.is_listener_in_range(x, y, range) }
     fn zomboid_globals(&self) -> &pz_characters::character::ZomboidGlobals {
         self.base.zomboid_globals()
     }
@@ -522,8 +523,13 @@ fn with_ctx_result<R, E>(
     };
     let r = f(c.thread, &ctx);
     let events = ctx.events.into_inner();
-    if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
+    let sink = SINK.with(|s| s.borrow().clone());
+    {
         for e in events {
+            if let Value::Object(o) = chr {
+                if o.as_any().downcast_ref::<CharacterObject>().is_some_and(|c| crate::bind_eat::apply_audio_event(&c.0, &e)) { continue; }
+            }
+            let Some(sink) = &sink else { continue };
             let (name, args) = match e {
                 SimEvent::LevelPerk {
                     perk,

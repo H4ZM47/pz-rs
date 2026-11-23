@@ -12,6 +12,7 @@ use std::rc::Rc;
 /// simulation raises are collected in [`FrameSim::events`].
 pub struct FrameSim {
     pub game_time: Rc<RefCell<GameTime>>,
+    hearing_players: pz_lua_api::bind_audio::HearingPlayers,
     input: std::cell::OnceCell<pz_player_input::EnginePlayerInput>,
     /// `Core.bDebug`.
     pub debug: bool,
@@ -58,6 +59,7 @@ impl FrameSim {
             let g = game_time.borrow();
             FrameSim {
                 game_time: game_time.clone(),
+                hearing_players: pz_lua_api::bind_audio::HearingPlayers::capture(),
                 input: Default::default(),
                 debug,
                 game_mode,
@@ -90,6 +92,7 @@ impl FrameSim {
 pub(crate) struct PlayerSim<'a>(&'a FrameSim);
 
 impl SimContext for PlayerSim<'_> {
+    fn is_listener_in_range(&self, x: f32, y: f32, range: f32) -> bool { self.0.is_listener_in_range(x, y, range) }
     fn easy_climbing(&self) -> bool { self.0.easy_climbing() }
     fn is_debug(&self) -> bool {
         self.0.is_debug()
@@ -159,6 +162,7 @@ impl SimContext for PlayerSim<'_> {
 }
 
 impl SimContext for FrameSim {
+    fn is_listener_in_range(&self, x: f32, y: f32, range: f32) -> bool { self.hearing_players.in_range(x, y, range) }
     fn easy_climbing(&self) -> bool { pz_lua_api::bind_sandbox::current_bool("EasyClimbing").unwrap_or(false) }
     fn is_debug(&self) -> bool {
         self.debug

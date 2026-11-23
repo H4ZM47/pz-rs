@@ -23,7 +23,7 @@
 pub use pz_characters::character::player::music::{MusicIntensityEvent, MusicIntensityEvents, INTENSITY_EVENT_CLASS, INTENSITY_EVENTS_CLASS};
 pub use pz_characters::character::player::music::{MusicThreatLevels, MusicThreatStatus, THREAT_STATUS_CLASS};
 mod environment;
-pub use environment::GameEmitterWorld;
+pub use environment::{GameEmitterWorld, HearingPlayers};
 mod world;
 
 use crate::expose::{expose_class, num_arg, str_arg};
@@ -408,6 +408,11 @@ fn register_sound_manager(thread: &mut Thread) {
     crate::expose::global(thread, "getSoundManager", |c| {
         let h: Rc<dyn LuaObject> = SOUND_HANDLE.with(|h| h.clone());
         Ok(c.push(Value::Object(h)))
+    });
+    b.method("isListenerInRange", |c| {
+        sm_this(c)?;
+        let in_range = HearingPlayers::capture().in_range(num_arg(c, 1) as f32, num_arg(c, 2) as f32, num_arg(c, 3) as f32);
+        Ok(c.push(in_range))
     });
     b.method("getUIEmitter", |c| {
         sm_this(c)?;

@@ -7,6 +7,33 @@ use pz_world::java::fastfloor;
 /// Reads the same world, players, scripts and lighting as Lua.
 pub struct GameEmitterWorld;
 
+/// Hearing locals at a simulation boundary, while all player owners are available.
+#[derive(Default)]
+pub struct HearingPlayers([Option<(f32, f32)>; crate::bind_players::MAX_PLAYERS]);
+
+impl HearingPlayers {
+    pub fn capture() -> Self {
+        let sound = super::sound_system();
+        let system = sound.borrow();
+        if system.sounds.env.sound_disabled || system.world.is_server() { return Self::default(); }
+        let n = crate::bind_players::num_players().max(0) as usize;
+        let scripts = crate::bind_registry::shared_script_manager();
+        Self(std::array::from_fn(|i| {
+            if i >= n { return None; }
+            let actor = crate::bind_players::player(i)?;
+            let actor = actor.borrow();
+            (!actor.has_trait(&scripts, "DEAF").unwrap_or(false)).then_some((actor.vars.x, actor.vars.y))
+        }))
+    }
+
+    pub fn in_range(&self, x: f32, y: f32, range: f32) -> bool {
+        self.0.iter().flatten().any(|&(px, py)| {
+            let squared = f64::from(x - px).powi(2) + f64::from(y - py).powi(2);
+            (squared as f32) < range * range
+        })
+    }
+}
+
 impl GameEmitterWorld {
     fn square_at(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
         let (room, zone_type) = with_world_state_cell(|state| {

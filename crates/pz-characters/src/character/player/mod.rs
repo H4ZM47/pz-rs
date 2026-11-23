@@ -30,6 +30,8 @@ pub use vision::PlayerRenderInputs;
 /// the player loop uses).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerControl {
+    /// ParameterCharacterMovementSpeed from the most recent footstep.
+    pub sound_movement_speed: u8,
     pub check_nearby_rooms: f32,
     pub num_nearby_buildings_rooms: f32,
     pub music_threat_levels: std::rc::Rc<music::MusicThreatLevels>,
@@ -180,6 +182,7 @@ pub struct PlayerControl {
 impl Default for PlayerControl {
     fn default() -> Self {
         PlayerControl {
+            sound_movement_speed: 3,
             check_nearby_rooms: 0.0,
             num_nearby_buildings_rooms: 0.0,
             next_rand_xp_check_times: std::collections::HashMap::new(),

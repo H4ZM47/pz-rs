@@ -46,7 +46,14 @@ impl<I: 'static> GameCharacter<I> {
             // TODO(anim): skipped while the layer blends in or out.
             cx.ctx.event(SimEvent::PlaySound(param.unwrap_or("").to_string()));
         } else if is("Footstep") {
-            cx.ctx.event(SimEvent::Footstep(param.unwrap_or("").to_string()));
+            let gait = param.unwrap_or("");
+            if self.is_player() {
+                self.player.sound_movement_speed = match gait {
+                    "sneak_walk" => 0, "sneak_run" => 1, "strafe" => 2,
+                    "run" => 4, "sprint" => 5, _ => 3,
+                };
+            }
+            cx.ctx.event(SimEvent::Footstep(gait.to_string()));
         } else if is("DamageWhileInTrees") {
             // TODO(world): damageWhileInTrees needs the clothing and holes.
         } else if is("TurnAround") || is("TurnAround_FlipSkeleton") {

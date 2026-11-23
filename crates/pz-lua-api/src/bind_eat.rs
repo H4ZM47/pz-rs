@@ -125,6 +125,35 @@ pub fn play(chr: &LuaGameCharacterRef, name: &str) -> i64 {
     })
 }
 
+/// Apply the character-owned audio events after releasing the simulation's
+/// mutable character and world borrows.
+pub fn apply_audio_event(chr: &LuaGameCharacterRef, event: &pz_characters::character::SimEvent) -> bool {
+    use pz_characters::character::SimEvent;
+    match event {
+        SimEvent::PlaySound(name) | SimEvent::EmitterPlaySound(name) => { play(chr, name); }
+        SimEvent::StopSound(name) => {
+            with_emitter(chr, |e, ctx| e.stop_or_trigger_sound_by_name(name, ctx));
+        }
+        SimEvent::ObstacleSound { name, parameter, value, movement_speed } => {
+            let actor = chr.borrow();
+            if actor.is_player() && actor.vars.remote && actor.is_ghost_mode(&*crate::bind_character_sim::current_sim_context()) {
+                return true;
+            }
+            let (x, y, z) = (actor.vars.x, actor.vars.y, actor.vars.z);
+            let speed = actor.player.sound_movement_speed;
+            drop(actor);
+            with_emitter(chr, |e, ctx| {
+                e.set_pos(x, y, z);
+                let h = e.play_sound_impl(name, pz_sound::emitter::ParentObject::None, ctx);
+                e.set_parameter_value_by_name(h, parameter, *value, ctx);
+                if *movement_speed { e.set_parameter_value_by_name(h, "CharacterMovementSpeed", f32::from(speed), ctx); }
+            });
+        }
+        _ => return false,
+    }
+    true
+}
+
 fn handle_arg(c: &NativeCall<'_>, i: usize) -> i64 {
     num_arg(c, i) as i64
 }

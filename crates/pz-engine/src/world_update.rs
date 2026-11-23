@@ -1168,6 +1168,7 @@ impl IsoWorld {
     ) {
         let cv = chr.map(character_value).unwrap_or_default();
         for e in sim.take_events() {
+            if chr.is_some_and(|c| pz_lua_api::bind_eat::apply_audio_event(c, &e)) { continue; }
             match e {
                 SimEvent::MusicIntensityEvent(id) => {
                     if let Some(p) = chr {
@@ -1175,9 +1176,6 @@ impl IsoWorld {
                         pz_lua_api::bind_audio::intensity_config().borrow()
                             .trigger(Some(id), &p.player.music_intensity_events);
                     }
-                }
-                SimEvent::PlaySound(name) | SimEvent::EmitterPlaySound(name) if chr.is_some() => {
-                    pz_lua_api::bind_eat::play(chr.unwrap(), &name);
                 }
                 SimEvent::PositionedSound { name, square: (x, y, z) } => {
                     pz_lua_api::bind_audio::sound_system().borrow_mut().play_world_clip(&name,
