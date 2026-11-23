@@ -192,6 +192,8 @@ pub(super) fn check(app: &mut App) {
         Events.OnWorldSound.Add(rustObserveCharacterNoise)
         getPlayer():addWorldSoundUnlessInvisible(14, 9, false)
         assert(#rustCharacterNoises == 0)
+        getPlayer():DoFootstepSound("walk")
+        assert(#rustCharacterNoises == 0)
         local damage = getPlayer():getBodyDamage()
         damage:setSneezeCoughActive(0)
         damage:TriggerSneezeCough()
@@ -202,8 +204,15 @@ pub(super) fn check(app: &mut App) {
     player.borrow_mut().cheats.set(&sim, "INVISIBLE", false);
     lua_check(app.lua.as_mut().unwrap(), r#"
         getPlayer():addWorldSoundUnlessInvisible(14, 9, false)
-        Events.OnWorldSound.Remove(rustObserveCharacterNoise)
         assert(#rustCharacterNoises == 2 and rustCharacterNoises[2][1] == 14 and rustCharacterNoises[2][2] == 9)
+        getPlayer():DoFootstepSound(0)
+        assert(#rustCharacterNoises == 2)
+        for i=1,64 do getPlayer():DoFootstepSound("sprint") end
+        Events.OnWorldSound.Remove(rustObserveCharacterNoise)
+        assert(#rustCharacterNoises > 2)
+        for i=3,#rustCharacterNoises do
+            assert(rustCharacterNoises[i][1] > 0 and rustCharacterNoises[i][1] == rustCharacterNoises[i][2])
+        end
     "#);
     player.borrow_mut().cheats.set(&sim, "INVISIBLE", previous_invisible);
     app.core.borrow_mut().debug = previous_debug;

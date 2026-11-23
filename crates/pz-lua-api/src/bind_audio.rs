@@ -1079,7 +1079,7 @@ mod tests {
 
     impl pz_sound::backend::AudioBackend for VoiceBackend {
         fn event_description(&mut self, path: &str) -> Option<Rc<pz_sound::backend::EventDescription>> {
-            matches!(path, "event:/VoiceMaleShoutHey" | "event:/TraversalFixture").then(|| {
+            matches!(path, "event:/VoiceMaleShoutHey" | "event:/TraversalFixture" | "event:/HumanFootstepsCombined").then(|| {
                 Rc::new(pz_sound::backend::EventDescription {
                     address: 1,
                     path: path.into(),
@@ -1090,6 +1090,9 @@ mod tests {
                     max_distance: 20.0,
                     parameters: if path == "event:/TraversalFixture" {
                         ["TripObstacleType", "CharacterMovementSpeed"].map(|p| self.parameter_description(p).unwrap()).to_vec()
+                    } else if path == "event:/HumanFootstepsCombined" {
+                        ["FootstepMaterial", "FootstepMaterial2", "ShoeType", "CharacterMovementSpeed"]
+                            .map(|p| self.parameter_description(p).unwrap()).to_vec()
                     } else { vec![self.parameter_description("CharacterVoicePitch").unwrap()] },
                 })
             })
@@ -1098,6 +1101,9 @@ mod tests {
             let (id, index) = match name {
                 "CharacterVoicePitch" => ((7, 9), 0),
                 "TripObstacleType" => ((11, 12), 1),
+                "FootstepMaterial" => ((15, 16), 3),
+                "FootstepMaterial2" => ((17, 18), 4),
+                "ShoeType" => ((19, 20), 5),
                 "CharacterMovementSpeed" => ((13, 14), 2),
                 _ => return None,
             };
@@ -1112,7 +1118,13 @@ mod tests {
                 global_index: index,
             })
         }
-        fn create_event_instance(&mut self, _desc: &pz_sound::backend::EventDescription) -> i64 {
+        fn create_event_instance(&mut self, desc: &pz_sound::backend::EventDescription) -> i64 {
+            if desc.path == "event:/HumanFootstepsCombined" {
+                let mut calls = self.0.borrow_mut();
+                let handle = 50 + calls.iter().filter(|s| *s == "create footstep").count() as i64;
+                calls.push("create footstep".into());
+                return handle;
+            }
             self.0.borrow_mut().push("create".into());
             42
         }
@@ -1251,11 +1263,23 @@ mod tests {
         bind_eat::apply_audio_event(&character, &SimEvent::ObstacleSound {
             name: "TraversalFixture".into(), parameter: "TripObstacleType", value: 9.0, movement_speed: true,
         }).unwrap();
+        for gait in [3, 3, 5] {
+            character.borrow_mut().player.sound_movement_speed = gait;
+            bind_eat::apply_audio_event(&character, &SimEvent::PlayerFootstep).unwrap();
+        }
+        assert_eq!(strs(&run(&mut thread, "return player:getEmitter():isPlaying('HumanFootstepsCombined')").unwrap()), ["true"]);
         character.borrow_mut().vars.z = 2.0;
         bind_eat::update_emitters(true);
         bind_eat::reset_emitters();
         let calls = log.borrow();
         for expected in ["param 42 (11, 12) 9", "param 42 (13, 14) 4", "start 42", "pos 42 10 20 6", "stop 42", "release 42"] {
+            assert!(calls.iter().any(|s| s == expected), "missing {expected} in {calls:?}");
+        }
+        let steps: Vec<_> = calls.iter().map(String::as_str).filter(|s|
+            matches!(*s, "create footstep" | "start 50" | "start 51")).collect();
+        assert_eq!(steps, ["create footstep", "start 50", "create footstep", "start 51", "start 50"]);
+        for expected in ["param 50 (15, 16) 2", "param 50 (17, 18) 0", "param 50 (19, 20) 0",
+            "param 50 (13, 14) 5", "pos 50 10 20 6", "stop 50", "stop 51"] {
             assert!(calls.iter().any(|s| s == expected), "missing {expected} in {calls:?}");
         }
         bind_players::set_player(0, original);
