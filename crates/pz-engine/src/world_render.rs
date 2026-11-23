@@ -116,6 +116,8 @@ pub struct WorldRender {
     lighting_error: bool,
     /// The last corpse render error, reported once.
     corpse_error: Option<String>,
+    /// The last mannequin render error, reported once.
+    mannequin_error: Option<String>,
     /// What the square mutations changed since the last frame.
     pub pending: PendingRender,
     /// The characters the last player frame drew (local players by
@@ -214,6 +216,7 @@ impl WorldRender {
             start: Instant::now(),
             lighting_error: false,
             corpse_error: None,
+            mannequin_error: None,
             pending: PendingRender::new(),
             drawn_players: [false; MAX_PLAYERS],
             drawn_zombies: Vec::new(),
@@ -634,13 +637,137 @@ impl WorldRender {
         }
     }
 
+    /// `FBORenderCorpses.render(renderChunkIndex, IsoMannequin)` and
+    /// `renderMannequinShadows`: draws ready mannequin models straight into
+    /// dirty chunk textures (`objects.chunk_models`) and emits each
+    /// mannequin's drop shadow every frame (`objects.mannequins`).
+    #[allow(clippy::too_many_arguments)]
+    fn render_mannequins(
+        lighting: &WorldLighting,
+        cache: &mut ChunkCache,
+        mannequin_error: &mut Option<String>,
+        view: &WorldView<'_>,
+        v: &RenderView,
+        chunks: &[pz_iso_render::frame::ChunkLevels<'_>],
+        models: &mut WorldModels,
+        objects: &mut FrameObjects,
+    ) {
+        let p_i32 = v.player as i32;
+        let world_age_days = (pz_lua_api::bind_climate::shared_game_time()
+            .borrow()
+            .world_age_hours()
+            / 24.0) as f32;
+        let cam_xy = [v.x, v.y];
+        let (x0, y0, n) = v.chunk_map;
+        for wx in x0..x0 + n {
+            for wy in y0..y0 + n {
+                let Some(chunk) = view.cell.chunks.get(&(wx, wy)) else {
+                    continue;
+                };
+                for sq_owner in chunk.squares() {
+                    let sq = sq_owner.borrow();
+                    let has_mannequin = sq.objects.iter().any(|slot| {
+                        slot.ref_handle()
+                            .try_borrow()
+                            .is_ok_and(|o| matches!(o.kind, pz_world::objects::ObjectKind::Mannequin(_)))
+                    });
+                    if !has_mannequin {
+                        continue;
+                    }
+                    let (sx, sy, sz) = (sq.x, sq.y, sq.z);
+                    let outside = sq.is_exterior(view.sprites);
+                    let room = sq.room_id != -1;
+                    let rgb = lighting
+                        .square_light(p_i32, sx, sy, sz)
+                        .map(|l| {
+                            let c = pz_iso_render::models::interpolate_light(&l.vert_light, 0.5, 0.5);
+                            [c.r, c.g, c.b]
+                        })
+                        .unwrap_or([v.climate.climate.ambient; 3]);
+                    // Collect table surface offsets for every object on the square.
+                    let mut surfaces_all = Vec::new();
+                    for slot in &sq.objects {
+                        let handle = slot.ref_handle();
+                        let Ok(o) = handle.try_borrow() else { continue };
+                        if let Ok(Some(s)) = o.sprite.metadata_projection(view.sprites) {
+                            let info = s.properties.surface_info(&view.sprites.alias);
+                            if info.is_table {
+                                surfaces_all.push(info.surface as f32);
+                            }
+                        }
+                    }
+                    let dirty_texture = chunks
+                        .iter()
+                        .find(|c| {
+                            c.dirty
+                                && c.texture.wx == wx
+                                && c.texture.wy == wy
+                                && sz >= c.texture.min_level
+                                && sz <= c.texture.top_level
+                        })
+                        .map(|c| c.texture);
+                    let mut surfaces_below = Vec::new();
+                    for slot in &sq.objects {
+                        let handle = slot.ref_handle();
+                        let Ok(mut obj) = handle.try_borrow_mut() else {
+                            continue;
+                        };
+                        let obj_id = obj.id;
+                        if let pz_world::objects::ObjectKind::Mannequin(man) = &mut obj.kind {
+                            let input = crate::world_models::MannequinSquare {
+                                x: sx,
+                                y: sy,
+                                z: sz,
+                                object_id: obj_id,
+                                surfaces_below: surfaces_below.clone(),
+                                surfaces_all: surfaces_all.clone(),
+                                outside,
+                                room,
+                                light: [rgb[0], rgb[1], rgb[2], 1.0],
+                                tint: [1.0; 3],
+                                alpha: 1.0,
+                                world_age_days,
+                            };
+                            match models.render_mannequin(man, &input, dirty_texture, cam_xy) {
+                                Ok(d) => {
+                                    objects.mannequins.push(pz_iso_render::objects::ObjectRender {
+                                        shadow: Some(d.shadow),
+                                        ..Default::default()
+                                    });
+                                    if let Some(cm) = d.chunk_models {
+                                        objects.chunk_models.push(cm);
+                                    }
+                                    if d.pending_textures {
+                                        cache.invalidate(wx, wy, sz, dirty::REDRAW);
+                                    }
+                                }
+                                Err(e) => {
+                                    if mannequin_error.as_deref() != Some(e.as_str()) {
+                                        eprintln!("ERROR: IsoMannequin.render: {e}");
+                                        *mannequin_error = Some(e);
+                                    }
+                                }
+                            }
+                        }
+                        if let Ok(Some(s)) = obj.sprite.metadata_projection(view.sprites) {
+                            let info = s.properties.surface_info(&view.sprites.alias);
+                            if info.is_table {
+                                surfaces_below.push(info.surface as f32);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// One player's world frame (`FBORenderCell.renderInternal` and what
     /// `IsoWorld.render` draws around it), appended to `out`.
     fn render_player(
         &mut self,
         view: &WorldView<'_>,
         v: &mut RenderView,
-        models: Option<&mut WorldModels>,
+        mut models: Option<&mut WorldModels>,
         zombies: &[LuaGameCharacter],
         regions: &IsoRegions,
         weather_fx: Option<&RefCell<IsoWeatherFx>>,
@@ -733,7 +860,7 @@ impl WorldRender {
         let mut objects = FrameObjects::default();
         // `DeadBodyAtlas.render()`'s jobs, drawn before the world.
         let mut corpse_jobs = Vec::new();
-        if let Some(models) = models {
+        if let Some(models) = models.as_deref_mut() {
             let camera = match &cam3 {
                 Some(c3) => pz_iso_render::models::ModelCamera::perspective(
                     &cam,
@@ -934,6 +1061,18 @@ impl WorldRender {
         }
         self.winter[p] = winter;
         let chunks = plan_chunks(&mut self.caches[p], &cam, size, &inputs, &mut cmds);
+        if let Some(models) = models {
+            Self::render_mannequins(
+                &self.lighting,
+                &mut self.caches[p],
+                &mut self.mannequin_error,
+                view,
+                v,
+                &chunks,
+                models,
+                &mut objects,
+            );
+        }
         let r = ChunkRenderer::new(cam, &maps, (v.width, v.height))
             .with_cutaways(Some(cv))
             .with_render_infos(&self.infos, p)
