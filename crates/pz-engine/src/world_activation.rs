@@ -96,6 +96,15 @@ impl IsoWorld {
                             ) else {
                                 return Err("object activation requires sprites, regions and native door tables".into());
                             };
+                            // IsoGridSquare.load assigns obj.square before invoking the
+                            // subclass load hooks. The archive decoder has no owning
+                            // square allocation yet. Bind it before the first live call.
+                            {
+                                let mut body = object.try_borrow_mut().map_err(|_| "map object is in use")?;
+                                if body.square_slot().is_none() {
+                                    body.replace_square(Some(&square), &mut pz_entity::RetiredComponents::new());
+                                }
+                            }
                             if matches!(object.borrow().kind, pz_world::ObjectKind::FeedingTrough(_)) {
                                 pz_lua_api::bind_world_object::trough::restore_fluid(&object)
                                     .map_err(|e| format!("restoring trough fluid at {pos:?}: {e}"))?;

@@ -375,6 +375,14 @@ pub(super) fn register(t: &mut Thread) {
         let v = inspect(&receiver_object(c)?, |t| t.feeding_types.is_empty())?;
         Ok(c.push(v))
     });
+    class.method("getAllFeedingTypes", |c| {
+        let keys=inspect(&receiver_object(c)?,|t|{
+            let mut keys: Vec<&str>=t.feeding_types.iter().map(|(key,_)| key.as_str()).collect();
+            pz_inventory::java::sort_string_hash_map(&mut keys,|s|*s);
+            keys.into_iter().map(Value::str).collect()
+        })?;
+        Ok(c.push(crate::bind_java_util::list_value(keys)))
+    });
     class.method("getFeedAmount", |c| {
         let key = str_arg(c, 1);
         let n = inspect(&receiver_object(c)?, |t| {

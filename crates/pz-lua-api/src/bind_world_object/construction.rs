@@ -110,7 +110,7 @@ fn update_from_item(object: &mut IsoObject, item: &pz_inventory::shared::ItemRef
     object
         .install_runtime_mod_data()
         .map_err(|e| LuaError::runtime(e.to_string()))?
-        .set_str("generatorFullType", Value::str(name));
+        .set_str("generatorFullType", Value::str(&name));
     Ok(())
 }
 

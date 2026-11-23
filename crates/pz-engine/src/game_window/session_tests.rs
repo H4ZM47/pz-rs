@@ -387,7 +387,10 @@ fn verify_feeding_trough(lua: &mut LuaManager, create: bool) {
         end
         local t,child = find(10685,9377),find(10685,9378)
         local def = FeedingTroughDef.simple
-        assert(t and child and child:getMasterTrough() == t)
+        assert(t, "missing saved master trough")
+        assert(child, "missing saved linked trough")
+        assert(child:getMasterTrough() == t, "saved linked trough points to "..tostring(child:getLinkedX())..","..tostring(child:getLinkedY()))
+        assert(t:getAllFeedingTypes():isEmpty())
         assert(t:getWater() == def.maxWater and t:getMaxWater() == def.maxWater)
         assert(not t:getContainer() and t:getFluidContainer():getOwner() == t)
         assert(t:getOverlaySprite():getName() == def.spriteWaterOverlay2[def.spriteW[1]])
