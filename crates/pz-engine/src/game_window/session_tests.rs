@@ -523,7 +523,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
             break;
         }
     }
-    assert_eq!(app.current_state(), Some(INGAME), "session never entered gameplay; cache: {}", cache_dir.display());
+    assert_eq!(app.current_state(), Some(INGAME), "session never entered gameplay; cache: {}, world errors: {:?}", cache_dir.display(), app.world.as_ref().map(|w| &w.errors));
     verify_tile_definitions(app.lua.as_mut().unwrap());
     lua_check(app.lua.as_mut().unwrap(), "assert(rustMapNew > 0, 'new sprite callbacks')");
     run_frames(&mut app, 4);

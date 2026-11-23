@@ -3,6 +3,18 @@ use super::*;
 use pz_world::sprite::runtime::{create_runtime_sprite, load_single_texture, ObjectSprite};
 
 pub(super) fn register(class: &crate::expose::ClassBuilder) {
+    class.method("setSpriteFromName", |c| {
+        let name = crate::expose::str_arg(c, 1).ok_or_else(|| LuaError::runtime("expected sprite name"))?;
+        let manager = crate::bind_sprites::manager()?;
+        let idx = {
+            let mut manager = manager.try_borrow_mut().map_err(|_| borrowed("IsoSpriteManager"))?;
+            manager.named_map.get(name.as_ref()).copied().unwrap_or_else(|| manager.add_sprite_named(&name))
+        };
+        let this = c.arg(0);
+        let set = c.thread.table_get(&this, &Value::str("setSprite"))?;
+        c.thread.call1(&set, &[this, crate::bind_sprites::sprite_value(Some(idx), false)])?;
+        Ok(0)
+    });
     class.method("setSprite", |c| {
         let this = c.arg(0);
         let arg = c.arg(1);
