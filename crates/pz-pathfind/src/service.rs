@@ -233,27 +233,23 @@ impl SquareChanges {
     /// (`IsoDirections` order) and then for the square.
     pub fn square_changed<G: GetSquare>(&self, square: &IsoGridSquare, bits: &SquareBits<'_, G>) {
         let chunk = (square.x.div_euclid(8), square.y.div_euclid(8));
-        let mut state = self.0.lock().unwrap();
-        if !state.loaded_chunks.contains_key(&chunk) {
+        if !self.0.lock().unwrap().loaded_chunks.contains_key(&chunk) {
             return;
         }
         for dir in IsoDirections::ALL {
             if let Some(sq2) = square.get_adjacent_square(dir, bits.squares) {
-                state.queue_square_update(&sq2.borrow(), bits);
+                self.queue_square_update(&sq2.borrow(), bits);
             }
         }
-        state.queue_square_update(square, bits);
+        self.queue_square_update(square, bits);
     }
-}
 
-impl SquareChangeState {
-    fn queue_square_update<G: GetSquare>(&mut self, sq: &IsoGridSquare, bits: &SquareBits<'_, G>) {
+    fn queue_square_update<G: GetSquare>(&self, sq: &IsoGridSquare, bits: &SquareBits<'_, G>) {
         let chunk = (sq.x.div_euclid(8), sq.y.div_euclid(8));
-        let load_id = self.loaded_chunks.get(&chunk).copied().unwrap_or(-1);
-        self.tasks.push_back(SquareTask {
-            load_id,
-            update: bits.square_update(sq),
-        });
+        let load_id = self.0.lock().unwrap().loaded_chunks.get(&chunk).copied().unwrap_or(-1);
+        // Geometry hooks can inspect the service. Release the queue lock before calling them.
+        let update = bits.square_update(sq);
+        self.0.lock().unwrap().tasks.push_back(SquareTask { load_id, update });
     }
 }
 

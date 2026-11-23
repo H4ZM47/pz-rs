@@ -120,6 +120,30 @@ fn toggle_window_leaves_a_permanently_locked_window_alone() {
 }
 
 #[test]
+fn glass_changes_only_on_smashed_windows_and_follows_the_retained_receiver() {
+    let mut f = Fixture::new();
+    f.window(false, false);
+    f.run("w = IsoCell.getInstance():getGridSquare(1,2,0):getObjects():get(0)
+           w:removeBrokenGlass()
+           check(not w:isGlassRemoved())");
+    let square = with_world(|w| w.cell.as_ref().unwrap().get_grid_square(1, 2, 0).unwrap());
+    let pane = square.borrow().objects[0].ref_handle();
+    {
+        let mut body = pane.borrow_mut();
+        let ObjectKind::Window(window) = &mut body.kind else { unreachable!() };
+        window.destroyed = true;
+        window.smashed_sprite = Some(f.closed);
+        window.glass_removed_sprite = Some(f.open);
+    }
+    f.run("w:removeBrokenGlass() check(w:isGlassRemoved())");
+    assert_eq!(pane.borrow().sprite, ObjectSprite::Tile(f.open));
+    square.borrow_mut().objects.clear();
+    f.window(false, false);
+    f.run("check(w:getObjectIndex() == -1) w:setGlassRemoved(false) check(not w:isGlassRemoved())");
+    assert_eq!(pane.borrow().sprite, ObjectSprite::Tile(f.closed));
+}
+
+#[test]
 fn get_object_index_is_the_position_in_the_square() {
     let mut f = Fixture::new();
     f.window(false, false);

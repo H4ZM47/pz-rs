@@ -149,6 +149,7 @@ const SPRITES: &[Spec] = &[
         "normal",
         &[("windowW", ""), ("WindowW", "")],
     ),
+    ("protected_window", "normal", &[("WindowLocked", "true")]),
     ("crate", "normal", &[("solidtrans", "")]),
     ("brokenglass_1_2", "normal", &[]),
     ("carpentry_01_9", "normal", &[]),
@@ -1297,6 +1298,29 @@ fn window_info_and_perma_lock() {
     // Not a window.
     let d = w.add(10, 10, "door_n", door(true, 500), true);
     assert_eq!(w.adapter().window_info_of(d), None);
+}
+
+#[test]
+fn debug_unlock_preserves_protected_or_missing_sprites_only_while_opening() {
+    let mut world = World::new();
+    let win = world.add(12, 12, "protected_window", window(&world, 50), true);
+    let object = world.object(win).unwrap();
+    for missing in [false, true] {
+        {
+            let mut body = object.borrow_mut();
+            if missing { body.sprite = pz_world::objects::ObjectSprite::None; }
+            let ObjectKind::Window(pane) = &mut body.kind else { unreachable!() };
+            pane.locked = true;
+            pane.perma_locked = true;
+        }
+        let adapter = world.adapter();
+        adapter.debug_unlock_window_at(win, true).unwrap();
+        let info = adapter.window_info_of(win).unwrap();
+        assert!(info.locked && info.perma_locked);
+        adapter.debug_unlock_window_at(win, false).unwrap();
+        let info = adapter.window_info_of(win).unwrap();
+        assert!(!info.locked && !info.perma_locked);
+    }
 }
 
 #[test]
