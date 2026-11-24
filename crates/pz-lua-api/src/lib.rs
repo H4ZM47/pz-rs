@@ -8,6 +8,7 @@
 //! metatable in `Thread::class_metatables` keyed by its Java class name.
 
 pub mod bind_appearance;
+pub mod bind_game_sounds_visited;
 pub mod bind_game_window;
 pub mod bind_attached_items;
 pub mod bind_body;
@@ -305,6 +306,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_server::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
     bind_server_list::register(&mut mgr.thread, mgr.fs.clone());
     bind_audio::register(&mut mgr.thread);
+    bind_game_sounds_visited::register(&mut mgr.thread);
     bind_iso_enums::register(mgr);
     bind_global_objects::register(mgr);
     bind_popman::register(&mut mgr.thread);
