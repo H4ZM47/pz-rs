@@ -253,6 +253,33 @@ pub(super) fn register(b: &ClassBuilder) {
         let (x, y, z) = self_square(c)?;
         with_square(x, y, z, |square| Ok(square.has_tree.into()))
     });
+    get(b, "isFire", |c| {
+        let (x, y, z) = self_square(c)?;
+        let burning = with_square(x, y, z, |square| {
+            let has_fire = square.objects.iter().any(|slot| {
+                matches!(
+                    &slot.borrow().kind,
+                    pz_world::ObjectKind::Fire(f) if !f.smoke
+                )
+            });
+            Ok(has_fire)
+        })?;
+        Ok(burning.into())
+    });
+    get(b, "getFire", |c| {
+        let (x, y, z) = self_square(c)?;
+        let fire = with_square(x, y, z, |square| {
+            Ok(square
+                .objects
+                .iter()
+                .find(|slot| matches!(slot.borrow().kind, pz_world::ObjectKind::Fire(_)))
+                .map(|slot| slot.ref_handle()))
+        })?;
+        let Some(fire) = fire else {
+            return Ok(Value::Nil);
+        };
+        square_object_value(&fire, (x, y, z))
+    });
     get(b, "isOutside", |c| {
         let (x, y, z) = self_square(c)?;
         Ok(square_is_outside(x, y, z)?.into())
