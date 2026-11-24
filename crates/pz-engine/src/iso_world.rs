@@ -797,7 +797,9 @@ impl IsoWorld {
             &lua.thread,
             Some((&self.file_in_save("z_outfits.bin"), no_save)),
         );
-        // TODO(port): `VehicleIDMap.Reset`, `new VehicleManager()`.
+        // `VehicleIDMap.Reset`, `new VehicleManager()`.
+        pz_lua_api::bind_vehicle_manager::reset_vehicle_id_map();
+        pz_lua_api::bind_vehicle_manager::init_vehicle_manager();
         // `metaGrid.CreateStep2()`: the building alarms (the adjacent-cell
         // rooms ran in `IsoMetaGrid::create`).
         {

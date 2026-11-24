@@ -515,11 +515,13 @@ impl GameState for IngameState {
         if let Some(w) = cx.world.as_mut() {
             w.reset_radio();
         }
+        // `VehicleCache.Reset()`, `VehicleIDMap.instance.Reset()`.
+        pz_lua_api::bind_vehicle_manager::reset_vehicle_cache();
+        pz_lua_api::bind_vehicle_manager::reset_vehicle_id_map();
         // TODO(port): `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,
-        // `IsoGenerator`, `StashSystem`, `LootRespawn`, `VehicleCache`,
-        // `VehicleIDMap`, `IsoChunk`, `ChunkChecksum`,
-        // the atlases and `FBORenderChunkManager.Reset`.
+        // `IsoGenerator`, `StashSystem`, `LootRespawn`, `IsoChunk`,
+        // `ChunkChecksum`, the atlases and `FBORenderChunkManager.Reset`.
         // `IsoWorld.instance.KillCell()`: the cell and the world's state go.
         pz_lua_api::bind_zombie::shared_world_sounds().borrow_mut().dispose_cell();
         pz_lua_api::bind_world::set_cell(None);
