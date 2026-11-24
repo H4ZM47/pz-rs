@@ -258,6 +258,21 @@ impl StatesEngine for EngineStates<'_> {
         pz_lua_api::bind_sandbox::current_bool("ZombieLore.TriggerHouseAlarm").unwrap_or(false)
     }
 
+    fn vehicle_box(&self, script_name: &str) -> Option<pz_world_states::VehicleBox> {
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let script = sm.get::<pz_scripts::objects::vehicles::VehicleScript>(
+            pz_scripts::ScriptType::Vehicle,
+            script_name,
+        )?;
+        let s = script.borrow();
+        let e = s.extents();
+        let com = s.center_of_mass_offset();
+        Some(pz_world_states::VehicleBox {
+            extents: [e.x, e.y, e.z],
+            center_of_mass_offset: [com.x, com.y, com.z],
+        })
+    }
+
     fn add_world_sound(&mut self, request: pz_world_states::WorldSoundRequest) {
         if let Some(sim) = self.sim {
             pz_characters::character::SimContext::event(sim, SimEvent::InteractionNoise(request));
