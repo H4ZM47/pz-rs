@@ -517,3 +517,29 @@ fn climate_winter_mode_uses_canonical_identity_and_null_is_false() {
     core.borrow_mut().set_game_mode_ref(None).unwrap();
     assert!(!ctx.is_winter_is_coming());
 }
+
+#[test]
+fn game_time_calender_and_winter_start_day_lua() {
+    let mut t = setup();
+    crate::bind_date::register(&mut t);
+    let r = run(
+        &mut t,
+        r#"
+        local gt = getGameTime()
+        local cal = gt:getCalender()
+        local ms = cal:getTimeInMillis()
+        local yr = cal:get(PZCalendar.YEAR)
+
+        local season = getClimateManager():getSeason()
+        season:setDay(9, 6, 1993)
+        local winter = season:getWinterStartDay(9, 6, 1993)
+        local w_ms = winter:getTimeInMillis()
+        local w_yr = winter:get(PZCalendar.YEAR)
+        return ms ~= 0, yr >= 1970, w_ms ~= 0, w_yr >= 1992
+        "#,
+    );
+    assert!(r[0].truthy());
+    assert!(r[1].truthy());
+    assert!(r[2].truthy());
+    assert!(r[3].truthy());
+}
