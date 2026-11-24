@@ -48,5 +48,6 @@ pub fn reset_session_bindings() {
     crate::bind_sprites::install_sprite_manager(None);
     crate::bind_erosion::set_instance(None);
     crate::bind_world::set_cell(None);
+    crate::bind_world_object::butcher_tracks::reset();
     crate::bind_world::set_meta_grid(None);
 }

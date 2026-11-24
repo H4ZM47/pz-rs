@@ -397,6 +397,7 @@ pub(crate) fn register_classes(thread: &mut Thread) {
     compost::register(thread);
     hutch::register(thread);
     trough::register(thread);
+    butcher_tracks::register(thread);
     object.method("getOverlaySprite", |c| {
         let object = receiver_object(c)?;
         let overlay = object.try_borrow().map_err(|_| borrowed("IsoObject body"))?.overlay_sprite.clone();
@@ -846,3 +847,4 @@ pub mod map_entity;
 mod compost;
 pub mod hutch;
 pub mod trough;
+pub mod butcher_tracks;
