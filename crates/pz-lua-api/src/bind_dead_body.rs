@@ -211,18 +211,27 @@ pub(crate) fn register(thread: &mut Thread) {
         Ok(Value::Num(f64::from(d)))
     });
     // `DistToSquared(float, float)` / `DistToSquared(IsoMovingObject)`:
-    // `IsoUtils.DistanceToSquared`.
-    // TODO(port): the vehicle polygon cases (`BaseVehicle.getClosestPointOnPoly`).
+    // `IsoUtils.DistanceToSquared` (or `BaseVehicle.getClosestPointOnPoly`).
     get(&b, "DistToSquared", |c| {
         let (x, y, _) = position(&this(c)?)?;
-        let (ox, oy) = match c.arg(1) {
-            Value::Num(_) => (num_arg(c, 1) as f32, num_arg(c, 2) as f32),
-            obj => other_xy(c.thread, &obj)?.ok_or_else(|| LuaError::Runtime {
-                class: "java.lang.NullPointerException",
-                message: String::new(),
-            })?,
+        let d_sq = match c.arg(1) {
+            Value::Num(_) => {
+                let (ox, oy) = (num_arg(c, 1) as f32, num_arg(c, 2) as f32);
+                (ox - x) * (ox - x) + (oy - y) * (oy - y)
+            }
+            obj => {
+                if let Some(vehicle) = pz_vehicles::lua::vehicle_from_value(&obj) {
+                    vehicle.closest_point_on_poly(x, y).0
+                } else {
+                    let (ox, oy) = other_xy(c.thread, &obj)?.ok_or_else(|| LuaError::Runtime {
+                        class: "java.lang.NullPointerException",
+                        message: String::new(),
+                    })?;
+                    (ox - x) * (ox - x) + (oy - y) * (oy - y)
+                }
+            }
         };
-        Ok(Value::Num(f64::from((ox - x) * (ox - x) + (oy - y) * (oy - y))))
+        Ok(Value::Num(f64::from(d_sq)))
     });
     get(&b, "getStaticMovingObjectIndex", |c| Ok(Value::Num(f64::from(static_moving_index(&this(c)?)?))));
     get(&b, "getContainer", |c| {

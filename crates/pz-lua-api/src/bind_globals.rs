@@ -2,8 +2,13 @@
 //! ported subsystem yet. Subsystem-specific globals live in their bind_*
 //! modules.
 
-use crate::expose::{global, str_arg};
+use crate::bind_java_util::list_value;
+use crate::bind_registry::shared_script_manager;
+use crate::expose::{bool_arg, global, int_arg, num_arg, str_arg};
 use pz_kahlua::{TableRef, Thread, Value};
+use pz_scripts::objects::items::find_item;
+use pz_scripts::objects::vehicles::VehicleScript;
+use pz_scripts::ScriptType;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> i64 {
@@ -157,6 +162,168 @@ pub fn register(thread: &mut Thread) {
     });
     // Only returns a trace in debug mode with DebugType.ISUIStackTrace on.
     global(thread, "getISUIStackTrace", |c| Ok(c.push(Value::Nil)));
+    // Build 42.22 `LuaManager.GlobalObject` math / string / UUID / world-level helpers.
+    global(thread, "fastfloor", |c| {
+        let v = (num_arg(c, 0) as f32).floor() as i32;
+        Ok(c.push(v as f64))
+    });
+    global(thread, "getMinimumWorldLevel", |c| Ok(c.push(-32.0)));
+    global(thread, "getMaximumWorldLevel", |c| Ok(c.push(31.0)));
+    global(thread, "moduleDotType", |c| {
+        let Some(ty) = str_arg(c, 1) else {
+            return Ok(c.push(Value::Nil));
+        };
+        if ty.contains('.') {
+            return Ok(c.push(ty.as_ref()));
+        }
+        let module = str_arg(c, 0).map(|s| s.to_string()).unwrap_or_default();
+        Ok(c.push(format!("{module}.{ty}")))
+    });
+    global(thread, "tabToX", |c| {
+        let s = str_arg(c, 0).map(|s| s.to_string()).unwrap_or_default();
+        let max_x = int_arg(c, 1).max(0) as usize;
+        let pad = max_x.saturating_sub(s.encode_utf16().count());
+        let mut out = String::with_capacity(s.len() + pad);
+        out.push_str(&s);
+        for _ in 0..pad {
+            out.push(' ');
+        }
+        Ok(c.push(out))
+    });
+    // True unless the pattern holds an opening square bracket.
+    global(thread, "checkStringPattern", |c| {
+        let ok = str_arg(c, 0).map_or(true, |s| !s.contains('['));
+        Ok(c.push(ok))
+    });
+    // `callLua(func, arg)`, `callLuaBool(func, arg)`, `callLuaReturn(func, arrayList)`.
+    global(thread, "callLua", |c| {
+        let Some(name) = str_arg(c, 0) else {
+            return Ok(0);
+        };
+        let f = c.thread.globals().get_str(&name);
+        if !f.is_nil() {
+            let arg = c.arg(1);
+            let _ = c.thread.pcall(&f, &[arg]);
+        }
+        Ok(0)
+    });
+    global(thread, "callLuaBool", |c| {
+        let Some(name) = str_arg(c, 0) else {
+            return Ok(c.push(false));
+        };
+        let f = c.thread.globals().get_str(&name);
+        if f.is_nil() {
+            return Ok(c.push(false));
+        }
+        let arg = c.arg(1);
+        let ok = match c.thread.pcall(&f, &[arg]) {
+            Ok(vals) => matches!(vals.first(), Some(Value::Bool(true))),
+            Err(_) => false,
+        };
+        Ok(c.push(ok))
+    });
+    global(thread, "callLuaReturn", |c| {
+        let Some(name) = str_arg(c, 0) else {
+            return Ok(c.push(list_value(Vec::new())));
+        };
+        let f = c.thread.globals().get_str(&name);
+        if f.is_nil() {
+            return Ok(c.push(list_value(Vec::new())));
+        }
+        // The list is handed to the callee as its one argument (a nil list
+        // becomes an empty one); it is not spread into separate arguments.
+        let arg = match c.arg(1) {
+            Value::Nil => list_value(Vec::new()),
+            other => other,
+        };
+        let out = c.thread.pcall(&f, &[arg]).unwrap_or_default();
+        Ok(c.push(list_value(out)))
+    });
+    // Item & recipe script lookup helpers.
+    global(thread, "getItemDisplayName", |c| {
+        let Some(name) = str_arg(c, 0) else {
+            return Ok(c.push(Value::Nil));
+        };
+        let sm = shared_script_manager();
+        let display = find_item(&sm, &name)
+            .and_then(|item| item.borrow().display_name.clone())
+            .unwrap_or_else(|| name.to_string());
+        Ok(c.push(display))
+    });
+    global(thread, "getItemFoodType", |c| {
+        let Some(name) = str_arg(c, 0) else {
+            return Ok(c.push(Value::Nil));
+        };
+        let sm = shared_script_manager();
+        let food_type = find_item(&sm, &name).and_then(|item| item.borrow().food_type.clone());
+        Ok(c.push(food_type.map_or(Value::Nil, |s| Value::str(&s))))
+    });
+    global(thread, "getItemActualWeight", |c| {
+        let weight = str_arg(c, 0)
+            .and_then(|name| {
+                let sm = shared_script_manager();
+                find_item(&sm, &name).map(|item| f64::from(item.borrow().actual_weight))
+            })
+            .unwrap_or(0.0);
+        Ok(c.push(weight))
+    });
+    global(thread, "getItemWeight", |c| {
+        let weight = str_arg(c, 0)
+            .and_then(|name| {
+                let sm = shared_script_manager();
+                find_item(&sm, &name).map(|item| {
+                    let b = item.borrow();
+                    if b.is_item_type(&sm, "WEAPON") {
+                        f64::from(b.weapon_weight)
+                    } else {
+                        f64::from(b.actual_weight)
+                    }
+                })
+            })
+            .unwrap_or(0.0);
+        Ok(c.push(weight))
+    });
+    global(thread, "getItemConditionMax", |c| {
+        let max = str_arg(c, 0)
+            .and_then(|name| {
+                let sm = shared_script_manager();
+                find_item(&sm, &name).map(|item| item.borrow().condition_max as f64)
+            })
+            .unwrap_or(0.0);
+        Ok(c.push(max))
+    });
+    global(thread, "getRecipeDisplayName", |c| {
+        let name = str_arg(c, 0).map(|s| s.to_string()).unwrap_or_default();
+        let display = crate::bind_text::with_translator_mut(|t| t.get_recipe_name(&name))
+            .unwrap_or(name);
+        Ok(c.push(display))
+    });
+    global(thread, "getAllVehicles", |c| {
+        let sm = shared_script_manager();
+        let mut names: Vec<String> = sm
+            .collection(ScriptType::Vehicle)
+            .get_all_scripts()
+            .into_iter()
+            .filter_map(|s| s.downcast::<VehicleScript>().map(|v| v.borrow().full_name()))
+            .collect();
+        names.sort();
+        Ok(c.push(list_value(
+            names.into_iter().map(|n| Value::str(&n)).collect(),
+        )))
+    });
+    global(thread, "getVehicleById", |c| {
+        let id = int_arg(c, 0) as i16;
+        let v = pz_vehicles::manager::vehicle_by_id(id)
+            .map_or(Value::Nil, |v| pz_vehicles::lua::vehicle_value(&v));
+        Ok(c.push(v))
+    });
+    global(thread, "useStaticErosionRand", |c| {
+        crate::bind_erosion::set_static_erosion_rand(bool_arg(c, 0));
+        Ok(0)
+    });
+    // `sledgeDestroy(object)`: sends `PacketType.SledgehammerDestroy` only when
+    // `GameClient.client && ServerOptions.allowDestructionBySledgehammer`.
+    global(thread, "sledgeDestroy", |_| Ok(0));
     // getPlayer, getSpecificPlayer, getNumActivePlayers: bind_players.
 }
 
@@ -180,5 +347,87 @@ mod tests {
             ["b", "a"]
         );
         assert!(!c.get_str("b").as_table().unwrap().ptr_eq(&inner));
+    }
+
+    #[test]
+    fn global_object_helpers_match_build_42_22() {
+        let mut thread = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut thread, None).unwrap();
+        crate::bind_java_util::register(&mut thread);
+        crate::bind_erosion::register(&mut thread);
+        crate::bind_zombie::register(&mut thread);
+        crate::bind_world::register(&mut thread);
+        register(&mut thread);
+
+        // Install a minimal meta_grid with a regular zone and a vehicle zone.
+        let mut meta = pz_world::IsoMetaGrid::with_bounds(10, 20, 12, 22);
+        let _ = meta.register_zone("Town", "TownZone", 10 * 256 + 5, 20 * 256 + 5, 0, 20, 20);
+        let _ = meta.register_vehicles_zone("Parking", "ParkingStall", 10 * 256 + 5, 20 * 256 + 5, 0, 10, 10, None);
+        crate::bind_world::with_world(|w| w.meta_grid = Some(meta));
+
+        let script = r#"
+            local function assert(v, msg) if not v then error(msg or "assertion failed") end end
+            assert(fastfloor(3.9) == 3)
+            assert(fastfloor(-1.2) == -2)
+            assert(getMinimumWorldLevel() == -32)
+            assert(getMaximumWorldLevel() == 31)
+            assert(moduleDotType("Base", "Axe") == "Base.Axe")
+            assert(moduleDotType("Base", "Custom.Axe") == "Custom.Axe")
+            assert(moduleDotType("Base", nil) == nil)
+            assert(tabToX("abc", 6) == "abc   ")
+            assert(tabToX("abcdef", 3) == "abcdef")
+            assert(checkStringPattern("Hammer") == true)
+            assert(checkStringPattern("Bad[Pattern") == false)
+
+            _G.CalledArg = nil
+            function TestLuaVoid(x) _G.CalledArg = x end
+            callLua("TestLuaVoid", 42)
+            assert(_G.CalledArg == 42)
+
+            function TestLuaBool(x) return x > 10 end
+            assert(callLuaBool("TestLuaBool", 20) == true)
+            assert(callLuaBool("TestLuaBool", 5) == false)
+            assert(callLuaBool("MissingFunc", 5) == false)
+
+            function TestLuaRet(list) return list:get(0) + list:get(1), list:size() end
+            local args = ArrayList.new()
+            args:add(3)
+            args:add(4)
+            local out = callLuaReturn("TestLuaRet", args)
+            assert(out:size() == 2 and out:get(0) == 7 and out:get(1) == 2)
+            function TestLuaRetNil(list) return list:size() end
+            assert(callLuaReturn("TestLuaRetNil", nil):get(0) == 0)
+
+            assert(getItemDisplayName("Base.MissingItem") == "Base.MissingItem")
+            assert(getItemFoodType("Base.MissingItem") == nil)
+            assert(getItemActualWeight("Base.MissingItem") == 0)
+            assert(getItemWeight("Base.MissingItem") == 0)
+            assert(getItemConditionMax("Base.MissingItem") == 0)
+            assert(getRecipeDisplayName("Make Bread") == "Make Bread")
+            assert(getAllVehicles():size() >= 0)
+            assert(getVehicleById(9999) == nil)
+
+            assert(getCellMinX() == 10 and getCellMaxX() == 12)
+            assert(getCellMinY() == 20 and getCellMaxY() == 22)
+            local vz = getVehicleZoneAt(10 * 256 + 7, 20 * 256 + 7, 0)
+            assert(vz ~= nil and vz:getName() == "Parking")
+
+            useStaticErosionRand(true)
+            AddNoiseToken(nil, 10)
+            sledgeDestroy(nil)
+            return true
+        "#;
+        let f = pz_kahlua::stdlib::load_string(
+            script,
+            Some("bind_globals_test"),
+            thread.globals().clone(),
+        )
+        .unwrap();
+        let res = thread
+            .pcall(&f, &[])
+            .unwrap_or_else(|(e, tb)| panic!("lua failed: {e:?}\n{tb}"));
+        assert!(matches!(res.first(), Some(Value::Bool(true))));
+        assert!(crate::bind_erosion::static_erosion_rand());
+        crate::bind_erosion::set_static_erosion_rand(false);
     }
 }
