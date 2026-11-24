@@ -351,6 +351,193 @@ pub trait HudConsoleMethods {
     }
 }
 
+/// [`HudConsoleMethods`] backed by `pz-lua-api`'s exposure tables and, when
+/// the installed `projectzomboid.jar` is present, enriched with exact return
+/// types and parameter counts from `pz-classfile` (lazily on first use).
+pub struct ExposedConsoleMethods {
+    jar_path: Option<std::path::PathBuf>,
+    jar: RefCell<Option<Option<pz_classfile::Jar>>>,
+    class_cache: RefCell<std::collections::HashMap<String, Vec<ConsoleMethod>>>,
+}
+
+impl ExposedConsoleMethods {
+    pub fn new(jar_path: Option<std::path::PathBuf>) -> Self {
+        ExposedConsoleMethods {
+            jar_path,
+            jar: RefCell::new(None),
+            class_cache: RefCell::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn with_jar<R>(&self, f: impl FnOnce(Option<&pz_classfile::Jar>) -> R) -> R {
+        let mut slot = self.jar.borrow_mut();
+        if slot.is_none() {
+            let opened = self
+                .jar_path
+                .as_deref()
+                .and_then(|p| pz_classfile::Jar::open(p).ok());
+            *slot = Some(opened);
+        }
+        f(slot.as_ref().and_then(|o| o.as_ref()))
+    }
+}
+
+/// Parse a JVM method descriptor `(<params>)<ret>` into Java's
+/// `Class.toString()` return type (`"void"`, `"int"`, `"class a.b.C"`, ...)
+/// and parameter count.
+fn parse_jvm_method_descriptor(desc: &str) -> Option<(String, usize)> {
+    let bytes = desc.as_bytes();
+    if *bytes.first()? != b'(' {
+        return None;
+    }
+    let mut i = 1usize;
+    let mut params = 0usize;
+    while i < bytes.len() && bytes[i] != b')' {
+        while i < bytes.len() && bytes[i] == b'[' {
+            i += 1;
+        }
+        match *bytes.get(i)? {
+            b'B' | b'C' | b'D' | b'F' | b'I' | b'J' | b'S' | b'Z' => {
+                i += 1;
+                params += 1;
+            }
+            b'L' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b';' {
+                    i += 1;
+                }
+                if i >= bytes.len() {
+                    return None;
+                }
+                i += 1;
+                params += 1;
+            }
+            _ => return None,
+        }
+    }
+    if bytes.get(i) != Some(&b')') {
+        return None;
+    }
+    let ret = &desc[i + 1..];
+    let return_type = match ret.as_bytes().first()? {
+        b'V' => "void".to_string(),
+        b'Z' => "boolean".to_string(),
+        b'B' => "byte".to_string(),
+        b'C' => "char".to_string(),
+        b'S' => "short".to_string(),
+        b'I' => "int".to_string(),
+        b'J' => "long".to_string(),
+        b'F' => "float".to_string(),
+        b'D' => "double".to_string(),
+        b'L' => {
+            let inner = ret.strip_prefix('L')?.strip_suffix(';')?;
+            format!("class {}", inner.replace('/', "."))
+        }
+        b'[' => format!("class {}", ret.replace('/', ".")),
+        _ => return None,
+    };
+    Some((return_type, params))
+}
+
+fn methods_from_classfile(
+    cf: &pz_classfile::ClassFile,
+    public_only: bool,
+) -> Vec<ConsoleMethod> {
+    const ACC_PUBLIC: u16 = 0x0001;
+    const ACC_BRIDGE: u16 = 0x0040;
+    const ACC_SYNTHETIC: u16 = 0x1000;
+    let mut out = Vec::new();
+    for m in &cf.methods {
+        if m.name == "<init>" || m.name == "<clinit>" {
+            continue;
+        }
+        if m.access & (ACC_SYNTHETIC | ACC_BRIDGE) != 0 {
+            continue;
+        }
+        if public_only && (m.access & ACC_PUBLIC == 0) {
+            continue;
+        }
+        let Some((return_type, param_count)) = parse_jvm_method_descriptor(&m.descriptor) else {
+            continue;
+        };
+        out.push(ConsoleMethod {
+            name: m.name.clone(),
+            return_type,
+            param_count,
+        });
+    }
+    out
+}
+
+impl HudConsoleMethods for ExposedConsoleMethods {
+    fn global_methods(&self) -> Vec<ConsoleMethod> {
+        let mut out = self.with_jar(|jar| {
+            jar.and_then(|j| pz_classfile::load_class(j, "zombie/Lua/LuaManager$GlobalObject").ok())
+                .map(|cf| methods_from_classfile(&cf, false))
+                .unwrap_or_default()
+        });
+        for name in crate::expose::exposed_globals() {
+            if !out.iter().any(|m| m.name == name) {
+                out.push(ConsoleMethod {
+                    name,
+                    return_type: "void".to_string(),
+                    param_count: 0,
+                });
+            }
+        }
+        out
+    }
+
+    fn public_methods_of(&self, return_type: &str) -> Vec<ConsoleMethod> {
+        let fqn = match return_type.strip_prefix("class ") {
+            Some(s) if !s.starts_with('[') => s,
+            None if return_type.contains('.') => return_type,
+            _ => return Vec::new(),
+        };
+        if let Some(cached) = self.class_cache.borrow().get(fqn) {
+            return cached.clone();
+        }
+        let mut out = self.with_jar(|jar| {
+            let Some(jar) = jar else {
+                return Vec::new();
+            };
+            let mut methods = Vec::new();
+            let mut cur = Some(fqn.replace('.', "/"));
+            let mut hops = 0usize;
+            while let Some(internal) = cur {
+                if hops > 32 || internal == "java/lang/Object" {
+                    break;
+                }
+                hops += 1;
+                let Ok(cf) = pz_classfile::load_class(jar, &internal) else {
+                    break;
+                };
+                methods.extend(methods_from_classfile(&cf, true));
+                cur = cf.super_class;
+            }
+            methods
+        });
+        for name in crate::expose::exposed_class_methods(fqn) {
+            if !out.iter().any(|m| m.name == name) {
+                out.push(ConsoleMethod {
+                    name,
+                    return_type: "void".to_string(),
+                    param_count: 0,
+                });
+            }
+        }
+        self.class_cache
+            .borrow_mut()
+            .insert(fqn.to_string(), out.clone());
+        out
+    }
+}
+
+/// Put [`ExposedConsoleMethods`] in the HUD host (run by `register_all`).
+pub fn install_console_methods_host(jar_path: Option<std::path::PathBuf>) {
+    with_host(|h| h.console_methods = Box::new(ExposedConsoleMethods::new(jar_path)));
+}
+
 /// `SoundManager.instance` calls the HUD makes. Owner: audio thread.
 pub trait HudSound {
     fn pause_sound_and_music(&mut self, _keep_music: bool) {}
@@ -517,4 +704,56 @@ pub fn with_host<R>(f: impl FnOnce(&mut HudHost) -> R) -> R {
 /// write from inside a host call).
 pub fn try_with_host<R>(f: impl FnOnce(&mut HudHost) -> R) -> Option<R> {
     HOST.with(|s| s.try_borrow_mut().ok().map(|mut h| f(&mut h)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_jvm_method_descriptors() {
+        assert_eq!(
+            parse_jvm_method_descriptor("()Lzombie/characters/IsoPlayer;"),
+            Some(("class zombie.characters.IsoPlayer".to_string(), 0))
+        );
+        assert_eq!(
+            parse_jvm_method_descriptor("(IF[Ljava/lang/String;Z)V"),
+            Some(("void".to_string(), 4))
+        );
+        assert_eq!(
+            parse_jvm_method_descriptor("(D)[I"),
+            Some(("class [I".to_string(), 1))
+        );
+        assert_eq!(
+            parse_jvm_method_descriptor("()I"),
+            Some(("int".to_string(), 0))
+        );
+    }
+
+    #[test]
+    fn exposed_console_methods_lists_globals_and_inherited_class_methods() {
+        let mut t = pz_kahlua::Thread::new(pz_kahlua::TableRef::new());
+        crate::expose::global(&mut t, "testConsoleGlobalFn", |_| Ok(0));
+        let base = crate::expose::expose_class(&mut t, "test.console.BaseClass", None);
+        base.method("baseMethod", |_| Ok(0));
+        let sub = crate::expose::expose_class(
+            &mut t,
+            "test.console.SubClass",
+            Some("test.console.BaseClass"),
+        );
+        sub.method("subMethod", |_| Ok(0));
+
+        let host = ExposedConsoleMethods::new(None);
+        assert!(host
+            .global_methods()
+            .iter()
+            .any(|m| m.name == "testConsoleGlobalFn"));
+        let names: Vec<String> = host
+            .public_methods_of("class test.console.SubClass")
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(names, vec!["subMethod", "baseMethod"]);
+        assert!(host.public_methods_of("void").is_empty());
+    }
 }

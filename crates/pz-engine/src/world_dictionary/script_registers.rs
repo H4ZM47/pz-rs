@@ -2,6 +2,7 @@
 //! loading. Keep saved ids and assign new ids in the native loadList order.
 use pz_inventory::dictionary::{Register, RegisterEntry, WorldDictionary};
 use pz_scripts::java::JHashMap;
+use pz_scripts::objects::definitions::FluidFilterScript;
 use pz_scripts::objects::entity::components::spriteconfig::{
     SpriteConfigScript, SpriteOverlayConfigScript,
 };
@@ -80,6 +81,62 @@ pub(super) fn register(dictionary: &mut WorldDictionary, sm: &ScriptManager) -> 
         };
         reconcile(register, scripts)?;
     }
+    Ok(())
+}
+
+/// `FluidFilterScript.OnScriptsLoaded(Init)`: register every non-anonymous
+/// `FluidFilter` script's `getScriptObjectFullType()` into the `"Generic"`
+/// string register (`StringDictionary.Generic`), preserving saved IDs.
+pub(super) fn register_generic_strings(
+    dictionary: &mut WorldDictionary,
+    sm: &ScriptManager,
+) -> Result<(), String> {
+    let mut loaded: JHashMap<()> = JHashMap::default();
+    for script in sm.get_all::<FluidFilterScript>(ScriptType::FluidFilter) {
+        let s = script.borrow();
+        if s.is_anonymous() {
+            continue;
+        }
+        let full = s.base.full_type().map_err(|e| e.to_string())?;
+        loaded.insert(full, ());
+    }
+    let register = if let Some(i) = dictionary
+        .string_registers
+        .iter()
+        .position(|r| r.name == "Generic")
+    {
+        &mut dictionary.string_registers[i]
+    } else {
+        dictionary.string_registers.push(Register {
+            name: "Generic".into(),
+            ..Default::default()
+        });
+        dictionary.string_registers.last_mut().unwrap()
+    };
+    let mut named = JHashMap::default();
+    for entry in register.entries.drain(..) {
+        named.insert(entry.name.clone(), entry);
+    }
+    for (name, _) in loaded.iter() {
+        if let Some(stored) = named.get_mut(name) {
+            stored.is_loaded = true;
+        } else {
+            let id = register.next_id;
+            register.next_id = id
+                .checked_add(1)
+                .ok_or_else(|| format!("{} string id limit reached", register.name))?;
+            named.insert(
+                name.to_string(),
+                RegisterEntry {
+                    registry_id: id,
+                    name: name.to_string(),
+                    version: None,
+                    is_loaded: true,
+                },
+            );
+        }
+    }
+    register.entries = named.values().cloned().collect();
     Ok(())
 }
 

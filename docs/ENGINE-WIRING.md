@@ -866,35 +866,79 @@ all installed assets, render paths or foreign platforms.
       (`ItemPickerJava.updateOverlaySprite`) for each named object whose
       container is not empty; `set_overlay_sprite` sets `overlay_sprite`,
       and `render_world` gives it to the renderer as `RenderObject.overlay`.
-- [ ] The rest of the overlay lifecycle: Lua `ItemPicker.updateOverlaySprite`
-      after a transfer (still a no-op), `invalidateRenderChunkLevel` for a
-      change after load, `fixTableTopOverlays(square)` after moving objects;
-      both `Reset()` on world unload.
+- [ ] The rest of the overlay lifecycle: `TileOverlays` now exposes
+      `hasOverlays`, `updateTileOverlaySprite`, and `fixTableTopOverlays(square)`
+      to Lua and `ContainerOverlays` exposes `hasOverlays` and
+      `updateContainerOverlaySprite` (`bind_tile_overlays.rs`); remaining:
+      Lua `ItemPicker.updateOverlaySprite` after a transfer,
+      `invalidateRenderChunkLevel` for a change after load, and both
+      `Reset()` on world unload (shipped in `antigravity/world-overlays-resets`).
+- [ ] The rest of the overlay lifecycle: `fixTableTopOverlays(square)` after
+      moving objects (wired: Lua `ItemPicker.updateOverlaySprite`,
+      `invalidateRenderChunkLevel` on `set_overlay_sprite`, and both
+      `Reset()` calls in `IngameState::exit`).
 - [ ] `BrokenFences.destroyFence(obj, dir)` (thumping, vehicles): the engine's
       `StatesEngine::destroy_fence` / `is_breakable_fence` /
       `broken_fence_items` read `bind_broken_fences::shared_broken_fences()`
       (`update_sprite_name`, `debris_sprite`, `adjacent_damage`,
       `destroy_adjacent_dirs`, `add_items` drawing `Rand`), then do the
       square changes, sound and recalculation; `Reset()` on unload.
+- [ ] The rest of the overlay lifecycle: Lua `ItemPicker.updateOverlaySprite`
+      after a transfer (still a no-op), `invalidateRenderChunkLevel` for a
+      change after load, `fixTableTopOverlays(square)` after moving objects;
+      both `Reset()` on world unload.
+- [x] `BrokenFences.destroyFence(obj, dir)` (thumping, vehicles): `EngineStates`
+      wires `broken_fences` / `is_breakable_fence` / `spawn_broken_fence_item`
+      from `bind_broken_fences::shared_broken_fences()`, `StatesWorldAdapter::destroy_fence`
+      executes sprite replacement, debris object placement, debris item drops,
+      adjacent damage/cascade, sound and square recalc/geometry invalidation,
+      and `bind_broken_fences` exposes `isBreakableObject` / `getBreakableObject` /
+      `destroyFence` / `setDestroyed` / `setDamagedLeft` / `setDamagedRight` /
+      `updateSprite` / `addItems` to Lua; `Reset()` on unload.
 - [ ] `ItemPickerJava.KeyNamer.nameKey(item, square)` when keys spawn:
       `bind_key_namer::key_namer().key_name_translation(&square)` with a
       `pz_inventory::key_namer::KeySquare` over the square.
-- [ ] Story clutter: `RandomizedWorldBase.get*ClutterItem()` reads
-      `bind_randomized_world::clutter(field)`.
+- [x] Story clutter: `RandomizedWorldBase.get*ClutterItem()` and
+      `bind_randomized_world::clutter_item(field)` pick a random entry from
+      `bind_randomized_world::clutter(field)` via `RandStandard` (discovered
+      from `projectzomboid.jar` or derived as `<getter>Item`).
 - [ ] `MapObjects.newGridSquare` / `loadGridSquare` on brand-new / loaded
       squares: call `bind_map_objects::on_new_callbacks(sprite)` /
       `on_load_callbacks(sprite)` with each object (needs an `IsoObject`
       Lua binding); `MapObjects.Reset` on world unload (#224).
-- [ ] Fence bending (`pz-world-states`) reads its `BentFences` from
-      `bind_bent_fences::shared_bent_fences()` (#224).
+- [x] Fence bending (`pz-world-states`) reads its `BentFences` from
+      `bind_bent_fences::shared_bent_fences()` via `EngineStates` (`bent_fences`,
+      `bent_fences_enabled`, `is_unbent_fence`) (#224).
 - [ ] Water rendering reads `IsoWaterFlow` from
       `lua_world::shared_water_flow()`; `IsoWaterFlow.Reset` on world
       unload (#224).
+- [x] Animal definitions: `pz_animals::AnimalDefinitionTables::load(&env)`
+- [ ] Story clutter: `RandomizedWorldBase.get*ClutterItem()` reads
+      `bind_randomized_world::clutter(field)`.
+- [x] `MapObjects.newGridSquare` / `loadGridSquare` on brand-new / loaded
+      squares: `bind_map_objects::dispatch_square` wired in
+      `world_activation.rs` + `floor_world/tiles.rs`; `MapObjects.Reset` wired
+      in `IngameState::exit` (#224).
+- [ ] Fence bending (`pz-world-states`) reads its `BentFences` from
+      `bind_bent_fences::shared_bent_fences()` (#224).
+- [x] Water rendering reads `IsoWaterFlow` from
+      `lua_world::shared_water_flow()` (`world_render.rs`);
+      `IsoWaterFlow.Reset` wired in `IngameState::exit` (#224).
+- [ ] Fence bending (`pz-world-states`) reads its `BentFences` from
+      `bind_bent_fences::shared_bent_fences()` (#224).
+- [x] Water rendering reads `IsoWaterFlow` from
+      `lua_world::shared_water_flow()`; `IsoWaterFlow.Reset` on world
+      unload (#224): `WorldRender::apply_pending` calls
+      `RenderWorld::refresh_water` with `shared_water_flow()` and
+      `IngameState::exit` calls `shared_water_flow().borrow_mut().reset()`.
 - [ ] Animal definitions: `pz_animals::AnimalDefinitionTables::load(&env)`
       over `LuaManager.env` once shared Lua is loaded, as `IsoWorld.init`
       calls `AnimalDefinitions.getAnimalDefs()` (which loads the genome
       definitions); tracks reload where `IsoWorld` calls
-      `loadTracksDefinitions` (#191).
+      `loadTracksDefinitions` (#191; wired in `IsoWorld::load_animal_definitions`
+      / `reload_animal_tracks`, plus `SimContext::{month, time_of_day,
+      time_since_apo, animal_sandbox, rain_manager_is_raining,
+      rain_manager_intensity}` in `sim.rs`).
 - [ ] Live animals (`ws/animals-characters`): implement
       `StateWorld::animal_host(chr)` (the definition tables and a
       `pz_animals::AnimalWorld` bound to that animal: rain, vehicle speed,
@@ -1060,18 +1104,15 @@ all installed assets, render paths or foreign platforms.
       PickThumpable/PickTree`). `PickHoppable`/`PickCorpse`, the left
       button (`OnObjectLeftMouseButton*`) and dragging moving objects are
       open (world thread).
-- [ ] Object picking render side: keep a `pz_iso_render::RenderInfos`
-      next to the chunk caches, build each player's `ChunkRenderer` with
-      `.with_render_infos(&infos, player)` (chunk recording, composite and
-      translucent passes record `ObjectRenderInfo`), call
-      `infos.forget_chunk(wx, wy)` when a chunk unloads, and give the HUD a
-      `PickWorld` built per frame as `pz_engine::world_hud::EnginePick {
-      world: pz_world_render::WorldPick { view, render, infos, player: 0,
-      camera: player 0's camera }, hooks }`; `world_hud::PickHooks`
-      supplies `IsoPlayer.players[0]` (characters thread), the square Lua
-      objects, door adjacency, entity UIs and corpses (`isMouseOver`).
-      Sprite models (`renderModel` → `updateRenderInfoForObjectPicker`) are
-      not recorded yet (world-render thread) (#198).
+- [x] Object picking render side: `WorldRender` keeps
+      `pz_iso_render::RenderInfos`, builds each player's `ChunkRenderer` with
+      `.with_render_infos(&infos, player)`, calls `infos.forget_chunk(wx, wy)`
+      on chunk unload, and `world_pick::EngineWorldMouse` builds
+      `EnginePick { world: WorldPick { .. }, hooks: Player0 }` with
+      `PickHooks::{player0, square_value, adjacent_to_player,
+      interactive_entity, combined_fbo}` wired. Still open: `corpses`
+      (`IsoDeadBody` Lua identity), multi-square `SpriteConfig` master lookup,
+      and sprite model picker records (#198).
 - [ ] HUD camera: create one `pz_world_render::SharedCameraFrame`, call
       `pz_engine::world_hud::install_hud_camera(frame.clone())` after the
       HUD host is installed,
@@ -1089,15 +1130,17 @@ all installed assets, render paths or foreign platforms.
       TODO(network). The part names in the wound list are
       `BodyPartType.getDisplayName`, translated through
       `bind_text::translate` (`Translator.getText`).
-- [ ] Debug console (built in `hud::init_ui`): with `Core.debug`, the
+- [x] Debug console (built in `hud::init_ui`): with `Core.debug`, the
       `TOGGLE_LUA_CONSOLE` key toggles `UIManager.debug_console`'s visibility
       in `GameWindow.logic`; `DebugLog`'s stream calls
       `hud::debug_console::debug_log_write(bytes)`; `HudDebug`'s
-      `ui_debug_console_start_visible/echo_command/debug_log` options;
-      `HudNetwork::may_process_console_commands` (role capability or coop
-      host; network thread); `HudConsoleMethods` (GlobalObject's declared
-      methods and each return type's public methods, for suggestions;
-      ours, from the exposure tables) (#160).
+      `ui_debug_console_start_visible/echo_command/debug_log` options
+      (`DebugOptionsHud`); `HudNetwork::may_process_console_commands`
+      (`CoreNetwork` for SP; role capability / coop host TODO(network));
+      `HudConsoleMethods` (`ExposedConsoleMethods`, installed by
+      `install_console_methods_host` from `expose.rs` exposure tables and
+      lazily enriched from `projectzomboid.jar` via `pz-classfile` when
+      present) (#160).
 - [x] TextDrawObject: `IngameState.renderframeui` calls
       `hud::text_draw::render_batch(player)` after `WorldMarkers`/`IsoMarkers`
       (`DebugChunkState` calls `no_render`); `ChatElement`'s constructor calls
@@ -1120,7 +1163,7 @@ all installed assets, render paths or foreign platforms.
       set `SharedCameraFrame::offsets[0]` (`cameras[0].rightClickX/Y`,
       `getTOffX/Y` while it differs from `getOffX/Y`, `deferedX/Y`;
       world-render thread) (#203).
-- [ ] Chat (SP): characters thread implements `chat::ChatPlayer` and
+- [x] Chat (SP): characters thread implements `chat::ChatPlayer` and
       `chat::ChatElementOwner` for IsoPlayer (and installs `chat::ChatPlayers`
       for `IsoPlayer.players`/`getInstance`), gives each `IsoGameCharacter` a
       `ChatElement::new(weak_self, 1, Some("character"))` (5 lines in
@@ -1128,11 +1171,11 @@ all installed assets, render paths or foreign platforms.
       `IsoGameCharacter.update` and `ChatElement::render_batched` from
       `renderlast`, and routes `Say`/`SayShout`/`SayRadio`/`addLineChatElement`/
       `SayDebug` to it and `with_chat_manager`; `GameLoadingState` calls
-      `chat::set_allowed_chat_icons(..)` (`Texture.collectAllIcons`) then
-      `with_chat_manager(|m| m.init(true, player))`; `IngameState.renderframeui`
-      calls `ChatElement::render_batch(player)` right after
-      `text_draw::render_batch`; Rust callers of the chat fire its queued Lua
-      events with `chat::fire_pending_events(thread)` (#190).
+      `chat::set_allowed_chat_icons(..)` (`TextureManager::collect_all_icons`)
+      and `set_static_sounds`, then `with_chat_manager(|m| m.init(true, player))`;
+      `IngameState.renderframeui` calls `ChatElement::render_batch(player)`
+      right after `text_draw::render_batch`; Rust callers of the chat fire its
+      queued Lua events with `chat::fire_pending_events(thread)` (#190).
 - [ ] WorldMarkers: `with_markers(WorldMarkers::init)` when the game starts
       (`IngameState.enter`) and `reset()` on exit; `hud::world_markers::render`
       per player in `IngameState.renderframeui` (before `render_batch`); the
@@ -1144,7 +1187,7 @@ all installed assets, render paths or foreign platforms.
       `HudPicking::square_coords` (world thread) (#193; `WorldPicking`
       implements it from the square handle, #197).
       events with `chat::fire_pending_events(thread)` (#TBD-chat).
-- [ ] Chat, characters side (`pz_lua_api::chat::characters`): create each
+- [x] Chat, characters side (`pz_lua_api::chat::characters`): create each
       character's chat element with `attach_chat_element(&chr)` when the
       character is made (the constructor's `chatElement`;
       `character_value` and `bind_players::set_player` also attach). After
@@ -1158,7 +1201,8 @@ all installed assets, render paths or foreign platforms.
       camCharacter == chr)` at `getNameCoords` (above the name tag,
       progress bar and halo note). `GameLoadingState`'s
       `ChatManager.init(true, player)` takes `bind_players::player_instance()`
-      as the `Rc<dyn ChatPlayer>` (#195).
+      as the `Rc<dyn ChatPlayer>` (#195; wired in `game_loading.rs`,
+      `world_update.rs`, `world_render.rs`, `ingame.rs`).
 - [x] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
@@ -1205,12 +1249,13 @@ registered):
       `WorldPopulation::remove_chunk_from_world(&mut host, wx, wy,
       &real_zombies.chunk_zombies(wx, wy, in_room))` (needs the chunk's rooms:
       decide `in_room` before the chunk leaves the cell).
-- [ ] After the cell load: `ClimateManager.postCellLoadSetSnow()` =
+- [x] After the cell load: `ClimateManager.postCellLoadSetSnow()` =
       `bind_climate::post_cell_load_set_snow(thread)`; apply the returned
       `SnowEffects`: `IsoCell.setSnowTarget(target)` (0 unless sandbox
       `EnableSnowOnGround`) and `ErosionIceQueen::set_snow(ice_queen)`. The
       climate update's own snow effects collect in the same slot: apply
-      `bind_climate::take_snow_effects()` after `update_game_time` each frame (#147).
+      `bind_climate::take_snow_effects()` after `update_game_time` each frame (#147;
+      wired in `iso_world.rs` + `world_update.rs`).
 - [x] Zombie dressing (`ModelManager.Add`/`Reset` call
       `ModelManager.dressInRandomOutfit`): when a zombie gets its model,
       `GameCharacter::model_manager_dress_in_random_outfit(&mut
@@ -1358,15 +1403,11 @@ registered):
       writes `thumb.png`, then the renderer reloads that texture.
       `map_animals.bin` and the queued `metagrid/metacell_*.bin` are
       written with `map_zone.bin` (#167).
-      `capture_thumbnail(player)`: set the player's zoom and target zoom
-      to 1 (camera zoom, offscreen size), centre the camera, render that
-      player's world frame into the offscreen buffer (no screen pass, no
-      UI) and submit it, then return
-      `pz_engine::save_thumbnail::capture_thumbnail(gpu, PlayerScreen
-      {screen left/top/width/height of player}, PlayerScreen{.. of player
-      0}, ScreenParams{player's desaturation, timer})`; restore the old
-      zoom and centre again; the next frame redraws screen and UI, and
-      reload the `thumb.png` texture after `save_game` writes it (#173).
+      `capture_thumbnail(player)` is wired through `QuitSaveHooks` (`save_on_quit`,
+      `save_on_window_close`, `save_during_play`) to
+      `save_thumbnail::capture_for_player` using `StateCx.gpu` / `GameWindow.gpu`,
+      writing `thumb.png` into the save folder; offscreen zoom-1 re-render
+      and `thumb.png` texture reload remain open (#173).
 - [x] Game load (`IsoWorld.init`): `world_gen.load_file(save_dir)`
       where `WorldGenParams.INSTANCE.load()` runs; after
       `GlobalModData.init`, `instance_tracker.load_file(save_dir,
@@ -1382,7 +1423,7 @@ registered):
       then `IngameState.exit`: `streamer.stop(&mut cell, ctx)`, the other
       stops, `world_save::close_stores(Some(&mut player_db), &mut
       vehicle_store)` (#150).
-- [ ] Session save, characters side: for each local player build its row
+- [x] Session save, characters side: for each local player build its row
       with `world_save::local_player_data(&mut player, sql_id, sm, chars,
       ctx, &SaveEnv { .. })` (`PlayerData.set`: `IsoPlayer.save` bytes from
       `GameCharacter::save_player`) and pass them to `save_on_quit`; keep the
@@ -1391,16 +1432,16 @@ registered):
       `character::save::reanimated_players_to_save(sm, chars, ctx, &env,
       &mut tracked, &mut cell_zombies, &|z| stairs_at(z))` (the manager's
       list, then the cell's live reanimated players); on `Err` log it and
-      pass `None` (no `reanimated.bin`) (#178).
-- [ ] `IsoWorld.init` (`ReanimatedPlayers.loadReanimatedPlayers`): read
+      pass `None` (no `reanimated.bin`) (#178; wired in `world_update.rs`).
+- [x] `IsoWorld.init` (`ReanimatedPlayers.loadReanimatedPlayers`): read
       `reanimated.bin` (missing: none) into the tracked list with
       `character::save::load_reanimated_players(.., new_zombie, set_on_fire,
       &mut tracked)`; `new_zombie` is `new IsoZombie(cell)`
       (`GameCharacter::new_zombie` with no descriptor). Call each zombie's
-      `set_default_state(cx)` once the world exists. Not ported yet:
+      `set_default_state(cx)` once the world exists. Chunk handoff
       `addReanimatedPlayersToChunk` (chunk load moves a tracked zombie into
       the cell's zombie list) and `removeReanimatedPlayerFromWorld` (chunk
-      unload moves it back) (#178).
+      unload moves it back) wired in `iso_world.rs` + `world_update.rs` (#178).
 - [x] `IsoWorld.init`, after `VehiclesDB2.init` and before
       `WorldStreamer.create` / the cell load:
       `let regions = IsoRegions::init_world(save_dir, chunk_grid_width,
@@ -1433,43 +1474,45 @@ registered):
 - [ ] World sound: `WorldSoundAdapter::from_state`; engine `SoundEffects`
       (OnWorldSound, fish noise, popman) (#71).
 - [x] Lighting: `WorldLighting::set_chunk_map` for every local player (#76).
-- [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
-      frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
+- [x] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
+      frame; `EngineFireHooks` (`FireHooks` + `FireSoundHooks`: world sounds,
+      `BurnedObjectExploded` audio, `OnNewFire`/`OnGridBurnt` Lua events,
+      `WorldDictionary` object-name lookup, closest-listener distance);
+      `fire_updated`/`fire_removed` replayed onto `WorldRender::fire_lights`
+      (`FireLightLinks`) (#89).
       (#FIRE-REST) `update` returns `Err(java exception text)` when a
       burn threw (`IsoWindow.removeSheet` on a window outside rooms whose
-      inside square does not exist): like the population `Err` above,
-      nothing up to `IngameState.update` catches it, so the rest of that
-      frame's `IngameState.update` is skipped and the text is logged via
-      `ExceptionLogger`. (Engine, #225: the decompiled `UpdateStuff` wraps
-      `IsoFireManager.Update` in its own `catch (Exception)`, and
-      `MapCollisionData.updateMain` through `PolygonalMap2.updateMain` in
-      one `catch (Throwable)`; so a fire `Err` is logged and the frame goes
-      on, a population `Err` is logged and skips the pathfinder's pass.)
+      inside square does not exist): logged via `ExceptionLogger` in
+      `IsoWorld::update_fire` while the frame goes on, matching `UpdateStuff`.
 - [ ] Fire world parts (#FIRE-REST): `FireWorld.mutation` (`FireMutation`:
       the regions, door tables and the `SquareMutationHooks` /
       `PathfindSquareHooks` / `RenderSquareHooks` the square mutations
       use), also in `StatesFire.mutation`. `WorldCall::FireManager` /
       `FireStopSound` from a fire removed by other code (Lua, mutations)
       go to `IsoFireManager::remove` / `sounds.remove_fire`.
-- [ ] Fire sound slots (#FIRE-REST): `FireSoundHooks::fire_slot_play` /
-      `fire_slot_stop` drive 20 emitters (`FMODSoundEmitter` +
-      `ParameterFireSize`); `FireHooks::listener_distance_sq` is
-      `FMODParameterUtils.getClosestListenerDistanceSquared`.
-- [ ] Heat sources (#FIRE-REST): add/resize/remove the cell's
-      `IsoHeatSource`s from `IsoFire::heat_source` (permanent fires, in
-      `fire_updated` / `fire_removed`), `IsoFireplace::heat_source()` and
-      `IsoBarbecue::heat_source()` after each hearth update; their
-      `running_sound()` loops on the object's emitter.
+- [x] Fire sound slots (#FIRE-REST): `FireSoundSlots` drives 20 pooled
+      `FmodSoundEmitter` instances with `FireSize` parameter, sustain-point
+      `trigger_cue` / `stop_all`, and `EngineFireHooks::listener_distance_sq`
+      over non-deaf local players; stopped on `IsoWorld::stop`.
+- [ ] Heat sources (#FIRE-REST): `HeatSourceRegistry` tracks permanent fires
+      (`IsoFire::heat_source` via `fire_updated`/`fire_removed`, cleared on
+      `IsoWorld::stop`) and feeds `CharacterEnvironment::heat_sources` in
+      `fill_square_environment` with `LosUtil::line_clear`. Remaining:
+      `IsoFireplace::heat_source()` and `IsoBarbecue::heat_source()` updates
+      and their `running_sound()` loops once hearth tick updates are wired.
 - [ ] Hutch burning (#FIRE-REST): `FireHooks::hutch_release_contents`
       runs `releaseAllAnimals` + `dropAllEggs` of the hutch object.
-- [ ] Fire fighting (#FIRE-REST): the put-out action uses
-      `fire::fighting::{get_square_to_extinguish, get_extinguisher}` with
-      an `ExtinguisherItem` view of the inventory items.
+- [x] Fire fighting (#FIRE-REST): `world_menu_logic/fetch.rs` resolves
+      `fetch.extinguisher` / `fetch.firetile` through
+      `fire::fighting::get_extinguisher` with an `ExtinguisherItem` view over
+      the player's hands and inventory (`doExtinguishFireMenu` remains
+      separate in `entries.rs`).
 - [x] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
-- [ ] Zombie vehicle checks (`isVehicleBetween`, `DistToSquared(vehicle)`)
-      read `IsoChunk.vehicles.loaded()` (#88/#91); once the vehicle runtime
-      replaces those entries with its own objects, route these through
-      the cell's vehicle list instead.
+- [x] Zombie vehicle checks (`isVehicleBetween`, `DistToSquared(vehicle)`):
+      `pz-world-states/src/vehicles.rs` queries live `pz_vehicles::manager`
+      runtime vehicles (falling back to `IsoChunk.vehicles.loaded()` for
+      unpromoted chunk vehicles) and `EngineStates::vehicle_box` resolves
+      `VehicleScript` extents/center-of-mass from `ScriptManager` (#88/#91).
 - [x] Erosion: `ErosionMain::new(tables from jar, ErosionSettings from
       sandbox/GameTime, sprites, None = host time zone, OnInitSeasons hook)` at
       world load; pass `ErosionChunkHook { main, hooks: &ObjectHooks,
@@ -1498,9 +1541,9 @@ registered):
       `SpawnWorld` impl fed by the meta cell vehicle zones;
       `bind_vehicles::register` (#86; wired in `world_vehicles.rs` with
       `VehiclesDB2` SQLite `VehicleIds`, `RuntimeVehicleSaver`, and
-      `VirtualVehicleManager`; remaining: `VehicleDevices` radio bridge once
-      world radio lands, `saved_vehicle` seating, and `VehicleSounds` meta
-      repeats).
+      `VirtualVehicleManager`, and `VehicleDevices` radio bridge +
+      `EngineVehicleItems::channel_lists` in `world_radio.rs`/`world_vehicles.rs`;
+      remaining: `saved_vehicle` seating and `VehicleSounds` meta repeats).
 - [ ] `StateWorld` impl owners: characters by id, squares, PathHost
       (`path_*`, `path_cancel_request` → `PathfindService::cancel_request`,
       `resolve_collision`, `resolve_collision_radius`,
@@ -1538,9 +1581,12 @@ registered):
       `resolve_collision_radius` (PathHost over the `WorldView`) and
       `path_cancel_request` (`PathfindService::cancel_request`).
 - [ ] States fire and render effects (#95): `StatesEngine::fire()` (the
-      world's `IsoFireManager`, FireHooks, flags, settings);
-      `has_render_effect` / `set_render_effect` (ObjectRenderEffects) and
-      `do_tree_noises` (tree sound manager); `ThumpSettings::server`.
+      world's `IsoFireManager`, FireHooks, flags, settings) and
+      `ThumpSettings::server` remain open; `has_render_effect` /
+      `set_render_effect` (`ObjectRenderEffects`: `VegetationRustle`,
+      `HitTreeShudder`, `HitDoor`) and `do_tree_noises` (`TreeSoundManager`
+      10-slot `"Bushes"` pool) are wired in `pz-engine/src/world_render_effects.rs`,
+      `world_update.rs`, and `world_render.rs`.
 - [ ] `SimContext` climate values from `ClimateManager` (#49).
 - [ ] Square edits → pathfinding: `pz_pathfind::pathfind_square_hooks!(pz_world)`
       in the engine crate, and pass `PathfindSquareHooksImpl(PathfindMutationHooks { service:
@@ -1578,9 +1624,9 @@ registered):
       `SpawnWorld` impl fed by the meta cell vehicle zones;
       `bind_vehicles::register` (#86; wired in `world_vehicles.rs` with
       `VehiclesDB2` SQLite `VehicleIds`, `RuntimeVehicleSaver`, and
-      `VirtualVehicleManager`; remaining: `VehicleDevices` radio bridge once
-      world radio lands, `saved_vehicle` seating, and `VehicleSounds` meta
-      repeats).
+      `VirtualVehicleManager`, and `VehicleDevices` radio bridge +
+      `EngineVehicleItems::channel_lists` in `world_radio.rs`/`world_vehicles.rs`;
+      remaining: `saved_vehicle` seating and `VehicleSounds` meta repeats).
 - [x] Player load (`PlayerDB.loadLocalPlayer`/`loadPlayer`): the bytes of
       `PlayerDb::load_local_player(sql_id)` (#100) go to
       `GameCharacter::load_player(sm, chars, ctx, SaveEnv { items:
@@ -1635,8 +1681,9 @@ registered):
         `FloorWorld` that builds a `FloorDropEnv` per call, for Lua's
         `setWornItem` / `removeWornItem` / `setClothingItem_*` and the new
         `dropHandItems` / `dropHeavyItems` (without one nothing drops);
-      - `Use`'s `Unwear` (`apply_use_outcome`) passes no world yet, so a
-        used-up worn item never drops (#189).
+      - `Use`'s `Unwear` (`apply_use_outcome_with_floor` /
+        `use_held_item_with_floor`) forwards `FloorCx` from `FloorAccess`
+        (`bind_eat.rs`) so used-up worn items drop when too heavy (#189).
 - [ ] Wall and sheet-rope climbs, landings and player death (#214, on
       #208): the climb states read the world through #208's hooks
       (`sheet_rope_square`, `chunk_levels`, `sheet_rope_exit`,
@@ -1879,10 +1926,12 @@ registered):
       are `DeviceData::save_state/load_state`; generator draw is
       `generator_power_consumption` (#205). Single-player world
       radios/TVs (including TV screen overlays, lampposts, emitters,
-      `OnDeviceText` and `ObjectLoadHooks`) and equipped handheld radios
-      are wired in `pz-engine/src/world_radio.rs`; still open: vehicle
-      radio `pz_vehicles::env::set_devices`, `IsoGenerator.updateGenerator`
-      recalc, and multiplayer `RadioDeviceDataState` packets.
+      `OnDeviceText` and `ObjectLoadHooks`), equipped handheld radios, and
+      vehicle radios (`pz_vehicles::env::set_devices`, `EngineVehicleItems::channel_lists`,
+      broadcast delivery + `ChatElement` + cleanup) are wired in
+      `pz-engine/src/world_radio.rs` and `world_vehicles.rs`; still open:
+      `IsoGenerator.updateGenerator` recalc and multiplayer
+      `RadioDeviceDataState` packets.
 - [x] Radio Lua: `bind_radio::install_radio(Some(radio))` when the world
       radio exists (and `None` on reset), `radio_api_created()` after
       `ZomboidRadio.init`, `install_text` (Translator `getText` /
@@ -1901,9 +1950,11 @@ registered):
 ## World render pass
 - [x] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
       allocating every loaded chunk exhausts the GPU device.
-- [ ] Water/sky: `SkyBox::render`, `Surfaces.sky` from `reflection()`;
-      `SurfaceChecks::run` + `apply_surface_checks` before `plan_chunks`;
-      water flow from lot directories; splash state (#53).
+- [x] Water/sky: `SkyBox::render`, `Surfaces.sky` from `reflection()`;
+      `SurfaceChecks::run` + invalidation before `plan_chunks`; water flow
+      from `shared_water_flow()` with `hide_for_water_render` toggling on
+      shore blends; rain & fish splash state (`WorldSplashes`) and full
+      `ClimateInputs` passed into `Surfaces` (#53).
 - [ ] One frame call: `frame::world_frame_full(r, size, chunks, objects,
       drop_shadow, screen, out, late)` with the frame's `FrameObjects` and
       the weather as `late`. It draws `performRenderTiles`' order itself
@@ -1959,12 +2010,10 @@ registered):
       melee aim outline (`highlightTargets`/`highlightMeleeTargets`) needs
       the melee `calculateHitInfoList`, and the ballistics/ragdoll debug
       outlines.
-- [ ] Held/attached item textures: once the slot is built (and each frame
-      before drawing it) `item_texture::render_equipped_textures_with(slot,
-      exists, file, gpu, tm)` renders the dirty initializers (tint/TINT
-      mask, weapon blood, fluid); on `postUpdateEquippedTextures` (blood or
-      fluid changed) call `inst.refresh_texture_init(held.texture_init())`
-      on the hand models; build `HeldItem`s `with_fluid(ctx)` (#94).
+- [x] Held/attached item textures: `WorldModels::prepare` runs
+      `item_texture::render_equipped_textures_with` for each character slot
+      and `WorldModels::build_equipped` builds `HeldItem`s `with_fluid(entity)`;
+      incremental `postUpdateEquippedTextures` refresh remains open (#94).
 - [ ] Placed items: `world_item::item_params_with_fluid` with
       `item.get_fluid_container(ctx)` (else the world item's) for the
       `_Fluid` model and the fluid overlay; draw the atlas jobs with
@@ -2007,7 +2056,7 @@ registered):
       Production erosion, MapObjects/LoadGridsquare and other addToWorld
       subsystem registries still need their actual adapters. Cursor square
       replacement errors are explicit; chunks are not yet canonical owners.
-- [ ] Mannequins: from each `IsoMannequin` (script anim set, state,
+- [x] Mannequins: from each `IsoMannequin` (script anim set, state,
       validated pose, direction, surfaces below/on its square, outside /
       room, interpolated light, highlight tint) build a `Mannequin`, pose an
       `AnimationPlayer` on the body skeleton with `mannequin::pose`, build
@@ -2015,7 +2064,8 @@ registered):
       outfit's clothing), and the frame its chunk texture is recorded push
       `mannequin::chunk_models(.., chunk texture, camera square)` into
       `FrameObjects.chunk_models`; every frame `mannequins` gets an
-      `ObjectRender` with `Mannequin::shadow(lightInfo)` (#125).
+      `ObjectRender` with `Mannequin::shadow(lightInfo)` (#125; wired in
+      `world_models/mannequins.rs` + `world_render.rs`).
 - [ ] Animal corpses: `DeadBody { animal: true, animal_anim_set:
       animalAnimSet, animal_size }`, a slot from
       `ModelSlot::single_body(model script mesh, Body/<skin texture>,
@@ -2028,6 +2078,23 @@ registered):
       offscreen buffer with per-player `ScreenParams`, and fills empty slots up
       to the highest active player index with black `renderi(None, sx, sy, sw,
       sh)` (`MultiTextureFBO2.render`) (#125, #181).
+      `ObjectRender` with `Mannequin::shadow(lightInfo)` (#125).
+- [x] Animal corpses: `WorldModels::render_corpse` handles
+      `CorpseVisual::Animal` (`DeadBody { animal: true, animal_anim_set,
+      animal_size }`), resolves `AnimalDefinitions`, `ModelScript` and
+      `AnimationsMesh` into `Assets::skeleton_for_mesh` +
+      `ModelSlot::single_body(model script mesh, Body/<skin texture>,
+      animalEffect)`, poses the anim set's `deadbody` state and caches in
+      `DeadBodyAtlas` keyed with `animal_body_key` (#125).
+- [ ] Split screen: one `world_frame_for_player(.., Some(PlayerView {
+      player, num_players, screen }), ..)` per player into the shared
+      offscreen buffer (each draws in its `glViewport` quarter, outline
+      passes in `IsoCamera.getScreenLeft/Top/Width/Height`), the camera
+      sized to the player's view; each call's screen pass draws that
+      player's screen rectangle with its own `ScreenParams` (#125, #181).
+      `MultiTextureFBO2.render` also covers slots up to the highest player
+      index without a player with a black `renderi(null, sx, sy, sw, sh)`;
+      draw that rectangle black for such slots (#181).
 - [ ] Screen shader (`WeatherShader`) inputs (#181): per player and frame
       `IngameState::render_settings` builds `ScreenParams` via
       `ClimateSettings::screen_params`, `bind_search_mode::apply_screen_inputs`,
@@ -2056,71 +2123,54 @@ registered):
       The existing error exit reports the graphics cause; retirement cleanup
       runs at the outer boundary. Actual device-loss testing remains open (#120).
 
-- [ ] Frame extras (#141): build the world frame with
-      `frame::world_frame_extras(.., &mut FrameExtras { .. }, ..)`; a field
-      left `None` draws nothing. `ModelOutlines.endFrameMain` now runs after
-      the weather, area highlights and LineDrawer, as in
-      `IngameState.renderframe`.
-- [ ] Corpse flies (#141): `RenderSquare.flies` from
-      `IsoGridSquare.hasFlies` (set by the corpse rot simulation); keep one
-      `flies::CorpseFlies` (texture `media/textures/CorpseFlies.png`), call
-      `update(realworldSecondsSinceLastUpdate)` from `IsoWorld.update` (not
-      on a server) and pass it as `FrameExtras.flies`.
-- [ ] Object highlight (#141): `RenderObject.highlight =
-      Some(ObjectHighlight { color: getHighlightColor(playerIndex),
-      alpha_scale: isBlink() ? Core.blinkAlpha : 1 })` while
-      `isHighlighted(playerIndex)` (the render-once bookkeeping of
-      `objectHighlightRendered` stays with the owner); `FrameExtras.highlight
-      = Some(HighlightFrame { creating_thumbnail })`.
-- [ ] Opaque-objects event (#141): `FrameExtras.opaque_event`
-      with the joypad flag, `UIManager.getPickedTile()`,
-      `IsoWorld.isValidSquare` and a handler raising Lua's
-      `RenderOpaqueObjectsInWorld(playerIndex, x, y, z, square)` whose
-      handlers (ISBuildingObject ghosts, fishing Bobber) draw into the list.
-- [ ] Markers (#141): `FrameExtras.markers` with
-      `WorldMarkers.gridSquareMarkers` after `update()`'s fade/blink
-      (`GridSquareMarker`), `IsoMarkers.markers` (`IsoMarker`, with the item
-      model's draws when it has one), `circle_center.png` and
-      `circle_only_highlight.png` from `media/textures/worldMap`, a white
-      texture, the chunk map's world tile bounds and the player's z. Homing
-      points and direction arrows draw in `renderframetext` (screen space)
-      with `markers::render_frame_text`; their placement
-      (`WorldMarkers.update`/`PlayerScreen`) is not ported.
-- [ ] Area highlights (#141): `FrameExtras.area_highlights` with
-      this UI frame's `FBORenderAreaHighlights.addHighlight*` calls, the
-      client's non-PvP zones and safehouses (when shown), the animal
-      designation zones (when `isSeeDesignationZone`), the chunk map bounds
-      and a white texture; outlines go through `LineDrawer`
-      (`area_highlights::render_lines`).
-- [ ] Vision cone (#141): `FrameExtras.vision` = a
-      `vispoly::VisionFrame` each frame: `vision_cone` from
-      `LightingJNI.calculateVisionCone` (pz-lighting), look angle/vector and
-      the reversing-driver flag from the player/pz-vehicles,
-      `inside_tree`/`on_square` from the player's square, `chunk_map` from
-      the cell's chunk map, `view_cone_opacity` from the options, split
-      screen index/count from the game state. Keep a
-      `vispoly::VisPolyChunks`; take each on-screen chunk level at
-      `floor(camZ)` (in `getChunks` order) from `level(wx, wy, z,
-      adjacentChunkLoadedCounter, || ChunkLevelData::recreate(..))` with
-      `VisSquare` flags from pz-world's line of sight, and drain
-      pz-world-render's `PendingRender.vispoly` into
-      `VisPolyChunks::invalidate(wx, wy, level)` each frame.
-- [ ] Cell fog (#141): keep a `fog::ImprovedFog`; the weather
-      owner calls `init(fogIntensity)` at world start and
-      `update(&FogClimate)` once per tick (ClimateManager fog intensity,
-      new-fog exterior colour, wind angle and intensity, `GameTime`
-      multiplier, `PerformanceSettings.fogQuality`). Each frame
-      `FrameExtras.fog = FogFrame { noise:
-      media/textures/weather/fognew/fog_noise.png, player (x, y, z,
-      isInARoom, in a vehicle), storm (tropical storm or thunderstorm
-      running), right_click_off, offscreen_left/top, .. }`.
+- [x] Frame extras (#141): `WorldRender::render_player` builds the world
+      frame with `frame::world_frame_extras(.., &mut FrameExtras { .. }, ..)`
+      fed by `WorldExtras` (`crates/pz-engine/src/world_extras.rs`).
+- [x] Corpse flies (#141): `RenderSquare.flies` is populated from
+      `IsoGridSquare.has_flies`; `WorldExtras` keeps `flies::CorpseFlies`
+      (`media/textures/CorpseFlies.png`), updates it with
+      `realworld_seconds` in `IsoWorld::update`, and passes it in
+      `FrameExtras.flies`.
+- [x] Object highlight (#141): `FrameExtras.highlight = Some(HighlightFrame
+      { creating_thumbnail: false })` wired in `WorldExtras::build_frame`
+      (per-object `RenderObject.highlight` stays with the owner).
+- [x] Opaque-objects event (#141): `WorldExtras::build_frame` computes the
+      picked tile (`picked_tile_from_mouse`) validated by
+      `IsoWorld.isValidSquare` via `OpaqueObjectsEvent::square`, and
+      `IngameState::renderframe` raises Lua's
+      `RenderOpaqueObjectsInWorld(playerIndex, x, y, z, square)` outside
+      the world borrow.
+- [ ] Markers (#141): `WorldExtras` populates `FrameExtras.markers` from
+      `WorldMarkers.grid_square_markers()` with `circle_center.png`,
+      `circle_only_highlight.png`, `TextureManager::white()`, chunk map bounds,
+      and `player_z`. Still open: `IsoMarkers.markers` and screen-space homing
+      points / direction arrows (`markers::render_frame_text`).
+- [x] Area highlights (#141): `bind_area_highlights` exposes
+      `addAreaHighlight`, `addAreaHighlightForPlayer`, and
+      `FBORenderAreaHighlights`; `FrameExtras.area_highlights` draws user
+      highlights and live `DesignationZone`s when `isSeeDesignationZone()`
+      with `LineDrawer` outlines (`area_highlights::render_lines`). Left:
+      multiplayer non-PvP zones and safehouses.
+- [x] Vision cone (#141): `WorldExtras` builds `FrameExtras.vision`
+      (`vispoly::VisionFrame`) from `WorldLighting::vision_cone()`, player look
+      angle/vector, `on_square`/`inside_tree`, chunk map bounds,
+      `Core.performance.view_cone_opacity`, and `VisPolyChunks` cached per
+      on-screen chunk level via `build_chunk_vispoly` (`test_vision_adjacent` +
+      solid/tree `blocksight`), draining `PendingRender::vispoly` each frame
+      (still open: reversing vehicle driver flag once vehicle driver state is
+      wired).
+- [x] Cell fog (#141): `WorldExtras` owns `fog::ImprovedFog`, calls
+      `init(fog_intensity)` in `WorldRender::new`, updates it per tick in
+      `IsoWorld::update` from `ClimateManager` + `Core.performance.fog_quality`,
+      and passes `FrameExtras.fog` (`FogFrame` with `fog_noise.png`, player
+      room/vehicle/position, storm state, and offscreen offset).
 - [ ] New draw commands (#141): `DrawCmd::ImprovedFog` and
       `DrawCmd::VisibilityPolygon` are executed by pz-gpu (`fog.wgsl`,
       `vispoly.wgsl`); any other backend must handle them.
 
 ## Cleanups
 - [x] Fold bind_vehicles' item subset into the full item bindings (#86).
-- [ ] Convert remaining bare prints to DebugLog (#66 meta_grid.rs, #67
+- [x] Convert remaining bare prints to DebugLog (#66 meta_grid.rs, #67
       meta_zones.rs/zone_save.rs) (#69).
 
 ## World map
@@ -2145,6 +2195,9 @@ registered):
       calls `worldmap::reset` (`WorldMap.Reset`: `MapFiles.Reset` and
       `WorldMapVisited.Reset`); the `Core.ResetLua` site waits on ResetLua
       itself.
+      lot directories and reloaded when the map changes. `MapFiles.Reset`
+      (`host::reset_current_map_files`) is wired in `IngameState::exit` and
+      `Core.ResetLua`.
 - [x] Move `WorldMapImages.startFrame/endFrame` from each UI map draw to the
       global SpriteRenderer frame boundary: `App::frame` brackets
       `states.render` with `worldmap::start_frame/end_frame`, so every map in

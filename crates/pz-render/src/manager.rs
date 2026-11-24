@@ -391,6 +391,34 @@ impl TextureManager {
         t
     }
 
+    /// `Texture.collectAllIcons(map, mapFull)`: collects short lower-case icon
+    /// names (`Item_*` and `media/ui/Container_*`) mapped to their texture
+    /// names for chat bubbles and the chat log.
+    pub fn collect_all_icons(&self) -> (HashMap<String, String>, HashMap<String, String>) {
+        let mut icons = HashMap::new();
+        let mut full = HashMap::new();
+        for key in self.shared.keys().chain(self.pack_textures.keys()) {
+            let trimmed = key.strip_suffix(".png").unwrap_or(key);
+            if let Some(rest) = trimmed.strip_prefix("media/ui/Container_") {
+                if !rest.is_empty() {
+                    let short = rest.to_ascii_lowercase();
+                    icons.insert(short.clone(), key.clone());
+                    full.insert(short, key.clone());
+                }
+            } else {
+                let base = trimmed.rsplit('/').next().unwrap_or(trimmed);
+                if let Some(rest) = base.strip_prefix("Item_") {
+                    if !rest.is_empty() {
+                        let short = rest.to_ascii_lowercase();
+                        icons.insert(short.clone(), key.clone());
+                        full.insert(short, key.clone());
+                    }
+                }
+            }
+        }
+        (icons, full)
+    }
+
     // ---- asset loading ----------------------------------------------------
 
     fn add_data(&mut self, d: TextureData) -> u32 {
@@ -544,5 +572,26 @@ impl TextureLoader for SharedTextures<'_> {
 
     fn image_size(&self, id: u32) -> Option<(i32, i32)> {
         self.manager.data(id).map(|d| (d.width, d.height))
+    }
+}
+
+#[cfg(test)]
+mod icon_tests {
+    use super::*;
+
+    #[test]
+    fn collect_all_icons_indexes_item_and_container_textures() {
+        let mut tm = TextureManager::new();
+        tm.shared
+            .insert("media/textures/Item_Apple.png".into(), Texture::empty("Item_Apple"));
+        tm.shared
+            .insert("media/ui/Container_Crate.png".into(), Texture::empty("Container_Crate"));
+        tm.shared
+            .insert("media/textures/Other_Wall.png".into(), Texture::empty("Other_Wall"));
+        let (icons, full) = tm.collect_all_icons();
+        assert_eq!(icons.get("apple").map(String::as_str), Some("media/textures/Item_Apple.png"));
+        assert_eq!(icons.get("crate").map(String::as_str), Some("media/ui/Container_Crate.png"));
+        assert_eq!(icons, full);
+        assert_eq!(icons.len(), 2);
     }
 }

@@ -110,6 +110,108 @@ fn register_vehicle(thread: &mut Thread) {
     vmethod!(b, "getX", |v, c| f(v.x()));
     vmethod!(b, "getY", |v, c| f(v.y()));
     vmethod!(b, "getZ", |v, c| f(v.z()));
+    b.method("getClosestPointOnPoly", |c| {
+        let v = this_vehicle(c)?;
+        let set_vec2 = |thread: &mut Thread, out: &Value, px: f32, py: f32| -> LuaResult<()> {
+            if out.is_nil() {
+                return Ok(());
+            }
+            let set_fn = thread.table_get(out, &Value::str("set"))?;
+            if !set_fn.is_nil() {
+                let _ = thread.call1(&set_fn, &[out.clone(), f(px), f(py)])?;
+            }
+            Ok(())
+        };
+        if let Some(other) = vlua::vehicle_from_value(&c.arg(1)) {
+            let (d, p_self, p_other) = v.closest_point_on_poly_vehicle(&other);
+            set_vec2(c.thread, &c.arg(2), p_self.0, p_self.1)?;
+            set_vec2(c.thread, &c.arg(3), p_other.0, p_other.1)?;
+            return Ok(c.push(f(d)));
+        }
+        let x = num_arg(c, 1) as f32;
+        let y = num_arg(c, 2) as f32;
+        let (d, p) = v.closest_point_on_poly(x, y);
+        set_vec2(c.thread, &c.arg(3), p.0, p.1)?;
+        Ok(c.push(f(d)))
+    });
+    b.method("DistTo", |c| {
+        let v = this_vehicle(c)?;
+        let (x, y) = (v.x(), v.y());
+        let other_xy = match c.arg(1) {
+            Value::Num(_) => Some((int_arg(c, 1) as f32, int_arg(c, 2) as f32)),
+            Value::Nil => None,
+            obj => {
+                let gx = c.thread.table_get(&obj, &Value::str("getX"))?;
+                let gy = c.thread.table_get(&obj, &Value::str("getY"))?;
+                if gx.is_nil() || gy.is_nil() {
+                    None
+                } else {
+                    let ox = pz_kahlua::exec::raw_tonumber(&c.thread.call1(&gx, &[obj.clone()])?)
+                        .unwrap_or(0.0) as f32;
+                    let oy = pz_kahlua::exec::raw_tonumber(&c.thread.call1(&gy, &[obj])?)
+                        .unwrap_or(0.0) as f32;
+                    Some((ox, oy))
+                }
+            }
+        };
+        let d = other_xy.map_or(0.0, |(ox, oy)| (ox - x).abs() + (oy - y).abs());
+        Ok(c.push(f(d)))
+    });
+    b.method("DistToSquared", |c| {
+        let v = this_vehicle(c)?;
+        let d = match c.arg(1) {
+            // `IsoMovingObject.DistToSquared(float, float)`: the plain squared
+            // distance to the object's position; only the object overload
+            // measures to the vehicle's polygon.
+            Value::Num(_) => {
+                let dx = v.x() - num_arg(c, 1) as f32;
+                let dy = v.y() - num_arg(c, 2) as f32;
+                dx * dx + dy * dy
+            }
+            Value::Nil => {
+                return Err(pz_kahlua::LuaError::Runtime {
+                    class: "java.lang.NullPointerException",
+                    message: String::new(),
+                });
+            }
+            obj => {
+                if let Some(other) = vlua::vehicle_from_value(&obj) {
+                    v.closest_point_on_poly_vehicle(&other).0
+                } else {
+                    let gx = c.thread.table_get(&obj, &Value::str("getX"))?;
+                    let gy = c.thread.table_get(&obj, &Value::str("getY"))?;
+                    let ox = pz_kahlua::exec::raw_tonumber(&c.thread.call1(&gx, &[obj.clone()])?)
+                        .unwrap_or(0.0) as f32;
+                    let oy = pz_kahlua::exec::raw_tonumber(&c.thread.call1(&gy, &[obj])?)
+                        .unwrap_or(0.0) as f32;
+                    v.closest_point_on_poly(ox, oy).0
+                }
+            }
+        };
+        Ok(c.push(f(d)))
+    });
+    b.method("DistToProper", |c| {
+        let v = this_vehicle(c)?;
+        let obj = c.arg(1);
+        if obj.is_nil() {
+            return Err(pz_kahlua::LuaError::Runtime {
+                class: "java.lang.NullPointerException",
+                message: String::new(),
+            });
+        }
+        let d = if let Some(other) = vlua::vehicle_from_value(&obj) {
+            v.closest_point_on_poly_vehicle(&other).0.sqrt()
+        } else {
+            let gx = c.thread.table_get(&obj, &Value::str("getX"))?;
+            let gy = c.thread.table_get(&obj, &Value::str("getY"))?;
+            let ox = pz_kahlua::exec::raw_tonumber(&c.thread.call1(&gx, &[obj.clone()])?)
+                .unwrap_or(0.0) as f32;
+            let oy = pz_kahlua::exec::raw_tonumber(&c.thread.call1(&gy, &[obj])?)
+                .unwrap_or(0.0) as f32;
+            v.closest_point_on_poly(ox, oy).0.sqrt()
+        };
+        Ok(c.push(f(d)))
+    });
     vmethod!(b, "getScriptName", |v, c| Value::str(&v.script_name()));
     vmethod!(b, "getScript", |v, c| v.script().map_or(Value::Nil, |s| {
         Value::Object(Rc::new(LuaVehicleScript(s)))
@@ -896,5 +998,61 @@ mod item_binding_tests {
             super::item_of(&super::item_value(&item)).map(|i| Rc::ptr_eq(&i, &item)),
             Some(true)
         );
+    }
+
+    #[test]
+    fn vehicle_closest_point_on_poly_and_dist_to_squared() {
+        let mut t = Thread::new(pz_kahlua::TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        crate::bind_java_util::register(&mut t);
+        crate::bind_globals::register(&mut t);
+        crate::bind_dead_body::register(&mut t);
+        crate::bind_characters::register_shared(&mut t);
+        crate::bind_character_sim::register_shared(&mut t);
+        super::register(&mut t);
+
+        let v = pz_vehicles::vehicle::BaseVehicle::new();
+        v.set_position(10.0, 20.0, 0.0);
+        let body = Rc::new(RefCell::new(pz_world::save::visual::IsoDeadBody::for_tests(
+            13.0, 24.0, 0.0,
+        )));
+        let sm = crate::bind_registry::shared_script_manager();
+        let mut chr = pz_characters::character::GameCharacter::new(
+            &sm,
+            pz_characters::CharacterKind::Player,
+        );
+        chr.set_x(13.0);
+        chr.set_y(24.0);
+        let chr = Rc::new(RefCell::new(chr));
+
+        t.globals().set_str("v", pz_vehicles::lua::vehicle_value(&v));
+        t.globals().set_str("b", crate::bind_dead_body::dead_body_value(&body));
+        t.globals().set_str("p", crate::bind_character_sim::character_value(&chr));
+
+        let f = pz_kahlua::stdlib::load_string(
+            r#"
+            local function assert(ok, msg) if not ok then error(msg or "fail") end end
+            local out = { x = 0, y = 0, set = function(self, x, y) self.x = x; self.y = y end }
+            local d_poly = v:getClosestPointOnPoly(13.0, 24.0, out)
+            assert(d_poly >= 0)
+            local d_v = v:DistToSquared(p)
+            local d_p = p:DistToSquared(v)
+            local d_b = b:DistToSquared(v)
+            assert(math.abs(d_v - d_poly) < 1e-4)
+            assert(math.abs(d_p - d_poly) < 1e-4)
+            assert(math.abs(d_b - d_poly) < 1e-4)
+            assert(math.abs(p:DistToProper(v) - math.sqrt(d_poly)) < 1e-4)
+            assert(v:DistTo(13, 24) == 7)
+            -- The coordinate overload is the plain squared distance to the
+            -- vehicle position (3^2 + 4^2), not the distance to its polygon.
+            assert(v:DistToSquared(13, 24) == 25)
+            "#,
+            Some("vehicle_poly_dist"),
+            t.globals().clone(),
+        )
+        .unwrap();
+        t.pcall(&f, &[])
+            .map_err(|(m, tr)| format!("{m:?}\n{tr}"))
+            .unwrap();
     }
 }

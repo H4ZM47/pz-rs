@@ -264,6 +264,14 @@ pub fn register_master(obj: &IsoObjectRef, pos: SquarePos) -> LuaResult<()> {
     .map_err(host_error)
 }
 
+pub fn unregister_master(obj: &IsoObjectRef) -> LuaResult<()> {
+    try_with_world(|w| {
+        w.hutches.retain(|h| !Rc::ptr_eq(h, obj));
+        Ok(())
+    })
+    .map_err(host_error)
+}
+
 fn field_int(t: &TableRef, key: &str) -> i32 {
     t.get_str(key).as_num().unwrap_or(0.) as i32
 }

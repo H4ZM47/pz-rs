@@ -947,10 +947,7 @@ fn register_text_manager(thread: &mut Thread) {
         Ok(0)
     });
     tm.method("DrawTextFromGameWorld", |_| {
-        if let Some(st) = state() {
-            let tm = st.text_manager.clone();
-            emit(&st, |dl| tm.borrow_mut().draw_text_from_game_world(dl));
-        }
+        draw_text_from_game_world();
         Ok(0)
     });
     tm.method("getFontFromEnum", |c| {
@@ -966,6 +963,15 @@ fn register_text_manager(thread: &mut Thread) {
     // Empty in the original.
     tm.method("DrawStringBBcode", |_| Ok(0));
     tm.method("DrawTextObject", |_| Ok(0));
+}
+
+/// `TextManager.instance.DrawTextFromGameWorld()`: flushes all queued
+/// `DrawStringCentreDefered` strings into the UI sprite draw list.
+pub fn draw_text_from_game_world() {
+    if let Some(st) = state() {
+        let tm = st.text_manager.clone();
+        emit(&st, |dl| tm.borrow_mut().draw_text_from_game_world(dl));
+    }
 }
 
 #[cfg(test)]

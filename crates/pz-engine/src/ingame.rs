@@ -192,18 +192,19 @@ impl IngameState {
             // TODO(port): `ScriptManager.instance.update()`.
             if let Some(w) = cx.world.as_mut() {
                 w.update_world_sounds(hearing);
-                // TODO(port): `RainManager.isRaining()`. `UpdateStuff`
-                // wraps `IsoFireManager.Update` in its own
-                // `catch (Exception)`: an `Err` is logged (`update_fire`
-                // does) and the frame goes on.
+                let raining = pz_lua_api::bind_climate::shared_game_time()
+                    .try_borrow()
+                    .is_ok_and(|g| g.climate.is_raining());
                 let _ = w.update_fire(
+                    cx.lua,
                     &sim,
                     pz_world::fire::FireSettings {
                         fire_spread,
-                        raining: false,
+                        raining,
                         tutorial,
                     },
                 );
+                w.update_hearths(&sim);
                 // TODO(port): `RainManager.Update`, `Meta.instance.update`,
                 // `VirtualZombieManager.instance.update`.
                 // `MapCollisionData.updateMain` +
@@ -381,14 +382,29 @@ impl IngameState {
             }
             return;
         }
+        if let Some((ox, oy, oz)) = w.take_opaque_event_square() {
+            if cx.lua.events.callbacks("RenderOpaqueObjectsInWorld") > 0 {
+                let sq = pz_lua_api::bind_world::square_value(ox, oy, oz);
+                cx.lua.trigger_event(
+                    "RenderOpaqueObjectsInWorld",
+                    &[
+                        Value::Num(n as f64),
+                        Value::Num(ox as f64),
+                        Value::Num(oy as f64),
+                        Value::Num(oz as f64),
+                        sq,
+                    ],
+                );
+            }
+        }
         cx.lua.trigger_event("OnPostRender", &[]);
-        // TODO(port): `LineDrawer.clear`, the animation debug key.
+        pz_lua_api::bind_line_drawer::clear();
+        // TODO(port): the animation debug key.
     }
 
     /// `renderframetext(nPlayer)`.
     fn renderframetext(&mut self, cx: &mut StateCx<'_>, n: usize) {
-        // TODO(port): the visible UI elements that follow the game world
-        // (`isFollowGameWorld`, `getRenderThisPlayerOnly`).
+        pz_ui::UIManager::render_follow_game_world(&mut cx.lua.thread, n as i32);
         pz_lua_api::hud::render_progress_bar(&mut cx.lua.thread, n);
         pz_lua_api::hud::world_markers::render(&mut cx.lua.thread);
         // TODO(port): `IsoMarkers.instance.render()`.
@@ -403,7 +419,10 @@ impl IngameState {
 
     /// `renderframeui()`.
     fn renderframeui(&mut self, cx: &mut StateCx<'_>, out: &mut DrawList) {
-        // TODO(port): `TextManager.DrawTextFromGameWorld`, `SkyBox.draw`.
+        // Clear previous UI frame's area highlights before the new UI pass queues them.
+        pz_lua_api::bind_area_highlights::clear();
+        pz_lua_api::bind_text::draw_text_from_game_world();
+        // TODO(port): `SkyBox.draw`.
         pz_ui::UIManager::render(&mut cx.lua.thread);
         // TODO(port): `ZomboidRadio.render`, `drawDebugChunkMap`,
         // `DeadBodyAtlas`/`WorldItemAtlas.renderUI`, the FPS graph,
@@ -463,8 +482,8 @@ impl GameState for IngameState {
             }
         };
         set_music_state(if tutorial { "Tutorial" } else { "InGame" });
-        // TODO(port): `ClimateManager.getInstance().update()` on its own,
-        // `AmbientStreamManager.instance.checkHaveElectricity()`.
+        pz_lua_api::bind_climate::update_climate_only(&mut cx.lua.thread);
+        // TODO(port): `AmbientStreamManager.instance.checkHaveElectricity()`.
         // `WorldMarkers.instance.init()` with the game.
         pz_lua_api::hud::world_markers::with_markers(|m| m.init());
         // The HUD reads the iso cameras (`IsoCamera.cameras`).
@@ -480,8 +499,13 @@ impl GameState for IngameState {
         cx.lua.trigger_event("OnLoad", &[]);
         // TODO(port): `PoolCaps.onLoadingFinished()`,
         // `FBORenderOcclusion.getInstance().init()`,
-        // `UIManager.setbFadeBeforeUI(false)`, `UIManager.FadeIn(0.35)`,
         // the display focus listeners.
+        // `IngameState.enter` clears fade-before-UI and starts the fade-in
+        // whether or not the player is asleep.
+        pz_ui::with_ui(|m| {
+            m.fade_before_ui = false;
+            m.fade(0.35, false);
+        });
     }
 
     fn exit(&mut self, cx: &mut StateCx<'_>) {
@@ -492,6 +516,7 @@ impl GameState for IngameState {
         // TODO(port): the `ScreenFader` fade to black, rendering the world
         // until it ends; `RenderThread.setWaitForRenderState(false)`.
         if let Some(w) = cx.world.as_mut() {
+            w.reset_hearths();
             w.reset_ragdolls();
             if let Some(models) = w.models.take() {
                 cx.retired_models.push(models);
@@ -505,15 +530,24 @@ impl GameState for IngameState {
         pz_lua_api::bind_core::shared_core()
             .borrow_mut()
             .num_players = 1;
-        // TODO(port): `Temperature.reset`.
+        // TODO(port): `Temperature.reset` (stateless today), `IsoMarkers.instance.reset()`.
+        pz_lua_api::bind_climate::reset_rain_manager();
+        pz_lua_api::bind_map_objects::reset();
         if let Err(e) = pz_lua_api::hud::world_markers::with_markers(|m| m.reset()) {
             eprintln!("WorldMarkers.reset: {e:?}");
         }
-        // TODO(port): `IsoMarkers.instance.reset()`.
         pz_lua_api::bind_search_mode::reset();
+        pz_lua_api::bind_global_moddata::reset();
+        pz_lua_api::bind_randomized_world::reset_unique_rds_spawned();
+        pz_lua_api::bind_world::reset_water_splashes();
+        pz_lua_api::bind_world::lua_world::shared_water_flow()
+            .borrow_mut()
+            .reset();
+        pz_lua_api::bind_area_highlights::clear();
         // `ZomboidRadio.getInstance().Reset()` and `IsoWaveSignal.Reset()`.
         if let Some(w) = cx.world.as_mut() {
             w.reset_radio();
+            w.reset_render_effects();
         }
         // TODO(port): `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,
@@ -599,7 +633,13 @@ impl GameState for IngameState {
             // `PlayerDB.saveLocalPlayersForce()`, `GameWindow.save(true)`,
             // `OnPostSave`.
             if let Some(w) = cx.world.as_mut() {
-                if let Err(error) = w.save_on_quit(cx.lua) {
+                let (screen_w, screen_h) = (cx.screen_w, cx.screen_h);
+                let mut capture = |player: usize| {
+                    let gpu = cx.gpu.as_deref_mut()?;
+                    let num_players = pz_lua_api::bind_players::num_players().max(1) as usize;
+                    crate::save_thumbnail::capture_for_player(gpu, player, num_players, screen_w, screen_h)
+                };
+                if let Err(error) = w.save_on_quit_with_thumbnail(cx.lua, Some(&mut capture)) {
                     crate::failure::record_first(cx.error, (format!("PlayerDB save host failure: {error}")).into());
                     return StateAction::Remain;
                 }
@@ -649,7 +689,13 @@ impl GameState for IngameState {
         // asked for during this update.
         if pz_lua_api::bind_game_window::take_save_request() {
             if let Some(w) = cx.world.as_mut() {
-                if let Err(error) = w.save_during_play(cx.lua) {
+                let (screen_w, screen_h) = (cx.screen_w, cx.screen_h);
+                let mut capture = |player: usize| {
+                    let gpu = cx.gpu.as_deref_mut()?;
+                    let num_players = pz_lua_api::bind_players::num_players().max(1) as usize;
+                    crate::save_thumbnail::capture_for_player(gpu, player, num_players, screen_w, screen_h)
+                };
+                if let Err(error) = w.save_during_play_with_thumbnail(cx.lua, Some(&mut capture)) {
                     crate::failure::record_first(cx.error, (format!("GameWindow.save host failure: {error}")).into());
                     return StateAction::Remain;
                 }
@@ -797,5 +843,183 @@ mod split_screen_tests {
         assert_eq!(bottom_left.offscreen_width, 960.0);
         assert_eq!(bottom_left.offscreen_height, 540.0);
         assert_eq!(bottom_left.tile_width, 32.0);
+    }
+}
+
+#[cfg(test)]
+mod ui_resets_tests {
+    use super::*;
+    use crate::game_window::{Launch, Start};
+    use pz_core::core::Core;
+    use pz_kahlua::{NativeFunction, TableRef, Value};
+    use pz_lua_api::LuaManager;
+    use pz_ui::UIElement;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn render_follow_game_world_filters_by_visibility_flag_and_player_index() {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "pz-engine-ingame-ui-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&dir)));
+        fs.borrow_mut().set_cache_dir(&dir);
+        let mut lua = LuaManager::init(fs).unwrap();
+
+        let rendered: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let make_el = |name: &'static str, follow: bool, visible: bool, player_only: i32| {
+            let tbl = TableRef::new();
+            let log = rendered.clone();
+            tbl.set_str(
+                "render",
+                Value::Native(NativeFunction::new("render", move |_| {
+                    log.borrow_mut().push(name.to_string());
+                    Ok(0)
+                })),
+            );
+            let el = UIElement::new(Some(tbl));
+            el.set_follow_game_world(follow);
+            el.set_visible(visible);
+            el.set_render_this_player_only(player_only);
+            el
+        };
+
+        let saved_ui = pz_ui::with_ui(|m| std::mem::take(&mut m.ui));
+        pz_ui::with_ui(|m| {
+            m.ui.push(make_el("world_all", true, true, -1));
+            m.ui.push(make_el("world_p0", true, true, 0));
+            m.ui.push(make_el("world_p1", true, true, 1));
+            m.ui.push(make_el("world_hidden", true, false, -1));
+            m.ui.push(make_el("screen_only", false, true, -1));
+        });
+
+        pz_ui::UIManager::render_follow_game_world(&mut lua.thread, 0);
+        assert_eq!(*rendered.borrow(), vec!["world_all", "world_p0"]);
+
+        rendered.borrow_mut().clear();
+        pz_ui::UIManager::render_follow_game_world(&mut lua.thread, 1);
+        assert_eq!(*rendered.borrow(), vec!["world_all", "world_p1"]);
+
+        pz_ui::with_ui(|m| m.ui = saved_ui);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ingame_enter_starts_fade_in_and_exit_resets_rain_and_map_objects() {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "pz-engine-ingame-lifecycle-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let old_core = pz_lua_api::bind_core::shared_core();
+        let mut core = Core::default();
+        let initializers = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial"), ("TEST_LAST_STAND", "LastStand")]
+            .map(|(field, id)| pz_classfile::StaticInit {
+                class: "zombie/core/GameMode".into(),
+                field: field.into(),
+                value: pz_classfile::Value::Call {
+                    class: "zombie/core/GameMode".into(),
+                    name: "registerBase".into(),
+                    descriptor: "(Ljava/lang/String;)Lzombie/core/GameMode;".into(),
+                    args: vec![pz_classfile::Value::Str(id.into())],
+                },
+            });
+        let modes = Rc::new(
+            pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&initializers).unwrap(),
+        );
+        core.install_game_mode_statics(modes).unwrap();
+        core.set_game_mode("Sandbox").unwrap();
+        pz_lua_api::bind_core::install_core(Rc::new(RefCell::new(core)));
+        pz_lua_api::bind_players::reset();
+
+        let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&dir)));
+        fs.borrow_mut().set_cache_dir(&dir);
+        let mut lua = LuaManager::init(fs).unwrap();
+
+        let climate_ticks = Rc::new(Cell::new(0));
+        let ticks_in = climate_ticks.clone();
+        lua.thread.globals().set_str(
+            "countClimateTick",
+            Value::Native(NativeFunction::new("countClimateTick", move |_| {
+                ticks_in.set(ticks_in.get() + 1);
+                Ok(0)
+            })),
+        );
+        let f = pz_kahlua::stdlib::load_string(
+            "Events.OnClimateTick.Add(function() countClimateTick() end); \
+             RainManager.stopRaining(); \
+             MapObjects.OnNewWithSprite('test_sprite_reset', function() end, 5)",
+            Some("test"),
+            lua.thread.globals().clone(),
+        )
+        .unwrap();
+        lua.thread.pcall(&f, &[]).unwrap();
+        assert!(pz_lua_api::bind_climate::rain_statics().stop_rain);
+
+        pz_ui::with_ui(|m| {
+            m.fade_before_ui = true;
+            m.fading_out = true;
+        });
+
+        let launch = Launch {
+            game_dir: dir.clone(),
+            cache_dir: dir.clone(),
+            start: Start::MainMenu,
+        };
+        let mut world = None;
+        let mut error = None;
+        let mut retired_models = Vec::new();
+        let mut state = IngameState::default();
+
+        {
+            let mut cx = StateCx {
+                lua: &mut lua,
+                launch: &launch,
+                screen_w: 1280,
+                screen_h: 720,
+                multiplier: 1.0,
+                time_delta: 0.016,
+                world: &mut world,
+                shutdown: false,
+                error: &mut error,
+                retired_models: &mut retired_models,
+                gpu: None,
+            };
+            state.enter(&mut cx);
+        }
+        assert!(error.is_none());
+        assert!(climate_ticks.get() >= 1, "enter must run standalone ClimateManager.update");
+        assert!(!pz_ui::with_ui(|m| m.fade_before_ui));
+        assert!(!pz_ui::with_ui(|m| m.fading_out));
+        assert!(pz_ui::with_ui(|m| m.fade_in_time_max > 0));
+
+        {
+            let mut cx = StateCx {
+                lua: &mut lua,
+                launch: &launch,
+                screen_w: 1280,
+                screen_h: 720,
+                multiplier: 1.0,
+                time_delta: 0.016,
+                world: &mut world,
+                shutdown: true,
+                error: &mut error,
+                retired_models: &mut retired_models,
+                gpu: None,
+            };
+            state.exit(&mut cx);
+        }
+        assert!(!pz_lua_api::bind_climate::rain_statics().stop_rain);
+
+        pz_lua_api::bind_core::install_core(old_core);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

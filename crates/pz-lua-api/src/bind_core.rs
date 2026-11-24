@@ -1259,6 +1259,7 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
         };
         let reason = opt_str(c, 2).unwrap_or_else(|| "null".into());
         cx.core_mut().reset_lua(&mods, &reason);
+        crate::worldmap::host::reset_current_map_files();
         Ok(Ret::Void)
     });
     def(b, cx, "DelayResetLua", |cx, c| {

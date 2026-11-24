@@ -160,7 +160,12 @@ impl App {
         };
         if in_game && !self.core.borrow().process_exit_requested() {
             if let Some(world) = self.world.as_mut() {
-                if let Err(error) = world.save_on_window_close(lua) {
+                let mut capture = |player: usize| {
+                    let gpu = self.gpu.as_mut()?;
+                    let num_players = pz_lua_api::bind_players::num_players().max(1) as usize;
+                    crate::save_thumbnail::capture_for_player(gpu, player, num_players, screen_w, screen_h)
+                };
+                if let Err(error) = world.save_on_window_close_with_thumbnail(lua, Some(&mut capture)) {
                     crate::failure::record_first(&mut self.error, (format!("PlayerDB save host failure: {error}")).into());
                 } else if pz_lua_api::bind_world::with_world(|w| w.cell.is_some()) {
                     // Native exit rereads currentCell before this second
@@ -181,6 +186,7 @@ impl App {
                 shutdown: true,
                 error: &mut self.error,
                 retired_models: &mut self.retired_models,
+                gpu: None,
             });
         }
         // A partially loaded world may have no current IngameState yet.
@@ -250,6 +256,7 @@ impl App {
             .map_err(|e| format!("text init: {e}"))?;
         pz_lua_api::hud::init_ui(&mut lua.thread);
         lua.load_all_client();
+        pz_lua_api::bind_character_sim::load_zomboid_globals(lua.thread.globals());
         lua.trigger_event("OnGameBoot", &[]);
         self.lua = Some(lua);
         self.init_states()
@@ -419,6 +426,7 @@ impl App {
                 shutdown: false,
                 error: &mut self.error,
                 retired_models: &mut self.retired_models,
+                gpu: self.gpu.as_mut(),
             };
             self.states.update(&mut cx);
         }
@@ -504,6 +512,7 @@ impl App {
                 shutdown: false,
                 error: &mut self.error,
                 retired_models: &mut self.retired_models,
+                gpu: self.gpu.as_mut(),
             };
             // SpriteRenderer brackets the frame holding the UI's map draws
             // with WorldMapImages.startFrame/endFrame.

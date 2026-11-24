@@ -5,6 +5,7 @@
 //! Inputs from other workstreams come through the traits in [`host`].
 
 pub mod host;
+pub mod map_definitions;
 pub mod present;
 pub mod style;
 pub mod ui;
@@ -224,6 +225,7 @@ pub fn register(thread: &mut Thread) {
     register_api(thread);
     register_option(thread);
     style::register(thread);
+    map_definitions::register(thread);
     // `LuaManager.GlobalObject.fileExists`, which `MapUtils` checks the
     // data files with (registered here unless another binding has it).
     if thread.globals().get_str("fileExists").is_nil() {

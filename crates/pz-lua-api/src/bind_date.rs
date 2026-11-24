@@ -197,6 +197,11 @@ impl PZCalendar {
     /// `PZCalendar.getInstance()`: the current time.
     pub fn now() -> PZCalendar {
         let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        Self::from_millis(ms)
+    }
+
+    /// A `PZCalendar` initialized at `ms` milliseconds since the Unix epoch.
+    pub fn from_millis(ms: i64) -> PZCalendar {
         PZCalendar { time: Cell::new(ms), zone: default_zone(), locale: Locale::default_locale() }
     }
 

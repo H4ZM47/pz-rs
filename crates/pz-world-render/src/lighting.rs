@@ -366,6 +366,12 @@ impl WorldLighting {
         }
     }
 
+    /// The smoothed vision cone `(cone_lerp - 180.0) / 180.0` from the last
+    /// `LightingJNI.calculateVisionCone` calculation.
+    pub fn vision_cone(&self) -> f32 {
+        (self.cone.cone_lerp - 180.0) / 180.0
+    }
+
     fn rebuild_squares(
         &mut self,
         w: &WorldView<'_>,
