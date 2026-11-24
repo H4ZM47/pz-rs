@@ -940,6 +940,11 @@ fn register_game_time(thread: &mut Thread) {
         let v = with_gt(c, |g, _| h.clamp(0.0, g.world_age_hours().max(0.0)))?;
         Ok(c.push(v))
     });
+    // `GameTime.getCalender()`: `PZCalendar` positioned at the current in-game date/time.
+    b.method("getCalender", |c| {
+        let ms = with_gt(c, |g, _| g.calendar_time_in_millis())?;
+        Ok(c.push(Value::Object(Rc::new(crate::bind_date::PZCalendar::from_millis(ms)))))
+    });
 }
 
 fn register_climate_manager(thread: &mut Thread) {
@@ -2288,6 +2293,11 @@ fn register_misc(thread: &mut Thread) {
     });
     b.method("isEndlessDay", |c| Ok(c.push(climate_settings().day_night_cycle == 2)));
     b.method("isEndlessNight", |c| Ok(c.push(climate_settings().day_night_cycle == 3)));
+    b.method("getWinterStartDay", |c| {
+        let (d, m, y) = (int_arg(c, 1), int_arg(c, 2), int_arg(c, 3));
+        let ms = with_season(c, |s| s.get_winter_start_day(d, m, y).time_in_millis())?;
+        Ok(c.push(Value::Object(Rc::new(crate::bind_date::PZCalendar::from_millis(ms)))))
+    });
 
     let b = expose_class(thread, TEMPERATURE_CLASS, None);
     b.static_fn("CelsiusToFahrenheit", |c| Ok(c.push(fv(temperature::celsius_to_fahrenheit(farg(c, 0))))));
