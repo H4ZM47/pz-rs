@@ -211,17 +211,13 @@ fn holds_a_session_with_the_original_server() {
         }
         while let Some(msg) = session.receive() {
             match ControlMessage::decode(&msg.payload).expect("control message decodes") {
-                Some(ControlMessage::ConnectionRequestAccepted {
-                    request_time,
-                    accept_time,
-                    ..
-                }) => {
+                Some(ControlMessage::ConnectionRequestAccepted { accept_time, .. }) => {
                     accepted = true;
                     let reply = ControlMessage::NewIncomingConnection {
                         server_address: server,
                         internal_addresses: vec![],
-                        ping_time: request_time,
-                        pong_time: accept_time,
+                        ping_time: accept_time,
+                        pong_time: now(),
                     };
                     session.send(&reply.encode(), Reliability::ReliableOrdered, 0);
                 }
@@ -260,4 +256,58 @@ fn holds_a_session_with_the_original_server() {
     for d in session.poll_transmit(now()) {
         sock.send(&d).unwrap();
     }
+}
+
+/// The game-level first step: a Login packet. A wrong client version must
+/// come back as `AccessDenied` naming both versions, then a disconnect.
+#[test]
+fn original_server_refuses_a_wrong_client_version() {
+    use pz_network::client::{ClientEvent, RakClient};
+    use pz_network::packets::connection::{
+        auth_type, AccessDeniedPacket, LoginPacket, GAME_AND_BUILD_VERSION,
+    };
+    use pz_network::packets::NetPacket;
+    use pz_network::{buffer::NetReader, PacketType};
+    let Ok(target) = std::env::var("PZ_RAKNET_ORACLE") else {
+        return;
+    };
+    let password = oracle_password();
+    let mut client = RakClient::connect(
+        target.parse().unwrap(),
+        password.as_bytes(),
+        0x5a5a_0000_0000_0042,
+    )
+    .expect("connects");
+    client.send_packet(&LoginPacket {
+        username: "pzrs-oracle".into(),
+        password: "".into(),
+        client_version: "0.0.0".into(),
+        auth_type: auth_type::PASSWORD,
+    });
+    let mut denied = None;
+    let mut disconnected = false;
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(10) && !disconnected {
+        for event in client.poll(Duration::from_millis(200)).unwrap() {
+            match event {
+                ClientEvent::Packet(PacketType::AccessDenied, body) => {
+                    denied = Some(AccessDeniedPacket::parse(&mut NetReader::new(&body)).unwrap());
+                }
+                ClientEvent::Disconnected | ClientEvent::ConnectionLost => disconnected = true,
+                other => eprintln!("oracle sent {other:?}"),
+            }
+        }
+    }
+    let denied = denied.expect("server sent AccessDenied");
+    assert_eq!(
+        denied.parts(),
+        ["ClientVersionMismatch", "0.0.0", GAME_AND_BUILD_VERSION]
+    );
+    assert!(disconnected, "server did not close the connection");
+}
+
+/// The oracle server's password (`PZ_RAKNET_ORACLE_PASSWORD`), empty when
+/// the server has none.
+fn oracle_password() -> String {
+    std::env::var("PZ_RAKNET_ORACLE_PASSWORD").unwrap_or_default()
 }

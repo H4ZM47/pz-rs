@@ -75,6 +75,7 @@ fn retained_xml_empty_polygon_uses_drawer_abort_and_skips_later_debug_passes() {
         fill: [1.0; 4],
         files: &NoMapFiles,
         debug: false,
+        visited: None,
     };
     let frame = Drawer::new(&renderer, &inputs).render();
     assert_eq!(frame.aborted, Some(EMPTY_ABORT));

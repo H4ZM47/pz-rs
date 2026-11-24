@@ -1401,7 +1401,7 @@ registered):
       `addReanimatedPlayersToChunk` (chunk load moves a tracked zombie into
       the cell's zombie list) and `removeReanimatedPlayerFromWorld` (chunk
       unload moves it back) (#178).
-- [ ] `IsoWorld.init`, after `VehiclesDB2.init` and before
+- [x] `IsoWorld.init`, after `VehiclesDB2.init` and before
       `WorldStreamer.create` / the cell load:
       `let regions = IsoRegions::init_world(save_dir, chunk_grid_width,
       core.no_save)` (`IsoRegions.init`: reads and queues every
@@ -1411,7 +1411,10 @@ registered):
       original's first `IsoRegions.update` swaps them in. Give the same
       `IsoRegions` to the region readers (puddles, weather mask, square
       edits through `set_previous_flags` / `square_changed`). Quit:
-      `IngameState` calls `IsoRegions.reset()`; drop it.
+      `IngameState` calls `IsoRegions.reset()`; drop it (wired in
+      `world_regions.rs` + `world_update.rs`; remaining `RegionWorldHooks`
+      TODOs: `FMODAmbientWalls` and runtime `IsoRoom` generator toxicity /
+      `lightSwitches`).
 - [x] Local player at world init: `VehicleStore::create` (`VehiclesDB2.init`),
       `savefile::is_player_alive`, `PlayerDb::new`; `load_player_for_info`
       gives `SWorldX/SWorldY` for the chunk map; later `load_local_player_1`
@@ -1524,9 +1527,9 @@ registered):
       movement-speed parameter). Owners that drive player paths call
       `GameCharacter::run_path_requests` after `path_update` and give
       players a `PathMoverState::window_hook` (`IsoWindow.canClimbThrough`).
-- [ ] Saved windows: `IsoChunk::apply_window_load_sprites(&mut sprites)` for
-      every chunk the streamer loads, before its squares' properties and
-      matrices are recalculated (#95).
+- [x] Saved windows: `apply_loaded_window_sprites` runs in
+      `prepare_chunk_load` (`WorldStreamer`) for every loaded chunk before
+      its squares' properties and matrices are recalculated (#95).
 - [ ] States path host hooks (#95): `StatesEngine::resolve_collision`,
       `resolve_collision_radius` (PathHost over the `WorldView`) and
       `path_cancel_request` (`PathfindService::cancel_request`).
@@ -1629,31 +1632,30 @@ registered):
       #208): the climb states read the world through #208's hooks
       (`sheet_rope_square`, `chunk_levels`, `sheet_rope_exit`,
       `can_climb_over_wall`, `climb_wall_fence_type`); `pz-world-states`
-      also implements the new `floor_sprite_name` (the landing's natural
-      floor). The engine must:
-      - implement `StateWorld::path_reset` (`PathFindBehavior2.reset()`, a
-        failed wall climb; `pz-world-states` leaves the no-op default, as
-        for `path_cancel`);
-      - start the climbs: `GameCharacter::climb_over_wall(dir, cx)` from
-        the player's wall-climb input (the `PathMoverRequest::ClimbOverWall`
-        handler in `run_path_requests` already calls it),
-        `climb_sheet_rope` / `climb_down_sheet_rope` from the rope input,
-        and `fall_from_rope` where the original lets go;
-      - call `GameCharacter::do_land(impact_iso_speed, cx)` when a falling
-        character lands (`IsoGameCharacter.updateFalling`, not yet ported)
-        and `player_on_death(cx)` from `IsoPlayer.OnDeath`;
-      - answer `SimContext::debug_always_trip_over_fence` (`DebugOptions`;
-        `easy_climbing` is #208's line);
-      - handle `SimEvent::MusicIntensityEvent`, `FallingItem`
-        (`createFallingItem`), `FallenHat`
-        (`PersistentOutfits.setFallenHat`), `StopPlayerVoiceSound`,
-        `CharacterDeath` (`OnCharacterDeath`), `FadeIn` and `PlayerDeath`
-        (the rest of `IsoPlayer.OnDeath`: death music, `OnPlayerDeath`,
-        leaving the vehicle, `removeSaveFile`, `setDrag`);
-      - bind the new calls to Lua (`climbSheetRope`, `canClimbSheetRope`,
-        `canClimbOverWall`, `climbOverWall`, `isClimbingRope`,
-        `fallFromRope`, `getClimbingFailChanceInt`, `fallenOnKnees`, ...)
-        where the Lua API needs them; none is bound yet.
+      also implements `floor_sprite_name` and `StateWorld::path_reset`
+      (`PathHost::path_reset` -> `PathFindBehavior2::reset`).
+      Wired:
+      - `StateWorld::path_reset` (`PathFindBehavior2.reset()`);
+      - `PathMoverRequest::{ClimbOverWall, ClimbSheetRope, ClimbDownSheetRope}`
+        through `GameCharacter::run_path_requests` and
+        `ContextualActionKind::ClimbSheetRope` in `contextual_action::perform`;
+      - `SimContext::debug_always_trip_over_fence` (`Core.debug &&
+        DebugOptions["Character.Debug.AlwaysTripOverFence"]`) in `FrameSim` /
+        `PlayerSim`;
+      - `SimEvent::{MusicIntensityEvent, CharacterDeath, FadeIn, PlayerDeath}`
+        in `world_update::fire_sim_events`;
+      - Build 42.22 climb and landing Lua bindings (`climb`, `climbDown`,
+        `canClimbSheetRope`, `canClimbDownSheetRope`,
+        `canClimbDownSheetRopeInCurrentSquare`, `canClimbOverWall`,
+        `climbOverWall` returning `bool`, `isClimbOverWallSuccess/Struggle` +
+        setters, `isClimbingRope`, `fallFromRope`, `getClimbRopeSpeed`,
+        `getClimbingFailChanceInt`, `getClimbingFailChanceFloat`,
+        `nearbyZombieClimbPenalty`, `isClimbing`/`setbClimbing`,
+        `getClimbRopeTime`/`setClimbRopeTime`, `fallenOnKnees`, `DoLand`).
+      Still open:
+      - `IsoGameCharacter.updateFalling` calling `GameCharacter::do_land`;
+      - `SimEvent::{FallingItem, FallenHat, StopPlayerVoiceSound}`, and
+        `PlayerDeath`'s remaining vehicle/savefile/death-music/drag cleanup.
 - [ ] Collision code fills `IsoChunk::collision` through
       `ChunkCollision::init(z, build)` (`CollideWithObstaclesPoly` /
       `LineClearCollide`) and drops levels with `take` on vehicle moves; the
@@ -1696,9 +1698,10 @@ registered):
       items), the power / fluid / piped-fuel / sprite-config queries,
       `FMODAmbientWalls`, `DesignationZoneAnimal.addNewRoof`, corpse
       registries, room lights, `IsoRoom.clear` (#97).
-- [ ] Regions: call `IsoRegions::update_with_buildings(BuildingCtx { .. })`
+- [x] Regions: call `IsoRegions::update_with_buildings(BuildingCtx { .. })`
       once per frame instead of `update`, so player rooms become meta-grid
-      buildings (`WorldRegionToMetaGrid`) (#97).
+      buildings (`WorldRegionToMetaGrid`) (#97; wired in `world_regions.rs` +
+      `world_update.rs`).
 - [ ] Bullet world ownership: the world/engine owns the one `PzBullet`
       (`WorldSimulation`) and counts its steps (`getBulletFrameNo`); the
       characters reach it through `StateWorld::physics()` (`PzBullet`
@@ -1908,7 +1911,7 @@ registered):
       end; then `late`) (#124).
 - [x] `render_animated_attachments` per chunk between water and
       translucent passes (#76) — done by the frame itself (#124).
-- [ ] `render_weather_fx` as `world_frame_full`'s `late`, driven by
+- [x] `render_weather_fx` as `world_frame_full`'s `late`, driven by
       `ClimateRenderValues` (#81); pass `weather_fx_mask::FxMaskCharacters
       { world, objects: &frame_objects }` as its `FxMaskWorld` so the mask's
       `renderCharacters` replays #79's `ObjectRender` draws without shadows.
@@ -1916,7 +1919,8 @@ registered):
       (`render_character_object` does; set it on hand-built zombies and
       animals) (#124).
 - [ ] Feed corpses, world items and fireplace state from pz-world (#87, #76).
-- [ ] Lighting pass reads `ClimateManager::render_values` (#49).
+- [x] Lighting pass reads `ClimateManager::render_values` (#49): `IngameState.render_settings` builds
+      the `ClimateSettings` the lighting frame takes from them.
 - [ ] Vehicles in `FrameObjects.moving` (cell object-list order): per
       vehicle `update_transform`, `instance.update_lights`,
       `instance.do_damage_overlay` (when `doDamageOverlay` is flagged or the
@@ -1935,7 +1939,7 @@ registered):
       (pz-iso-render `skybox.rs`, now on the same stack (#124)).
       Until that is wired, load vehicle models with `reflections: false` (the
       `_noreflect` shader variants, as with `bPerfReflections` off) (#90).
-- [ ] Character outlines: per character, `ObjectRender.outline =
+- [x] Character outlines: per character, `ObjectRender.outline =
       OutlineHighlight::character_request(playerIndex, x, y, isProne,
       camCharacterX, camCharacterY)` from the object's highlight state
       (`IsoObject.setOutlineHighlight`/`Col`: CombatManager's aim targets in
@@ -1944,6 +1948,13 @@ registered):
       `renderlast` clears the highlight. `world_frame_with_objects` runs
       `startFrameMain`/`endFrameMain` around the object and translucent
       passes (#94).
+      Done: the state is `GameCharacter.outline` (pz-characters
+      `character/outline.rs`), the Lua methods are in
+      `bind_character_sim/outline.rs`, and `renderlast` runs after each
+      player frame for the characters it drew. Still open: CombatManager's
+      melee aim outline (`highlightTargets`/`highlightMeleeTargets`) needs
+      the melee `calculateHitInfoList`, and the ballistics/ragdoll debug
+      outlines.
 - [ ] Held/attached item textures: once the slot is built (and each frame
       before drawing it) `item_texture::render_equipped_textures_with(slot,
       exists, file, gpu, tm)` renders the dirty initializers (tint/TINT
@@ -2161,10 +2172,11 @@ registered):
       global SpriteRenderer frame boundary: `App::frame` brackets
       `states.render` with `worldmap::start_frame/end_frame`, so every map in
       a frame shares each pyramid's required tiles and five-tile budget.
-- [ ] Restore native file-thread queue scheduling
-      (`WorldMapImages.checkLoadingQueue` in `GameWindow.logic`, async
-      `FileTask_LoadImagePyramidTexture`); tiles still decode synchronously
-      in `checkQueue`.
+- [x] Restore native file-thread queue scheduling: `startLoadingFromZip`
+      queues the tile, `App::frame` calls `worldmap::check_loading_queue`
+      (`WorldMapImages.checkLoadingQueue` after `UIManager.resize`), a file
+      thread reads and decodes it, `checkQueue` uploads at most five per
+      frame, and `endFrame`'s cancellations reach the running tasks.
 - [ ] Native request-counter reset ties depend on Java HashMap values order;
       the current Rust map order does not establish that tie behavior. The
       actual Core debug threshold is latched on first production image use;

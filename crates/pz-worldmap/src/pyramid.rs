@@ -2,16 +2,73 @@
 //! PNG tiles per zoom level (`<z>/tile<x>x<y>.png` plus `pyramid.txt`)
 //! drawn under or instead of the vector features.
 //!
-//! The original decodes tiles on a file thread and uploads at most five
-//! per frame. Here a requested tile is decoded when the queue is next
-//! checked (the same at-most-five-per-frame budget), so a tile becomes
-//! ready a frame after it is first asked for, as at best in the game.
+//! As in the original, a requested tile is queued (`queueLoading`),
+//! handed to a file thread once a frame by
+//! [`check_loading_queue`] (`GameWindow.logic`), decoded
+//! there, and uploaded when the pyramid next checks its queue, at most five
+//! per frame. Loads no map needs at a frame's end are cancelled.
 
 use pz_classfile::Jar;
 use pz_render::Texture;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// A decoded tile: width, height and RGBA pixels at the power-of-two size.
+type TilePixels = (i32, i32, Vec<u8>);
+
+/// `FileTask_LoadImagePyramidTexture` as the file thread runs it.
+struct FileTask {
+    jar: Arc<Jar>,
+    entry: String,
+    key: String,
+    cancelled: Arc<AtomicBool>,
+    reply: Sender<FileTaskResult>,
+}
+
+/// `FileTaskResult`: `pixels` is `None` for a tile that would not decode.
+struct FileTaskResult {
+    key: String,
+    task: Arc<AtomicBool>,
+    pixels: Option<TilePixels>,
+}
+
+/// `GameWindow.fileSystem`'s worker thread for pyramid tiles.
+fn file_thread() -> &'static Mutex<Sender<FileTask>> {
+    static WORKER: OnceLock<Mutex<Sender<FileTask>>> = OnceLock::new();
+    WORKER.get_or_init(|| {
+        let (tx, rx) = channel::<FileTask>();
+        std::thread::Builder::new()
+            .name("pz-worldmap-pyramid".into())
+            .spawn(move || {
+                for task in rx {
+                    // A cancelled task reports nothing (onFileTaskCancelled).
+                    if task.cancelled.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    let pixels = task
+                        .jar
+                        .read(&task.entry)
+                        .ok()
+                        .and_then(|b| pz_render::image::ImageData::from_png(&b[..], false).ok())
+                        .map(|img| (img.width, img.height, img.data.pixels));
+                    if task.cancelled.load(Ordering::Acquire) {
+                        continue;
+                    }
+                    let _ = task.reply.send(FileTaskResult {
+                        key: task.key,
+                        task: task.cancelled,
+                        pixels,
+                    });
+                }
+            })
+            .expect("spawn pyramid file thread");
+        Mutex::new(tx)
+    })
+}
 
 pub const TILE_SIZE: i32 = 256;
 pub const GL_CLAMP_TO_EDGE: i32 = 33071;
@@ -98,10 +155,21 @@ impl PyramidTexture {
 
 /// `ImagePyramid`.
 pub struct ImagePyramid {
-    zip: Option<Jar>,
+    zip: Option<Arc<Jar>>,
     textures: HashMap<String, PyramidTexture>,
     missing: HashSet<String>,
-    queue: Vec<String>,
+    /// `queueLoading`.
+    queue_loading: VecDeque<String>,
+    /// `fileTasks`: each key's running task, by its cancel flag.
+    file_tasks: HashMap<String, Arc<AtomicBool>>,
+    /// `queueCancel`.
+    queue_cancel: Vec<String>,
+    /// `queueRender`, filled by the file thread.
+    queue_render: Receiver<FileTaskResult>,
+    render_tx: Sender<FileTaskResult>,
+    /// Results taken off the channel and not yet uploaded (the budget ran
+    /// out), in arrival order ahead of the channel.
+    pending_render: VecDeque<FileTaskResult>,
     request_number: i32,
     pub min_x: i32,
     pub min_y: i32,
@@ -136,11 +204,17 @@ impl ImagePyramid {
     /// Lua host samples its real Core.debug before reaching this method.
     pub fn from_zip(path: &str) -> Self {
         initialize_class(false);
+        let (render_tx, render_rx) = channel();
         let mut p = ImagePyramid {
-            zip: Jar::open(path).ok(),
+            zip: Jar::open(path).ok().map(Arc::new),
             textures: HashMap::new(),
             missing: HashSet::new(),
-            queue: Vec::new(),
+            queue_loading: VecDeque::new(),
+            file_tasks: HashMap::new(),
+            queue_cancel: Vec::new(),
+            queue_render: render_rx,
+            render_tx,
+            pending_render: VecDeque::new(),
             request_number: 0,
             min_x: 0,
             min_y: 0,
@@ -278,26 +352,30 @@ impl ImagePyramid {
         }
     }
 
-    /// `checkQueue()`: decodes queued tiles, at most five per frame.
+    /// `checkQueue()`: uploads finished tiles, at most five per frame.
     fn check_queue(&mut self) {
-        while self.textures_loaded_this_frame < 5 && !self.queue.is_empty() {
-            let k = self.queue.remove(0);
-            let Some(t) = self.textures.get(&k) else {
-                continue;
+        loop {
+            let Some(done) = self.pending_render.pop_front().or_else(|| self.queue_render.try_recv().ok()) else {
+                return;
             };
-            if t.state != TextureState::Loading {
+            // onFileTaskFinished: only the key's current task publishes.
+            if !self.file_tasks.get(&done.key).is_some_and(|t| Arc::ptr_eq(t, &done.task)) {
                 continue;
             }
-            let (x, y, z) = (t.x, t.y, t.z);
-            let png = self
-                .zip
-                .as_ref()
-                .and_then(|zip| zip.read(&format!("{z}/tile{x}x{y}.png")).ok());
-            let img = png.and_then(|b| pz_render::image::ImageData::from_png(&b[..], false).ok());
-            let Some(img) = img else {
-                let t = self.textures.get_mut(&k).unwrap();
+            if self.textures_loaded_this_frame >= 5 {
+                self.pending_render.push_front(done);
+                return;
+            }
+            self.file_tasks.remove(&done.key);
+            let k = done.key;
+            let Some(t) = self.textures.get_mut(&k) else {
+                continue;
+            };
+            if t.state == TextureState::Cancelled {
+                continue;
+            }
+            let Some((width, height, pixels)) = done.pixels else {
                 t.request_number = 0;
-                t.state = TextureState::Init;
                 self.missing.insert(k);
                 continue;
             };
@@ -307,17 +385,9 @@ impl ImagePyramid {
                 self.clamp_s == GL_CLAMP_TO_EDGE,
             );
             let tex = MAKER.with(|m| {
-                m.borrow_mut().as_mut().and_then(|m| {
-                    m.create(
-                        &format!("pyramid:{k}"),
-                        img.width,
-                        img.height,
-                        img.data.pixels,
-                        min_n,
-                        mag_n,
-                        clamp,
-                    )
-                })
+                m.borrow_mut()
+                    .as_mut()
+                    .and_then(|m| m.create(&format!("pyramid:{k}"), width, height, pixels, min_n, mag_n, clamp))
             });
             let t = self.textures.get_mut(&k).unwrap();
             if let Some(old) = t.texture.take() {
@@ -333,14 +403,67 @@ impl ImagePyramid {
         }
     }
 
+    /// `checkCancelQueue()`: cancels the file tasks of loads `endFrame`
+    /// dropped.
+    fn check_cancel_queue(&mut self) {
+        for k in std::mem::take(&mut self.queue_cancel) {
+            if let Some(task) = self.file_tasks.remove(&k) {
+                task.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    /// `checkLoadingQueue()`: starts a file task for each queued tile,
+    /// replacing (and cancelling) the key's earlier task.
+    fn check_loading_queue(&mut self) {
+        let Some(jar) = self.zip.clone() else {
+            self.queue_loading.clear();
+            return;
+        };
+        while let Some(k) = self.queue_loading.pop_front() {
+            if let Some(old) = self.file_tasks.remove(&k) {
+                old.store(true, Ordering::Release);
+            }
+            let Some(t) = self.textures.get(&k) else {
+                continue;
+            };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            self.file_tasks.insert(k.clone(), cancelled.clone());
+            let task = FileTask {
+                jar: jar.clone(),
+                entry: format!("{}/tile{}x{}.png", t.z, t.x, t.y),
+                key: k,
+                cancelled,
+                reply: self.render_tx.clone(),
+            };
+            let _ = file_thread().lock().map(|tx| tx.send(task));
+        }
+    }
+
+    /// Blocks until `n` results have arrived from the file thread (tests).
+    #[cfg(test)]
+    fn wait_for_results(&mut self, n: usize) {
+        while self.pending_render.len() < n {
+            match self.queue_render.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(r) => self.pending_render.push_back(r),
+                Err(_) => panic!("file thread produced {} of {n} results", self.pending_render.len()),
+            }
+        }
+    }
+
+    /// No file task is queued or running (tests and shutdown).
+    pub fn is_idle(&self) -> bool {
+        self.queue_loading.is_empty() && self.file_tasks.is_empty()
+    }
+
     fn start_loading(&mut self, k: &str) {
         let t = self.textures.get_mut(k).unwrap();
         if t.state == TextureState::Loading {
             return;
         }
         t.state = TextureState::Loading;
-        self.queue.retain(|q| q != k);
-        self.queue.push(k.to_string());
+        // startLoadingFromZip: the request waits for checkLoadingQueue.
+        self.queue_loading.push_back(k.to_string());
     }
 
     /// `getTexture(x, y, z)`: the tile, queued for loading when needed.
@@ -464,8 +587,9 @@ impl ImagePyramid {
             }
             None => false,
             Some(old) => {
+                // The evicted key's task still runs; its result finds no
+                // texture and is dropped, as in the original.
                 let mut t = self.textures.remove(&old).unwrap();
-                self.queue.retain(|q| *q != old);
                 t.x = x;
                 t.y = y;
                 t.z = z;
@@ -592,7 +716,7 @@ impl ImagePyramid {
             t.state = TextureState::Cancelled;
             cancelled.push(t.key.clone());
         }
-        self.queue.retain(|k| !cancelled.contains(k));
+        self.queue_cancel.extend(cancelled);
     }
 }
 
@@ -676,6 +800,19 @@ pub fn start_frame() {
     IMAGES.with(|m| {
         for i in m.borrow().values() {
             i.pyramid.borrow_mut().start_frame();
+        }
+    });
+}
+
+/// `WorldMapImages.checkLoadingQueue()`, once a frame from
+/// `GameWindow.logic`: each pyramid's cancelled tasks are cancelled and its
+/// queued tiles go to the file thread.
+pub fn check_loading_queue() {
+    IMAGES.with(|m| {
+        for i in m.borrow().values() {
+            let mut p = i.pyramid.borrow_mut();
+            p.check_cancel_queue();
+            p.check_loading_queue();
         }
     });
 }
@@ -1004,8 +1141,13 @@ mod tests {
         }
         // A tile not in the zip is missing.
         assert!(p.get_texture(0, 1, 0).is_none());
-        // Queued tiles decode as the queue is next checked, at most five
-        // per frame.
+        // Queued tiles wait for the frame's checkLoadingQueue, decode on
+        // the file thread, and upload as the queue is next checked, at
+        // most five per frame.
+        assert!(p.get_ready_texture(0, 0, 0).is_none());
+        p.check_cancel_queue();
+        p.check_loading_queue();
+        p.wait_for_results(8);
         let ready = (0..8)
             .filter(|&x| p.get_ready_texture(x, 0, 0).is_some())
             .count();

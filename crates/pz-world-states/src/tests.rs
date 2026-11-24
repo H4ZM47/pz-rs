@@ -2212,6 +2212,11 @@ fn the_states_find_paths_through_the_host() {
     let b = StateWorld::<()>::path_behavior(&a, 10).unwrap();
     assert!(b.is_goal_location());
     assert_eq!((b.target_x(), b.target_y()), (3.5, 4.5));
+    // `path_reset` resets the character's `PathFindBehavior2` target to its current position.
+    StateWorld::<()>::path_reset(&mut a, &mut z);
+    let b = StateWorld::<()>::path_behavior(&a, 10).unwrap();
+    assert_eq!((b.target_x(), b.target_y()), (z.vars.x, z.vars.y));
+    assert_eq!(z.path.progress, pz_pathfind::mover::PathFindProgress::NotRunning);
     StateWorld::<()>::put_character(&mut a, z);
     // A target that is not in the list is not followed.
     let mut other = zombie(1.5, 1.5, 1);

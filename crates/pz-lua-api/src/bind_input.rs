@@ -123,6 +123,9 @@ struct MouseStatics {
     last_activity: i64,
     ui_captured: [bool; 10],
     cursor_visible: bool,
+    /// Port extension: buttons pressed while the 3D crosshair met nothing,
+    /// read as up until they are physically released.
+    sky_pressed: [bool; MOUSE_BUTTONS],
 }
 
 thread_local! {
@@ -141,6 +144,7 @@ thread_local! {
             last_activity: 0,
             ui_captured: [false; 10],
             cursor_visible: true,
+            sky_pressed: [false; MOUSE_BUTTONS],
         })
     };
 }
@@ -403,13 +407,19 @@ fn game_keyboard_update(mgr: &mut LuaManager) {
 }
 
 fn mouse_update(seconds: f32) {
-    let (mut cx, mut cy, wheel, buttons) = with_input(|i| (i.cursor_x, i.cursor_y, i.take_wheel(), i.buttons_down));
+    let (mut cx, mut cy, wheel, mut buttons, look) =
+        with_input(|i| (i.cursor_x, i.cursor_y, i.take_wheel(), i.buttons_down, i.mouse_look));
     // Port extension: while the 3D view's mouse-look holds the cursor, the
     // mouse is where the view's crosshair meets the world, in isometric
     // screen pixels, so world picking and context menus act on it. UI
-    // elements do not take clicks then (`MouseState::world_only`), so no
-    // panel under that point swallows them; freeing the cursor clears it.
-    let world_mouse = pz_input::world_mouse();
+    // elements never take clicks then (`MouseState::world_only`), hit or
+    // miss, so no panel under the hidden cursor swallows them; freeing the
+    // cursor clears it. When the crosshair meets nothing (open sky) there
+    // is nothing to act on: the mouse stays where it last was, a press that
+    // starts there reads as up until its release, and a button already held
+    // stays held, so a miss neither starts nor ends a world interaction.
+    let world_mouse = if look { pz_input::world_mouse() } else { None };
+    let sky = look && world_mouse.is_none();
     if let Some((wx, wy)) = world_mouse {
         cx = f64::from(wx);
         cy = f64::from(wy) + 1.0;
@@ -421,8 +431,20 @@ fn mouse_update(seconds: f32) {
         let (last_x, last_y) = (m.x, m.y);
         // `x = state.getX(); y = screenHeight - state.getY() - 1` where the
         // LWJGL y is already flipped: one pixel above the cursor.
-        m.x = cx as i32;
-        m.y = cy as i32 - 1;
+        if !sky {
+            m.x = cx as i32;
+            m.y = cy as i32 - 1;
+        }
+        let was_down = m.down.clone().unwrap_or_default();
+        for (i, b) in buttons.iter_mut().enumerate() {
+            let held = was_down.get(i).copied().unwrap_or(false);
+            if !*b {
+                m.sky_pressed[i] = false;
+            } else if m.sky_pressed[i] || (sky && !held) {
+                m.sky_pressed[i] = true;
+                *b = false;
+            }
+        }
         m.wheel_delta = wheel;
         let mut activity = last_x != m.x || last_y != m.y || wheel != 0;
         if m.down.is_none() {
@@ -448,7 +470,7 @@ fn mouse_update(seconds: f32) {
     });
     let right_delay = mouse_is_right_delay();
     with_ui(|u| {
-        u.mouse.world_only = world_mouse.is_some();
+        u.mouse.world_only = look;
         u.mouse.x = x;
         u.mouse.y = y;
         u.mouse.world_x = (x as f32 * zoom) as i32;
@@ -853,6 +875,50 @@ mod tests {
         mouse_update(0.1);
         assert!(!mouse_is_button_down_ui_check(1));
         assert!(!MS.with(|m| m.borrow().ui_captured[1]), "released clears the capture");
+    }
+
+    #[test]
+    fn mouse_look_keeps_clicks_off_the_ui_on_a_miss() {
+        with_input(|i| {
+            i.mouse_look = true;
+            i.world_mouse = Some((40, 50));
+            i.mouse_button(0, true);
+        });
+        mouse_update(0.1);
+        assert!(with_ui(|u| u.mouse.world_only));
+        assert!(mouse_is_button_down(0), "a crosshair hit clicks the world");
+        assert_eq!(MS.with(|m| (m.borrow().x, m.borrow().y)), (40, 50));
+        // Held across a miss: no release, and the mouse stays put.
+        with_input(|i| i.world_mouse = None);
+        mouse_update(0.1);
+        assert!(with_ui(|u| u.mouse.world_only), "the UI takes no clicks on a miss");
+        assert!(mouse_is_button_down(0), "a held button is not released by a miss");
+        assert_eq!(MS.with(|m| (m.borrow().x, m.borrow().y)), (40, 50));
+        // A press that starts on a miss does nothing, even after the
+        // crosshair finds geometry again, until it is released.
+        with_input(|i| i.mouse_button(0, false));
+        mouse_update(0.1);
+        with_input(|i| i.mouse_button(0, true));
+        mouse_update(0.1);
+        assert!(!mouse_is_button_down(0), "a press on open sky acts on nothing");
+        with_input(|i| i.world_mouse = Some((60, 70)));
+        mouse_update(0.1);
+        assert!(!mouse_is_button_down(0), "regaining a hit does not start a click");
+        with_input(|i| i.mouse_button(0, false));
+        mouse_update(0.1);
+        with_input(|i| i.mouse_button(0, true));
+        mouse_update(0.1);
+        assert!(mouse_is_button_down(0), "a fresh press on a hit clicks");
+        // Freeing the cursor hands clicks back to the UI.
+        with_input(|i| {
+            i.mouse_look = false;
+            i.world_mouse = None;
+        });
+        mouse_update(0.1);
+        assert!(!with_ui(|u| u.mouse.world_only));
+        assert!(mouse_is_button_down(0));
+        with_input(|i| i.mouse_button(0, false));
+        mouse_update(0.1);
     }
 }
 

@@ -667,15 +667,7 @@ impl IsoWorld {
             let c = p.borrow();
             (c.vars.x, c.vars.y)
         });
-        if let (Some(r), Some(sp)) = (self.regions.as_mut(), self.sprites.as_ref()) {
-            // TODO(port): `update_with_buildings` (player-built rooms into
-            // the meta grid needs the render invalidation's `BuildingCtx`).
-            with_world(|w| {
-                if let Some(cell) = w.cell.as_ref() {
-                    r.borrow_mut().update(cell, &sp.borrow(), player);
-                }
-            });
-        }
+        self.update_regions(player);
         // TODO(port): `HaloTextHelper.update`, `CollisionManager.ResolveContacts`.
         self.postupdate_characters(lua, sim)?;
         // `IsoGameCharacter.postUpdateAnimating` follows movement and
@@ -1334,6 +1326,9 @@ impl IsoWorld {
                 // `IsoGameCharacter.OnDeath()` of a player.
                 SimEvent::CharacterDeath if chr.is_some() => {
                     lua.trigger_event("OnCharacterDeath", std::slice::from_ref(&cv));
+                }
+                SimEvent::FadeIn(seconds) => {
+                    pz_ui::with_ui(|m| m.fade(f64::from(seconds), false));
                 }
                 // The rest of `IsoPlayer.OnDeath()`: `OnPlayerDeath` for a
                 // local player, which opens the death screen
@@ -2239,7 +2234,7 @@ fn add_chunk_to_pathfinder(
 /// mutation for the pathfinder, applied after it with
 /// [`QueuedPathfind::apply`].
 #[derive(Default)]
-struct QueuedPathfind {
+pub(crate) struct QueuedPathfind {
     squares: Vec<(i32, i32, i32)>,
     chunks: Vec<(i32, i32)>,
 }
@@ -2258,7 +2253,7 @@ impl pz_world::square_mutation::PathfindSquareHooks for QueuedPathfind {
 impl QueuedPathfind {
     /// `PathfindNative.squareChanged` / `addChunkToWorld` for what was
     /// queued, in order.
-    fn apply(self, h: &mut pz_pathfind::host::PathHost, sprites: &IsoSpriteManager) {
+    pub(crate) fn apply(self, h: &mut pz_pathfind::host::PathHost, sprites: &IsoSpriteManager) {
         if self.squares.is_empty() && self.chunks.is_empty() {
             return;
         }
@@ -2577,6 +2572,7 @@ impl IsoWorld {
                     }
                     let sim = FrameSim::capture();
                     self.with_population(&sim, &mut |pop, host, _| pop.save(&host.zombies.infos()));
+                    self.update_regions(None);
                     // `WorldMapVisited.SaveAll()`: explored areas reach disk
                     // before `IngameState.exit` runs `WorldMap.Reset()`.
                     pz_lua_api::worldmap::visited::save_all();
@@ -2642,7 +2638,7 @@ impl IsoWorld {
         for (_, e) in r.errors {
             self.log_update_error(format!("VehiclesDB2.Reset: {e}"));
         }
-        self.regions = None;
+        self.clear_regions();
         // IngameState.exit retires both global-object registries. Native
         // close also takes this path without rebuilding the Lua environment.
         pz_lua_api::global_objects::reset_single_player_packets();

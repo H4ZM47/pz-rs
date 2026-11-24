@@ -70,6 +70,7 @@ pub mod stats;
 pub mod thermoregulator;
 pub mod timed_action;
 pub mod grapple;
+pub mod outline;
 pub mod update;
 pub mod xp;
 pub mod zombie;
@@ -432,6 +433,8 @@ pub struct GameCharacter<I: 'static> {
     pub ragdoll: firearm::ragdoll::RagdollTracking,
     /// `hitInfoList` (the ranged path's targets).
     pub hit_info_list: Vec<states::swipe::HitInfo>,
+    /// `IsoObject`'s outline highlight fields (aim targets, Lua).
+    pub outline: outline::OutlineState,
     /// `wornClothingCanRagdoll` (no worn item has the `NO_RAGDOLL` tag).
     pub worn_clothing_can_ragdoll: bool,
     /// `patience` (drawn in `[patienceMin, patienceMax)` by the constructor).
@@ -559,6 +562,7 @@ impl<I: 'static> GameCharacter<I> {
             ballistics_target: None,
             ragdoll: Default::default(),
             hit_info_list: Vec::new(),
+            outline: Default::default(),
             worn_clothing_can_ragdoll: true,
             patience: 20,
             speak_colour: [1.0; 4],

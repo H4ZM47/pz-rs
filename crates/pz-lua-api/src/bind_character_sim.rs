@@ -83,6 +83,7 @@ mod sleeping;
 pub(crate) use sleeping::update_asleep_player;
 pub use sleeping::wake_up_ui as sleeping_event_wake_up_ui;
 mod key_ring;
+pub mod outline;
 pub(crate) mod known_poison;
 pub(crate) use known_poison::with_recipe_knowledge;
 mod reading;
@@ -108,6 +109,8 @@ mod definition_texture_tests;
 mod traits_tests;
 #[cfg(test)]
 mod gender_tests;
+#[cfg(test)]
+mod outline_tests;
 #[cfg(test)]
 mod unwanted_tests;
 #[cfg(test)]
@@ -198,12 +201,12 @@ fn floor_world() -> Option<FloorWorldRef> {
 
 /// Capture one service identity for the whole action. Borrow its body only at
 /// an actual native floor operation, after native no-op checks have run.
-struct FloorAccess {
+pub(super) struct FloorAccess {
     service: Option<FloorWorldRef>,
 }
 
 impl FloorAccess {
-    fn capture() -> HostResult<Self> {
+    pub(super) fn capture() -> HostResult<Self> {
         FLOOR
             .try_with(|slot| {
                 Ok(Self {
@@ -214,6 +217,10 @@ impl FloorAccess {
                 })
             })
             .map_err(|_| Self::unavailable())?
+    }
+
+    pub(super) fn has_service(&self) -> bool {
+        self.service.is_some()
     }
 
     fn unavailable() -> RuntimeHostError {
@@ -1961,10 +1968,12 @@ fn register_character(
         let sub = expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
         if class == ISO_PLAYER_CLASS || class == ISO_ANIMAL_CLASS {
             control::register_player(&sub);
+            climb::register_player(&sub);
         }
     }
     control::register(&b);
     climb::register(&b);
+    outline::register(&b);
     control::register_globals(thread);
     known_poison::register(&b, sm, chars);
     reading::register(&b);
@@ -2911,6 +2920,52 @@ pub(crate) mod tests {
         sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
         sm
+    }
+
+    /// `Item.isFavouriteRecipeInput(player)` / `isUsedInRecipes(player)`:
+    /// a recipe resolved at post-world-dictionary init lists its input item,
+    /// and the player's `recipeFavourite:<name>` mod data decides.
+    #[test]
+    fn favourite_recipe_input_reads_the_player_favourites() {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("pz-bind-character-fav-{}-{n}", std::process::id()));
+        let p = dir.join("media/scripts/test.txt");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(
+            &p,
+            "module Base { item Plank { DisplayName = Plank, ItemType = base:normal, } \
+             item Box { DisplayName = Box, ItemType = base:normal, } \
+             craftRecipe MakeBox { inputs { item 1 [Base.Plank], } outputs { item 1 Base.Box, } } }",
+        )
+        .unwrap();
+        let sm = ScriptManager::new();
+        sm.registries.get("item_type").unwrap().borrow_mut().register_id("base:normal", true).unwrap();
+        sm.statics.items.borrow_mut().constants.insert("item_type", "NORMAL", "base:normal");
+        sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        sm.post_world_dictionary_init();
+        let plank = sm
+            .get_script(pz_scripts::ScriptType::Item, "Base.Plank")
+            .expect("Base.Plank");
+        let (mut t, _player, _) = setup_with(sm);
+        crate::bind_scripts::register(&mut t, crate::bind_registry::shared_script_manager());
+        t.globals().set_str("plank", crate::bind_scripts::script_value(Some(&plank)));
+        run(
+            &mut t,
+            r#"
+            assert(plank:getUsedInRecipes():size() == 1)
+            assert(plank:isUsedInRecipes(player))
+            assert(not plank:isFavouriteRecipeInput(player))
+            player:getModData()["recipeFavourite:MakeBox"] = true
+            assert(plank:isFavouriteRecipeInput(player))
+            player:getModData()["recipeFavourite:MakeBox"] = false
+            assert(not plank:isFavouriteRecipeInput(player))
+            local ok, err = pcall(function() return plank:isFavouriteRecipeInput(nil) end)
+            assert(not ok)
+            "#,
+        )
+        .unwrap();
     }
 
     #[test]

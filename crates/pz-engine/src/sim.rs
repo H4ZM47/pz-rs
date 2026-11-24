@@ -96,6 +96,7 @@ impl SimContext for PlayerSim<'_> {
     fn lore_hearing(&self) -> i32 { self.0.lore_hearing() }
     fn is_listener_in_range(&self, x: f32, y: f32, range: f32) -> bool { self.0.is_listener_in_range(x, y, range) }
     fn easy_climbing(&self) -> bool { self.0.easy_climbing() }
+    fn debug_always_trip_over_fence(&self) -> bool { self.0.debug_always_trip_over_fence() }
     fn is_debug(&self) -> bool {
         self.0.is_debug()
     }
@@ -170,6 +171,12 @@ impl SimContext for FrameSim {
     }
     fn is_listener_in_range(&self, x: f32, y: f32, range: f32) -> bool { self.hearing_players.in_range(x, y, range) }
     fn easy_climbing(&self) -> bool { pz_lua_api::bind_sandbox::current_bool("EasyClimbing").unwrap_or(false) }
+    fn debug_always_trip_over_fence(&self) -> bool {
+        self.debug
+            && pz_core::debug::debug_options()
+                .borrow()
+                .get_boolean("Character.Debug.AlwaysTripOverFence")
+    }
     fn is_debug(&self) -> bool {
         self.debug
     }
@@ -314,5 +321,57 @@ mod tests {
         assert_eq!(frame.wet_ground_final_value(), 0.25);
         run("getPuddlesManager():getPuddlesFloat(1):setEnableAdmin(false)");
         assert_eq!(frame.wet_ground_final_value(), 0.75);
+    }
+
+    #[test]
+    fn debug_always_trip_over_fence_requires_debug_and_option() {
+        let core = pz_lua_api::bind_core::shared_core();
+        let key = "Character.Debug.AlwaysTripOverFence";
+        let prev_debug = core.borrow().debug;
+        let (prev_opts, prev_opts_debug) = {
+            let opts = pz_core::debug::debug_options();
+            let o = opts.borrow();
+            (o.options.clone(), o.core_debug)
+        };
+        struct Restore(
+            bool,
+            Vec<(pz_core::debug::DebugOptionDef, pz_core::config::ConfigOption)>,
+            bool,
+        );
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                pz_lua_api::bind_core::shared_core().borrow_mut().debug = self.0;
+                let opts = pz_core::debug::debug_options();
+                let mut o = opts.borrow_mut();
+                o.options = std::mem::take(&mut self.1);
+                o.core_debug = self.2;
+            }
+        }
+        let _restore = Restore(prev_debug, prev_opts, prev_opts_debug);
+
+        {
+            let opts = pz_core::debug::debug_options();
+            let mut o = opts.borrow_mut();
+            o.core_debug = true;
+            o.set_definitions(vec![pz_core::debug::DebugOptionDef {
+                name: key.into(),
+                default_value: false,
+                debug_only: true,
+            }]);
+            o.set_boolean(key, true);
+        }
+
+        core.borrow_mut().debug = false;
+        let non_debug = FrameSim::capture();
+        assert!(!non_debug.debug_always_trip_over_fence());
+        assert!(!non_debug.player_context().debug_always_trip_over_fence());
+
+        core.borrow_mut().debug = true;
+        let debug_on = FrameSim::capture();
+        assert!(debug_on.debug_always_trip_over_fence());
+        assert!(debug_on.player_context().debug_always_trip_over_fence());
+
+        pz_core::debug::debug_options().borrow_mut().set_boolean(key, false);
+        assert!(!debug_on.debug_always_trip_over_fence());
     }
 }
