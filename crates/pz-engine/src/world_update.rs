@@ -935,8 +935,9 @@ impl IsoWorld {
         }
         self.hand_off_events();
         self.process_remove_items();
-        // TODO(port): `ProcessItems`: dispatch real item update/finishupdate
-        // and world-item updates. Saved codec items are not runtime ItemRefs.
+        for error in pz_lua_api::bind_process_items::process_items(&mut lua.thread, sim.multiplier) {
+            self.log_update_error(error);
+        }
         self.process_remove_items();
         self.process_iso_objects(lua);
         self.update_characters(lua, sim)?;

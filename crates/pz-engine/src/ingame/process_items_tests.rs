@@ -128,3 +128,88 @@ fn paused_ingame_frames_preserve_real_cell_and_item_sound_queues() {
     );
     assert!(cx.error.is_none(), "{:?}", cx.error.as_ref().map(|e| format!("{e:?}")));
 }
+
+#[test]
+fn process_items_ages_cooks_food_and_retires_cooled_base_items() {
+    let old_core = pz_lua_api::bind_core::shared_core();
+    let old_time = pz_lua_api::bind_climate::shared_game_time();
+    let old_world = pz_lua_api::bind_world::with_world(std::mem::take);
+    struct Restore {
+        core: Rc<RefCell<pz_core::core::Core>>,
+        time: Rc<RefCell<pz_core::game_time::GameTime>>,
+        world: pz_lua_api::bind_world::WorldState,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            pz_lua_api::bind_world::with_world(|w| *w = std::mem::take(&mut self.world));
+            pz_lua_api::bind_core::install_core(self.core.clone());
+            pz_lua_api::bind_climate::install_game_time(self.time.clone());
+        }
+    }
+    let _restore = Restore {
+        core: old_core,
+        time: old_time,
+        world: old_world,
+    };
+
+    pz_lua_api::bind_core::install_core(Rc::new(RefCell::new(pz_core::core::Core::default())));
+    let gt = Rc::new(RefCell::new(pz_core::game_time::GameTime::default()));
+    gt.borrow_mut().nights_survived = 0;
+    gt.borrow_mut().time_of_day = 10.0;
+    pz_lua_api::bind_climate::install_game_time(gt.clone());
+    pz_lua_api::bind_world::set_cell(Some(pz_world::IsoCell::default()));
+
+    let root = std::env::temp_dir();
+    let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&root)));
+    let mut lua = LuaManager::init(fs).unwrap();
+
+    // Heated normal item that should cool to 1.0 and retire from process_items.
+    let mut rock = InventoryItem::create(
+        Rc::new(ItemTemplate::new(ItemClass::Normal, "Base", "Rock")),
+        1,
+    );
+    rock.item_heat = 1.0005;
+    let rock_ref = pz_inventory::shared::new_item(rock);
+
+    // Perishable cookable food item that should cook when hot and stay in process_items.
+    let mut tpl = ItemTemplate::new(ItemClass::Food, "Base", "Steak");
+    tpl.days_fresh = 2;
+    tpl.days_totally_rotten = 4;
+    let mut steak = InventoryItem::create(Rc::new(tpl), 2);
+    if let pz_inventory::ItemKind::Food(food) = &mut steak.kind {
+        food.is_cookable = true;
+        food.minutes_to_cook = 10.0;
+        food.heat = 2.0;
+        food.last_cook_minute = 180; // (time_of_day 10.0 - 7.0) * 60
+        food.last_aged = 3.0;
+    }
+    let steak_ref = pz_inventory::shared::new_item(steak);
+
+    pz_lua_api::bind_world::with_world(|w| {
+        let q = &w.cell.as_ref().unwrap().process_items;
+        q.add(Some(rock_ref.clone()), false);
+        q.add(Some(steak_ref.clone()), false);
+    });
+
+    // Advance game clock by 15 minutes (0.25 hours -> minute 615).
+    gt.borrow_mut().time_of_day = 10.25;
+    let errors = pz_lua_api::bind_process_items::process_items(&mut lua.thread, 1.0);
+    assert!(errors.is_empty(), "{errors:?}");
+    pz_lua_api::bind_world::with_world(|w| {
+        w.cell.as_ref().unwrap().process_items.drain_remove();
+    });
+
+    assert!((rock_ref.borrow().item_heat - 1.0).abs() < 1e-5);
+    if let pz_inventory::ItemKind::Food(food) = &steak_ref.borrow().kind {
+        assert!(food.cooked, "steak should cook after 15 mins above heat 1.6");
+        assert!(food.cooking_time >= 15.0);
+        assert!(food.heat < 2.0, "steak heat should move toward ambient");
+    } else {
+        panic!("expected Food item");
+    }
+    pz_lua_api::bind_world::with_world(|w| {
+        let items = w.cell.as_ref().unwrap().process_items.items.borrow();
+        assert_eq!(items.len(), 1, "cooled rock retired, perishable steak kept");
+        assert!(Rc::ptr_eq(items[0].as_ref().unwrap(), &steak_ref));
+    });
+}
