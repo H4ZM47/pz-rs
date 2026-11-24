@@ -815,6 +815,54 @@ pub struct WorldVehicles {
     /// Active Bullet chunk maps `(wx_min, wy_min, width)` per player slot, kept
     /// synchronized with `ChunkStreamer`'s scrolling/teleporting chunk maps.
     bullet_chunk_maps: [Option<(i32, i32, i32)>; 4],
+    /// Live `(vehicle, seat)` for each local player seated in a runtime vehicle.
+    seated_players: [Option<(VehicleRef, i32)>; 4],
+    /// Remaining seconds until next meta world-sound repeat per virtual vehicle `sql_id`.
+    meta_sound_cooldowns: HashMap<i32, f32>,
+}
+
+/// Live vehicle environment snapshot for a seated player (`CharacterEnvironment`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SeatedVehicleEnv {
+    pub has_roof: bool,
+    pub windshield_destroyed: bool,
+    pub speed_kmh: f32,
+    pub inside_temperature: f32,
+}
+
+/// `VehicleCharacter` adapter backed by a local `LuaGameCharacterRef`.
+struct EnginePlayerPassenger {
+    character: pz_lua_api::bind_character_sim::LuaGameCharacterRef,
+}
+
+impl pz_vehicles::vehicle::VehicleCharacter for EnginePlayerPassenger {
+    fn is_god_mod(&self) -> bool {
+        self.character.try_borrow().is_ok_and(|c| {
+            c.cheats
+                .names()
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case("GOD_MODE"))
+        })
+    }
+
+    fn set_position(&self, x: f32, y: f32, z: f32) {
+        if let Ok(mut c) = self.character.try_borrow_mut() {
+            c.vars.x = x;
+            c.vars.y = y;
+            c.vars.z = z;
+        }
+    }
+
+    fn is_player(&self) -> bool {
+        true
+    }
+
+    fn exited_vehicle(&self) {
+        if let Ok(mut c) = self.character.try_borrow_mut() {
+            c.saved_vehicle = None;
+            c.environment.in_vehicle = false;
+        }
+    }
 }
 
 impl WorldVehicles {
@@ -905,6 +953,8 @@ impl WorldVehicles {
             sandbox_cfg,
             chunk_grid_width: chunk_map.2,
             bullet_chunk_maps: [Some(chunk_map), None, None, None],
+            seated_players: [const { None }; 4],
+            meta_sound_cooldowns: HashMap::new(),
         }
     }
 
@@ -1076,12 +1126,15 @@ impl WorldVehicles {
 
         pz_vehicles::lua::with_thread(&mut lua.thread, || {
             manager::process_add_vehicles();
+            self.seat_saved_players();
             manager::update_frame();
         });
 
         self.render_store
             .borrow_mut()
             .update_animations(unmodded_mult);
+
+        self.update_meta_vehicle_sounds(gt_state.time_delta);
 
         if let Some(ctx) = save_ctx {
             let queued = {
@@ -1367,6 +1420,8 @@ impl WorldVehicles {
         self.brand_new_chunks.clear();
         self.pending_chunks.clear();
         self.bullet_chunk_maps = [None; 4];
+        self.seated_players = [const { None }; 4];
+        self.meta_sound_cooldowns.clear();
         world_sim::destroy();
         world_sim::reset();
         manager::reset();
@@ -1376,6 +1431,184 @@ impl WorldVehicles {
         env::set_vehicle_ids(None);
         SHARED_BULLET.with(|b| *b.borrow_mut() = None);
         let _ = Bullet::install(Box::new(NoPhysics));
+    }
+
+    /// Seats any loaded local player that still has a pending `saved_vehicle`
+    /// into its matching live runtime [`BaseVehicle`] once that vehicle's chunk
+    /// has been adopted into `pz_vehicles::manager`.
+    pub fn seat_saved_players(&mut self) -> usize {
+        let vehicles = manager::cell_vehicles();
+        if vehicles.is_empty() {
+            return 0;
+        }
+        let mut seated = 0usize;
+        for idx in 0..4 {
+            let Some(player) = pz_lua_api::bind_players::player(idx) else {
+                continue;
+            };
+            let sv = match player.try_borrow() {
+                Ok(c) => c.saved_vehicle,
+                Err(_) => continue,
+            };
+            let Some(sv) = sv else { continue };
+            let seat = sv.seat as i32;
+            if seat < 0 {
+                if let Ok(mut c) = player.try_borrow_mut() {
+                    c.saved_vehicle = None;
+                }
+                continue;
+            }
+            // Pick the closest live vehicle within 2.5 tiles of `(sv.x, sv.y)`
+            // that has `seat`.
+            let best = vehicles
+                .iter()
+                .filter(|v| seat < v.max_passengers())
+                .map(|v| {
+                    let dx = v.x() - sv.x;
+                    let dy = v.y() - sv.y;
+                    (dx * dx + dy * dy, v)
+                })
+                .filter(|(d2, _)| *d2 <= 6.25)
+                .min_by(|(a, _), (b, _)| a.total_cmp(b))
+                .map(|(_, v)| v.clone());
+            let Some(v) = best else { continue };
+            let passenger = Rc::new(EnginePlayerPassenger {
+                character: player.clone(),
+            });
+            if v.set_passenger(seat, Some(passenger), pz_vehicles::jmath::Vector3f::default()) {
+                if sv.running && !v.is_engine_running() {
+                    v.engine_do_running();
+                }
+                self.seated_players[idx] = Some((v.clone(), seat));
+                if let Ok(mut c) = player.try_borrow_mut() {
+                    c.saved_vehicle = None;
+                    c.environment.in_vehicle = true;
+                }
+                seated += 1;
+            }
+        }
+        seated
+    }
+
+    /// Reads the live [`SeatedVehicleEnv`] for local player `player_idx` if
+    /// seated in a live runtime vehicle; clears stale seat tracking otherwise.
+    pub fn seated_vehicle_env(&mut self, player_idx: usize) -> Option<SeatedVehicleEnv> {
+        let (v, seat) = self.seated_players.get(player_idx)?.as_ref()?.clone();
+        if !manager::cell_contains(&v) || v.character(seat).is_none() {
+            self.seated_players[player_idx] = None;
+            return None;
+        }
+        let has_roof = v.script_passenger(seat, |p| p.has_roof).unwrap_or(true);
+        let windshield_destroyed = v.part_by_id("Windshield").is_some_and(|w| {
+            let st = w.st();
+            st.condition <= 0 || st.item.is_none()
+        });
+        let speed_kmh = v.current_speed_kmh();
+        let inside_temperature = v
+            .heater()
+            .and_then(|h| {
+                h.st()
+                    .mod_data
+                    .as_ref()
+                    .and_then(|t| t.get_str("temperature").as_num())
+            })
+            .unwrap_or(0.0) as f32;
+        Some(SeatedVehicleEnv {
+            has_roof,
+            windshield_destroyed,
+            speed_kmh,
+            inside_temperature,
+        })
+    }
+
+    /// Writes `saved_vehicle` back onto any currently seated local player so
+    /// `PlayerDB` persists their seat, vehicle coordinates, and engine state.
+    pub fn sync_saved_vehicles_for_save(&self) {
+        for (idx, slot) in self.seated_players.iter().enumerate() {
+            let Some((v, seat)) = slot.as_ref() else { continue };
+            let seat = *seat;
+            if !manager::cell_contains(v) || v.character(seat).is_none() {
+                continue;
+            }
+            let Some(player) = pz_lua_api::bind_players::player(idx) else {
+                continue;
+            };
+            if let Ok(mut c) = player.try_borrow_mut() {
+                c.saved_vehicle = Some(pz_characters::character::save::SavedVehicle {
+                    x: v.x(),
+                    y: v.y(),
+                    seat: seat as i16,
+                    running: v.is_engine_running(),
+                });
+            };
+        }
+    }
+
+    /// Emits periodic meta world sounds (`VehicleSounds` repeats) for off-cell
+    /// [`VirtualVehicleManager`] vehicles with an active alarm, siren, or
+    /// running engine.
+    pub fn update_meta_vehicle_sounds(&mut self, dt_secs: f32) -> usize {
+        const REPEAT_INTERVAL_SECS: f32 = 4.0;
+        let active: Vec<(i32, i32, i32, i32, i32, i32)> = virtual_vehicle::with_manager(|m| {
+            m.vehicles
+                .iter()
+                .filter_map(|vv| {
+                    let v = &vv.vehicle;
+                    let battery = v.battery_charge() > 0.0;
+                    let alarm = battery && v.has_alarm() && v.st().alarm.start_time > 0.0;
+                    let siren = battery && v.has_lightbar() && v.st().lightbar_siren_mode != 0;
+                    let (radius, volume) = if alarm || siren {
+                        (150, 150)
+                    } else if v.is_engine_running() {
+                        ((v.engine_loudness()).max(20), 50)
+                    } else {
+                        return None;
+                    };
+                    Some((
+                        vv.sql_id,
+                        vv.x.floor() as i32,
+                        vv.y.floor() as i32,
+                        vv.z.floor() as i32,
+                        radius,
+                        volume,
+                    ))
+                })
+                .collect()
+        });
+        let active_ids: HashSet<i32> = active.iter().map(|e| e.0).collect();
+        self.meta_sound_cooldowns
+            .retain(|id, _| active_ids.contains(id));
+
+        let mut due = Vec::new();
+        for (sql_id, x, y, z, radius, volume) in active {
+            let rem = self.meta_sound_cooldowns.entry(sql_id).or_insert(0.0);
+            *rem -= dt_secs.max(0.0);
+            if *rem <= 0.0 {
+                *rem = REPEAT_INTERVAL_SECS;
+                due.push((sql_id, x, y, z, radius, volume));
+            }
+        }
+        if due.is_empty() {
+            return 0;
+        }
+        let emitted = due.len();
+        with_world(|w| {
+            let Some(cell) = w.cell.as_ref() else {
+                return;
+            };
+            let mut effects = pz_world_sound::NoEffects;
+            let mut adapter = pz_world_sound::WorldSoundAdapter::new(cell, 2, &mut effects);
+            let sounds = pz_lua_api::bind_zombie::shared_world_sounds();
+            let mut sounds = sounds.borrow_mut();
+            for (sql_id, x, y, z, radius, volume) in due {
+                let source = pz_audio::world_sound::SoundSource {
+                    id: sql_id as u64,
+                    ..Default::default()
+                };
+                sounds.add_sound(&mut adapter, Some(source), x, y, z, radius, volume);
+            }
+        });
+        emitted
     }
 
     /// Access to the runtime's [`VehicleIds`] for `StreamCtx::vehicle_ids`.
@@ -1528,6 +1761,7 @@ impl IsoWorld {
         let Some(mut wv) = self.vehicles_runtime.take() else {
             return;
         };
+        wv.sync_saved_vehicles_for_save();
         if let (Some(sp_rc), Some(save_tables)) = (self.sprites.as_ref(), self.save_tables.as_ref())
         {
             let items: &dyn pz_world::save::items::ItemRegistry = self

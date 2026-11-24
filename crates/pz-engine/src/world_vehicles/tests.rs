@@ -490,3 +490,79 @@ fn chunk_unload_removes_runtime_vehicle_scrolls_bullet_and_flushes_db_removes() 
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn saved_vehicle_seating_populates_env_and_round_trips_for_save() {
+    pz_vehicles::manager::reset();
+    pz_lua_api::bind_players::reset();
+    let sm = pz_lua_api::bind_registry::shared_script_manager();
+    let mut player = pz_lua_api::bind_character_sim::LuaGameCharacter::new(
+        &sm,
+        pz_characters::CharacterKind::Player,
+    );
+    player.saved_vehicle = Some(pz_characters::character::save::SavedVehicle {
+        x: 50.0,
+        y: 60.0,
+        seat: 0,
+        running: true,
+    });
+    let player_ref = Rc::new(RefCell::new(player));
+    pz_lua_api::bind_players::set_player(0, Some(player_ref.clone()));
+
+    let v = BaseVehicle::new();
+    let engine = pz_vehicles::part::VehiclePart::new(&v);
+    engine.st_mut().part_id = Some("Engine".to_string());
+    v.add_part(engine);
+    {
+        let mut st = v.st_mut();
+        st.vehicle_id = 12;
+        st.x = 50.2;
+        st.y = 60.1;
+        st.z = 0.0;
+        st.passengers = vec![Default::default(); 2];
+    }
+    v.set_speed_kmh(42.5);
+    manager::cell_add(&v);
+    manager::process_add_vehicles();
+
+    let root = temp_dir("saved-vehicle-seating");
+    let game_dir = root.join("game");
+    let cache_dir = root.join("cache");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    let lua = fresh_lua(&game_dir, &cache_dir);
+    let sb = Rc::new(RefCell::new(pz_sandbox::SandboxOptions::default()));
+    let mut wv = WorldVehicles::init(
+        &game_dir,
+        &lua,
+        &sb,
+        None,
+        None,
+        Rc::new(RefCell::new(None)),
+        (0, 0, 10, 10),
+        (0, 0, 13),
+    );
+    // Re-add vehicle after init's reset.
+    manager::cell_add(&v);
+    manager::process_add_vehicles();
+
+    assert_eq!(wv.seat_saved_players(), 1);
+    assert!(v.character(0).is_some());
+    assert!(v.is_engine_running());
+    assert!(player_ref.borrow().saved_vehicle.is_none());
+
+    let env = wv.seated_vehicle_env(0).expect("seated player env");
+    assert!(env.has_roof);
+    assert!((env.speed_kmh - 42.5).abs() < 0.01);
+
+    wv.sync_saved_vehicles_for_save();
+    let saved = player_ref
+        .borrow()
+        .saved_vehicle
+        .expect("saved_vehicle repopulated for save");
+    assert_eq!(saved.seat, 0);
+    assert!(saved.running);
+
+    wv.reset();
+    pz_lua_api::bind_players::reset();
+    let _ = std::fs::remove_dir_all(&root);
+}
+

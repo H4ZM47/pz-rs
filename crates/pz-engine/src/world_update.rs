@@ -977,11 +977,15 @@ impl IsoWorld {
                         floor_world,
                         regions,
                         zombies,
+                        vehicles_runtime,
                         ..
                     } = self;
                     let Some(sprites) = sprites.as_mut() else {
                         return Ok(());
                     };
+                    let seated_env = vehicles_runtime
+                        .as_mut()
+                        .and_then(|wv| wv.seated_vehicle_env(i));
                     with_states_for_player(
                         sprites,
                         states_runtime,
@@ -992,7 +996,13 @@ impl IsoWorld {
                         active_player,
                         |w| {
                             if first_phase {
-                                fill_square_environment(&mut chr, w.cell, w.meta, regions.as_ref())?;
+                                fill_square_environment(
+                                    &mut chr,
+                                    w.cell,
+                                    w.meta,
+                                    regions.as_ref(),
+                                    seated_env,
+                                )?;
                             }
                             pz_lua_api::bind_states::with_state_registry(|reg| {
                                 let chars = chars.borrow();
@@ -1122,7 +1132,7 @@ impl IsoWorld {
                     for &id in &zombie_ids {
                         let Some(mut z) = StateWorld::<LuaItem>::take_character(w, id) else { continue };
                         z.preupdate_zombie();
-                        if let Err(error) = fill_square_environment(&mut z, w.cell, w.meta, regions.as_ref()) {
+                        if let Err(error) = fill_square_environment(&mut z, w.cell, w.meta, regions.as_ref(), None) {
                             StateWorld::<LuaItem>::put_character(w, z);
                             return Err(error.into());
                         }
@@ -2447,6 +2457,7 @@ impl IsoWorld {
 fn fill_square_environment(
     chr: &mut LuaGameCharacter, cell: &IsoCell, meta: &IsoMetaGrid,
     regions: Option<&Rc<RefCell<pz_world::isoregion::IsoRegions>>>,
+    seated_vehicle: Option<crate::world_vehicles::SeatedVehicleEnv>,
 ) -> HostResult<()> {
     let cur = chr.path.current_square;
     let sq_owner = cur.and_then(|(x, y, z)| cell.get_grid_square(x, y, z));
@@ -2477,6 +2488,19 @@ fn fill_square_environment(
         .filter(|s| s.room_id != -1)
         .map(|s| s.room_id as u64);
     e.stress_from_sounds = stress;
+    if let Some(sv) = seated_vehicle {
+        e.in_vehicle = true;
+        e.vehicle_has_roof = sv.has_roof;
+        e.vehicle_windshield_destroyed = sv.windshield_destroyed;
+        e.vehicle_speed_kmh = sv.speed_kmh;
+        e.vehicle_inside_temperature = sv.inside_temperature;
+    } else {
+        e.in_vehicle = false;
+        e.vehicle_has_roof = false;
+        e.vehicle_windshield_destroyed = false;
+        e.vehicle_speed_kmh = 0.0;
+        e.vehicle_inside_temperature = 0.0;
+    }
     Ok(())
 }
 
