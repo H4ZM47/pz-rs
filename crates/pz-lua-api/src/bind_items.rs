@@ -2010,6 +2010,31 @@ pub fn register(thread: &mut Thread) {
     }
     expose_class(thread, "zombie.inventory.types.Key", Some(INVENTORY_ITEM_CLASS))
         .static_fn("setHighlightDoors", set_highlight_doors);
+    // Declared on `InventoryItem`, so every item answers them.
+    let map = expose_class(thread, INVENTORY_ITEM_CLASS, Some(GAME_ENTITY_CLASS));
+    map.method("doBuildingStash", |c| {
+        let item = this(c)?;
+        let stash_name = item.borrow().stash_map.clone();
+        if let Some(name) = stash_name {
+            crate::bind_stash::prepare_building_stash(&name);
+        }
+        Ok(0)
+    });
+    map.method("getStashMap", |c| {
+        let item = this(c)?;
+        let v = item
+            .borrow()
+            .stash_map
+            .as_deref()
+            .map(Value::str)
+            .unwrap_or(Value::Nil);
+        Ok(c.push(v))
+    });
+    map.method("setStashMap", |c| {
+        let item = this(c)?;
+        item.borrow_mut().stash_map = str_arg(c, 1).map(|s| s.as_ref().to_owned());
+        Ok(0)
+    });
     // `getDeviceData` is `Radio`'s own method, so other items have none.
     let b = expose_class(
         thread,

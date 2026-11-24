@@ -3460,6 +3460,9 @@ impl IsoWorld {
         use pz_lua_api::world_save::{
             save_game_before_event, save_game_cell_actual as save_game_cell, save_game_finish, SaveReport,
         };
+        if let Some(stash) = pz_lua_api::bind_stash::snapshot_state() {
+            self.meta_world.stash = Some(stash);
+        }
         if let Some(rds) = pz_lua_api::bind_randomized_world::snapshot_unique_rds_spawned() {
             self.meta_world.unique_rds_spawned = rds;
         }
