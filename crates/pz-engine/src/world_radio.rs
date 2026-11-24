@@ -10,7 +10,7 @@
 //! up emitters, lamppost lights and caches on `IngameState.exit`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
@@ -44,6 +44,8 @@ use pz_sound::emitter::ParentObject;
 use pz_sound::params::FmodParameter;
 use pz_sound::world_emitters::EmitterRef;
 use pz_text::UIFont;
+use pz_vehicles::env::VehicleDevices;
+use pz_vehicles::{BaseVehicle, PartRef, VehiclePart};
 use pz_world::objects::{ObjectLoadHooks, OverlaySprite, SpriteName};
 use pz_world::sprite::SpriteIdx;
 use pz_world::world_state::{PowerSettings, WorldState};
@@ -394,6 +396,58 @@ impl ChatElementOwner for WorldDeviceChatOwner {
     }
 }
 
+/// `ChatElementOwner` for a live vehicle radio/TV [`VehiclePart`].
+struct VehiclePartChatOwner {
+    part: Weak<VehiclePart>,
+}
+
+impl ChatElementOwner for VehiclePartChatOwner {
+    fn get_x(&self) -> f32 {
+        self.part.upgrade().map_or(0.0, |p| p.vehicle().x())
+    }
+    fn get_y(&self) -> f32 {
+        self.part.upgrade().map_or(0.0, |p| p.vehicle().y())
+    }
+    fn get_z(&self) -> f32 {
+        self.part.upgrade().map_or(0.0, |p| p.vehicle().z())
+    }
+    fn get_square(&self) -> Option<ChatSquare> {
+        let part = self.part.upgrade()?;
+        let v = part.vehicle();
+        let (x, y, z) = (
+            pz_world::java::fastfloor(v.x()),
+            pz_world::java::fastfloor(v.y()),
+            pz_world::java::fastfloor(v.z()),
+        );
+        with_world(|w| {
+            let cell = w.cell.as_ref()?;
+            let sq = cell.get_grid_square(x, y, z)?;
+            let sq = sq.borrow();
+            let room = (sq.room_id != -1).then_some(sq.room_id as u64);
+            let building = sq
+                .associated_building
+                .or_else(|| {
+                    let meta = w.meta_grid.as_ref()?;
+                    sq.room_def(meta).and_then(|r| r.building)
+                })
+                .map(|b| b.0 as u64);
+            Some(ChatSquare { building, room })
+        })
+    }
+    fn kind(&self) -> ChatOwnerKind {
+        ChatOwnerKind::VehiclePart
+    }
+}
+
+/// Per-part runtime bookkeeping for a registered vehicle signal device
+/// (`VehiclePart` with `DeviceData`).
+struct VehicleDeviceEntry {
+    part: Weak<VehiclePart>,
+    two_way: bool,
+    _chat_owner: Rc<VehiclePartChatOwner>,
+    chat: Rc<RefCell<ChatElement>>,
+}
+
 /// Per-object runtime bookkeeping for a registered world `IsoWaveSignal`.
 struct WorldDeviceEntry {
     object: Weak<RefCell<IsoObject>>,
@@ -455,6 +509,8 @@ struct WorldRadioState {
     next_device_id: u64,
     world_devices: HashMap<DeviceId, WorldDeviceEntry>,
     object_to_id: HashMap<usize, DeviceId>,
+    vehicle_devices: HashMap<DeviceId, VehicleDeviceEntry>,
+    part_to_id: HashMap<usize, DeviceId>,
     item_devices: HashMap<DeviceId, Weak<RefCell<pz_inventory::InventoryItem>>>,
     item_to_id: HashMap<usize, DeviceId>,
     prev_equipped_radios: [Option<ItemRef>; MAX_PLAYERS],
@@ -474,6 +530,7 @@ enum EventTarget {
         pos: [f32; 3],
     },
     Vehicle {
+        id: DeviceId,
         pos: [f32; 3],
         device_lua: Value,
     },
@@ -489,6 +546,8 @@ impl WorldRadioState {
             next_device_id: 0,
             world_devices: HashMap::new(),
             object_to_id: HashMap::new(),
+            vehicle_devices: HashMap::new(),
+            part_to_id: HashMap::new(),
             item_devices: HashMap::new(),
             item_to_id: HashMap::new(),
             prev_equipped_radios: Default::default(),
@@ -708,6 +767,99 @@ impl EngineDeviceEnv {
             events: Vec::new(),
         }
     }
+
+    fn for_vehicle_part(
+        vehicle: &BaseVehicle,
+        part: &PartRef,
+        pool: Rc<RefCell<RadioEmitterPool>>,
+        owner: Option<DeviceId>,
+    ) -> Self {
+        let pos = [vehicle.x(), vehicle.y(), vehicle.z()];
+        Self {
+            parent: ParentKind::Vehicle,
+            mains: MainsPower::Vehicle {
+                uninstalled: part.is_inventory_item_uninstalled(),
+                has_power: vehicle.battery_charge() > 0.0,
+            },
+            iso_object: Some(IsoObjectPos {
+                x: pos[0],
+                y: pos[1],
+                z: pos[2],
+                character: false,
+            }),
+            parent_pos: pos,
+            has_sound_source: true,
+            in_room: false,
+            item_player_deaf: None,
+            audio: EngineRadioAudio::new(pool, owner),
+            events: Vec::new(),
+        }
+    }
+}
+
+/// Ensures `part` (if it currently owns `DeviceData`) is registered with both
+/// [`WorldRadioState`] and [`ZomboidRadio`]. Idempotent by `PartRef` identity.
+fn ensure_vehicle_part_registered(
+    radio: &Rc<RefCell<ZomboidRadio>>,
+    state: &Rc<RefCell<WorldRadioState>>,
+    part: &PartRef,
+) -> Option<DeviceId> {
+    let two_way = part.st().device_data.as_ref()?.two_way;
+    let key = Rc::as_ptr(part) as usize;
+    let existing = {
+        let st = state.borrow();
+        st.part_to_id.get(&key).copied().and_then(|id| {
+            let entry = st.vehicle_devices.get(&id)?;
+            entry
+                .part
+                .upgrade()
+                .is_some_and(|p| Rc::ptr_eq(&p, part))
+                .then_some((id, entry.two_way))
+        })
+    };
+    if let Some((id, prev_two_way)) = existing {
+        if prev_two_way != two_way {
+            if let Ok(mut r) = radio.try_borrow_mut() {
+                r.unregister_device(id, prev_two_way);
+                r.register_device(id, two_way);
+            }
+            if let Some(entry) = state.borrow_mut().vehicle_devices.get_mut(&id) {
+                entry.two_way = two_way;
+            }
+        }
+        return Some(id);
+    }
+
+    let chat_owner = Rc::new(VehiclePartChatOwner {
+        part: Rc::downgrade(part),
+    });
+    let weak_owner: Weak<dyn ChatElementOwner> =
+        Rc::downgrade(&chat_owner) as Weak<dyn ChatElementOwner>;
+    let chat = Rc::new(RefCell::new(ChatElement::new(
+        weak_owner,
+        5,
+        Some("device"),
+    )));
+
+    let id = {
+        let mut st = state.borrow_mut();
+        let id = st.alloc_id();
+        st.part_to_id.insert(key, id);
+        st.vehicle_devices.insert(
+            id,
+            VehicleDeviceEntry {
+                part: Rc::downgrade(part),
+                two_way,
+                _chat_owner: chat_owner,
+                chat,
+            },
+        );
+        id
+    };
+    if let Ok(mut r) = radio.try_borrow_mut() {
+        r.register_device(id, two_way);
+    }
+    Some(id)
 }
 
 impl DeviceEnv for EngineDeviceEnv {
@@ -882,25 +1034,33 @@ fn apply_device_events(
                 range,
             } => match chat_target {
                 ChatTarget::Device => {
-                    if let EventTarget::World(id) = &target {
-                        let chat = state.borrow().world_devices.get(id).map(|e| e.chat.clone());
-                        if let Some(chat) = chat {
-                            chat.borrow_mut().add_chat_line_full(
-                                &text,
-                                rgb[0],
-                                rgb[1],
-                                rgb[2],
-                                UIFont::Medium,
-                                range as f32,
-                                "default",
-                                true,
-                                true,
-                                true,
-                                true,
-                                true,
-                                true,
-                            );
+                    let chat = match &target {
+                        EventTarget::World(id) => {
+                            state.borrow().world_devices.get(id).map(|e| e.chat.clone())
                         }
+                        EventTarget::Vehicle { id, .. } => state
+                            .borrow()
+                            .vehicle_devices
+                            .get(id)
+                            .map(|e| e.chat.clone()),
+                        EventTarget::Item { .. } => None,
+                    };
+                    if let Some(chat) = chat {
+                        chat.borrow_mut().add_chat_line_full(
+                            &text,
+                            rgb[0],
+                            rgb[1],
+                            rgb[2],
+                            UIFont::Medium,
+                            range as f32,
+                            "default",
+                            true,
+                            true,
+                            true,
+                            true,
+                            true,
+                            true,
+                        );
                     }
                 }
                 ChatTarget::Player => {
@@ -1062,13 +1222,21 @@ fn apply_device_events(
                 }
             }
             DeviceEvent::ChatUpdate { history_range } => {
-                if let EventTarget::World(id) = &target {
-                    let chat = state.borrow().world_devices.get(id).map(|e| e.chat.clone());
-                    if let Some(chat) = chat {
-                        let mut c = chat.borrow_mut();
-                        c.set_history_range(history_range);
-                        c.update();
+                let chat = match &target {
+                    EventTarget::World(id) => {
+                        state.borrow().world_devices.get(id).map(|e| e.chat.clone())
                     }
+                    EventTarget::Vehicle { id, .. } => state
+                        .borrow()
+                        .vehicle_devices
+                        .get(id)
+                        .map(|e| e.chat.clone()),
+                    EventTarget::Item { .. } => None,
+                };
+                if let Some(chat) = chat {
+                    let mut c = chat.borrow_mut();
+                    c.set_history_range(history_range);
+                    c.update();
                 }
             }
             DeviceEvent::TvOverlay(opt_idx) => {
@@ -1224,6 +1392,17 @@ impl RadioWorld for EngineRadioWorld<'_> {
                 d.runtime.wave.has_player_in_range,
             ));
         }
+        if let Some(entry) = st.vehicle_devices.get(&id) {
+            let part = entry.part.upgrade()?;
+            let pst = part.st();
+            let d = pst.device_data.as_ref()?;
+            let v = part.vehicle();
+            return Some(device_view(
+                d,
+                [v.x(), v.y(), v.z()],
+                pst.has_player_in_range,
+            ));
+        }
         None
     }
 
@@ -1305,6 +1484,46 @@ impl RadioWorld for EngineRadioWorld<'_> {
                         item,
                         player,
                         pos,
+                    },
+                    env.events,
+                ));
+            }
+            return;
+        }
+        // Vehicle signal part (`VehiclePart` with `DeviceData`).
+        let part_ref = self
+            .state
+            .borrow()
+            .vehicle_devices
+            .get(&device)
+            .and_then(|e| e.part.upgrade());
+        if let Some(part) = part_ref {
+            let v = part.vehicle();
+            let pos = [v.x(), v.y(), v.z()];
+            let mut env = EngineDeviceEnv::for_vehicle_part(
+                &v,
+                &part,
+                self.emitters.clone(),
+                Some(device),
+            );
+            let listener = listener_index.map(|i| {
+                pz_lua_api::bind_players::player(i).map(|p| Listener {
+                    local: true,
+                    deaf: player_is_deaf(&p),
+                    equipped_parent: false,
+                })
+            });
+            let dd_opt = part.st_mut().device_data.take();
+            if let Some(mut dd) = dd_opt {
+                deliver_line(&mut dd, &mut env, listener, text, rgb, guid, codes, distance);
+                part.st_mut().device_data = Some(dd);
+            }
+            if !env.events.is_empty() {
+                self.state.borrow_mut().deferred_device_events.push((
+                    EventTarget::Vehicle {
+                        id: device,
+                        pos,
+                        device_lua: pz_vehicles::lua::part_value(&part),
                     },
                     env.events,
                 ));
@@ -1433,6 +1652,7 @@ impl DeviceEnv for LuaCallbackDeviceEnv {
 /// [`RadioLuaHooks`] connecting Lua `DeviceData` / `RecordedMedia` calls to
 /// the live engine world.
 struct EngineRadioLuaHooks {
+    radio: Weak<RefCell<ZomboidRadio>>,
     state: Rc<RefCell<WorldRadioState>>,
     emitters: Rc<RefCell<RadioEmitterPool>>,
     sprites: Option<Rc<RefCell<IsoSpriteManager>>>,
@@ -1492,28 +1712,20 @@ impl RadioLuaHooks for EngineRadioLuaHooks {
             DeviceOwner::Part(part) => {
                 let v = part.vehicle();
                 let pos = [v.x(), v.y(), v.z()];
-                let inner = EngineDeviceEnv {
-                    parent: ParentKind::Vehicle,
-                    mains: MainsPower::Vehicle {
-                        uninstalled: part.is_inventory_item_uninstalled(),
-                        has_power: v.battery_charge() > 0.0,
-                    },
-                    iso_object: Some(IsoObjectPos {
-                        x: pos[0],
-                        y: pos[1],
-                        z: pos[2],
-                        character: false,
-                    }),
-                    parent_pos: pos,
-                    has_sound_source: true,
-                    in_room: false,
-                    item_player_deaf: None,
-                    audio: EngineRadioAudio::new(self.emitters.clone(), None),
-                    events: Vec::new(),
-                };
+                let id = self
+                    .radio
+                    .upgrade()
+                    .and_then(|r| ensure_vehicle_part_registered(&r, &self.state, part));
+                let inner = EngineDeviceEnv::for_vehicle_part(
+                    &v,
+                    part,
+                    self.emitters.clone(),
+                    id,
+                );
                 Some(Box::new(LuaCallbackDeviceEnv {
                     inner,
                     target: EventTarget::Vehicle {
+                        id: id.unwrap_or(DeviceId(0)),
                         pos,
                         device_lua: bind_radio::device_owner_lua_value(owner),
                     },
@@ -1582,6 +1794,64 @@ fn character_from_value(v: &Value) -> Option<LuaGameCharacterRef> {
         _ => None,
     }
 }
+
+/// [`VehicleDevices`] bridge connecting `pz-vehicles` (`VehiclePart.updateSignalDevice`)
+/// to the live [`WorldRadio`] subsystem.
+struct EngineVehicleDevices {
+    radio: Weak<RefCell<ZomboidRadio>>,
+    state: Rc<RefCell<WorldRadioState>>,
+    emitters: Rc<RefCell<RadioEmitterPool>>,
+    render: Rc<RefCell<Option<WorldRender>>>,
+}
+
+impl VehicleDevices for EngineVehicleDevices {
+    fn device_env(
+        &self,
+        vehicle: &BaseVehicle,
+        part: &PartRef,
+    ) -> Option<Box<dyn DeviceEnv>> {
+        let radio = self.radio.upgrade()?;
+        let id = ensure_vehicle_part_registered(&radio, &self.state, part)?;
+        let pos = [vehicle.x(), vehicle.y(), vehicle.z()];
+        let inner = EngineDeviceEnv::for_vehicle_part(
+            vehicle,
+            part,
+            self.emitters.clone(),
+            Some(id),
+        );
+        Some(Box::new(LuaCallbackDeviceEnv {
+            inner,
+            target: EventTarget::Vehicle {
+                id,
+                pos,
+                device_lua: pz_vehicles::lua::part_value(part),
+            },
+            state: self.state.clone(),
+            render: self.render.clone(),
+        }))
+    }
+
+    fn local_players(&self) -> Vec<Option<(f32, f32)>> {
+        let n = (pz_lua_api::bind_players::num_players().max(0) as usize).min(MAX_PLAYERS);
+        let count = if n == 0 && pz_lua_api::bind_players::player(0).is_some() {
+            1
+        } else {
+            n
+        };
+        (0..count)
+            .map(|i| {
+                pz_lua_api::bind_players::player(i).and_then(|p| {
+                    let c = p.borrow();
+                    (!c.is_dead()).then_some((c.vars.x, c.vars.y))
+                })
+            })
+            .collect()
+    }
+}
+
+/// No-op [`VehicleDevices`] installed when the world radio is shut down.
+struct NoEngineVehicleDevices;
+impl VehicleDevices for NoEngineVehicleDevices {}
 
 /// [`ObjectLoadHooks`] supplying `IsoWaveSignal.cloneDeviceDataFromItem` and
 /// `ZomboidRadio.GetChannelList` during chunk loading (`with_stream`).
@@ -1721,6 +1991,7 @@ impl WorldRadio {
 
         bind_radio::install_text(Rc::new(EngineRadioText));
         bind_radio::install_hooks(Rc::new(EngineRadioLuaHooks {
+            radio: Weak::new(),
             state: state.clone(),
             emitters: emitters.clone(),
             sprites: sprites.clone(),
@@ -1759,6 +2030,19 @@ impl WorldRadio {
         LOUISVILLE_OBFUSCATION.with(|c| c.set(radio.louisville_obfuscation));
         let radio = Rc::new(RefCell::new(radio));
         bind_radio::install_radio(Some(radio.clone()));
+        bind_radio::install_hooks(Rc::new(EngineRadioLuaHooks {
+            radio: Rc::downgrade(&radio),
+            state: state.clone(),
+            emitters: emitters.clone(),
+            sprites: sprites.clone(),
+            render: render.clone(),
+        }));
+        pz_vehicles::env::set_devices(Rc::new(EngineVehicleDevices {
+            radio: Rc::downgrade(&radio),
+            state: state.clone(),
+            emitters: emitters.clone(),
+            render,
+        }));
 
         // Install the ten-minute `GameTime` hook (`ZomboidRadio.UpdateScripts`).
         let tick_radio = Rc::downgrade(&radio);
@@ -1791,6 +2075,7 @@ impl WorldRadio {
         };
         if let Err(e) = init_result {
             bind_radio::reset_world_bindings();
+            pz_vehicles::env::set_devices(Rc::new(NoEngineVehicleDevices));
             return Err(e.0);
         }
         Ok(wr)
@@ -1969,6 +2254,61 @@ impl WorldRadio {
         self.emitters.borrow_mut().return_for_device(id);
     }
 
+    /// Synchronizes registered vehicle signal parts against live
+    /// `pz_vehicles::manager::cell_vehicles()`: registers any part with
+    /// `DeviceData` and unregisters/cleans up any removed, unloaded, or
+    /// uninstalled part.
+    pub fn sync_vehicle_devices(&self) {
+        let mut live_ids = HashSet::new();
+        for vehicle in pz_vehicles::manager::cell_vehicles() {
+            for part in vehicle.parts() {
+                if part.st().device_data.is_some() {
+                    if let Some(id) =
+                        ensure_vehicle_part_registered(&self.radio, &self.state, &part)
+                    {
+                        live_ids.insert(id);
+                    }
+                }
+            }
+        }
+        let stale: Vec<DeviceId> = {
+            let st = self.state.borrow();
+            st.vehicle_devices
+                .keys()
+                .copied()
+                .filter(|id| !live_ids.contains(id))
+                .collect()
+        };
+        for id in stale {
+            let entry = {
+                let mut st = self.state.borrow_mut();
+                let entry = st.vehicle_devices.remove(&id);
+                st.part_to_id.retain(|_, v| *v != id);
+                entry
+            };
+            if let Some(entry) = entry {
+                self.radio
+                    .borrow_mut()
+                    .unregister_device(id, entry.two_way);
+                if let Some(part) = entry.part.upgrade() {
+                    let v = part.vehicle();
+                    let mut env = EngineDeviceEnv::for_vehicle_part(
+                        &v,
+                        &part,
+                        self.emitters.clone(),
+                        Some(id),
+                    );
+                    let dd_opt = part.st_mut().device_data.take();
+                    if let Some(mut dd) = dd_opt {
+                        dd.clean_sounds_and_emitter(&mut env);
+                        part.st_mut().device_data = Some(dd);
+                    }
+                }
+                self.emitters.borrow_mut().return_for_device(id);
+            }
+        }
+    }
+
     /// `IsoWaveSignal.update()` for every live world radio/TV, plus
     /// `Radio.update()` for each local player's equipped radio item.
     pub fn update_devices(
@@ -1977,6 +2317,7 @@ impl WorldRadio {
         sprites: Option<&Rc<RefCell<IsoSpriteManager>>>,
         render: &Rc<RefCell<Option<WorldRender>>>,
     ) {
+        self.sync_vehicle_devices();
         let player_pos = pz_lua_api::bind_players::player_instance().map(|p| {
             let c = p.borrow();
             (c.vars.x, c.vars.y)
@@ -2154,6 +2495,7 @@ impl WorldRadio {
         sprites: Option<&Rc<RefCell<IsoSpriteManager>>>,
         render: &Rc<RefCell<Option<WorldRender>>>,
     ) {
+        self.sync_vehicle_devices();
         {
             let mut radio = self.radio.borrow_mut();
             let mut world = EngineRadioWorld::new(
@@ -2229,21 +2571,33 @@ impl WorldRadio {
             .try_borrow()
             .map_or(2, |c| c.tile_scale)
             .max(1) as f32;
-        let devices: Vec<((i32, i32, i32), Rc<RefCell<ChatElement>>)> = {
+        let devices: Vec<([f32; 3], Rc<RefCell<ChatElement>>)> = {
             let st = self.state.borrow();
-            st.world_devices
+            let mut out: Vec<([f32; 3], Rc<RefCell<ChatElement>>)> = st
+                .world_devices
                 .values()
                 .filter(|e| e.object.strong_count() > 0 && e.chat.borrow().get_has_chat_to_display())
-                .map(|e| (e.pos, e.chat.clone()))
-                .collect()
+                .map(|e| {
+                    (
+                        [e.pos.0 as f32 + 0.5, e.pos.1 as f32 + 0.5, e.pos.2 as f32],
+                        e.chat.clone(),
+                    )
+                })
+                .collect();
+            for e in st.vehicle_devices.values() {
+                if !e.chat.borrow().get_has_chat_to_display() {
+                    continue;
+                }
+                if let Some(part) = e.part.upgrade() {
+                    let v = part.vehicle();
+                    out.push(([v.x(), v.y(), v.z()], e.chat.clone()));
+                }
+            }
+            out
         };
         for (pos, chat) in devices {
-            let (sx, sy) = pz_lua_api::hud::screen_iso::iso_to_screen(
-                player,
-                pos.0 as f32 + 0.5,
-                pos.1 as f32 + 0.5,
-                pos.2 as f32,
-            );
+            let (sx, sy) =
+                pz_lua_api::hud::screen_iso::iso_to_screen(player, pos[0], pos[1], pos[2]);
             // Offset dialogue above the radio/TV tile (`IsoWaveSignal.renderlast`).
             let y = sy - (32.0 * tile_scale) / zoom;
             ChatElement::render_batched(&chat, player, sx as i32, y as i32, false);
@@ -2255,12 +2609,15 @@ impl WorldRadio {
     pub fn reset(&self, render: &Rc<RefCell<Option<WorldRender>>>) {
         LOUISVILLE_OBFUSCATION.with(|c| c.set(self.radio.borrow().louisville_obfuscation));
         bind_radio::reset_world_bindings();
+        pz_vehicles::env::set_devices(Rc::new(NoEngineVehicleDevices));
         self.device_data_cache.borrow_mut().clear();
 
         // Remove all TV lamppost lights from the renderer.
         let lamppost_keys: Vec<u64> = {
             let mut st = self.state.borrow_mut();
             st.object_to_id.clear();
+            st.part_to_id.clear();
+            st.vehicle_devices.clear();
             st.item_to_id.clear();
             st.item_devices.clear();
             st.prev_equipped_radios = Default::default();
@@ -2373,6 +2730,7 @@ impl IsoWorld {
             radio.reset(&self.render);
         } else {
             bind_radio::reset_world_bindings();
+            pz_vehicles::env::set_devices(Rc::new(NoEngineVehicleDevices));
         }
     }
 }

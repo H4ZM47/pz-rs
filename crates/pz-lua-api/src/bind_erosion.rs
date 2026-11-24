@@ -43,6 +43,28 @@ struct Instance {
 
 thread_local! {
     static INSTANCE: RefCell<Option<Instance>> = const { RefCell::new(None) };
+    static STATIC_RAND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `LuaManager.GlobalObject.useStaticErosionRand(boolean)`: mirrors
+/// `ErosionData.staticRand` and updates the live `ErosionMain` settings when present.
+pub fn set_static_erosion_rand(enabled: bool) {
+    STATIC_RAND.with(|f| f.set(enabled));
+    if let Some((main, _)) = instance() {
+        if let Ok(mut m) = main.try_borrow_mut() {
+            m.settings.static_rand = enabled;
+        }
+    }
+}
+
+/// Current `useStaticErosionRand` flag.
+pub fn static_erosion_rand() -> bool {
+    if let Some((main, _)) = instance() {
+        if let Ok(m) = main.try_borrow() {
+            return m.settings.static_rand;
+        }
+    }
+    STATIC_RAND.with(|f| f.get())
 }
 
 /// Makes `main` the `ErosionMain.instance` Lua sees (`None`: `Reset()`).
