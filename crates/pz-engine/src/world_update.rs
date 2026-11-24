@@ -2573,6 +2573,9 @@ impl IsoWorld {
                     let sim = FrameSim::capture();
                     self.with_population(&sim, &mut |pop, host, _| pop.save(&host.zombies.infos()));
                     self.update_regions(None);
+                    // `WorldMapVisited.SaveAll()`: explored areas reach disk
+                    // before `IngameState.exit` runs `WorldMap.Reset()`.
+                    pz_lua_api::worldmap::visited::save_all();
                     with_save_game(self, sandbox, can_save_players, |g| {
                         save_game_finish(g, &mut hooks, &mut report)
                     });

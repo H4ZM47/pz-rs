@@ -144,6 +144,14 @@ pub fn end_frame() {
     pz_worldmap::pyramid::end_frame();
 }
 
+/// The parts of `WorldMap.Reset()` this port has: `WorldMapVisited.Reset`
+/// and `MapFiles.Reset`. (`WorldMapSettings`, `WorldMapData`,
+/// `WorldMapImages`, `MapSymbolDefinitions` and `MapItem` keep their state.)
+pub fn reset() {
+    visited::reset();
+    host::reset_current_map_files();
+}
+
 /// Install the file system the map resolves `media/...` names with.
 pub fn install_fs(fs: Rc<std::cell::RefCell<pz_fs::GameFs>>) {
     FS.with(|f| *f.borrow_mut() = Some(fs));
