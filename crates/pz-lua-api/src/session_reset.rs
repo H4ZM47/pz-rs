@@ -34,6 +34,7 @@ pub fn reset_session_bindings() {
     crate::bind_climate::reset_session_handles();
     crate::bind_puddles::reset_session_handles();
     crate::bind_template_text::reset();
+    crate::bind_spawn_points::reset();
 
     crate::bind_tile_overlays::shared_tile_overlays().borrow_mut().reset();
     crate::bind_tile_overlays::shared_container_overlays().borrow_mut().reset();

@@ -1036,7 +1036,9 @@ impl IsoWorld {
                 height: h,
             });
         }
-        // TODO(port): `SpawnPoints.initSinglePlayer`.
+        // `SpawnPoints.initSinglePlayer`: resolve starter spawn buildings on
+        // the meta grid before world generation and chunk streaming.
+        pz_lua_api::bind_spawn_points::init_single_player(&mut lua.thread);
         // `WorldStreamer.instance.create()` and
         // `CellLoader.LoadCellBinaryChunk`: the world generator for
         // brand-new chunks, then player 0's chunk map around (worldX, worldY).

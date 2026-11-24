@@ -73,6 +73,7 @@ pub mod bind_save;
 pub mod bind_scripts;
 pub mod bind_search_mode;
 pub mod bind_skills;
+pub mod bind_spawn_points;
 pub mod bind_survival_guide;
 pub mod bind_xui;
 pub mod bind_states;
@@ -294,6 +295,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_broken_fences::register(&mut mgr.thread);
     bind_object_picker::register(&mut mgr.thread);
     bind_safehouse::register(&mut mgr.thread);
+    bind_spawn_points::register(&mut mgr.thread);
     world_menu_logic::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
     bind_template_text::register(
