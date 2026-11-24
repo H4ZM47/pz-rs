@@ -485,7 +485,7 @@ mod session_reset_tests {
         let mut cx = StateCx {
             lua: &mut lua, launch: &launch, screen_w: 1, screen_h: 1,
             multiplier: 1.0, time_delta: 1.0 / 30.0, world: &mut world,
-            shutdown: false, error: &mut error, retired_models: &mut retired_models,
+            shutdown: false, error: &mut error, retired_models: &mut retired_models, gpu: None,
         };
         machine.update(&mut cx);
         assert!(initializer_called.get(), "failure did not reach the late initialization boundary");

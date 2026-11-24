@@ -71,6 +71,68 @@ pub fn clutter(field: &str) -> Vec<String> {
     })
 }
 
+/// Pick one random item from clutter static field `field` using the shared
+/// `RandStandard` generator (`RandomizedWorldBase.get*ClutterItem()`).
+pub fn clutter_item(field: &str) -> Option<String> {
+    let items = clutter(field);
+    if items.is_empty() {
+        return None;
+    }
+    let idx = pz_core::random::with_standard(|r| r.next(items.len() as i32)) as usize;
+    items.into_iter().nth(idx)
+}
+
+/// The `(method, static field)` pairs of `get*ClutterItem()` methods on
+/// `RandomizedWorldBase` (`()Ljava/lang/String;` calling a clutter list getter
+/// or reading a static `ArrayList` field), plus fallback `<getter>Item` names
+/// for every `(getter, field)` pair in `getters`.
+pub fn clutter_item_getters_from_class(
+    class: &ClassFile,
+    getters: &[(String, String)],
+) -> Vec<(String, String)> {
+    let by_getter: HashMap<&str, &str> = getters
+        .iter()
+        .map(|(m, f)| (m.as_str(), f.as_str()))
+        .collect();
+    let mut out = Vec::new();
+    for m in &class.methods {
+        if m.descriptor != "()Ljava/lang/String;" {
+            continue;
+        }
+        let Some(code) = &m.code else { continue };
+        // Scan for getstatic (0xb2) of a static ArrayList field or
+        // invokevirtual/invokestatic (0xb6/0xb8) calling one of the clutter
+        // list getters.
+        let mut i = 0usize;
+        let mut found: Option<String> = None;
+        while i + 2 < code.len() {
+            let op = code[i];
+            if op == 0xb2 || op == 0xb6 || op == 0xb8 {
+                let idx = u16::from_be_bytes([code[i + 1], code[i + 2]]);
+                if let Ok(r) = class.member_ref(idx) {
+                    if r.class == class.this_class {
+                        if op == 0xb2 && r.descriptor == "Ljava/util/ArrayList;" {
+                            found = Some(r.name);
+                            break;
+                        }
+                        if (op == 0xb6 || op == 0xb8) && r.descriptor == "()Ljava/util/ArrayList;" {
+                            if let Some(&field) = by_getter.get(r.name.as_str()) {
+                                found = Some(field.to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+        if let Some(field) = found {
+            out.push((m.name.clone(), field));
+        }
+    }
+    out
+}
+
 fn list_of(field: &str) -> Rc<JavaList> {
     LISTS.with(|l| {
         l.borrow_mut()
@@ -83,12 +145,40 @@ fn list_of(field: &str) -> Rc<JavaList> {
 /// The class and its getters (`getters` from
 /// [`clutter_getters_from_class`]); `IsoWorld.getRandomizedWorldBase`.
 pub fn register(thread: &mut Thread, getters: &[(String, String)]) {
+    register_with_items(thread, getters, &[]);
+}
+
+/// [`register`] with explicit `get*ClutterItem()` mappings read from
+/// `projectzomboid.jar` (falling back to `<getter>Item` for every clutter list
+/// getter not already listed).
+pub fn register_with_items(
+    thread: &mut Thread,
+    getters: &[(String, String)],
+    item_getters: &[(String, String)],
+) {
     let b = expose_class(thread, CLASS, Some("java.lang.Object"));
     for (method, field) in getters {
         let field = field.clone();
         b.method(method, move |c| {
             crate::expose::this::<LuaRandomizedWorldBase>(c)?;
             Ok(c.push(Value::Object(list_of(&field))))
+        });
+    }
+    let mut registered_items: Vec<(String, String)> = item_getters.to_vec();
+    for (method, field) in getters {
+        let item_method = format!("{method}Item");
+        if !registered_items.iter().any(|(m, _)| m == &item_method) {
+            registered_items.push((item_method, field.clone()));
+        }
+    }
+    for (method, field) in registered_items {
+        b.method(&method, move |c| {
+            crate::expose::this::<LuaRandomizedWorldBase>(c)?;
+            let v = match clutter_item(&field) {
+                Some(s) => Value::str(&s),
+                None => Value::Nil,
+            };
+            Ok(c.push(v))
         });
     }
     let w = expose_class(thread, "zombie.iso.IsoWorld", Some("java.lang.Object"));
@@ -109,11 +199,16 @@ pub fn register(thread: &mut Thread, getters: &[(String, String)]) {
 
 /// [`register`] with the getters read from `projectzomboid.jar`.
 pub fn register_from_jar(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
-    let getters = jar
-        .and_then(|j| pz_classfile::load_class(j, &CLASS.replace('.', "/")).ok())
-        .map(|c| clutter_getters_from_class(&c))
+    let class = jar.and_then(|j| pz_classfile::load_class(j, &CLASS.replace('.', "/")).ok());
+    let getters = class
+        .as_ref()
+        .map(clutter_getters_from_class)
         .unwrap_or_default();
-    register(thread, &getters);
+    let item_getters = class
+        .as_ref()
+        .map(|c| clutter_item_getters_from_class(c, &getters))
+        .unwrap_or_default();
+    register_with_items(thread, &getters, &item_getters);
 }
 
 #[cfg(test)]
@@ -142,9 +237,13 @@ mod tests {
             l:add("Base.Hat")
             assert(rwb:getBarnClutterAgain():size() == 2)
             assert(rwb:getBBQClutter():size() == 0)
+            assert(rwb:getBarnClutterItem() == "Base.Hat")
+            assert(rwb:getBBQClutterItem() == nil)
         "#;
         let f = pz_kahlua::stdlib::load_string(src, Some("test"), t.globals().clone()).unwrap();
         t.call(&f, &[]).unwrap();
         assert_eq!(clutter("barnClutter"), ["Base.Hat", "Base.Hat"]);
+        assert_eq!(clutter_item("barnClutter").as_deref(), Some("Base.Hat"));
+        assert_eq!(clutter_item("bbqClutter"), None);
     }
 }

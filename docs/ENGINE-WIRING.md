@@ -882,8 +882,10 @@ all installed assets, render paths or foreign platforms.
 - [ ] `ItemPickerJava.KeyNamer.nameKey(item, square)` when keys spawn:
       `bind_key_namer::key_namer().key_name_translation(&square)` with a
       `pz_inventory::key_namer::KeySquare` over the square.
-- [ ] Story clutter: `RandomizedWorldBase.get*ClutterItem()` reads
-      `bind_randomized_world::clutter(field)`.
+- [x] Story clutter: `RandomizedWorldBase.get*ClutterItem()` and
+      `bind_randomized_world::clutter_item(field)` pick a random entry from
+      `bind_randomized_world::clutter(field)` via `RandStandard` (discovered
+      from `projectzomboid.jar` or derived as `<getter>Item`).
 - [ ] `MapObjects.newGridSquare` / `loadGridSquare` on brand-new / loaded
       squares: call `bind_map_objects::on_new_callbacks(sprite)` /
       `on_load_callbacks(sprite)` with each object (needs an `IsoObject`
@@ -1362,15 +1364,11 @@ registered):
       writes `thumb.png`, then the renderer reloads that texture.
       `map_animals.bin` and the queued `metagrid/metacell_*.bin` are
       written with `map_zone.bin` (#167).
-      `capture_thumbnail(player)`: set the player's zoom and target zoom
-      to 1 (camera zoom, offscreen size), centre the camera, render that
-      player's world frame into the offscreen buffer (no screen pass, no
-      UI) and submit it, then return
-      `pz_engine::save_thumbnail::capture_thumbnail(gpu, PlayerScreen
-      {screen left/top/width/height of player}, PlayerScreen{.. of player
-      0}, ScreenParams{player's desaturation, timer})`; restore the old
-      zoom and centre again; the next frame redraws screen and UI, and
-      reload the `thumb.png` texture after `save_game` writes it (#173).
+      `capture_thumbnail(player)` is wired through `QuitSaveHooks` (`save_on_quit`,
+      `save_on_window_close`, `save_during_play`) to
+      `save_thumbnail::capture_for_player` using `StateCx.gpu` / `GameWindow.gpu`,
+      writing `thumb.png` into the save folder; offscreen zoom-1 re-render
+      and `thumb.png` texture reload remain open (#173).
 - [x] Game load (`IsoWorld.init`): `world_gen.load_file(save_dir)`
       where `WorldGenParams.INSTANCE.load()` runs; after
       `GlobalModData.init`, `instance_tracker.load_file(save_dir,
@@ -1964,12 +1962,10 @@ registered):
       melee aim outline (`highlightTargets`/`highlightMeleeTargets`) needs
       the melee `calculateHitInfoList`, and the ballistics/ragdoll debug
       outlines.
-- [ ] Held/attached item textures: once the slot is built (and each frame
-      before drawing it) `item_texture::render_equipped_textures_with(slot,
-      exists, file, gpu, tm)` renders the dirty initializers (tint/TINT
-      mask, weapon blood, fluid); on `postUpdateEquippedTextures` (blood or
-      fluid changed) call `inst.refresh_texture_init(held.texture_init())`
-      on the hand models; build `HeldItem`s `with_fluid(ctx)` (#94).
+- [x] Held/attached item textures: `WorldModels::prepare` runs
+      `item_texture::render_equipped_textures_with` for each character slot
+      and `WorldModels::build_equipped` builds `HeldItem`s `with_fluid(entity)`;
+      incremental `postUpdateEquippedTextures` refresh remains open (#94).
 - [ ] Placed items: `world_item::item_params_with_fluid` with
       `item.get_fluid_container(ctx)` (else the world item's) for the
       `_Fluid` model and the fluid overlay; draw the atlas jobs with
@@ -2125,7 +2121,7 @@ registered):
 
 ## Cleanups
 - [x] Fold bind_vehicles' item subset into the full item bindings (#86).
-- [ ] Convert remaining bare prints to DebugLog (#66 meta_grid.rs, #67
+- [x] Convert remaining bare prints to DebugLog (#66 meta_grid.rs, #67
       meta_zones.rs/zone_save.rs) (#69).
 
 ## World map

@@ -600,7 +600,13 @@ impl GameState for IngameState {
             // `PlayerDB.saveLocalPlayersForce()`, `GameWindow.save(true)`,
             // `OnPostSave`.
             if let Some(w) = cx.world.as_mut() {
-                if let Err(error) = w.save_on_quit(cx.lua) {
+                let (screen_w, screen_h) = (cx.screen_w, cx.screen_h);
+                let mut capture = |player: usize| {
+                    let gpu = cx.gpu.as_deref_mut()?;
+                    let num_players = pz_lua_api::bind_players::num_players().max(1) as usize;
+                    crate::save_thumbnail::capture_for_player(gpu, player, num_players, screen_w, screen_h)
+                };
+                if let Err(error) = w.save_on_quit_with_thumbnail(cx.lua, Some(&mut capture)) {
                     crate::failure::record_first(cx.error, (format!("PlayerDB save host failure: {error}")).into());
                     return StateAction::Remain;
                 }
@@ -650,7 +656,13 @@ impl GameState for IngameState {
         // asked for during this update.
         if pz_lua_api::bind_game_window::take_save_request() {
             if let Some(w) = cx.world.as_mut() {
-                if let Err(error) = w.save_during_play(cx.lua) {
+                let (screen_w, screen_h) = (cx.screen_w, cx.screen_h);
+                let mut capture = |player: usize| {
+                    let gpu = cx.gpu.as_deref_mut()?;
+                    let num_players = pz_lua_api::bind_players::num_players().max(1) as usize;
+                    crate::save_thumbnail::capture_for_player(gpu, player, num_players, screen_w, screen_h)
+                };
+                if let Err(error) = w.save_during_play_with_thumbnail(cx.lua, Some(&mut capture)) {
                     crate::failure::record_first(cx.error, (format!("GameWindow.save host failure: {error}")).into());
                     return StateAction::Remain;
                 }

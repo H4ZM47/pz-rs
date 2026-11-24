@@ -2663,13 +2663,23 @@ fn fire_player_events(
 /// The engine saves chunks and population between the borrow-scoped file
 /// phases below. Lua events run directly between those scopes, while
 /// their live world, `Core` and `GameTime` remain accessible.
-#[derive(Default)]
-struct QuitSaveHooks;
+/// Callback capturing `SavefileThumbnail.create(player)` pixels during save.
+pub type ThumbnailCapture<'a> =
+    &'a mut dyn FnMut(usize) -> Option<pz_core::thumbnail::Thumbnail>;
 
-impl pz_lua_api::world_save::SaveGameHooks for QuitSaveHooks {
+#[derive(Default)]
+struct QuitSaveHooks<'a> {
+    capture: Option<ThumbnailCapture<'a>>,
+}
+
+impl pz_lua_api::world_save::SaveGameHooks for QuitSaveHooks<'_> {
     /// Already done after `OnSave` by [`IsoWorld::save_on_quit`], before
     /// the cell's files (the streamer borrows the same live meta grid).
     fn save_chunks(&mut self, _meta: &IsoMetaGrid) {}
+
+    fn capture_thumbnail(&mut self, player: usize) -> Option<pz_core::thumbnail::Thumbnail> {
+        self.capture.as_mut().and_then(|f| f(player))
+    }
 }
 
 /// `f` with the save's view of the world. The live meta grid is lent only
@@ -2725,17 +2735,38 @@ impl IsoWorld {
     /// observes the live world after the prelude and before the chunks,
     /// cell and population, so its changes reach the saved files.
     pub fn save_on_quit(&mut self, lua: &mut LuaManager) -> pz_characters::character::save::CharacterPersistenceResult<()> {
-        self.save_quit_phases(lua, false)
+        self.save_on_quit_with_thumbnail(lua, None)
+    }
+
+    pub fn save_on_quit_with_thumbnail(
+        &mut self,
+        lua: &mut LuaManager,
+        thumbnail: Option<ThumbnailCapture<'_>>,
+    ) -> pz_characters::character::save::CharacterPersistenceResult<()> {
+        self.save_quit_phases(lua, false, thumbnail)
     }
 
     /// The first post-save block of `GameWindow.exit` checks the current
     /// cell after saving. App.close performs the second, independent check.
     /// Ordinary IngameState quit retains its existing unconditional callback.
     pub(crate) fn save_on_window_close(&mut self, lua: &mut LuaManager) -> pz_characters::character::save::CharacterPersistenceResult<()> {
-        self.save_quit_phases(lua, true)
+        self.save_on_window_close_with_thumbnail(lua, None)
     }
 
-    fn save_quit_phases(&mut self, lua: &mut LuaManager, require_current_cell: bool) -> pz_characters::character::save::CharacterPersistenceResult<()> {
+    pub(crate) fn save_on_window_close_with_thumbnail(
+        &mut self,
+        lua: &mut LuaManager,
+        thumbnail: Option<ThumbnailCapture<'_>>,
+    ) -> pz_characters::character::save::CharacterPersistenceResult<()> {
+        self.save_quit_phases(lua, true, thumbnail)
+    }
+
+    fn save_quit_phases(
+        &mut self,
+        lua: &mut LuaManager,
+        require_current_cell: bool,
+        thumbnail: Option<ThumbnailCapture<'_>>,
+    ) -> pz_characters::character::save::CharacterPersistenceResult<()> {
         let sim = FrameSim::capture();
         let sandbox = self.sandbox_save_bytes(lua);
         // `PlayerDB.saveLocalPlayersForce()`, then `canSavePlayers = false`.
@@ -2760,7 +2791,7 @@ impl IsoWorld {
             self.log_update_error(format!("ImportantAreaManager.save: {e}"));
         }
         // `saveLocalPlayersForce` above already queued them.
-        let mut report = self.game_window_save(lua, &sandbox, false)?;
+        let mut report = self.game_window_save(lua, &sandbox, false, thumbnail)?;
         // Ordinary quitting keeps its callback even when saving is disabled
         // or the prelude threw. Window close rereads currentCell at this
         // separate native block. The WORLD borrow ends before callbacks run.
@@ -2833,9 +2864,17 @@ impl IsoWorld {
     /// `IsoCell.save` asks `PlayerDB.savePlayers()` with
     /// `canSavePlayers`, which the world start sets.
     pub fn save_during_play(&mut self, lua: &mut LuaManager) -> pz_characters::character::save::CharacterPersistenceResult<()> {
+        self.save_during_play_with_thumbnail(lua, None)
+    }
+
+    pub fn save_during_play_with_thumbnail(
+        &mut self,
+        lua: &mut LuaManager,
+        thumbnail: Option<ThumbnailCapture<'_>>,
+    ) -> pz_characters::character::save::CharacterPersistenceResult<()> {
         let sandbox = self.sandbox_save_bytes(lua);
         let can_save_players = self.player_db.as_ref().is_some_and(|db| db.can_save_players);
-        let mut report = self.game_window_save(lua, &sandbox, can_save_players)?;
+        let mut report = self.game_window_save(lua, &sandbox, can_save_players, thumbnail)?;
         // `GlobalObject.save` and `wakeUp` log what `GameWindow.save` throws.
         for e in report.errors.drain(..) {
             self.log_update_error(e);
@@ -2861,6 +2900,7 @@ impl IsoWorld {
         lua: &mut LuaManager,
         sandbox: &[u8],
         can_save_players: bool,
+        thumbnail: Option<ThumbnailCapture<'_>>,
     ) -> pz_characters::character::save::CharacterPersistenceResult<pz_lua_api::world_save::SaveReport> {
         use pz_lua_api::world_save::{
             save_game_before_event, save_game_cell_actual as save_game_cell, save_game_finish, SaveReport,
@@ -2874,7 +2914,7 @@ impl IsoWorld {
                         s.save_chunk_maps(cell, ctx);
                     });
                     self.hand_off_events();
-                    let mut hooks = QuitSaveHooks;
+                    let mut hooks = QuitSaveHooks { capture: thumbnail };
                     match with_save_game(self, sandbox, can_save_players, |g| save_game_cell(g,&mut hooks,&mut report)) {
                         Some(Ok(()))=>{},
                         Some(Err(error))=>return Err(error.into()),
@@ -3299,5 +3339,38 @@ mod quit_save_tests {
                 fail_prefix
             );
         }
+    }
+
+    #[test]
+    fn save_on_quit_with_thumbnail_writes_thumb_png() {
+        let (fixture, mut world, mut lua) = Fixture::new(false, "Sandbox", true);
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let player = Rc::new(RefCell::new(LuaGameCharacter::new(
+            &sm,
+            pz_characters::character::CharacterKind::Player,
+        )));
+        pz_lua_api::bind_players::set_player(0, Some(player));
+        struct ClearPlayer;
+        impl Drop for ClearPlayer {
+            fn drop(&mut self) {
+                pz_lua_api::bind_players::set_player(0, None);
+            }
+        }
+        let _clear = ClearPlayer;
+        let mut called = None;
+        let mut capture = |player: usize| {
+            called = Some(player);
+            Some(pz_core::thumbnail::Thumbnail {
+                width: 2,
+                height: 2,
+                rgba: vec![255; 2 * 2 * 4],
+            })
+        };
+        world
+            .save_on_quit_with_thumbnail(&mut lua, Some(&mut capture))
+            .unwrap();
+        assert_eq!(called, Some(0));
+        let thumb = std::fs::read(fixture.dir.join("thumb.png")).expect("thumb.png written");
+        assert!(thumb.starts_with(b"\x89PNG\r\n\x1a\n"));
     }
 }
