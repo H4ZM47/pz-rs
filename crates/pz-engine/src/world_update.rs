@@ -1513,20 +1513,245 @@ impl IsoWorld {
                 SimEvent::FadeIn(seconds) => {
                     pz_ui::with_ui(|m| m.fade(f64::from(seconds), false));
                 }
-                // The rest of `IsoPlayer.OnDeath()`: `OnPlayerDeath` for a
-                // local player, which opens the death screen
-                // (`ISPostDeathUI`). TODO(port): the `PlayerDied` music once
-                // all players are dead, leaving the vehicle,
-                // `removeSaveFile()`, `forceAwake()` for a player that
-                // becomes a zombie, `getMoodles().Update()` and
-                // `getCell().setDrag(null, index)`.
+                SimEvent::LevelPerk { perk, level, increased } if chr.is_some() => {
+                    let pv = pz_lua_api::bind_skills::perk_value(Some(&perk));
+                    lua.trigger_event(
+                        "LevelPerk",
+                        &[cv.clone(), pv, Value::Num(f64::from(level)), Value::Bool(increased)],
+                    );
+                }
+                SimEvent::LogLevelPerk { perk, level } if chr.is_some() => {
+                    let pv = pz_lua_api::bind_skills::perk_value(Some(&perk));
+                    lua.trigger_event(
+                        "LogLevelPerk",
+                        &[cv.clone(), pv, Value::Num(f64::from(level)), Value::Bool(false)],
+                    );
+                }
+                SimEvent::AddXp { perk, amount } if chr.is_some() => {
+                    let pv = pz_lua_api::bind_skills::perk_value(Some(&perk));
+                    lua.trigger_event(
+                        "AddXP",
+                        &[cv.clone(), pv, Value::Num(f64::from(amount))],
+                    );
+                }
+                SimEvent::GainExperienceLevelSound => {
+                    if let Some(actor) = chr {
+                        let (x, y, z) = {
+                            let c = actor.borrow();
+                            (c.vars.x, c.vars.y, c.vars.z)
+                        };
+                        pz_lua_api::bind_audio::sound_system()
+                            .borrow_mut()
+                            .play_world_clip("GainExperienceLevel", [x, y, z], true);
+                    }
+                }
+                SimEvent::PlayerVoiceSound(name) => {
+                    if let Some(actor) = chr {
+                        let (x, y, z) = {
+                            let c = actor.borrow();
+                            (c.vars.x, c.vars.y, c.vars.z)
+                        };
+                        pz_lua_api::bind_audio::sound_system()
+                            .borrow_mut()
+                            .play_world_clip(name, [x, y, z], true);
+                    }
+                }
+                SimEvent::PlayerVoiceSoundNamed(name) => {
+                    if let Some(actor) = chr {
+                        let (x, y, z) = {
+                            let c = actor.borrow();
+                            (c.vars.x, c.vars.y, c.vars.z)
+                        };
+                        pz_lua_api::bind_audio::sound_system()
+                            .borrow_mut()
+                            .play_world_clip(&name, [x, y, z], true);
+                    }
+                }
+                SimEvent::StopPlayerVoiceSound(name) => {
+                    if let Some(actor) = chr {
+                        let _ = pz_lua_api::bind_eat::apply_audio_event(
+                            actor,
+                            &SimEvent::StopSound(name),
+                        );
+                    }
+                }
+                SimEvent::MoodleWiggle(moodle) => {
+                    let idx = chr
+                        .map(|c| c.borrow().player.player_index.max(0) as usize)
+                        .unwrap_or(0);
+                    pz_lua_api::hud::wiggle_moodle(idx, &moodle.name);
+                }
+                SimEvent::ClothingUpdated if chr.is_some() => {
+                    lua.trigger_event("OnClothingUpdated", std::slice::from_ref(&cv));
+                }
+                SimEvent::AiStateChange { current, previous } if chr.is_some() => {
+                    let (cur_v, prev_v) = pz_lua_api::bind_states::with_state_registry(|reg| {
+                        (
+                            pz_lua_api::bind_states::state_value(
+                                current.and_then(|id| reg.get(id.0)),
+                            ),
+                            pz_lua_api::bind_states::state_value(
+                                previous.and_then(|id| reg.get(id.0)),
+                            ),
+                        )
+                    });
+                    lua.trigger_event("OnAIStateChange", &[cv.clone(), cur_v, prev_v]);
+                }
+                SimEvent::WorldSound { radius, volume } => {
+                    if let Some(actor) = chr {
+                        let ghost = actor.borrow().is_ghost_mode(sim);
+                        if !ghost {
+                            let request = actor.borrow().world_sound_request(radius, volume, false);
+                            self.interaction_noise(lua, request, NoiseKind::Once);
+                        }
+                    }
+                }
+                SimEvent::AddBloodSplat { kind } => {
+                    if let Some(actor) = chr {
+                        let (current, x, y, zz) = {
+                            let c = actor.borrow();
+                            (c.path.current_square, c.vars.x, c.vars.y, c.vars.z)
+                        };
+                        if let Err(e) = self.splat_blood_floor_kind(current, x, y, zz, kind) {
+                            self.log_update_error(format!("IsoGameCharacter.splatBloodFloor: {e:?}"));
+                        }
+                    }
+                }
+                SimEvent::WeaponSwing if chr.is_some() => {
+                    let wv = chr
+                        .unwrap()
+                        .borrow()
+                        .items
+                        .primary_hand_item()
+                        .map_or(Value::Nil, |i| pz_lua_api::bind_items::item_value(&i));
+                    lua.trigger_event("OnWeaponSwing", &[cv.clone(), wv]);
+                }
+                SimEvent::WeaponSwingHitPoint if chr.is_some() => {
+                    let wv = chr
+                        .unwrap()
+                        .borrow()
+                        .items
+                        .primary_hand_item()
+                        .map_or(Value::Nil, |i| pz_lua_api::bind_items::item_value(&i));
+                    lua.trigger_event("OnWeaponSwingHitPoint", &[cv.clone(), wv]);
+                }
+                SimEvent::PlayerAttackFinished if chr.is_some() => {
+                    let wv = chr
+                        .unwrap()
+                        .borrow()
+                        .items
+                        .primary_hand_item()
+                        .map_or(Value::Nil, |i| pz_lua_api::bind_items::item_value(&i));
+                    lua.trigger_event("OnPlayerAttackFinished", &[cv.clone(), wv]);
+                }
+                SimEvent::SwingSound(name) => {
+                    if let Some(actor) = chr {
+                        let _ = pz_lua_api::bind_eat::apply_audio_event(
+                            actor,
+                            &SimEvent::PlaySound(name),
+                        );
+                    }
+                }
+                SimEvent::ItemFall(item) => {
+                    let iv = pz_lua_api::bind_items::item_value(&item);
+                    lua.trigger_event("onItemFall", &[iv]);
+                }
+                SimEvent::SetGameSpeed(speed) => {
+                    pz_lua_api::hud::set_game_speed(speed);
+                    if speed == 1 {
+                        sim.game_time.borrow_mut().multiplier = 1.0;
+                    }
+                }
+                SimEvent::CombatStatistic { name, value } => {
+                    // StatisticType::Player (0), StatisticCategory::Combat (1).
+                    self.statistics.increment(0, 1, name, value);
+                }
+                SimEvent::ReanimateTimer { chr: target_id, value } => {
+                    if let Some(z) = self.zombies.iter_mut().find(|z| z.id == target_id) {
+                        z.vars.reanimate_timer = value;
+                    } else if let Some(p) = local_players()
+                        .into_iter()
+                        .flatten()
+                        .find(|p| p.borrow().id == target_id)
+                    {
+                        p.borrow_mut().vars.reanimate_timer = value;
+                    }
+                }
+                SimEvent::BloodSplatterSound { chr: target_id } => {
+                    let pos = self
+                        .zombies
+                        .iter()
+                        .find(|z| z.id == target_id)
+                        .map(|z| [z.vars.x, z.vars.y, z.vars.z])
+                        .or_else(|| {
+                            local_players()
+                                .into_iter()
+                                .flatten()
+                                .find(|p| p.borrow().id == target_id)
+                                .map(|p| {
+                                    let b = p.borrow();
+                                    [b.vars.x, b.vars.y, b.vars.z]
+                                })
+                        });
+                    if let Some(pos) = pos {
+                        pz_lua_api::bind_audio::sound_system()
+                            .borrow_mut()
+                            .play_world_clip("BloodSplatter", pos, true);
+                    }
+                }
+                SimEvent::BulletHitSound { chr: target_id, sound, hollow } => {
+                    let pos = self
+                        .zombies
+                        .iter()
+                        .find(|z| z.id == target_id)
+                        .map(|z| [z.vars.x, z.vars.y, z.vars.z])
+                        .or_else(|| {
+                            local_players()
+                                .into_iter()
+                                .flatten()
+                                .find(|p| p.borrow().id == target_id)
+                                .map(|p| {
+                                    let b = p.borrow();
+                                    [b.vars.x, b.vars.y, b.vars.z]
+                                })
+                        });
+                    if let Some(pos) = pos {
+                        let ss = pz_lua_api::bind_audio::sound_system();
+                        let mut ss = ss.borrow_mut();
+                        ss.with_world_emitters(|pool, ctx| {
+                            let em = pool.get_free();
+                            let mut e = em.borrow_mut();
+                            e.set_pos(pos[0], pos[1], pos[2]);
+                            let h = e.play_sound_impl(
+                                &sound,
+                                pz_sound::emitter::ParentObject::None,
+                                ctx,
+                            );
+                            let surface = if hollow { 1.0 } else { 0.0 };
+                            e.set_parameter_value_by_name(h, "BulletHitSurface", surface, ctx);
+                        });
+                    }
+                }
+                SimEvent::Error(msg) => {
+                    self.log_update_error(msg);
+                }
                 SimEvent::PlayerDeath { local } if chr.is_some() => {
                     if local {
                         lua.trigger_event("OnPlayerDeath", std::slice::from_ref(&cv));
+                        let all_dead = local_players()
+                            .iter()
+                            .flatten()
+                            .all(|p| p.borrow().is_dead());
+                        if all_dead {
+                            pz_lua_api::bind_audio::sound_system()
+                                .borrow_mut()
+                                .with(|m, _| m.set_music_state("PlayerDied"));
+                        }
                     }
                 }
-                // TODO(port): the other `SimEvent`s (sounds, visuals, XP,
-                // game speed, the world's side of combat).
+                // TODO(port): remaining visual/network `SimEvent`s (HaloTextHelper,
+                // Giblet, MuzzleFlash, BulletTracer, FallingItem, FallenHat,
+                // WeaponHitCharacter/Xp, ReticleMode).
                 _ => {}
             }
         }
@@ -1542,6 +1767,20 @@ impl IsoWorld {
         x: f32,
         y: f32,
         z: f32,
+    ) -> HostResult<()> {
+        let kind = pz_core::random::next(20);
+        self.splat_blood_floor_kind(current, x, y, z, kind)
+    }
+
+    /// Adds a specific blood splat `kind` on `current`'s chunk and notifies the
+    /// renderer when kept.
+    fn splat_blood_floor_kind(
+        &mut self,
+        current: Option<(i32, i32, i32)>,
+        x: f32,
+        y: f32,
+        z: f32,
+        kind: i32,
     ) -> HostResult<()> {
         let Some((sx, sy, _)) = current else {
             return Ok(());
@@ -1564,7 +1803,6 @@ impl IsoWorld {
             let Some(chunk) = w.cell.as_mut().and_then(|c| c.chunks.get_mut(&(wx, wy))) else {
                 return Ok(None);
             };
-            let kind = pz_core::random::next(20);
             let sprites = sprites
                 .try_borrow()
                 .map_err(|_| RuntimeHostError::Borrowed("addBloodSplat sprite manager"))?;
@@ -3372,5 +3610,73 @@ mod quit_save_tests {
         assert_eq!(called, Some(0));
         let thumb = std::fs::read(fixture.dir.join("thumb.png")).expect("thumb.png written");
         assert!(thumb.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[test]
+    fn fire_sim_events_dispatches_xp_clothing_combat_stats_reanimate_and_errors() {
+        let (_fixture, mut world, mut lua) = Fixture::new(true, "Sandbox", false);
+        run_lua(
+            &mut lua,
+            r#"
+            clothingCount, itemFallCount, speedHits = 0, 0, 0
+            Events.OnClothingUpdated.Add(function(chr)
+                if chr ~= nil then clothingCount = clothingCount + 1 end
+            end)
+            Events.onItemFall.Add(function(it)
+                if it ~= nil then itemFallCount = itemFallCount + 1 end
+            end)
+        "#,
+        );
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let player = Rc::new(RefCell::new(LuaGameCharacter::new(
+            &sm,
+            pz_characters::character::CharacterKind::Player,
+        )));
+        player.borrow_mut().id = 101;
+        let mut z = LuaGameCharacter::new(&sm, pz_characters::character::CharacterKind::Zombie);
+        z.id = 202;
+        world.zombies.push(z);
+
+        let template =
+            pz_inventory::ItemTemplate::new(pz_inventory::ItemClass::Normal, "Base", "Hat");
+        let hat = Rc::new(RefCell::new(pz_inventory::InventoryItem::create(
+            Rc::new(template),
+            1,
+        )));
+
+        let sim = FrameSim::capture();
+        sim.game_time.borrow_mut().multiplier = 4.0;
+        {
+            let mut ev = sim.events.borrow_mut();
+            ev.push(SimEvent::ClothingUpdated);
+            ev.push(SimEvent::ItemFall(hat));
+            ev.push(SimEvent::CombatStatistic {
+                name: "ZombiesKilled",
+                value: 2.0,
+            });
+            ev.push(SimEvent::ReanimateTimer {
+                chr: 202,
+                value: 45.0,
+            });
+            ev.push(SimEvent::SetGameSpeed(1));
+            ev.push(SimEvent::Error("synthetic sim error".into()));
+        }
+        world.fire_sim_events(&mut lua, Some(&player), &sim);
+
+        assert_eq!(
+            lua.thread.globals().get_str("clothingCount").as_num(),
+            Some(1.0)
+        );
+        assert_eq!(
+            lua.thread.globals().get_str("itemFallCount").as_num(),
+            Some(1.0)
+        );
+        assert_eq!(world.statistics.get("ZombiesKilled"), Some(2.0));
+        assert_eq!(world.zombies[0].vars.reanimate_timer, 45.0);
+        assert_eq!(sim.game_time.borrow().multiplier, 1.0);
+        assert!(world
+            .errors
+            .iter()
+            .any(|e| e == "synthetic sim error"));
     }
 }
