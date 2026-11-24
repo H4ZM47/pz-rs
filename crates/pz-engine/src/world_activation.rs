@@ -151,14 +151,54 @@ impl IsoWorld {
                             }
                             for (receiver, call) in calls.0 {
                                 match call {
-                                    WorldCall::ProcessIsoObjectAdd | WorldCall::StaticUpdater { add: true } => {
+                                    WorldCall::ProcessIsoObjectAdd
+                                    | WorldCall::ProcessIsoObjectRemove
+                                    | WorldCall::StaticUpdater { .. } => {
                                         with_world(|w| {
                                             if let Some(cell) = w.cell.as_ref() {
                                                 let mut lists = cell.process_objects.borrow_mut();
-                                                if call == WorldCall::ProcessIsoObjectAdd {
-                                                    lists.add(&receiver);
-                                                } else {
-                                                    lists.static_updater(&receiver, true);
+                                                match call {
+                                                    WorldCall::ProcessIsoObjectAdd => {
+                                                        lists.add(&receiver);
+                                                    }
+                                                    WorldCall::ProcessIsoObjectRemove => {
+                                                        lists.queue_remove(&receiver);
+                                                    }
+                                                    WorldCall::StaticUpdater { add } => {
+                                                        lists.static_updater(&receiver, add);
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                        });
+                                    }
+                                    WorldCall::ProcessItems { container, add } => {
+                                        let target = receiver
+                                            .try_borrow()
+                                            .ok()
+                                            .and_then(|body| {
+                                                body.runtime_containers
+                                                    .as_ref()
+                                                    .and_then(|r| r.iter().nth(container).cloned())
+                                            });
+                                        if let Some(c) = target {
+                                            let res = if add {
+                                                pz_lua_api::bind_process_items::add_container_items(&c)
+                                            } else {
+                                                pz_lua_api::bind_process_items::remove_container_items(&c)
+                                            };
+                                            res.map_err(|e| {
+                                                format!("process_items at {pos:?}: {e}")
+                                            })?;
+                                        }
+                                    }
+                                    WorldCall::FlagForHotSave => {
+                                        with_world(|w| {
+                                            if let Some(cell) = w.cell.as_ref() {
+                                                let wx = pos.0.div_euclid(pz_world::chunk::CHUNK_WIDTH);
+                                                let wy = pos.1.div_euclid(pz_world::chunk::CHUNK_WIDTH);
+                                                if let Some(chunk) = cell.chunks.get(&(wx, wy)) {
+                                                    chunk.hot_save.borrow_mut().flag_for_hot_save();
                                                 }
                                             }
                                         });
@@ -170,6 +210,10 @@ impl IsoWorld {
                                     WorldCall::HutchManager { add: true } => {
                                         pz_lua_api::bind_world_object::hutch::register_master(&receiver, pos)
                                             .map_err(|e| format!("adding hutch at {pos:?}: {e}"))?;
+                                    }
+                                    WorldCall::HutchManager { add: false } => {
+                                        pz_lua_api::bind_world_object::hutch::unregister_master(&receiver)
+                                            .map_err(|e| format!("removing hutch at {pos:?}: {e}"))?;
                                     }
                                     WorldCall::MannequinInit => {
                                         let sandbox = sandbox(lua).ok_or(
