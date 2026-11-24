@@ -288,36 +288,45 @@ pub fn fire_events(thread: &mut Thread, ctx: LuaClimateContext) {
             }
         }
     });
-    let Some(sink) = SINK.with(|s| s.borrow().clone()) else { return };
-    for e in ctx.events {
-        let (name, args): (&str, Vec<Value>) = match e {
-            ClimateEvent::ClimateManagerInit => ("OnClimateManagerInit", vec![handle(Obj::Climate)]),
-            ClimateEvent::ClimateTick => ("OnClimateTick", vec![handle(Obj::Climate)]),
-            ClimateEvent::ClimateTickDebug => ("OnClimateTickDebug", vec![handle(Obj::Climate)]),
-            ClimateEvent::WeatherPeriodStart(p) => ("OnWeatherPeriodStart", vec![handle(Obj::Period(p))]),
-            ClimateEvent::WeatherPeriodStop(p) => ("OnWeatherPeriodStop", vec![handle(Obj::Period(p))]),
-            ClimateEvent::WeatherPeriodComplete(p) => ("OnWeatherPeriodComplete", vec![handle(Obj::Period(p))]),
-            ClimateEvent::WeatherPeriodStage(p) => ("OnWeatherPeriodStage", vec![handle(Obj::Period(p))]),
-            ClimateEvent::InitModdedWeatherStage { period, stage, strength } => (
-                "OnInitModdedWeatherStage",
-                vec![handle(Obj::Period(period)), handle(Obj::Stage(period, stage)), fv(strength)],
-            ),
-            ClimateEvent::UpdateModdedWeatherStage { period, stage, strength } => (
-                "OnUpdateModdedWeatherStage",
-                vec![handle(Obj::Period(period)), handle(Obj::Stage(period, stage)), fv(strength)],
-            ),
-            ClimateEvent::ThunderEvent { x, y, strike, lightning, rumble } => (
-                "OnThunderEvent",
-                vec![Value::from(x), Value::from(y), Value::Bool(strike), Value::Bool(lightning), Value::Bool(rumble)],
-            ),
-            _ => continue,
-        };
-        sink(thread, name, &args);
+    let sink = SINK.with(|s| s.borrow().clone());
+    if let Some(sink) = &sink {
+        for e in ctx.events {
+            let (name, args): (&str, Vec<Value>) = match e {
+                ClimateEvent::ClimateManagerInit => ("OnClimateManagerInit", vec![handle(Obj::Climate)]),
+                ClimateEvent::ClimateTick => ("OnClimateTick", vec![handle(Obj::Climate)]),
+                ClimateEvent::ClimateTickDebug => ("OnClimateTickDebug", vec![handle(Obj::Climate)]),
+                ClimateEvent::WeatherPeriodStart(p) => ("OnWeatherPeriodStart", vec![handle(Obj::Period(p))]),
+                ClimateEvent::WeatherPeriodStop(p) => ("OnWeatherPeriodStop", vec![handle(Obj::Period(p))]),
+                ClimateEvent::WeatherPeriodComplete(p) => ("OnWeatherPeriodComplete", vec![handle(Obj::Period(p))]),
+                ClimateEvent::WeatherPeriodStage(p) => ("OnWeatherPeriodStage", vec![handle(Obj::Period(p))]),
+                ClimateEvent::InitModdedWeatherStage { period, stage, strength } => (
+                    "OnInitModdedWeatherStage",
+                    vec![handle(Obj::Period(period)), handle(Obj::Stage(period, stage)), fv(strength)],
+                ),
+                ClimateEvent::UpdateModdedWeatherStage { period, stage, strength } => (
+                    "OnUpdateModdedWeatherStage",
+                    vec![handle(Obj::Period(period)), handle(Obj::Stage(period, stage)), fv(strength)],
+                ),
+                ClimateEvent::ThunderEvent { x, y, strike, lightning, rumble } => (
+                    "OnThunderEvent",
+                    vec![Value::from(x), Value::from(y), Value::Bool(strike), Value::Bool(lightning), Value::Bool(rumble)],
+                ),
+                _ => continue,
+            };
+            sink(thread, name, &args);
+        }
     }
     for e in ctx.clock_events {
         match e {
-            GameTimeEvent::Lua(name) => sink(thread, name, &[]),
+            GameTimeEvent::Lua(name) => {
+                if let Some(sink) = &sink {
+                    sink(thread, name, &[]);
+                }
+            }
             GameTimeEvent::ErosionEveryTenMinutes => crate::bind_erosion::every_ten_minutes(),
+            GameTimeEvent::RadioUpdateScripts { hour, minutes } => {
+                crate::bind_radio::on_update_scripts(hour, minutes);
+            }
             _ => {}
         }
     }

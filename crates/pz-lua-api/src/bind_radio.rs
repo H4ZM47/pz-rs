@@ -94,6 +94,10 @@ pub trait WorldDevice {
     fn lua_value(&self) -> Value {
         Value::Nil
     }
+    /// The underlying live world object when this device wraps an `IsoObject`.
+    fn world_object(&self) -> Option<pz_world::IsoObjectRef> {
+        None
+    }
 }
 
 /// `Translator.getText` and `getTextMediaEN` for the radio classes.
@@ -148,12 +152,47 @@ thread_local! {
     static PRESET_ENTRIES: RefCell<EntryCache> = RefCell::new(HashMap::new());
     static PRESET_OWNERS: RefCell<HashMap<usize, Weak<LuaDevicePresets>>> = RefCell::new(HashMap::new());
     static PRESET_LISTS: RefCell<HashMap<usize, Weak<crate::bind_java_util::JavaList>>> = RefCell::new(HashMap::new());
+    static UPDATE_SCRIPTS_HOOK: RefCell<Option<Rc<dyn Fn(i32, i32)>>> = const { RefCell::new(None) };
 }
 
 /// Makes `radio` the `ZomboidRadio.getInstance()` Lua sees (`None`:
 /// `hasInstance()` is false).
 pub fn install_radio(radio: Option<Rc<RefCell<ZomboidRadio>>>) {
     RADIO.with(|r| *r.borrow_mut() = radio);
+}
+
+/// Installs the engine callback invoked on `GameTime`'s ten-minute
+/// `RadioUpdateScripts` event (`ZomboidRadio.UpdateScripts(hour, minutes)`).
+pub fn install_update_scripts_hook(hook: Option<Rc<dyn Fn(i32, i32)>>) {
+    UPDATE_SCRIPTS_HOOK.with(|h| *h.borrow_mut() = hook);
+}
+
+pub(crate) fn on_update_scripts(hour: i32, minutes: i32) {
+    let hook = UPDATE_SCRIPTS_HOOK.with(|h| h.borrow().clone());
+    if let Some(hook) = hook {
+        hook(hour, minutes);
+    }
+}
+
+/// The singleton `RecordedMedia` userdata passed to `OnInitRecordedMedia`.
+pub fn recorded_media_value() -> Value {
+    MEDIA_OBJ.with(|v| v.clone())
+}
+
+/// The Lua userdata for a world object (`IsoRadio` / `IsoTelevision`), or
+/// `Value::Nil` if its native class has not been stamped yet.
+pub fn world_object_value(object: &pz_world::IsoObjectRef) -> Value {
+    crate::bind_world_object::object_value(object).unwrap_or(Value::Nil)
+}
+
+/// The Lua userdata for any [`DeviceOwner`] (`VehiclePart`, `Radio`, or
+/// world `IsoWaveSignal`).
+pub fn device_owner_lua_value(owner: &DeviceOwner) -> Value {
+    match owner {
+        DeviceOwner::Part(p) => pz_vehicles::lua::part_value(p),
+        DeviceOwner::Item(i) => crate::bind_items::item_value(i),
+        DeviceOwner::World(w) => w.lua_value(),
+    }
 }
 
 /// `RadioAPI.getInstance()` ran (in `ZomboidRadio.Init`); the instance is
@@ -168,6 +207,16 @@ pub fn install_text(text: Rc<dyn LuaRadioText>) {
 
 pub fn install_hooks(hooks: Rc<dyn RadioLuaHooks>) {
     HOOKS.with(|h| *h.borrow_mut() = hooks);
+}
+
+/// Clears all world-scoped radio hooks, translator, script tick hook, and
+/// active `ZomboidRadio` instance so exiting a world never retains old
+/// world/render state.
+pub fn reset_world_bindings() {
+    UPDATE_SCRIPTS_HOOK.with(|h| *h.borrow_mut() = None);
+    RADIO.with(|r| *r.borrow_mut() = None);
+    HOOKS.with(|h| *h.borrow_mut() = Rc::new(NoHooks));
+    TEXT.with(|t| *t.borrow_mut() = Rc::new(KeyText));
 }
 
 fn text() -> Rc<dyn LuaRadioText> {
@@ -382,6 +431,14 @@ fn register_zomboid_radio(thread: &mut Thread) {
     });
     b.method("getRecordedMedia", |c| {
         Ok(c.push(MEDIA_OBJ.with(|v| v.clone())))
+    });
+    b.method("getScriptManager", |c| {
+        let has = with_radio(|r| r.script_manager().is_some()).unwrap_or(false);
+        Ok(c.push(if has {
+            script_manager_value()
+        } else {
+            Value::Nil
+        }))
     });
     b.method("getDisableBroadcasting", |c| {
         Ok(c.push(with_radio(|r| r.disable_broadcasting).unwrap_or(false)))
@@ -1574,6 +1631,14 @@ impl pz_inventory::device::ChannelLists for EnvLists<'_> {
     }
 }
 
+pub mod scripting;
+pub use scripting::{
+    script_manager_value, IsoObjectWorldDevice, LuaRadioBroadCast, LuaRadioChannel, LuaRadioLine,
+    CHANNEL_CATEGORY_CLASS, DYNAMIC_RADIO_CHANNEL_CLASS, ISO_RADIO_CLASS, ISO_TELEVISION_CLASS,
+    ISO_WAVE_SIGNAL_CLASS, RADIO_BROADCAST_CLASS, RADIO_CHANNEL_CLASS, RADIO_LINE_CLASS,
+    RADIO_SCRIPT_MANAGER_CLASS,
+};
+
 /// Registers the radio classes and `DeviceData`.
 pub fn register(thread: &mut Thread) {
     register_globals(thread);
@@ -1583,6 +1648,7 @@ pub fn register(thread: &mut Thread) {
     register_presets(thread);
     register_device_fields(thread);
     register_device_data(thread);
+    scripting::register(thread);
 }
 
 #[cfg(test)]

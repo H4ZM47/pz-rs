@@ -1829,7 +1829,7 @@ registered):
       culled, has_active_model))`; from saves,
       `corpse::died_bone_transforms_from_saved(n, &ragdoll bones)` with
       pz-world's `IsoDeadBody.ragdoll` (#142).
-- [ ] Radio: keep one `pz_radio::ZomboidRadio` per world
+- [x] Radio: keep one `pz_radio::ZomboidRadio` per world
       (`ZomboidRadio::new(GameTime hour)`, with the game mode set) and
       implement `RadioWorld` (GameTime hour / nightsSurvived / multiplier,
       `SandboxOptions.timeSinceApo`, `Core.gameMode`, weather
@@ -1844,7 +1844,9 @@ registered):
       `IngameState` exit (`Reset`), carrying `louisville_obfuscation`
       over (a static in the original). Devices call `register_device` /
       `unregister_device`; DeviceData preset generation takes the radio
-      as its `ChannelLists` (#200).
+      as its `ChannelLists` (#200). Wired in `pz-engine/src/world_radio.rs`
+      and verified against installed Build 42.22 assets (19 channels, 352
+      recorded media, AEBS `EMRG-711984`).
 
 - [x] Regular window interactions (#208). Stock Lua open, climb, close and
       smash actions run through the player animation states with real input,
@@ -1891,8 +1893,13 @@ registered):
       `pz_radio::device_view` and `add_device_text` with
       `pz_radio::deliver_line`. `IsoWaveSignal.saveState/loadState`
       are `DeviceData::save_state/load_state`; generator draw is
-      `generator_power_consumption` (#205).
-- [ ] Radio Lua: `bind_radio::install_radio(Some(radio))` when the world
+      `generator_power_consumption` (#205). Single-player world
+      radios/TVs (including TV screen overlays, lampposts, emitters,
+      `OnDeviceText` and `ObjectLoadHooks`) and equipped handheld radios
+      are wired in `pz-engine/src/world_radio.rs`; still open: vehicle
+      radio `pz_vehicles::env::set_devices`, `IsoGenerator.updateGenerator`
+      recalc, and multiplayer `RadioDeviceDataState` packets.
+- [x] Radio Lua: `bind_radio::install_radio(Some(radio))` when the world
       radio exists (and `None` on reset), `radio_api_created()` after
       `ZomboidRadio.init`, `install_text` (Translator `getText` /
       `getTextMediaEN`), `install_hooks` (a `RadioLuaHooks` with the
@@ -1900,10 +1907,12 @@ registered):
       `isKnownMediaLine`). Fire `OnInitRecordedMedia` inside
       `bind_radio::with_scoped_media(media, ..)` with the
       `RecordedMedia` Lua object, and `OnLoadRadioScripts` inside
-      `with_scoped_radio` when the radio is not installed yet. A
-      future `IsoRadio` / `IsoTelevision` binding returns
-      `LuaDeviceData(DeviceOwner::World(..))` from `getDeviceData`
-      (#205).
+      `with_scoped_radio` when the radio is not installed yet.
+      `IsoWaveSignal` / `IsoRadio` / `IsoTelevision` bindings return
+      `LuaDeviceData(DeviceOwner::World(..))` from `getDeviceData`, and
+      `ChannelCategory` / `RadioScriptManager` / `RadioChannel` /
+      `DynamicRadioChannel` / `RadioBroadCast` / `RadioLine` are exposed
+      in `pz-lua-api/src/bind_radio/scripting.rs` (#205).
 
 ## World render pass
 - [x] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);

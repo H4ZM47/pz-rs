@@ -393,6 +393,9 @@ impl IngameState {
         pz_lua_api::hud::world_markers::render(&mut cx.lua.thread);
         // TODO(port): `IsoMarkers.instance.render()`.
         pz_lua_api::hud::text_draw::render_batch(n as i32);
+        if let Some(w) = cx.world.as_ref() {
+            w.queue_radio_device_chat(n);
+        }
         pz_lua_api::chat::element::ChatElement::render_batch(n);
         // TODO(port): `ParameterRoomTypeEx.renderRoomTones`,
         // `ThumpDamageRender`, `Core.EndFrameText`.
@@ -507,8 +510,11 @@ impl GameState for IngameState {
         }
         // TODO(port): `IsoMarkers.instance.reset()`.
         pz_lua_api::bind_search_mode::reset();
-        // TODO(port): `ZomboidRadio.Reset`, `IsoWaveSignal.Reset`,
-        // `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
+        // `ZomboidRadio.getInstance().Reset()` and `IsoWaveSignal.Reset()`.
+        if let Some(w) = cx.world.as_mut() {
+            w.reset_radio();
+        }
+        // TODO(port): `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,
         // `IsoGenerator`, `StashSystem`, `LootRespawn`, `VehicleCache`,
         // `VehicleIDMap`, `IsoChunk`, `ChunkChecksum`,
@@ -624,10 +630,11 @@ impl GameState for IngameState {
                     crate::failure::record_first(cx.error, crate::failure::EngineError::state("IsoWorld.update", error));
                     return StateAction::Remain;
                 }
+                // `ZomboidRadio.getInstance().update()`.
+                w.update_radio(cx.lua);
             }
             // TODO(port): `ObjectAmbientEmitters` (threaded),
-            // `GameEntityManager.Update`, `AnimalController.update`,
-            // `ZomboidRadio.update`.
+            // `GameEntityManager.Update`, `AnimalController.update`.
             self.update_stuff(cx);
             self.on_tick(cx.lua);
             // TODO(port): `FMODAmbientWalls.update`.

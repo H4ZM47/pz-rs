@@ -25,8 +25,8 @@ use pz_world::save::{SaveHooks, SaveSettings, SaveTables};
 use pz_world::streamer::{calc_chunk_width, ChunkStreamer, StreamCtx};
 use pz_world::zone_save::{ClockUuids, SpawnedZombieZones};
 use pz_world::{
-    CreateParams, GameRand, IsoMetaGrid, IsoSpriteManager, NoHooks, ObjectLoadSettings,
-    ObjectTables, SpriteTables, WorldGenBounds,
+    CreateParams, GameRand, IsoMetaGrid, IsoSpriteManager, ObjectLoadSettings, ObjectTables,
+    SpriteTables, WorldGenBounds,
 };
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -199,6 +199,8 @@ pub struct IsoWorld {
     /// `ErosionMain.getInstance()`.
     /// `ErosionMain.getInstance()`, shared with its Lua object.
     pub erosion: Option<Rc<RefCell<pz_erosion::erosion_main::ErosionMain>>>,
+    /// `ZomboidRadio.getInstance()` and live world radio/TV devices.
+    pub radio: Option<crate::world_radio::WorldRadio>,
     pub instance_tracker: InstanceTracker,
     pub(crate) ambient_parameters: crate::sound::ambient::AmbientParameters,
     pub(crate) house_alarms: crate::sound::house_alarms::HouseAlarms,
@@ -340,6 +342,7 @@ impl IsoWorld {
             regions: None,
             pathfind: None,
             erosion: None,
+            radio: None,
             instance_tracker: InstanceTracker::default(),
             ambient_parameters: Default::default(),
             house_alarms: Default::default(),
@@ -408,6 +411,7 @@ impl IsoWorld {
             items,
             erosion,
             render, farm_globals,
+            radio,
             ..
         } = self;
         // `GameTime.getWorldAgeHours()` as the item loads read it.
@@ -456,7 +460,8 @@ impl IsoWorld {
                 let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else {
                     return (None, pz_world::RetiredWorldOwners::default(), Vec::new());
                 };
-                let mut object_hooks = NoHooks;
+                let mut object_hooks =
+                    crate::world_radio::RadioObjectLoadHooks::new(radio.as_ref());
                 let sounds = pz_lua_api::bind_zombie::shared_world_sounds();
                 let mut sounds = sounds.borrow_mut();
                 let mut chunk_hook = pz_world_sound::ClearSoundsOnUnload::new(&mut sounds,
@@ -740,9 +745,8 @@ impl IsoWorld {
                 self.log_error(format!("GameTime.load: {e}"));
             }
         }
-        // TODO(port): `ImprovedFog.init`; `ZomboidRadio.Init(savedWorldVersion)`
-        // (`pz_radio::ZomboidRadio::init` needs the engine's `RadioWorld`);
-        // `GlobalModData.init`.
+        // TODO(port): `ImprovedFog.init`; `GlobalModData.init`.
+        self.init_radio(lua, &sb, no_save);
         if let Err(e) = self.instance_tracker.load_file(&self.save_dir, no_save) {
             self.log_error(format!("InstanceTracker.load: {e}"));
         }
@@ -776,8 +780,10 @@ impl IsoWorld {
                     save_tables: tables,
                     sprites: sprites.as_deref(),
                     world_age_hours,
+                    recorded_media: self.radio.as_ref().map(|r| r.recorded_media_names()),
+                    channels: self.radio.as_ref().map(|r| r.channel_lists()),
                 };
-                Some(crate::world_dictionary::script_items(d, &inputs))
+                Some(crate::world_dictionary::script_items(d, inputs))
             }
             _ => None,
         };
@@ -916,9 +922,9 @@ impl IsoWorld {
         if load_character {
             // `currentCell.LoadPlayer(savedWorldVersion)`.
             self.load_player(&save_dir)?;
-            // TODO(port): `RecordedMedia.handleLegacyListenedLines`.
+            self.handle_legacy_listened_lines(true);
         } else {
-            // TODO(port): `RecordedMedia.handleLegacyListenedLines(null)`.
+            self.handle_legacy_listened_lines(false);
             if pz_lua_api::bind_players::num_players() == 0 {
                 pz_lua_api::bind_players::set_num_players(1);
             }
