@@ -329,16 +329,15 @@ pub struct RegistryInputs<'a> {
 /// The save's item registry: `dictionary`'s ids over the shared
 /// `ScriptManager`, with the game's `Rand`, the `ClothingItem` assets and
 /// entity registries the Lua item environment has, the moveable sprites,
-/// radio channels/recorded media and item textures (a client has every
-/// texture).
-///
-/// TODO(port): `MapDefinitions` (`map_definitions`).
+/// radio channels/recorded media, `MapDefinitions`, and item textures (a
+/// client has every texture).
 pub fn script_items(dictionary: WorldDictionary, inputs: RegistryInputs<'_>) -> ScriptItems {
     let sm = pz_lua_api::bind_registry::shared_script_manager();
     let names = item_names(&sm);
     let mut items = ScriptItems::new(&sm, dictionary, &names);
     items.world_age_hours = inputs.world_age_hours;
     items.blood_body_parts = inputs.save_tables.blood_body_parts;
+    items.map_definitions = pz_lua_api::worldmap::map_definitions::definitions();
     if let Some(s) = inputs.sprites {
         items.world_sprites = pz_world::save::items::moveable_sprites(s);
     }

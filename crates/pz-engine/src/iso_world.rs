@@ -772,6 +772,7 @@ impl IsoWorld {
         )?;
         sm.post_world_dictionary_init();
         println!("WorldDictionary.init() end");
+        pz_lua_api::worldmap::map_definitions::init_from_lua(&lua.thread);
         self.items = match (dictionary, self.save_tables.as_ref()) {
             (Some(d), Some(tables)) => {
                 let world_age_hours = pz_lua_api::bind_climate::shared_game_time()
