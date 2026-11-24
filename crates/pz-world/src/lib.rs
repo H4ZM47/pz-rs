@@ -22,6 +22,7 @@ pub mod fix2x;
 pub mod floor_item;
 pub mod floor_object;
 pub mod iso_lot;
+pub mod loot_respawn;
 pub mod isoregion;
 pub mod java;
 pub mod los;

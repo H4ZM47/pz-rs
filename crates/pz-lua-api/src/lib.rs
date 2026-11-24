@@ -95,6 +95,7 @@ pub mod bind_tile_overlays;
 pub mod bind_broken_fences;
 pub mod bind_item_picker;
 pub mod bind_key_namer;
+pub mod bind_loot_respawn;
 pub mod bind_world_gen_utils;
 pub mod bind_world_gen_params;
 pub mod bind_randomized_world;
@@ -289,6 +290,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     world_menu_logic::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
     bind_item_picker::register(&mut mgr.thread);
+    bind_loot_respawn::register(&mut mgr.thread);
     bind_item_picker::install_event_sink(mgr.events.clone());
     bind_world_gen_utils::register(&mut mgr.thread, mgr.fs.clone());
     bind_world_gen_params::register(&mut mgr.thread);

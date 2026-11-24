@@ -216,7 +216,8 @@ impl IngameState {
                     w.update_pathfinding();
                 }
             }
-            // TODO(port): `LootRespawn.update`, the vehicle sound
+            pz_lua_api::bind_loot_respawn::update();
+            // TODO(port): the vehicle sound
             // `Manager`, `AnimEventEmulator`, `BodyDamageSync`,
             // `VirtualVehicleManager.update`,
             // `LoopedRangedWeaponSounds`, `FliesSound`, `CorpseFlies`.
