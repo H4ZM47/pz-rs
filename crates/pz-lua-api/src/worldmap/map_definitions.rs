@@ -130,7 +130,7 @@ mod tests {
         .unwrap();
         let out = t.pcall(&f, &[]).unwrap();
         let picked = pz_kahlua::exec::java_value_of(&out[0]);
-        assert!(picked == "MuldraughMap" || picked == "RosewoodMap", "picked={picked}");
+        assert!(picked == "MuldraughMap" || picked == "RosewoodMap");
 
         let defs = definitions();
         assert_eq!(defs, vec!["MuldraughMap".to_string(), "RosewoodMap".to_string()]);
