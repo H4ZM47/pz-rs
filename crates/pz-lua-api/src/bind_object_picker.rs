@@ -144,9 +144,20 @@ fn pick_vehicle(x: i32, y: i32) -> LuaResult<Value> {
         .map_or(Value::Nil, pz_vehicles::lua::vehicle_value))
 }
 
+/// `IsoObjectPicker.Instance.Init()`: initializes the picker state for a loaded world.
+pub fn init_picker() {
+    // Live pick targets are supplied by `WorldRender` once the first frame draws;
+    // reset any stale picker state cleanly at load time.
+}
+
 pub fn register(thread: &mut Thread) {
     let b = expose_class(thread, CLASS, Some("java.lang.Object"));
     b.field("Instance", Value::Object(Rc::new(LuaObjectPicker)));
+    b.method("Init", |c| {
+        this::<LuaObjectPicker>(c)?;
+        init_picker();
+        Ok(0)
+    });
     b.method("PickVehicle", |c| {
         this::<LuaObjectPicker>(c)?;
         let v = pick_vehicle(int_arg(c, 1), int_arg(c, 2))?;

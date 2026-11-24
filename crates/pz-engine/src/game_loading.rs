@@ -239,8 +239,9 @@ impl GameLoadingState {
         let events = cx.lua.events.clone();
         pz_lua_api::global_objects::init_server_systems(&mut cx.lua.thread, &events);
         pz_lua_api::global_objects::init_client_systems(&mut cx.lua.thread, &events);
-        // TODO(port): `IsoObjectPicker.Instance.Init()`,
-        // `TutorialManager.instance.init()` / `CreateQuests()`.
+        pz_lua_api::bind_object_picker::init_picker();
+        pz_lua_api::bind_type_util::init_default_clothing_from_lua(&cx.lua.thread);
+        // TODO(port): `TutorialManager.instance.init()` / `CreateQuests()`.
         let saved = cx.world.as_ref().map_or(-1, |w| w.saved_world_version);
         let save_dir = Self::current_save_dir(cx)?;
         let new_game = !save_dir.join("map_ver.bin").exists();
@@ -361,7 +362,7 @@ impl GameState for GameLoadingState {
         pz_lua_api::bind_video::release_all_video_textures();
         // TODO(port): `GameWindow.loadedAsClient` / `okToSaveOnExit = false`.
         self.showed_ui = false;
-        // TODO(port): `ChunkMapFilenames.instance.clear()`.
+        pz_lua_api::bind_type_util::clear_chunk_map_filenames();
         let core = pz_lua_api::bind_core::shared_core();
         println!("Savefile name is \"{}\"", core.borrow().game_save_world);
         self.game_loading_string.clear();

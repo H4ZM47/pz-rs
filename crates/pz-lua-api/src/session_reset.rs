@@ -21,6 +21,7 @@ pub fn reset_session_bindings() {
     crate::bind_game_window::take_save_request();
 
     crate::bind_players::reset();
+    crate::bind_type_util::reset_session_handles();
     crate::bind_character_sim::reset_session_handles();
     crate::bind_states::reset_session_handles();
     crate::bind_body::reset_session_handles();
