@@ -586,6 +586,53 @@ impl WorldModels {
             },
         );
     }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_primary_hand_muzzle(&mut self, id: i32, offset: [f32; 3]) {
+        use pz_character_model::model_tree::{InstanceKind, ModelInstance, ModelSlot, TextureSource};
+        use pz_scripts::objects::models::{ModelAttachment, ModelScript};
+
+        let Some(model) = self.characters.get_mut(&id) else {
+            return;
+        };
+        let mut att = ModelAttachment::new("muzzle").unwrap();
+        att.offset_mut().set(offset[0], offset[1], offset[2]);
+        let mut script = ModelScript::new();
+        script.add_attachment(Rc::new(RefCell::new(att)));
+        let script_ref = Rc::new(RefCell::new(script));
+        let hand = ModelInstance {
+            kind: InstanceKind::PrimaryHand,
+            mesh_name: "synthetic_gun".into(),
+            model_texture: None,
+            is_static: true,
+            shader: None,
+            tex: TextureSource::None,
+            tint: [1.0; 3],
+            hue: 0.0,
+            depth_bias: 0.0,
+            parent: None,
+            parent_bone: -1,
+            parent_bone_name: None,
+            attachment_name_self: None,
+            attachment_name_parent: None,
+            scale: 1.0,
+            model_script: Some(script_ref),
+            item_visual: None,
+            mask_variable_value: None,
+            texture_init: None,
+            equipped_texture: Default::default(),
+            sub: Vec::new(),
+        };
+        model.slot = Some(ModelSlot {
+            instances: vec![hand],
+            model: 0,
+            sub: vec![0],
+            attached_models: Vec::new(),
+            primary_hand: Some(0),
+            secondary_hand: None,
+            mask_variables: Vec::new(),
+        });
+    }
 }
 
 /// The supported single-player branch of `postUpdateAnimating`'s facing

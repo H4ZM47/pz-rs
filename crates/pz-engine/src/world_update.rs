@@ -136,6 +136,7 @@ mod animation_bridge_tests {
                 animation_time_delta: 0.5,
                 floor_world: None,
                 bullet: None,
+                player_firearms: Vec::new(),
             };
             let mut world = StatesWorldAdapter::new(
                 &mut cell,
@@ -186,26 +187,55 @@ mod animation_bridge_tests {
     }
 }
 
+/// Snapshot of a local player's position and aiming reticle captured before
+/// a state-world call borrows the player mutably.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PlayerFirearmSnapshot {
+    pub(crate) id: i32,
+    pub(crate) pos: [f32; 3],
+    pub(crate) reticle_iso: (f32, f32),
+}
+
+impl PlayerFirearmSnapshot {
+    pub(crate) fn from_character(
+        c: &LuaGameCharacter,
+        input: &dyn pz_characters::character::player::PlayerInput,
+    ) -> Self {
+        let p_idx = c.player.player_index;
+        let rx = c.aiming_reticle_x(input);
+        let ry = c.aiming_reticle_y(input);
+        Self {
+            id: c.id,
+            pos: [c.vars.x, c.vars.y, c.vars.z],
+            reticle_iso: input.screen_to_iso(p_idx, rx, ry, c.vars.z),
+        }
+    }
+}
+
 /// The engine's side of the character states: the game's `Rand`, the
 /// squares' moving objects outside the zombie list and the squares'
 /// visibility from the renderer's lighting. The rest of
 /// `StatesEngine` (other characters by id, corpses, sounds, the path
 /// host) keeps its defaults: TODO(port): those owners.
-struct EngineStates<'a> {
-    geometry: Option<&'a pz_lua_api::bind_world::GeometryChanges>,
-    sim: Option<&'a FrameSim>,
-    closing_windows: Vec<pz_world_states::ClosingWindow>,
-    rand: StandardRand,
+pub(crate) struct EngineStates<'a> {
+    pub(crate) geometry: Option<&'a pz_lua_api::bind_world::GeometryChanges>,
+    pub(crate) sim: Option<&'a FrameSim>,
+    pub(crate) closing_windows: Vec<pz_world_states::ClosingWindow>,
+    pub(crate) rand: StandardRand,
     /// The squares the local players stand on (`getCurrentSquare()`),
     /// taken before the frame lends any of them out. TODO(port): animals.
-    movers: Vec<(i32, i32, i32)>,
+    pub(crate) movers: Vec<(i32, i32, i32)>,
     /// The same animation players that the world draws, lent for this
     /// states-world call. Interior borrowing permits a non-consuming
     /// root-motion query through StateWorld's immutable query method.
-    models: RefCell<Option<&'a mut WorldModels>>,
-    animation_time_delta: f32,
-    floor_world: Option<Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
-    bullet: Option<crate::world_vehicles::SharedBullet>,
+    pub(crate) models: RefCell<Option<&'a mut WorldModels>>,
+    pub(crate) animation_time_delta: f32,
+    pub(crate) floor_world: Option<Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
+    pub(crate) bullet: Option<crate::world_vehicles::SharedBullet>,
+    /// Pre-borrow position & aiming reticle snapshots for local players so
+    /// `muzzle_attachment` and `aim_reticle_iso` work while the shooter is
+    /// mutably borrowed during `advance_player_update` / `update_player_after_actions`.
+    pub(crate) player_firearms: Vec<PlayerFirearmSnapshot>,
 }
 
 impl StatesEngine for EngineStates<'_> {
@@ -423,7 +453,13 @@ impl StatesEngine for EngineStates<'_> {
             .flatten()
             .find_map(|p| {
                 let c = p.try_borrow().ok()?;
-                (c.id == chr).then_some([c.vars.x, c.vars.y, c.vars.z])
+                (c.is_player() && c.id == chr).then_some([c.vars.x, c.vars.y, c.vars.z])
+            })
+            .or_else(|| {
+                self.player_firearms
+                    .iter()
+                    .find(|p| p.id == chr)
+                    .map(|p| p.pos)
             })
             .unwrap_or([0.0; 3]);
         self.models
@@ -433,23 +469,25 @@ impl StatesEngine for EngineStates<'_> {
     }
     fn aim_reticle_iso(&self, chr: i32) -> (f32, f32) {
         use pz_characters::character::player::PlayerInput;
-        let Some(sim) = self.sim else {
-            return (0.0, 0.0);
-        };
-        let input = sim.player_input();
-        local_players()
-            .iter()
-            .flatten()
-            .find_map(|p| {
+        if let Some(sim) = self.sim {
+            let input = sim.player_input();
+            if let Some(reticle) = local_players().iter().flatten().find_map(|p| {
                 let c = p.try_borrow().ok()?;
-                if c.id != chr {
+                if !c.is_player() || c.id != chr {
                     return None;
                 }
                 let p_idx = c.player.player_index;
                 let rx = c.aiming_reticle_x(input);
                 let ry = c.aiming_reticle_y(input);
                 Some(input.screen_to_iso(p_idx, rx, ry, c.vars.z))
-            })
+            }) {
+                return reticle;
+            }
+        }
+        self.player_firearms
+            .iter()
+            .find(|p| p.id == chr)
+            .map(|p| p.reticle_iso)
             .unwrap_or((0.0, 0.0))
     }
     fn ballistics_skeleton(
@@ -525,7 +563,34 @@ pub(crate) fn with_states_and_characters<R>(
     characters: Option<&mut Vec<LuaGameCharacter>>,
     f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
 ) -> Option<R> {
-    with_states_characters_and_path(sprites, runtime, models, sim, floor_world, characters, None, f)
+    with_states_characters_and_path(sprites, runtime, models, sim, floor_world, characters, None, None, f)
+}
+
+/// [`with_states_and_characters`] carrying a pre-borrow snapshot of the
+/// actively updating local player so firearm/ballistics hooks still see its
+/// position and reticle while the caller holds `p.borrow_mut()`.
+#[allow(clippy::too_many_arguments)]
+fn with_states_for_player<R>(
+    sprites: &Rc<RefCell<IsoSpriteManager>>,
+    runtime: &mut StatesRuntime,
+    models: Option<&mut WorldModels>,
+    sim: &FrameSim,
+    floor_world: Option<&Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
+    characters: Option<&mut Vec<LuaGameCharacter>>,
+    active_player: PlayerFirearmSnapshot,
+    f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
+) -> Option<R> {
+    with_states_characters_and_path(
+        sprites,
+        runtime,
+        models,
+        sim,
+        floor_world,
+        characters,
+        None,
+        Some(active_player),
+        f,
+    )
 }
 
 /// What `PathFindBehavior2` reads of the game: the sandbox through the
@@ -585,15 +650,31 @@ fn with_states_characters_and_path<R>(
     floor_world: Option<&Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
     characters: Option<&mut Vec<LuaGameCharacter>>,
     path: Option<&mut pz_pathfind::host::PathHost>,
+    active_player: Option<PlayerFirearmSnapshot>,
     f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
 ) -> Option<R> {
     let mut movers = player_squares();
     let mut closing_windows = pz_lua_api::bind_players::closing_windows();
+    let input = sim.player_input();
+    let mut player_firearms = Vec::new();
+    if let Some(snap) = active_player {
+        player_firearms.push(snap);
+    }
+    for p in local_players().into_iter().flatten() {
+        if let Ok(c) = p.try_borrow() {
+            if c.is_player() && !player_firearms.iter().any(|s| s.id == c.id) {
+                player_firearms.push(PlayerFirearmSnapshot::from_character(&c, input));
+            }
+        }
+    }
     // The players lent to `characters` (their cells hold stand-ins).
     if let Some(list) = characters.as_ref() {
         for actor in list.iter() {
             if actor.is_player() {
                 movers.extend(actor.path.current_square);
+                if !player_firearms.iter().any(|s| s.id == actor.id) {
+                    player_firearms.push(PlayerFirearmSnapshot::from_character(actor, input));
+                }
             }
             if let Some(action) = pz_world_states::ClosingWindow::of(actor) {
                 closing_windows.push(action);
@@ -618,6 +699,7 @@ fn with_states_characters_and_path<R>(
             animation_time_delta,
             floor_world: floor_world.cloned(),
             bullet: crate::world_vehicles::shared_bullet(),
+            player_firearms,
         };
         let mut sprites = sprites.borrow_mut();
         let sounds = pz_lua_api::bind_zombie::shared_world_sounds();
@@ -886,6 +968,7 @@ impl IsoWorld {
                         chr.preupdate_player();
                         chr.frame_step(input);
                     }
+                    let active_player = PlayerFirearmSnapshot::from_character(&chr, input);
                     let IsoWorld {
                         sprites,
                         states_runtime,
@@ -899,13 +982,14 @@ impl IsoWorld {
                     let Some(sprites) = sprites.as_mut() else {
                         return Ok(());
                     };
-                    with_states_and_characters(
+                    with_states_for_player(
                         sprites,
                         states_runtime,
                         models.as_mut(),
                         sim,
                         floor_world.as_ref(),
                         Some(zombies),
+                        active_player,
                         |w| {
                             if first_phase {
                                 fill_square_environment(&mut chr, w.cell, w.meta, regions.as_ref())?;
@@ -1030,6 +1114,7 @@ impl IsoWorld {
             floor_world.as_ref(),
             Some(zombies),
             pathfind.as_mut(),
+            None,
             |w| {
                 pz_lua_api::bind_states::with_state_registry(|reg| {
                     let chars = chars.borrow();
@@ -2023,6 +2108,7 @@ impl IsoWorld {
                 animation_time_delta,
                 floor_world: floor_world.clone(),
                 bullet: crate::world_vehicles::shared_bullet(),
+                player_firearms: Vec::new(),
             };
             let mut adapter = StatesWorldAdapter::new(
                 cell,

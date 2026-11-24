@@ -165,7 +165,7 @@ impl WorldRagdolls {
         chr.update_ragdoll_variables(cx.ctx);
 
         let bullet_frame_no = self.bullet_frame_no();
-        let vars = ChrVarProxy::snapshot(chr);
+        let vars = ChrVarProxy::snapshot(chr, player);
         {
             let mut bullet = self.bullet.borrow_mut();
             let mut character = CharacterRagdoll::new(chr, cx);
@@ -254,7 +254,7 @@ pub fn pack_target_skeleton(player: &AnimationPlayer) -> TargetSkeleton {
     let mut packed = vec![0.0f32; COUNT * 7];
     pack_bone_transforms(&bones, &mut packed);
     TargetSkeleton {
-        bone_count: player.num_bones() as i32,
+        bone_count: COUNT as i32,
         angle: player.rendered_angle(),
         packed,
     }
@@ -321,7 +321,7 @@ struct ChrVarProxy {
 }
 
 impl ChrVarProxy {
-    fn snapshot(chr: &LuaGameCharacter) -> Self {
+    fn snapshot(chr: &LuaGameCharacter, player: &AnimationPlayer) -> Self {
         use pz_anim::AnimationVariableSource;
         let mut vars = pz_anim::MapVariableSource::new();
         for name in [
@@ -337,6 +337,15 @@ impl ChrVarProxy {
         ] {
             if let Some(v) = chr.get_variable_named(name) {
                 vars.set_variable(name, v);
+            }
+        }
+        // Preserve any custom `m_TrackTimeToVariable` variables referenced by
+        // active animation tracks so non-ragdolling tracks keep reading them.
+        for track in player.tracks() {
+            if let Some(name) = track.track_time_to_variable.as_deref().filter(|s| !s.is_empty()) {
+                if let Some(v) = chr.get_variable_named(name) {
+                    vars.set_variable(name, v);
+                }
             }
         }
         Self { vars }
