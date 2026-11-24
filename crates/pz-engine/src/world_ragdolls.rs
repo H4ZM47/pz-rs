@@ -166,6 +166,8 @@ impl WorldRagdolls {
 
         let bullet_frame_no = self.bullet_frame_no();
         let vars = ChrVarProxy::snapshot(chr, player);
+        let vehicle_contact = chr.is_zombie().then(|| zombie_vehicle_contact(chr)).flatten();
+        let is_zombie = chr.is_zombie();
         {
             let mut bullet = self.bullet.borrow_mut();
             let mut character = CharacterRagdoll::new(chr, cx);
@@ -183,6 +185,11 @@ impl WorldRagdolls {
                 multiplier,
             };
             player.update_with_ragdoll(dt, Some(&vars), &mut frame);
+            if is_zombie {
+                if let Some(ctrl) = frame.controller.as_mut() {
+                    ctrl.vehicle_collision(&mut frame.env, vehicle_contact);
+                }
+            }
         }
         CharacterRagdoll::track(chr, player, controller.as_ref());
         publish_active_simulations(self.globals.number_of_active_simulations);
@@ -232,6 +239,43 @@ impl WorldRagdolls {
         self.builder_attempted = false;
         publish_active_simulations(0);
     }
+}
+
+/// Resolves `RagdollController.vehicleCollision(zombie, collidedVehicle)` inputs:
+/// `Some((is_collided, touching))` when a live cell vehicle contacts `chr`, or
+/// `None` when no live vehicle is in contact (clearing `was_contacting_vehicle`
+/// and resetting ragdoll body dynamics in Bullet).
+pub(crate) fn zombie_vehicle_contact(chr: &LuaGameCharacter) -> Option<(bool, bool)> {
+    let vehicles = pz_vehicles::manager::cell_vehicles();
+    if vehicles.is_empty() {
+        return None;
+    }
+    let (x, y, z) = (chr.vars.x, chr.vars.y, chr.vars.z);
+    let flagged = chr.vars.vehicle_collision || chr.vars.collided_with_vehicle;
+    let mut best: Option<(bool, bool)> = None;
+    for v in &vehicles {
+        if (v.z() - z).abs() >= 1.0 {
+            continue;
+        }
+        let touching = if v.script().is_some() {
+            v.poly_plus_radius().contains_point(x, y) || v.closest_point_on_poly(x, y).0 <= 0.25
+        } else {
+            let dx = v.x() - x;
+            let dy = v.y() - y;
+            dx * dx + dy * dy <= 4.0
+        };
+        if touching {
+            return Some((flagged || touching, true));
+        }
+        if flagged && best.is_none() {
+            let dx = v.x() - x;
+            let dy = v.y() - y;
+            if dx * dx + dy * dy <= 25.0 {
+                best = Some((true, false));
+            }
+        }
+    }
+    best
 }
 
 /// Packs an [`AnimationPlayer`]'s current bone transforms into a

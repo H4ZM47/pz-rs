@@ -426,3 +426,80 @@ fn installed_build42_ragdoll_scripts_and_tpose_init_in_bullet() {
     wr.reset();
     bullet.0.borrow_mut().destroy_world();
 }
+
+#[test]
+fn zombie_vehicle_contact_drives_ragdoll_vehicle_collision_dynamics() {
+    pz_vehicles::manager::reset();
+    let sm = pz_lua_api::bind_registry::shared_script_manager();
+    let mut zombie = LuaGameCharacter::new(&sm, pz_characters::CharacterKind::Zombie);
+    zombie.id = 77;
+    zombie.vars.x = 50.0;
+    zombie.vars.y = 60.0;
+    zombie.vars.z = 0.0;
+    zombie.vars.vehicle_collision = true;
+
+    // No vehicles -> None.
+    assert_eq!(zombie_vehicle_contact(&zombie), None);
+
+    // Add a live vehicle right on top of the zombie -> Some((true, true)).
+    let v = pz_vehicles::BaseVehicle::new();
+    {
+        let mut st = v.st_mut();
+        st.vehicle_id = 9;
+        st.x = 50.5;
+        st.y = 60.0;
+        st.z = 0.0;
+    }
+    pz_vehicles::manager::cell_add(&v);
+    pz_vehicles::manager::process_add_vehicles();
+    assert_eq!(zombie_vehicle_contact(&zombie), Some((true, true)));
+
+    // Move zombie out of touching radius (3 tiles away, still flagged) -> Some((true, false)).
+    zombie.vars.x = 53.5;
+    assert_eq!(zombie_vehicle_contact(&zombie), Some((true, false)));
+
+    // Clear vehicle_collision flag and move far away -> None.
+    zombie.vars.vehicle_collision = false;
+    zombie.vars.x = 90.0;
+    assert_eq!(zombie_vehicle_contact(&zombie), None);
+
+    // Exercise `RagdollController::vehicle_collision` transition directly in Bullet.
+    let bullet = SharedBullet::new();
+    bullet
+        .0
+        .borrow_mut()
+        .init_world(0, 0, 10, 10, 0, 0, false)
+        .unwrap();
+    let scripts = synthetic_ragdoll_scripts();
+    let (_sd, skel, tpose) = synthetic_tpose_skeleton_with_extra(&[]);
+    let builder = {
+        let mut b = bullet.0.borrow_mut();
+        scripts.to_bullet(&mut b, false);
+        pz_ragdoll::RagdollBuilder::initialize(&mut b, &skel, &tpose, &scripts.body_dynamics)
+    };
+    let mut globals = pz_ragdoll::RagdollGlobals::default();
+    let mut ctrl = pz_ragdoll::RagdollController::new();
+    let mut dummy = ReleaseCharacter(77);
+    {
+        let mut b = bullet.0.borrow_mut();
+        let mut env = pz_ragdoll::RagdollEnv {
+            bullet: &mut b,
+            globals: &mut globals,
+            builder: &builder,
+            character: &mut dummy,
+            bullet_frame_no: 1,
+            time_delta: 0.016,
+            debug: pz_ragdoll::RagdollDebugOptions::default(),
+        };
+        ctrl.vehicle_collision(&mut env, Some((true, true)));
+        assert!(ctrl.state().is_contacting_vehicle);
+
+        ctrl.vehicle_collision(&mut env, Some((true, false)));
+        assert!(ctrl.state().is_contacting_vehicle);
+
+        ctrl.vehicle_collision(&mut env, Some((false, false)));
+        assert!(!ctrl.state().is_contacting_vehicle);
+    }
+    bullet.0.borrow_mut().destroy_world();
+    pz_vehicles::manager::reset();
+}
