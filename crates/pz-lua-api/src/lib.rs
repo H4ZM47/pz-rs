@@ -14,6 +14,7 @@ pub mod bind_body;
 pub mod bind_body_damage;
 pub mod bind_character_sim;
 pub mod bind_eat;
+pub mod bind_fish_school;
 pub mod bind_cheat_type;
 pub mod bind_characters;
 pub mod bind_audio;
@@ -289,6 +290,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     world_menu_logic::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
     bind_item_picker::register(&mut mgr.thread);
+    bind_fish_school::register(&mut mgr.thread);
     bind_item_picker::install_event_sink(mgr.events.clone());
     bind_world_gen_utils::register(&mut mgr.thread, mgr.fs.clone());
     bind_world_gen_params::register(&mut mgr.thread);

@@ -774,8 +774,12 @@ impl IsoWorld {
             }
             _ => None,
         };
-        // TODO(port): `FishSchoolManager.init`; `WorldMarkers.instance.init`;
-        // `GameEntityManager.Init`.
+        let fish_seed = self.rand.next(i32::MAX);
+        let fish_age = pz_lua_api::bind_climate::shared_game_time()
+            .borrow()
+            .world_age_hours();
+        pz_lua_api::bind_fish_school::init(fish_seed, fish_age);
+        // TODO(port): `WorldMarkers.instance.init`; `GameEntityManager.Init`.
         // `PersistentOutfits.instance.init()`.
         self.outfit_names = pz_lua_api::bind_zombie_outfits::init_persistent_outfits(
             &lua.thread,

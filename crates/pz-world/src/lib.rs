@@ -18,6 +18,7 @@ pub mod defs;
 pub mod designation;
 pub mod erosion_data;
 pub mod fire;
+pub mod fish_school;
 pub mod fix2x;
 pub mod floor_item;
 pub mod floor_object;
