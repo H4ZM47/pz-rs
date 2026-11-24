@@ -866,10 +866,13 @@ all installed assets, render paths or foreign platforms.
       (`ItemPickerJava.updateOverlaySprite`) for each named object whose
       container is not empty; `set_overlay_sprite` sets `overlay_sprite`,
       and `render_world` gives it to the renderer as `RenderObject.overlay`.
-- [ ] The rest of the overlay lifecycle: Lua `ItemPicker.updateOverlaySprite`
-      after a transfer (still a no-op), `invalidateRenderChunkLevel` for a
-      change after load, `fixTableTopOverlays(square)` after moving objects;
-      both `Reset()` on world unload.
+- [ ] The rest of the overlay lifecycle: `TileOverlays` now exposes
+      `hasOverlays`, `updateTileOverlaySprite`, and `fixTableTopOverlays(square)`
+      to Lua and `ContainerOverlays` exposes `hasOverlays` and
+      `updateContainerOverlaySprite` (`bind_tile_overlays.rs`); remaining:
+      Lua `ItemPicker.updateOverlaySprite` after a transfer,
+      `invalidateRenderChunkLevel` for a change after load, and both
+      `Reset()` on world unload (shipped in `antigravity/world-overlays-resets`).
 - [ ] `BrokenFences.destroyFence(obj, dir)` (thumping, vehicles): the engine's
       `StatesEngine::destroy_fence` / `is_breakable_fence` /
       `broken_fence_items` read `bind_broken_fences::shared_broken_fences()`
@@ -1063,18 +1066,15 @@ all installed assets, render paths or foreign platforms.
       PickThumpable/PickTree`). `PickHoppable`/`PickCorpse`, the left
       button (`OnObjectLeftMouseButton*`) and dragging moving objects are
       open (world thread).
-- [ ] Object picking render side: keep a `pz_iso_render::RenderInfos`
-      next to the chunk caches, build each player's `ChunkRenderer` with
-      `.with_render_infos(&infos, player)` (chunk recording, composite and
-      translucent passes record `ObjectRenderInfo`), call
-      `infos.forget_chunk(wx, wy)` when a chunk unloads, and give the HUD a
-      `PickWorld` built per frame as `pz_engine::world_hud::EnginePick {
-      world: pz_world_render::WorldPick { view, render, infos, player: 0,
-      camera: player 0's camera }, hooks }`; `world_hud::PickHooks`
-      supplies `IsoPlayer.players[0]` (characters thread), the square Lua
-      objects, door adjacency, entity UIs and corpses (`isMouseOver`).
-      Sprite models (`renderModel` → `updateRenderInfoForObjectPicker`) are
-      not recorded yet (world-render thread) (#198).
+- [x] Object picking render side: `WorldRender` keeps
+      `pz_iso_render::RenderInfos`, builds each player's `ChunkRenderer` with
+      `.with_render_infos(&infos, player)`, calls `infos.forget_chunk(wx, wy)`
+      on chunk unload, and `world_pick::EngineWorldMouse` builds
+      `EnginePick { world: WorldPick { .. }, hooks: Player0 }` with
+      `PickHooks::{player0, square_value, adjacent_to_player,
+      interactive_entity, combined_fbo}` wired. Still open: `corpses`
+      (`IsoDeadBody` Lua identity), multi-square `SpriteConfig` master lookup,
+      and sprite model picker records (#198).
 - [ ] HUD camera: create one `pz_world_render::SharedCameraFrame`, call
       `pz_engine::world_hud::install_hud_camera(frame.clone())` after the
       HUD host is installed,
