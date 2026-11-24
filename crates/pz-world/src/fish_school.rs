@@ -67,13 +67,13 @@ fn hash_u32(mut v: u32) -> u32 {
     v ^ (v >> 16)
 }
 
-fn cell_hash01(seed: i32, gx: i32, gy: i32, salt: u32) -> f32 {
+fn cell_hash01(seed: i32, gx: i32, gy: i32, layer: u32) -> f32 {
     let h = hash_u32(
         (seed as u32)
             .wrapping_mul(374_761_393)
             ^ (gx as u32).wrapping_mul(668_265_263)
             ^ (gy as u32).wrapping_mul(2_147_483_647)
-            ^ salt,
+            ^ layer.wrapping_mul(1_597_334_677),
     );
     (h & 0x00ff_ffff) as f32 / 16_777_215.0
 }
@@ -140,7 +140,7 @@ impl FishSchoolManager {
 
     fn base_fish_abundance(&self, x: i32, y: i32) -> f32 {
         let (gx, gy) = zone_key(x, y);
-        let t = cell_hash01(self.seed, gx, gy, 0x1357_9bdf);
+        let t = cell_hash01(self.seed, gx, gy, 1);
         BASE_FISH_MIN + t * (BASE_FISH_MAX - BASE_FISH_MIN)
     }
 
@@ -178,7 +178,7 @@ impl FishSchoolManager {
     /// consumed by `Fish.lua:getFishByLure`).
     pub fn get_trash_abundance(&self, x: i32, y: i32) -> f32 {
         let (gx, gy) = zone_key(x, y);
-        let t = cell_hash01(self.seed, gx, gy, 0x2468_ace1);
+        let t = cell_hash01(self.seed, gx, gy, 2);
         0.05 + t * 0.40
     }
 
