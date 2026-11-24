@@ -536,6 +536,9 @@ impl GameState for IngameState {
             eprintln!("WorldMarkers.reset: {e:?}");
         }
         pz_lua_api::bind_search_mode::reset();
+        pz_lua_api::bind_world::lua_world::shared_water_flow()
+            .borrow_mut()
+            .reset();
         pz_lua_api::bind_area_highlights::clear();
         // `ZomboidRadio.getInstance().Reset()` and `IsoWaveSignal.Reset()`.
         if let Some(w) = cx.world.as_mut() {

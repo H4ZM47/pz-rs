@@ -29,6 +29,7 @@ pub mod world_ragdolls;
 pub mod world_regions;
 pub mod world_render;
 pub mod world_render_effects;
+pub mod world_surfaces;
 pub mod world_update;
 pub mod world_vehicles;
 pub mod zone_clipper;

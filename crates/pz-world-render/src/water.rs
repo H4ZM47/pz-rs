@@ -74,9 +74,20 @@ impl RenderWorld {
                             continue;
                         };
                         let geometry = self.water_geometry(sq, flow, shader);
+                        let sq = self.squares.get_mut(&pos).unwrap();
                         if sq.water != geometry {
-                            self.squares.get_mut(&pos).unwrap().water = geometry;
+                            sq.water = geometry;
                             redraw = true;
+                        }
+                        for obj in &mut sq.objects {
+                            if let Some(sp) = obj.sprite.as_mut() {
+                                let hide = shader
+                                    && pz_iso_render::water::hides_for_water_render(&sp.name);
+                                if sp.hide_for_water_render != hide {
+                                    std::rc::Rc::make_mut(sp).hide_for_water_render = hide;
+                                    redraw = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -145,5 +156,29 @@ mod tests {
         w.remove_chunk(1, 0);
         w.refresh_water(&flow, true);
         assert!(w.squares[&(7, 2, 0)].water.is_none());
+    }
+
+    #[test]
+    fn water_shader_toggles_hide_for_water_render_on_shore_blends() {
+        let mut w = RenderWorld::default();
+        let flow = IsoWaterFlow::default();
+        w.chunks.insert((0, 0), (0, 0));
+        let mut sq = floor(2, 3, true);
+        let blend = SpriteInfo {
+            name: "blends_natural_02_6".into(),
+            ..Default::default()
+        };
+        sq.objects
+            .push(RenderObject::new(ObjectKind::Plain, Some(Rc::new(blend))));
+        w.squares.insert((2, 3, 0), sq);
+        w.water_changed(0, 0);
+
+        assert_eq!(w.refresh_water(&flow, true), [(0, 0)]);
+        assert!(!w.squares[&(2, 3, 0)].objects[0].sprite.as_ref().unwrap().hide_for_water_render);
+        assert!(w.squares[&(2, 3, 0)].objects[1].sprite.as_ref().unwrap().hide_for_water_render);
+
+        // Disabling the water shader restores the shore-blend sprite and flags redraw.
+        assert_eq!(w.refresh_water(&flow, false), [(0, 0)]);
+        assert!(!w.squares[&(2, 3, 0)].objects[1].sprite.as_ref().unwrap().hide_for_water_render);
     }
 }

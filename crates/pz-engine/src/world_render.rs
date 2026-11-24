@@ -106,6 +106,7 @@ pub struct WorldRender {
     /// `renderOneLevel_Blood`).
     surface_textures: GroundTextures,
     surface_checks: [pz_iso_render::weather::SurfaceChecks; MAX_PLAYERS],
+    pub splashes: crate::world_surfaces::WorldSplashes,
     winter: [bool; MAX_PLAYERS],
     puddle_geometry_settings: Option<(i32, bool)>,
     sprites: SpriteCache,
@@ -204,6 +205,7 @@ impl WorldRender {
             cutaway_stencils,
             drop_shadow: tm.shared_texture_flags(fs, "media/textures/NewShadow.png", 0),
             surface_checks: Default::default(),
+            splashes: crate::world_surfaces::WorldSplashes::new(),
             winter: Default::default(),
             puddle_geometry_settings: None,
             surface_textures: GroundTextures(
@@ -212,6 +214,7 @@ impl WorldRender {
                     .map(|&name| name.to_owned())
                     .chain(["media/textures/river_bottom.png", "media/textures/puddles_hm.png", "media/textures/CMVehicleReflection/ref_am.png"].map(str::to_owned))
                     .chain((0..48).map(|index| format!("e_newsnow_ground_1_{index}")))
+                    .chain(crate::world_surfaces::splash_texture_names())
                     .filter_map(|name| tm.shared_texture(fs, &name).map(|tex| (name, tex)))
                     .collect(),
             ),
@@ -510,6 +513,7 @@ impl WorldRender {
             self.infos.forget_chunk(wx, wy);
             self.lighting.remove_chunk(wx, wy);
             self.extras.on_chunk_removed(wx, wy);
+            self.splashes.on_chunk_removed(wx, wy);
         }
         let mut tex = GameTextures {
             fs,
@@ -987,9 +991,14 @@ impl WorldRender {
             let state = shared.borrow();
             (state.water, state.state, state.sky.reflection(now_ms, settings.use_shaders, perf_skybox, night, &self.surface_textures))
         };
+        let paused = pz_lua_api::bind_climate::is_game_paused();
+        let realworld_seconds = pz_lua_api::bind_climate::shared_game_time()
+            .try_borrow()
+            .map_or(0.0, |t| t.realworld_seconds_since_last_update());
+        self.splashes.advance_frame(v.tick, paused, realworld_seconds);
         let surfaces = Surfaces {
             settings,
-            climate: pz_iso_render::weather::ClimateInputs { snow_target: target, winter, ..Default::default() },
+            climate: crate::world_surfaces::surface_climate_inputs(target, winter),
             water,
             puddles,
             sky,
@@ -997,9 +1006,9 @@ impl WorldRender {
             meta_grid_min_x: view.meta.min_x,
             world: &self.world,
             textures: &self.surface_textures,
-            frame: Default::default(),
-            rain: None,
-            fish: None,
+            frame: self.splashes.frame,
+            rain: Some(&self.splashes.rain),
+            fish: Some(&self.splashes.fish),
         };
         let enable_snow = pz_lua_api::bind_sandbox::current_bool("EnableSnowOnGround").unwrap_or(true);
         let changed = self.surface_checks[p].run(&surfaces, enable_snow, now_ms);
