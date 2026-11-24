@@ -873,6 +873,10 @@ all installed assets, render paths or foreign platforms.
       Lua `ItemPicker.updateOverlaySprite` after a transfer,
       `invalidateRenderChunkLevel` for a change after load, and both
       `Reset()` on world unload (shipped in `antigravity/world-overlays-resets`).
+- [ ] The rest of the overlay lifecycle: `fixTableTopOverlays(square)` after
+      moving objects (wired: Lua `ItemPicker.updateOverlaySprite`,
+      `invalidateRenderChunkLevel` on `set_overlay_sprite`, and both
+      `Reset()` calls in `IngameState::exit`).
 - [ ] `BrokenFences.destroyFence(obj, dir)` (thumping, vehicles): the engine's
       `StatesEngine::destroy_fence` / `is_breakable_fence` /
       `broken_fence_items` read `bind_broken_fences::shared_broken_fences()`
@@ -896,6 +900,18 @@ all installed assets, render paths or foreign platforms.
       `lua_world::shared_water_flow()`; `IsoWaterFlow.Reset` on world
       unload (#224).
 - [x] Animal definitions: `pz_animals::AnimalDefinitionTables::load(&env)`
+- [ ] Story clutter: `RandomizedWorldBase.get*ClutterItem()` reads
+      `bind_randomized_world::clutter(field)`.
+- [x] `MapObjects.newGridSquare` / `loadGridSquare` on brand-new / loaded
+      squares: `bind_map_objects::dispatch_square` wired in
+      `world_activation.rs` + `floor_world/tiles.rs`; `MapObjects.Reset` wired
+      in `IngameState::exit` (#224).
+- [ ] Fence bending (`pz-world-states`) reads its `BentFences` from
+      `bind_bent_fences::shared_bent_fences()` (#224).
+- [x] Water rendering reads `IsoWaterFlow` from
+      `lua_world::shared_water_flow()` (`world_render.rs`);
+      `IsoWaterFlow.Reset` wired in `IngameState::exit` (#224).
+- [ ] Animal definitions: `pz_animals::AnimalDefinitionTables::load(&env)`
       over `LuaManager.env` once shared Lua is loaded, as `IsoWorld.init`
       calls `AnimalDefinitions.getAnimalDefs()` (which loads the genome
       definitions); tracks reload where `IsoWorld` calls
@@ -1465,9 +1481,11 @@ registered):
       `running_sound()` loops on the object's emitter.
 - [ ] Hutch burning (#FIRE-REST): `FireHooks::hutch_release_contents`
       runs `releaseAllAnimals` + `dropAllEggs` of the hutch object.
-- [ ] Fire fighting (#FIRE-REST): the put-out action uses
-      `fire::fighting::{get_square_to_extinguish, get_extinguisher}` with
-      an `ExtinguisherItem` view of the inventory items.
+- [x] Fire fighting (#FIRE-REST): `world_menu_logic/fetch.rs` resolves
+      `fetch.extinguisher` / `fetch.firetile` through
+      `fire::fighting::get_extinguisher` with an `ExtinguisherItem` view over
+      the player's hands and inventory (`doExtinguishFireMenu` remains
+      separate in `entries.rs`).
 - [x] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
 - [x] Zombie vehicle checks (`isVehicleBetween`, `DistToSquared(vehicle)`):
       `pz-world-states/src/vehicles.rs` queries live `pz_vehicles::manager`

@@ -342,10 +342,11 @@ pub(super) fn fetch(cx: &mut Cx<'_>, fetch: &TableRef, v: &Value, player: f64, d
             fetch.set_str("sheetRopeSquare", square.clone());
         }
         if !square_to_extinguish(cx, &square)?.is_nil() {
-            // fetch.extinguisher = FireFighting.getExtinguisher(player) (the
-            // hands, then the inventory's extinguisher, sand bag or water
-            // source); fetch.firetile = square.
-            return Err(crate::bind_world_object::unsupported("FireFighting.getExtinguisher"));
+            // `fetch.extinguisher = FireFighting.getExtinguisher(player)`;
+            // `fetch.firetile = square`.
+            let ext = extinguisher_of(cx, &player_obj, &inventory)?;
+            fetch.set_str("extinguisher", ext);
+            fetch.set_str("firetile", square.clone());
         }
         fetch.set_str("clickedSquare", square);
     }
@@ -930,4 +931,113 @@ fn is_square_to_extinguish(cx: &mut Cx<'_>, square: &Value) -> LuaResult<bool> {
         }
     }
     Ok(false)
+}
+
+struct LuaExtinguisherView {
+    item_type: String,
+    current_uses: i32,
+    water_source: bool,
+    drainable: bool,
+    fluid: Option<Option<(bool, f32)>>,
+}
+
+impl pz_world::fire::fighting::ExtinguisherItem for LuaExtinguisherView {
+    fn item_type(&self) -> &str {
+        &self.item_type
+    }
+    fn current_uses(&self) -> i32 {
+        self.current_uses
+    }
+    fn is_water_source(&self) -> bool {
+        self.water_source
+    }
+    fn is_drainable(&self) -> bool {
+        self.drainable
+    }
+    fn fluid(&self) -> Option<Option<(bool, f32)>> {
+        self.fluid
+    }
+}
+
+fn read_extinguisher_view(cx: &mut Cx<'_>, item: &Value) -> LuaResult<Option<LuaExtinguisherView>> {
+    if item.is_nil() {
+        return Ok(None);
+    }
+    let item_type = cx
+        .call(item, "getType", &[])?
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let current_uses = cx.num(item, "getCurrentUses", &[]).unwrap_or(0.0) as i32;
+    let water_source = cx.is(item, "isWaterSource", &[]).unwrap_or(false);
+    let drainable = cx.is(item, "IsDrainable", &[]).unwrap_or(false);
+    let fc = cx.call(item, "getFluidContainer", &[]).unwrap_or(Value::Nil);
+    let fluid = if fc.is_nil() {
+        None
+    } else {
+        let primary = cx.call(&fc, "getPrimaryFluid", &[]).unwrap_or(Value::Nil);
+        if primary.is_nil() {
+            Some(None)
+        } else {
+            let name = cx
+                .call(&primary, "getFluidTypeString", &[])
+                .or_else(|_| cx.call(&primary, "toString", &[]))
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            let is_water = name == "Water" || name == "TaintedWater";
+            let amount = cx.num(&fc, "getAmount", &[]).unwrap_or(0.0) as f32;
+            Some(Some((is_water, amount)))
+        }
+    };
+    Ok(Some(LuaExtinguisherView {
+        item_type,
+        current_uses,
+        water_source,
+        drainable,
+        fluid,
+    }))
+}
+
+/// `FireFighting.getExtinguisher(player)`: primary hand, secondary hand, then
+/// inventory in order (extinguisher > sand/gravel/dirt bag > water source).
+fn extinguisher_of(cx: &mut Cx<'_>, player_obj: &Value, inventory: &Value) -> LuaResult<Value> {
+    let primary_val = cx.call(player_obj, "getPrimaryHandItem", &[])?;
+    let secondary_val = cx.call(player_obj, "getSecondaryHandItem", &[])?;
+    let primary_view = read_extinguisher_view(cx, &primary_val)?;
+    let secondary_view = read_extinguisher_view(cx, &secondary_val)?;
+    let mut inv_vals = Vec::new();
+    let mut inv_views = Vec::new();
+    if !inventory.is_nil() {
+        let items = cx.call(inventory, "getItems", &[])?;
+        if !items.is_nil() {
+            let n = cx.num(&items, "size", &[])? as i64;
+            for i in 0..n {
+                let it = cx.call(&items, "get", &[Value::Num(i as f64)])?;
+                if let Some(view) = read_extinguisher_view(cx, &it)? {
+                    inv_vals.push(it);
+                    inv_views.push(view);
+                }
+            }
+        }
+    }
+    let inv_refs: Vec<&dyn pz_world::fire::fighting::ExtinguisherItem> = inv_views
+        .iter()
+        .map(|v| v as &dyn pz_world::fire::fighting::ExtinguisherItem)
+        .collect();
+    let chosen = pz_world::fire::fighting::get_extinguisher(
+        primary_view
+            .as_ref()
+            .map(|v| v as &dyn pz_world::fire::fighting::ExtinguisherItem),
+        secondary_view
+            .as_ref()
+            .map(|v| v as &dyn pz_world::fire::fighting::ExtinguisherItem),
+        &inv_refs,
+    );
+    Ok(match chosen {
+        Some(0) => primary_val,
+        Some(1) => secondary_val,
+        Some(i) => inv_vals.get(i - 2).cloned().unwrap_or(Value::Nil),
+        None => Value::Nil,
+    })
 }

@@ -674,8 +674,47 @@ pub fn register(thread: &mut Thread) {
         fill_container(c.thread, &d, &container, &player)?;
         Ok(0)
     });
-    // STUB: the overlay sprites (`doOverlaySprite`) are not ported.
-    b.static_fn("updateOverlaySprite", |_| Ok(0));
+    b.static_fn("updateOverlaySprite", |c| {
+        let arg = c.arg(0);
+        if arg.is_nil() {
+            return Ok(0);
+        }
+        let Some(obj) = crate::bind_world_object::object_from_value(&arg) else {
+            return Ok(0);
+        };
+        let (x, y, z, room) = {
+            let sq_slot = obj
+                .object
+                .try_borrow()
+                .ok()
+                .and_then(|o| o.square_slot().cloned());
+            match sq_slot {
+                Some(sq) => {
+                    let (x, y, z) = sq
+                        .try_borrow()
+                        .map(|s| (s.x, s.y, s.z))
+                        .unwrap_or((0, 0, 0));
+                    let room = crate::bind_world::with_world(|w| {
+                        let meta = w.meta_grid.as_ref()?;
+                        let sq = sq.try_borrow().ok()?;
+                        sq.room_def(meta).map(|r| r.name.clone())
+                    });
+                    (x, y, z, room)
+                }
+                None => (0, 0, 0, None),
+            }
+        };
+        if crate::bind_sprites::manager().is_ok() {
+            let sq = pz_world::tile_overlays::OverlaySquare {
+                x,
+                y,
+                z,
+                room: room.as_deref(),
+            };
+            crate::bind_tile_overlays::update_container_overlay_sprite(&obj.object, sq)?;
+        }
+        Ok(0)
+    });
     b.static_fn("getLootModifier", |c| {
         let name = string(&c.arg(0)).unwrap_or_default();
         let sm = crate::bind_registry::shared_script_manager();
