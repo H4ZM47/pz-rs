@@ -18,9 +18,9 @@ use crate::world_mannequins::InventoryHost;
 /// not a client): the worn items are made from the outfit's item visuals
 /// and put in the emptied inventory with the attached items.
 ///
-/// Not ported: `setSourceGrid` (the live container has no source grid), the
-/// server's `dressInPersistentOutfitID` and `ItemSpawner.spawnItem` for
-/// `itemsToSpawnAtDeath` (reported as unsupported; the items stay listed).
+/// Not ported: `setSourceGrid` (the live container has no source grid) and
+/// the server's `dressInPersistentOutfitID`. `itemsToSpawnAtDeath` are named
+/// after the owner when flagged and placed into the zombie's container.
 pub fn do_zombie_inventory(thread: &mut Thread, z: &mut LuaGameCharacter) -> ScriptResult<()> {
     if z.zombie.reanimated_player || z.zombie.was_fake_dead {
         return Ok(());
@@ -67,8 +67,14 @@ pub fn do_zombie_inventory(thread: &mut Thread, z: &mut LuaGameCharacter) -> Scr
         pz_inventory::shared::set_container(&item, Some(&container));
         container.borrow_mut().items.push(item);
     }
-    if !z.zombie.items_to_spawn_at_death.is_empty() {
-        return Err(ScriptError::new("unsupported: ItemSpawner.spawnItem (itemsToSpawnAtDeath)"));
+    for mut item in z.zombie.items_to_spawn_at_death.drain(..) {
+        if container.borrow().items.iter().any(|i| i.borrow().id == item.id) {
+            continue;
+        }
+        name_after_owner(&mut item, names.as_ref())?;
+        let item: ItemRef = Rc::new(RefCell::new(item));
+        pz_inventory::shared::set_container(&item, Some(&container));
+        container.borrow_mut().items.push(item);
     }
     Ok(())
 }
@@ -150,13 +156,13 @@ mod tests {
     }
 
     #[test]
-    fn items_to_spawn_at_death_are_unsupported() {
+    fn items_to_spawn_at_death_are_spawned_into_inventory() {
         let mut z = zombie();
         z.zombie.items_to_spawn_at_death.push(item(9));
 
-        let e = do_zombie_inventory(&mut Thread::new(TableRef::new()), &mut z).unwrap_err();
+        do_zombie_inventory(&mut Thread::new(TableRef::new()), &mut z).unwrap();
 
-        assert!(e.to_string().contains("unsupported: ItemSpawner.spawnItem"));
-        assert_eq!(ids(&z), vec![7]);
+        assert!(z.zombie.items_to_spawn_at_death.is_empty());
+        assert_eq!(ids(&z), vec![7, 9]);
     }
 }
