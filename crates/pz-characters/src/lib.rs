@@ -26,7 +26,6 @@ pub mod survivor;
 pub mod traits;
 pub mod worn_items;
 
-pub use pz_animals;
 pub use attached_items::{
     AttachedItem, AttachedItems, AttachedLocation, AttachedLocationGroup, AttachedLocationGroupRef, AttachedLocationRef,
     AttachedLocations,
@@ -37,7 +36,6 @@ pub use skills::{Perk, PerkFactory, PerkRef};
 pub use survivor::{CharacterGender, SurvivorDesc, SurvivorDescRef, SurvivorDescStatics, SurvivorFactory, SurvivorType};
 pub use traits::CharacterTraits;
 pub use color::{Color, ImmutableColor};
-pub use pz_animals;
 pub use worn_items::{BodyLocation, BodyLocationGroup, BodyLocationGroupRef, BodyLocationRef, BodyLocations, ItemIdentity, WornItem, WornItems};
 
 use pz_scripts::ScriptError;
