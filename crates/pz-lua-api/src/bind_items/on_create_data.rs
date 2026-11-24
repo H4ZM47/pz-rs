@@ -191,6 +191,11 @@ impl Tables {
     }
 }
 
+/// The tables read at start-up, if an installed jar was loaded.
+pub(crate) fn maybe_tables() -> Option<Rc<Tables>> {
+    TABLES.with(|t| t.borrow().clone())
+}
+
 /// The tables read at start-up, or a host capability error.
 pub(crate) fn tables() -> LuaResult<Rc<Tables>> {
     TABLES.with(|t| t.borrow().clone()).ok_or_else(|| {
