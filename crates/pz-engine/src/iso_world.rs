@@ -1320,6 +1320,12 @@ end
                 pz_lua_api::bind_safehouse::install_safehouses(
                     self.meta_world.safehouses.iter().map(|s| [s.x, s.y, s.w, s.h]).collect(),
                 );
+                pz_lua_api::bind_nonpvp_faction::install_non_pvp_zones(
+                    self.meta_world.non_pvp_zones.clone(),
+                );
+                pz_lua_api::bind_nonpvp_faction::install_factions(
+                    self.meta_world.factions.clone(),
+                );
                 match result {
                     Ok(())=>{},
                     Err(DesignationIoError::Io(error))=>self.errors.push(format!("IsoMetaGrid.load: {error}")),

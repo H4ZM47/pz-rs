@@ -2555,6 +2555,12 @@ impl IsoWorld {
         use pz_lua_api::world_save::{
             save_game_before_event, save_game_cell_actual as save_game_cell, save_game_finish, SaveReport,
         };
+        if let Some(zones) = pz_lua_api::bind_nonpvp_faction::snapshot_non_pvp_zones() {
+            self.meta_world.non_pvp_zones = zones;
+        }
+        if let Some(factions) = pz_lua_api::bind_nonpvp_faction::snapshot_factions() {
+            self.meta_world.factions = factions;
+        }
         let report = match with_save_game(self, sandbox, can_save_players, |g| save_game_before_event(g)) {
             Some(Ok(mut report)) => {
                 if report.saved {
