@@ -1631,8 +1631,8 @@ end
             chr.borrow_mut().id = self.next_object_id;
         }
         pz_lua_api::bind_players::set_player(0, Some(chr.clone()));
-        pz_lua_api::bind_players::set_player_instance(Some(chr));
-        // TODO(port): `IsoCamera.setCameraCharacter(player)`.
+        pz_lua_api::bind_players::set_player_instance(Some(chr.clone()));
+        pz_lua_api::bind_players::set_camera_character(Some(chr));
     }
 
     /// The new-game branch of `IsoWorld.init`: the spawn square (a free
@@ -1645,17 +1645,12 @@ end
         sm: &pz_scripts::ScriptManager,
     ) -> Result<(), String> {
         let (xa, ya, za) = self.world_xa;
+        let sprites = self.sprites.clone();
         let sq = with_world(|w| {
-            w.cell
-                .as_ref()
-                .and_then(|c| c.get_grid_square(xa, ya, za))
-                .map(|s| {
-                    let s = s.borrow();
-                    (s.x, s.y, s.z)
-                })
+            let cell = w.cell.as_ref()?;
+            let sp = sprites.as_ref().map(|s| s.borrow());
+            find_free_spawn_square(cell, w.meta_grid.as_ref(), sp.as_deref(), xa, ya, za)
         });
-        // TODO(port): `sq.isFree(false) && sq.getRoom() != null` →
-        // `sq.getRoom().getFreeTile()` (IsoRoom is not ported).
         let mut player = None;
         if let Some(desc) = self.lua_player_desc.clone() {
             let Some((x, y, z)) = sq else {
@@ -1721,6 +1716,51 @@ end
         println!("triggerEvent OnNewGame");
         lua.trigger_event("OnNewGame", &[pv, sv]);
         Ok(())
+    }
+}
+
+/// `IsoWorld.init` spawn-square selection: when `(xa, ya, za)` is occupied
+/// (`!sq.isFree(false)`) and belongs to a room, pick a loaded free tile from
+/// that room (`sq.getRoom().getFreeTile()`). Falls back to `(xa, ya, za)`.
+fn find_free_spawn_square(
+    cell: &IsoCell,
+    meta: Option<&IsoMetaGrid>,
+    sprites: Option<&IsoSpriteManager>,
+    xa: i32,
+    ya: i32,
+    za: i32,
+) -> Option<(i32, i32, i32)> {
+    let sq = cell.get_grid_square(xa, ya, za)?;
+    let sq = sq.borrow();
+    let (Some(meta), Some(sprites)) = (meta, sprites) else {
+        return Some((sq.x, sq.y, sq.z));
+    };
+    if pz_world_popman::is_free_ignoring_movers(&sq, sprites) {
+        return Some((sq.x, sq.y, sq.z));
+    }
+    let Some(room) = sq.room_def(meta) else {
+        return Some((sq.x, sq.y, sq.z));
+    };
+    let mut candidates = Vec::new();
+    for rect in &room.rects {
+        for y in rect.y..rect.y + rect.h {
+            for x in rect.x..rect.x + rect.w {
+                if let Some(other) = cell.get_grid_square(x, y, za) {
+                    if let Ok(other) = other.try_borrow() {
+                        if pz_world_popman::is_free_ignoring_movers(&other, sprites) {
+                            candidates.push((other.x, other.y, other.z));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if candidates.is_empty() {
+        Some((sq.x, sq.y, sq.z))
+    } else {
+        let pick = pz_core::random::with_standard(|r| r.next(candidates.len() as i32))
+            .rem_euclid(candidates.len() as i32) as usize;
+        Some(candidates[pick])
     }
 }
 
@@ -1793,6 +1833,48 @@ mod world_gen_params_tests {
             "new world reset the static parameters"
         );
         std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn find_free_spawn_square_relocates_from_blocked_tile_inside_room() {
+        let sprites = IsoSpriteManager::new(pz_world::sprite::test_tables());
+        let solid = sprites.tables.flag.solid;
+        let solidfloor = sprites.tables.flag.solidfloor;
+        let mut cell = IsoCell::default();
+        let mut chunk = pz_world::IsoChunk::new(0, 0);
+        let mut blocked = pz_world::IsoGridSquare::new(2, 2, 0);
+        blocked.room_id = 42;
+        blocked.properties.set_flag(solidfloor);
+        blocked.properties.set_flag(solid);
+        chunk.set_square(2, 2, 0, Some(blocked.into()));
+        let mut free_sq = pz_world::IsoGridSquare::new(3, 2, 0);
+        free_sq.room_id = 42;
+        free_sq.properties.set_flag(solidfloor);
+        chunk.set_square(3, 2, 0, Some(free_sq.into()));
+        cell.chunks.insert((0, 0), chunk);
+
+        let mut meta = IsoMetaGrid::blank(0, 0, 0, 0);
+        meta.create_cell(0, 0);
+        let mut room = pz_world::defs::RoomDef::new(42, "bedroom".into());
+        room.rects.push(pz_world::defs::RoomRect {
+            x: 2,
+            y: 2,
+            w: 2,
+            h: 1,
+        });
+        room.x = 2;
+        room.y = 2;
+        room.x2 = 4;
+        room.y2 = 3;
+        let room_idx = pz_world::defs::RoomIdx(meta.room_defs.len() as u32);
+        meta.room_defs.push(room);
+        meta.get_cell_data_mut(0, 0).unwrap().rooms.insert(42, room_idx);
+        meta.add_room_to_cell(0, 0, room_idx);
+
+        assert_eq!(
+            find_free_spawn_square(&cell, Some(&meta), Some(&sprites), 2, 2, 0),
+            Some((3, 2, 0))
+        );
     }
 }
 

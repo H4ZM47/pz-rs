@@ -102,6 +102,7 @@ fn view3d_frame_makes_no_corpse_atlas_entry() {
             players: [PlayerRenderInput::default(); MAX_PLAYERS],
         },
         screen: ScreenParams::default(),
+        right_click_pan: (0.0, 0.0),
         tick: 0,
         multiplier: 1.0,
     };

@@ -117,11 +117,31 @@ impl Camera {
     /// `IsoCamera.playerOffsetY` (-56 pixels at tile scale 2), which
     /// lines tiles up with the model camera's `-0.48` foot offset.
     pub fn player(x: f32, y: f32, z: f32, width: i32, height: i32, zoom: f32) -> Self {
+        Self::player_with_pan(x, y, z, width, height, zoom, 0.0, 0.0)
+    }
+
+    /// [`Camera::player`] shifted by `PlayerCamera`'s right-click / aiming
+    /// look-ahead pan `(right_click_x, right_click_y)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn player_with_pan(
+        x: f32,
+        y: f32,
+        z: f32,
+        width: i32,
+        height: i32,
+        zoom: f32,
+        right_click_x: f32,
+        right_click_y: f32,
+    ) -> Self {
         let w = width as f32 * zoom;
         let h = height as f32 * zoom;
-        let off_x = pz_render::iso::x_to_screen(x, y) - w / 2.0 + PLAYER_OFFSET_X as f32;
-        let off_y = pz_render::iso::y_to_screen(x, y, z, 0) - h / 2.0 + PLAYER_OFFSET_Y as f32;
-        Camera { off_x: off_x as i32, off_y: off_y as i32, ..Camera::centred(x, y, z, width, height, zoom) }
+        let off_x = pz_render::iso::x_to_screen(x, y) - w / 2.0 + PLAYER_OFFSET_X as f32 + right_click_x;
+        let off_y = pz_render::iso::y_to_screen(x, y, z, 0) - h / 2.0 + PLAYER_OFFSET_Y as f32 + right_click_y;
+        Camera {
+            off_x: off_x as i32,
+            off_y: off_y as i32,
+            ..Camera::centred(x, y, z, width, height, zoom)
+        }
     }
 
     /// The camera character's chunk.

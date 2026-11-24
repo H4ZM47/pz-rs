@@ -8,8 +8,8 @@
 //! [`set_num_players`]); the HUD reads them through
 //! [`crate::hud::characters`].
 
-use crate::bind_character_sim::{character_value, LuaGameCharacterRef};
-use crate::expose::{global, int_arg};
+use crate::bind_character_sim::{character_value, CharacterObject, LuaGameCharacterRef};
+use crate::expose::{expose_class, global, int_arg};
 use pz_kahlua::{LuaError, Thread, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -26,11 +26,19 @@ struct IsoPlayerStatics {
     instance: Option<LuaGameCharacterRef>,
     /// `IsoPlayer.assumedPlayer`.
     assumed_player: i32,
+    /// `IsoCamera.camCharacter`.
+    camera_character: Option<LuaGameCharacterRef>,
 }
 
 impl Default for IsoPlayerStatics {
     fn default() -> Self {
-        IsoPlayerStatics { players: Default::default(), num_players: 1, instance: None, assumed_player: 0 }
+        IsoPlayerStatics {
+            players: Default::default(),
+            num_players: 1,
+            instance: None,
+            assumed_player: 0,
+            camera_character: None,
+        }
     }
 }
 
@@ -140,6 +148,16 @@ pub fn all_players_dead() -> bool {
     !(0..n).any(|i| player(i).is_some_and(|p| !p.borrow().is_dead()))
 }
 
+/// `IsoCamera.setCameraCharacter(chr)`.
+pub fn set_camera_character(chr: Option<LuaGameCharacterRef>) {
+    STATICS.with(|s| s.borrow_mut().camera_character = chr);
+}
+
+/// `IsoCamera.getCameraCharacter()` / `getCamCharacter()`.
+pub fn camera_character() -> Option<LuaGameCharacterRef> {
+    STATICS.with(|s| s.borrow().camera_character.clone())
+}
+
 /// Clears every slot, the instance and `numPlayers` (back to 1), e.g. when
 /// leaving a game.
 pub fn reset() {
@@ -147,6 +165,7 @@ pub fn reset() {
         set_player(i, None);
     }
     set_player_instance(None);
+    set_camera_character(None);
     set_num_players(1);
 }
 
@@ -195,6 +214,45 @@ pub fn register(thread: &mut Thread) {
             Ok(c.push(rect[component]))
         });
     }
+    let cam = expose_class(thread, "zombie.iso.IsoCamera", None);
+    cam.static_fn("getCameraCharacter", |c| {
+        Ok(c.push(player_value(camera_character())))
+    });
+    cam.static_fn("getCamCharacter", |c| {
+        Ok(c.push(player_value(camera_character())))
+    });
+    cam.static_fn("setCameraCharacter", |c| {
+        let chr = match c.arg(0) {
+            Value::Nil => None,
+            Value::Object(o) => Some(
+                o.as_any()
+                    .downcast_ref::<CharacterObject>()
+                    .map(|co| co.0.clone())
+                    .ok_or_else(|| LuaError::runtime("Expected IsoGameCharacter"))?,
+            ),
+            _ => return Err(LuaError::runtime("Expected IsoGameCharacter")),
+        };
+        set_camera_character(chr);
+        Ok(0)
+    });
+    cam.static_fn("clearCameraCharacter", |_| {
+        set_camera_character(None);
+        Ok(0)
+    });
+    for (component, name) in [
+        "getScreenLeft",
+        "getScreenTop",
+        "getScreenWidth",
+        "getScreenHeight",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        cam.static_fn(name, move |c| {
+            let rect = player_screen_rect(int_arg(c, 0));
+            Ok(c.push(rect[component]))
+        });
+    }
 }
 
 #[cfg(test)]
@@ -239,5 +297,53 @@ mod tests {
         next.borrow_mut().set_screen_size(800, 600);
         crate::bind_core::install_core(next);
         assert_eq!(read_screen(&mut thread, 0), [0, 0, 800, 600]);
+    }
+
+    #[test]
+    fn iso_camera_lua_character_and_screen_methods() {
+        reset();
+        let core = Rc::new(RefCell::new(Core::new()));
+        core.borrow_mut().set_screen_size(1280, 720);
+        crate::bind_core::install_core(core);
+        let mut thread = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut thread, None).unwrap();
+        let sm = crate::bind_registry::shared_script_manager();
+        let chars = Rc::new(RefCell::new(pz_characters::Characters::default()));
+        crate::bind_character_sim::register(&mut thread, sm.clone(), chars);
+        register(&mut thread);
+        let chr = Rc::new(RefCell::new(
+            crate::bind_character_sim::LuaGameCharacter::new(
+                &sm,
+                pz_characters::CharacterKind::Player,
+            ),
+        ));
+        set_camera_character(Some(chr.clone()));
+        let code = pz_kahlua::compiler::compile(
+            r#"
+            local c = IsoCamera.getCameraCharacter()
+            if c == nil then error("expected camera character") end
+            if IsoCamera.getCamCharacter() ~= c then error("cam alias mismatch") end
+            if IsoCamera.getScreenWidth(0) ~= 1280 then error("screen width mismatch") end
+            if IsoCamera.getScreenHeight(0) ~= 720 then error("screen height mismatch") end
+            IsoCamera.clearCameraCharacter()
+            if IsoCamera.getCameraCharacter() ~= nil then error("expected cleared camera character") end
+            IsoCamera.setCameraCharacter(c)
+            if IsoCamera.getCameraCharacter() == nil then error("expected restored camera character") end
+            "#,
+            Some("iso_camera"),
+            Some("iso_camera"),
+            None,
+        )
+        .unwrap();
+        let closure = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(code),
+            thread.globals().clone(),
+        ));
+        thread
+            .pcall(&closure, &[])
+            .unwrap_or_else(|(e, tr)| panic!("{e:?}\n{tr}"));
+        assert!(camera_character().is_some());
+        reset();
+        assert!(camera_character().is_none());
     }
 }
