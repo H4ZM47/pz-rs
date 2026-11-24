@@ -2318,12 +2318,6 @@ impl WorldRadio {
         render: &Rc<RefCell<Option<WorldRender>>>,
     ) {
         self.sync_vehicle_devices();
-        {
-            let st = self.state.borrow();
-            for entry in st.vehicle_devices.values() {
-                entry.chat.borrow_mut().update();
-            }
-        }
         let player_pos = pz_lua_api::bind_players::player_instance().map(|p| {
             let c = p.borrow();
             (c.vars.x, c.vars.y)
