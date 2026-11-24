@@ -790,8 +790,9 @@ impl IsoWorld {
             }
             _ => None,
         };
-        // TODO(port): `FishSchoolManager.init`; `WorldMarkers.instance.init`;
         // `GameEntityManager.Init`.
+        pz_lua_api::bind_entity_managers::init_game_entity_manager(self.saved_world_version);
+        // TODO(port): `FishSchoolManager.init`; `WorldMarkers.instance.init`.
         // `PersistentOutfits.instance.init()`.
         self.outfit_names = pz_lua_api::bind_zombie_outfits::init_persistent_outfits(
             &lua.thread,

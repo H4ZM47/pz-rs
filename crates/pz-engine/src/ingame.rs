@@ -515,8 +515,10 @@ impl GameState for IngameState {
         if let Some(w) = cx.world.as_mut() {
             w.reset_radio();
         }
-        // TODO(port): `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
-        // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,
+        // `GameEntityManager.Reset`, `SpriteConfigManager.Reset`.
+        pz_lua_api::bind_entity_managers::reset_game_entity_manager();
+        pz_lua_api::bind_entity_managers::reset_sprite_config_manager();
+        // TODO(port): `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,
         // `IsoGenerator`, `StashSystem`, `LootRespawn`, `VehicleCache`,
         // `VehicleIDMap`, `IsoChunk`, `ChunkChecksum`,
         // the atlases and `FBORenderChunkManager.Reset`.
@@ -634,8 +636,10 @@ impl GameState for IngameState {
                 // `ZomboidRadio.getInstance().update()`.
                 w.update_radio(cx.lua);
             }
+            // `GameEntityManager.Update`.
+            pz_lua_api::bind_entity_managers::update_game_entity_manager();
             // TODO(port): `ObjectAmbientEmitters` (threaded),
-            // `GameEntityManager.Update`, `AnimalController.update`.
+            // `AnimalController.update`.
             self.update_stuff(cx);
             self.on_tick(cx.lua);
             // TODO(port): `FMODAmbientWalls.update`.
