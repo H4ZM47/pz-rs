@@ -147,6 +147,21 @@ impl SimContext for PlayerSim<'_> {
     fn last_time_of_day(&self) -> f32 {
         self.0.game_time.borrow().last_time_of_day
     }
+    fn month(&self) -> i32 {
+        self.0.game_time.borrow().month
+    }
+    fn time_since_apo(&self) -> i32 {
+        self.0.time_since_apo()
+    }
+    fn animal_sandbox(&self) -> pz_characters::pz_animals::AnimalSandbox {
+        self.0.animal_sandbox()
+    }
+    fn rain_manager_is_raining(&self) -> bool {
+        self.0.rain_manager_is_raining()
+    }
+    fn rain_manager_intensity(&self) -> f32 {
+        self.0.rain_manager_intensity()
+    }
     fn num_players(&self) -> i32 {
         pz_lua_api::bind_players::num_players()
     }
@@ -224,6 +239,65 @@ impl SimContext for FrameSim {
     }
     fn world_age_hours(&self) -> f64 {
         self.world_age_hours
+    }
+    fn time_of_day(&self) -> f32 {
+        self.game_time
+            .try_borrow()
+            .map(|g| g.time_of_day)
+            .unwrap_or(0.0)
+    }
+    fn last_time_of_day(&self) -> f32 {
+        self.game_time
+            .try_borrow()
+            .map(|g| g.last_time_of_day)
+            .unwrap_or(0.0)
+    }
+    fn month(&self) -> i32 {
+        self.game_time.try_borrow().map(|g| g.month).unwrap_or(7)
+    }
+    fn time_since_apo(&self) -> i32 {
+        pz_lua_api::bind_sandbox::current_double("TimeSinceApo")
+            .map(|v| v as i32)
+            .unwrap_or(1)
+    }
+    fn animal_sandbox(&self) -> pz_characters::pz_animals::AnimalSandbox {
+        let mut s = pz_characters::pz_animals::AnimalSandbox::default();
+        if let Some(v) = pz_lua_api::bind_sandbox::current_double("AnimalStatsModifier") {
+            s.animal_stats_modifier = v as i32;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_double("AnimalMetaStatsModifier") {
+            s.animal_meta_stats_modifier = v as i32;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_double("AnimalPregnancyTime") {
+            s.animal_pregnancy_time = v as i32;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_double("AnimalAgeModifier") {
+            s.animal_age_modifier = v as i32;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_double("AnimalMilkIncModifier") {
+            s.animal_milk_inc_modifier = v as i32;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_double("AnimalWoolIncModifier") {
+            s.animal_wool_inc_modifier = v as i32;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_bool("AnimalMetaPredator") {
+            s.animal_meta_predator = v;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_bool("AnimalMatingSeason") {
+            s.animal_mating_season = v;
+        }
+        s
+    }
+    fn rain_manager_is_raining(&self) -> bool {
+        self.game_time
+            .try_borrow()
+            .is_ok_and(|g| g.climate.is_raining())
+    }
+    fn rain_manager_intensity(&self) -> f32 {
+        self.game_time
+            .try_borrow()
+            .map(|g| g.climate.get_rain_intensity())
+            .unwrap_or(0.0)
     }
     fn climate(&self) -> Option<Ref<'_, ClimateManager>> {
         self.game_time
@@ -428,5 +502,24 @@ mod tests {
 
         pz_core::debug::debug_options().borrow_mut().set_boolean(key, false);
         assert!(!debug_on.debug_always_trip_over_fence());
+    }
+
+    #[test]
+    fn sim_context_reads_live_calendar_month_and_animal_sandbox() {
+        let prev_time = pz_lua_api::bind_climate::shared_game_time();
+        let time = Rc::new(RefCell::new(GameTime::default()));
+        time.borrow_mut().month = 10;
+        time.borrow_mut().time_of_day = 14.25;
+        pz_lua_api::bind_climate::install_game_time(time);
+
+        let frame = FrameSim::capture();
+        assert_eq!(frame.month(), 10);
+        assert_eq!(frame.player_context().month(), 10);
+        assert!((frame.time_of_day() - 14.25).abs() < 0.001);
+        let sandbox = frame.animal_sandbox();
+        assert_eq!(sandbox.animal_stats_modifier, 4);
+        assert!(sandbox.animal_mating_season);
+
+        pz_lua_api::bind_climate::install_game_time(prev_time);
     }
 }

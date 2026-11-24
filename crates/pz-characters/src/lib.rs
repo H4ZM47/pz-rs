@@ -34,6 +34,7 @@ pub use skills::{Perk, PerkFactory, PerkRef};
 pub use survivor::{CharacterGender, SurvivorDesc, SurvivorDescRef, SurvivorDescStatics, SurvivorFactory, SurvivorType};
 pub use traits::CharacterTraits;
 pub use color::{Color, ImmutableColor};
+pub use pz_animals;
 pub use worn_items::{BodyLocation, BodyLocationGroup, BodyLocationGroupRef, BodyLocationRef, BodyLocations, ItemIdentity, WornItem, WornItems};
 
 use pz_scripts::ScriptError;
