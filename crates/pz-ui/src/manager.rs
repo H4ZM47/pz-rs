@@ -920,6 +920,31 @@ impl UIManager {
         Self::trigger(t, "OnPostUIDraw", &[]);
     }
 
+    /// `IngameState.renderframetext(nPlayer)`'s world-following UI pass:
+    /// draws visible `UIElement`s with `isFollowGameWorld() == true` (which
+    /// [`UIManager::render`] skips) matching `player_index` (or `-1`),
+    /// excluding `ActionProgressBar` (drawn separately right after).
+    pub fn render_follow_game_world(t: &mut Thread, player_index: i32) {
+        use pz_kahlua::value::LuaObject;
+        with_ui(|m| m.rendering = true);
+        let mut i = 0;
+        while let Some(el) = with_ui(|m| m.ui.get(i).cloned()) {
+            i += 1;
+            if el.class_name() == "zombie.ui.ActionProgressBar" {
+                continue;
+            }
+            if !el.is_visible() || !el.is_follow_game_world() {
+                continue;
+            }
+            let only = el.get_render_this_player_only();
+            if only != -1 && only != player_index {
+                continue;
+            }
+            el.render(t);
+        }
+        with_ui(|m| m.rendering = false);
+    }
+
     /// `renderFadeOverlay()`: updates `fadeAlpha`. TODO(world): the black
     /// overlay is drawn only with a camera character.
     fn render_fade_overlay(&mut self) {
