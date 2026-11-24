@@ -211,17 +211,13 @@ fn holds_a_session_with_the_original_server() {
         }
         while let Some(msg) = session.receive() {
             match ControlMessage::decode(&msg.payload).expect("control message decodes") {
-                Some(ControlMessage::ConnectionRequestAccepted {
-                    request_time,
-                    accept_time,
-                    ..
-                }) => {
+                Some(ControlMessage::ConnectionRequestAccepted { accept_time, .. }) => {
                     accepted = true;
                     let reply = ControlMessage::NewIncomingConnection {
                         server_address: server,
                         internal_addresses: vec![],
-                        ping_time: request_time,
-                        pong_time: accept_time,
+                        ping_time: accept_time,
+                        pong_time: now(),
                     };
                     session.send(&reply.encode(), Reliability::ReliableOrdered, 0);
                 }
@@ -275,8 +271,13 @@ fn original_server_refuses_a_wrong_client_version() {
     let Ok(target) = std::env::var("PZ_RAKNET_ORACLE") else {
         return;
     };
-    let mut client =
-        RakClient::connect(target.parse().unwrap(), b"", 0x5a5a_0000_0000_0042).expect("connects");
+    let password = oracle_password();
+    let mut client = RakClient::connect(
+        target.parse().unwrap(),
+        password.as_bytes(),
+        0x5a5a_0000_0000_0042,
+    )
+    .expect("connects");
     client.send_packet(&LoginPacket {
         username: "pzrs-oracle".into(),
         password: "".into(),
@@ -303,4 +304,10 @@ fn original_server_refuses_a_wrong_client_version() {
         ["ClientVersionMismatch", "0.0.0", GAME_AND_BUILD_VERSION]
     );
     assert!(disconnected, "server did not close the connection");
+}
+
+/// The oracle server's password (`PZ_RAKNET_ORACLE_PASSWORD`), empty when
+/// the server has none.
+fn oracle_password() -> String {
+    std::env::var("PZ_RAKNET_ORACLE_PASSWORD").unwrap_or_default()
 }

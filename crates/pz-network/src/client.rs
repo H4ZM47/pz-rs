@@ -157,16 +157,15 @@ impl RakClient {
             }
             while let Some(msg) = client.session.receive() {
                 match ControlMessage::decode(&msg.payload) {
-                    Ok(Some(ControlMessage::ConnectionRequestAccepted {
-                        request_time,
-                        accept_time,
-                        ..
-                    })) => {
+                    Ok(Some(ControlMessage::ConnectionRequestAccepted { accept_time, .. })) => {
+                        // `RakPeer` answers with the server's `sendPongTime`
+                        // and its own `GetTime()`, so the server's first
+                        // ping sample uses its own clock.
                         let reply = ControlMessage::NewIncomingConnection {
                             server_address: server,
                             internal_addresses: vec![],
-                            ping_time: request_time,
-                            pong_time: accept_time,
+                            ping_time: accept_time,
+                            pong_time: Self::now_ms(client.start),
                         };
                         client
                             .session
@@ -277,9 +276,15 @@ impl RakClient {
                 };
                 match OfflineMessage::decode(&buf[..n]) {
                     Ok(Some(OfflineMessage::OpenConnectionReply2 {
-                        server_guid, mtu, ..
+                        server_guid,
+                        mtu: reply_mtu,
+                        ..
                     })) => {
-                        return Ok((server_guid, mtu));
+                        // A reply below RakNet's smallest MTU is malformed:
+                        // keep waiting rather than size datagrams from it.
+                        if let Some(mtu) = negotiated_mtu(mtu, reply_mtu) {
+                            return Ok((server_guid, mtu));
+                        }
                     }
                     Ok(Some(OfflineMessage::Refused { id, .. })) => {
                         return Err(ConnectError::Refused(id))
@@ -441,5 +446,28 @@ impl RakClient {
 impl Drop for RakClient {
     fn drop(&mut self) {
         let _ = self.disconnect();
+    }
+}
+
+/// The MTU the session uses after `OpenConnectionReply2`: never above what
+/// this client offered, and `None` for a reply below RakNet's smallest MTU
+/// (which would underflow the datagram budget).
+fn negotiated_mtu(offered: u16, reply: u16) -> Option<u16> {
+    let floor = MTU_SIZES[MTU_SIZES.len() - 1];
+    (reply >= floor).then(|| reply.min(offered))
+}
+
+#[cfg(test)]
+mod mtu_tests {
+    use super::negotiated_mtu;
+
+    #[test]
+    fn reply_mtu_is_clamped_and_floored() {
+        assert_eq!(negotiated_mtu(1492, 1492), Some(1492));
+        assert_eq!(negotiated_mtu(1200, 1492), Some(1200));
+        assert_eq!(negotiated_mtu(1492, 1200), Some(1200));
+        assert_eq!(negotiated_mtu(1492, 576), Some(576));
+        assert_eq!(negotiated_mtu(1492, 575), None);
+        assert_eq!(negotiated_mtu(1492, 0), None);
     }
 }
