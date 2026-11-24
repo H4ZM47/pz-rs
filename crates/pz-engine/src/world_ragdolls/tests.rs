@@ -247,6 +247,9 @@ fn shared_bullet_drives_ragdoll_builder_and_ballistics_through_states_world() {
             floor_world: None,
             bullet: Some(bullet.clone()),
             player_firearms: vec![snap],
+            animal_defs: None,
+            animal_world: None,
+            virtualized_animals: Vec::new(),
         };
         let mut world = StatesWorldAdapter::new(
             &mut cell,

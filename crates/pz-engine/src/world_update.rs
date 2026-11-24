@@ -137,6 +137,9 @@ mod animation_bridge_tests {
                 floor_world: None,
                 bullet: None,
                 player_firearms: Vec::new(),
+                animal_defs: None,
+                animal_world: None,
+                virtualized_animals: Vec::new(),
             };
             let mut world = StatesWorldAdapter::new(
                 &mut cell,
@@ -236,6 +239,12 @@ pub(crate) struct EngineStates<'a> {
     /// `muzzle_attachment` and `aim_reticle_iso` work while the shooter is
     /// mutably borrowed during `advance_player_update` / `update_player_after_actions`.
     pub(crate) player_firearms: Vec<PlayerFirearmSnapshot>,
+    /// Loaded animal definition tables for `StateWorld::animal_host`.
+    pub(crate) animal_defs: Option<Rc<pz_characters::pz_animals::AnimalDefinitionTables>>,
+    /// Per-tick `AnimalWorld` view for `StateWorld::animal_host`.
+    pub(crate) animal_world: Option<crate::world_animal_host::EngineAnimalWorld<'a>>,
+    /// Character ids accepted by `virtualize_animal_if_unloaded` this tick.
+    pub(crate) virtualized_animals: Vec<i32>,
 }
 
 impl StatesEngine for EngineStates<'_> {
@@ -505,6 +514,20 @@ impl StatesEngine for EngineStates<'_> {
             .as_deref()
             .and_then(|m| m.ragdoll_pelvis(chr))
     }
+    fn animal_host(
+        &mut self,
+        _chr: i32,
+    ) -> Option<pz_characters::character::animal::AnimalHost<'_>> {
+        let defs = self.animal_defs.as_deref()?;
+        let world = self.animal_world.as_mut()?;
+        Some(pz_characters::character::animal::AnimalHost { defs, world })
+    }
+    fn on_virtualize_animal(&mut self, chr: i32) -> bool {
+        if !self.virtualized_animals.contains(&chr) {
+            self.virtualized_animals.push(chr);
+        }
+        true
+    }
 }
 
 /// The local players' current squares, for [`EngineStates::movers`].
@@ -700,6 +723,9 @@ fn with_states_characters_and_path<R>(
             floor_world: floor_world.cloned(),
             bullet: crate::world_vehicles::shared_bullet(),
             player_firearms,
+            animal_defs: None,
+            animal_world: None,
+            virtualized_animals: Vec::new(),
         };
         let mut sprites = sprites.borrow_mut();
         let sounds = pz_lua_api::bind_zombie::shared_world_sounds();
@@ -2109,6 +2135,9 @@ impl IsoWorld {
                 floor_world: floor_world.clone(),
                 bullet: crate::world_vehicles::shared_bullet(),
                 player_firearms: Vec::new(),
+                animal_defs: None,
+                animal_world: None,
+                virtualized_animals: Vec::new(),
             };
             let mut adapter = StatesWorldAdapter::new(
                 cell,
