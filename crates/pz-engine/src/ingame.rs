@@ -124,7 +124,8 @@ impl IngameState {
                         tutorial,
                     },
                 );
-                // TODO(port): `RainManager.Update`, `Meta.instance.update`,
+                w.update_meta(&sim);
+                // TODO(port): `RainManager.Update`,
                 // `VirtualZombieManager.instance.update`.
                 // `MapCollisionData.updateMain` +
                 // `ZombiePopulationManager.updateMain`, then

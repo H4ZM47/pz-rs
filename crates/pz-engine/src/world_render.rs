@@ -118,6 +118,9 @@ pub struct WorldRender {
     corpse_error: Option<String>,
     /// What the square mutations changed since the last frame.
     pub pending: PendingRender,
+    /// Squares reported `first_seen` by `WorldLighting::frame`, queued for
+    /// `Meta.instance.dealWithSquareSeen` / `Meta.instance.update`.
+    pending_first_seen: Vec<(i32, i32, i32)>,
     /// The characters the last player frame drew (local players by
     /// index, zombies by position in the world's list), for their
     /// `renderlast`.
@@ -215,6 +218,7 @@ impl WorldRender {
             lighting_error: false,
             corpse_error: None,
             pending: PendingRender::new(),
+            pending_first_seen: Vec::new(),
             drawn_players: [false; MAX_PLAYERS],
             drawn_zombies: Vec::new(),
             fx_masks: std::array::from_fn(|_| WeatherFxMask::default()),
@@ -224,6 +228,11 @@ impl WorldRender {
             view3d_held: (false, false),
             view3d_cursor_free: false,
         }
+    }
+
+    /// Drain squares seen for the first time since the last `Meta.update`.
+    pub fn take_first_seen(&mut self) -> Vec<(i32, i32, i32)> {
+        std::mem::take(&mut self.pending_first_seen)
     }
 
     /// Port extension: player 0's 3D view keys and mouse-look, before its
@@ -682,6 +691,9 @@ impl WorldRender {
                 &on_screen,
             ) {
                 Ok(r) => {
+                    if !r.first_seen.is_empty() {
+                        self.pending_first_seen.extend(r.first_seen);
+                    }
                     for (wx, wy, z) in r.dirty_levels {
                         self.caches[p].invalidate(wx, wy, z, dirty::LIGHTING);
                     }

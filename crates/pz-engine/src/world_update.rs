@@ -1956,6 +1956,28 @@ impl IsoWorld {
 
     /// `IsoFireManager.Update()`. `Err` is the exception a burn threw
     /// (logged here: `UpdateStuff` catches and logs it, then goes on).
+    /// `Meta.instance.dealWithSquareSeen` + `Meta.instance.update`: drain newly
+    /// seen squares reported by lighting and update explored rooms, visited
+    /// buildings, and zone `hour_last_seen` timestamps.
+    pub fn update_meta(&mut self, sim: &FrameSim) {
+        let squares = self
+            .render
+            .borrow_mut()
+            .as_mut()
+            .map(|r| r.take_first_seen())
+            .unwrap_or_default();
+        if squares.is_empty() {
+            return;
+        }
+        let world_age_hours = sim.game_time.borrow().world_age_hours() as i32;
+        with_world(|w| {
+            let Some(meta) = w.meta_grid.as_mut() else {
+                return;
+            };
+            deal_with_squares_seen(meta, w.cell.as_ref(), &squares, world_age_hours);
+        });
+    }
+
     pub fn update_fire(
         &mut self,
         sim: &FrameSim,
@@ -2985,3 +3007,83 @@ mod quit_save_tests {
         }
     }
 }
+
+/// Apply `Meta.dealWithSquareSeen` / `Meta.update` to a batch of newly seen
+/// tile coordinates: mark their `RoomDef` explored, mark their `BuildingDef`
+/// seen and visited, and stamp `hour_last_seen` on overlapping meta zones.
+pub(crate) fn deal_with_squares_seen(
+    meta: &mut pz_world::IsoMetaGrid,
+    cell: Option<&pz_world::IsoCell>,
+    squares: &[(i32, i32, i32)],
+    world_age_hours: i32,
+) {
+    for &(x, y, z) in squares {
+        let room_idx = meta
+            .get_chunk_data_from_tile(x, y)
+            .and_then(|c| c.get_room_at(&meta.room_defs, x, y, z))
+            .or_else(|| {
+                let sq = cell?.get_grid_square(x, y, z)?;
+                let rid = sq.borrow().room_id;
+                if rid < 0 {
+                    return None;
+                }
+                meta.get_cell_data(x.div_euclid(256), y.div_euclid(256))?
+                    .rooms
+                    .get(&rid)
+                    .copied()
+            });
+        if let Some(ridx) = room_idx {
+            let room = &mut meta.room_defs[ridx.0 as usize];
+            room.explored = true;
+            if let Some(bidx) = room.building {
+                let b = &mut meta.building_defs[bidx.0 as usize];
+                b.seen = true;
+                b.has_been_visited = true;
+            }
+        }
+        for zid in meta.get_zones_at(x, y, z) {
+            meta.zone_mut(zid).hour_last_seen = world_age_hours;
+        }
+    }
+}
+
+#[cfg(test)]
+mod meta_seen_tests {
+    use super::*;
+    use pz_world::{BuildingDef, GameRand, IsoMetaGrid, RoomDef, RoomRect};
+
+    struct ZeroRand;
+    impl GameRand for ZeroRand {
+        fn next(&mut self, _: i32) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn deal_with_squares_seen_marks_rooms_buildings_and_zones() {
+        let mut meta = IsoMetaGrid::blank(0, 0, 1, 1);
+        meta.create_cell(0, 0);
+
+        let mut room = RoomDef::new(7, "hall".into());
+        room.level = 0;
+        room.rects.push(RoomRect::new(16, 16, 6, 6));
+        room.CalculateBounds();
+
+        let building = BuildingDef::new(&mut ZeroRand);
+        let bidx = meta
+            .add_building(0, 0, building, vec![room], Vec::new())
+            .expect("building added");
+
+        let zid = meta.register_zone("Town", "TownZone", 10, 10, 0, 20, 20);
+        assert_eq!(meta.zone(zid).hour_last_seen, 0);
+
+        deal_with_squares_seen(&mut meta, None, &[(18, 18, 0)], 42);
+
+        let bdef = &meta.building_defs[bidx.0 as usize];
+        assert!(meta.room_defs[bdef.rooms[0].0 as usize].explored);
+        assert!(bdef.seen);
+        assert!(bdef.has_been_visited);
+        assert_eq!(meta.zone(zid).hour_last_seen, 42);
+    }
+}
+
