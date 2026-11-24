@@ -308,9 +308,36 @@ impl IngameState {
     fn renderframeui(&mut self, cx: &mut StateCx<'_>, out: &mut DrawList) {
         // TODO(port): `TextManager.DrawTextFromGameWorld`, `SkyBox.draw`.
         pz_ui::UIManager::render(&mut cx.lua.thread);
+        let all_asleep = {
+            let mut any = false;
+            let mut all = true;
+            for n in 0..MAX_PLAYERS {
+                if let Some(p) = player(n) {
+                    any = true;
+                    if !p.borrow().asleep {
+                        all = false;
+                        break;
+                    }
+                }
+            }
+            any && all
+        };
+        if all_asleep {
+            let player_index = pz_lua_api::bind_players::player_index();
+            let time_of_day = pz_lua_api::bind_climate::shared_game_time()
+                .borrow()
+                .time_of_day;
+            cx.lua.trigger_event(
+                "OnSleepingTick",
+                &[
+                    Value::Num(f64::from(player_index)),
+                    Value::Num(f64::from(time_of_day)),
+                ],
+            );
+        }
         // TODO(port): `ZomboidRadio.render`, `drawDebugChunkMap`,
         // `DeadBodyAtlas`/`WorldItemAtlas.renderUI`, the FPS graph,
-        // `OnSleepingTick`, `ActiveMods.renderUI`, `JoypadManager.renderUI`.
+        // `ActiveMods.renderUI`, `JoypadManager.renderUI`.
         // `Core.EndFrameUI`.
         pz_ui::with_ui(|m| m.sprite.lower_into(out));
         pz_ui::with_ui(|m| m.sprite.clear());
@@ -478,8 +505,13 @@ impl GameState for IngameState {
 
     fn update(&mut self, cx: &mut StateCx<'_>) -> StateAction {
         self.tick_count += 1;
-        // TODO(port): the first 60 ticks set each player's
-        // `dirtyRecalcGridStackTime = 20`.
+        if self.tick_count <= 60 {
+            for n in 0..MAX_PLAYERS {
+                if let Some(p) = player(n) {
+                    p.borrow_mut().player.dirty_recalc_grid_stack_time = 20.0;
+                }
+            }
+        }
         cx.lua
             .trigger_event("OnTickEvenPaused", &[Value::Num(self.number_ticks as f64)]);
         // TODO(port): `DebugFileWatcher.instance.update()`,
@@ -507,11 +539,22 @@ impl GameState for IngameState {
         let all_dead = pz_lua_api::bind_players::player_instance().is_some()
             && pz_lua_api::bind_players::all_players_dead();
         if all_dead {
-            // TODO(port): `UIManager.getSpeedControls().SetCurrentGameSpeed(1)`,
-            // `IsoCamera.update()`.
+            if let Some(el) = pz_ui::with_ui(|ui| ui.speed_controls.clone()) {
+                if let Some(sc) = el.ext::<pz_lua_api::hud::speed_controls::SpeedControls>() {
+                    if sc.get_current_game_speed() != 1 {
+                        sc.set_current_game_speed(&el, 1);
+                    }
+                }
+            }
+            // TODO(port): `IsoCamera.update()`.
         }
-        // TODO(port): `waitMul` from the speed controls.
-        if !self.paused {
+        let speed_paused = pz_ui::with_ui(|ui| ui.speed_controls.clone())
+            .and_then(|el| {
+                el.ext::<pz_lua_api::hud::speed_controls::SpeedControls>()
+                    .map(|sc| sc.is_paused())
+            })
+            .unwrap_or(false);
+        if !self.paused && !speed_paused {
             if let Some(w) = cx.world.as_mut() {
                 // `chunkMap[n].ProcessChunkPos(player)`
                 // (`IsoWorld.doChunkMapUpdate`).

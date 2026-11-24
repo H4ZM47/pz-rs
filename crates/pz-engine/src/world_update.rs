@@ -1342,6 +1342,50 @@ impl IsoWorld {
                         lua.trigger_event("OnPlayerDeath", std::slice::from_ref(&cv));
                     }
                 }
+                // `IsoGameCharacter.createFallingItem(item)`: drop a worn item
+                // that fell off (e.g. helmet/hat on fall or head hit) onto the
+                // solid floor beneath the character.
+                SimEvent::FallingItem(item) => {
+                    let pos = chr.map(|p| {
+                        let c = p.borrow();
+                        c.path.current_square.unwrap_or((
+                            c.vars.x.floor() as i32,
+                            c.vars.y.floor() as i32,
+                            c.vars.z.floor() as i32,
+                        ))
+                    });
+                    if let (Some((x, y, z)), Some(floor)) = (pos, self.floor_world.clone()) {
+                        use pz_inventory::floor_drop::FloorWorld;
+                        if let Ok(mut floor) = floor.try_borrow_mut() {
+                            match floor.solid_floor_ref_at(x, y, z) {
+                                Ok(Some(sq)) => {
+                                    if let Err(e) =
+                                        pz_inventory::floor_drop::drop_on_floor(&mut *floor, &sq, &item)
+                                    {
+                                        self.log_update_error(format!(
+                                            "IsoGameCharacter.createFallingItem: {e:?}"
+                                        ));
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(e) => self.log_update_error(format!(
+                                    "IsoGameCharacter.createFallingItem: {e:?}"
+                                )),
+                            }
+                        }
+                    }
+                }
+                // `PersistentOutfits.instance.setFallenHat(chr, true)`.
+                SimEvent::FallenHat => {
+                    if let Some(p) = chr {
+                        let mut c = p.borrow_mut();
+                        c.zombie.persistent_outfit_id =
+                            pz_characters::population::persistent_outfits::PersistentOutfits::with_fallen_hat(
+                                c.zombie.persistent_outfit_id,
+                                true,
+                            );
+                    }
+                }
                 // TODO(port): the other `SimEvent`s (sounds, visuals, XP,
                 // game speed, the world's side of combat).
                 _ => {}
