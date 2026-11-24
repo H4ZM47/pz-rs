@@ -668,7 +668,8 @@ impl IsoWorld {
             (c.vars.x, c.vars.y)
         });
         self.update_regions(player);
-        // TODO(port): `HaloTextHelper.update`, `CollisionManager.ResolveContacts`.
+        pz_lua_api::bind_halo_text::update();
+        // TODO(port): `CollisionManager.ResolveContacts`.
         self.postupdate_characters(lua, sim)?;
         // `IsoGameCharacter.postUpdateAnimating` follows movement and
         // action-context updates, before the rest of UpdateStuff.
