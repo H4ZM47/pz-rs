@@ -61,6 +61,7 @@ pub mod bind_safehouse;
 mod world_menu_logic;
 pub mod bind_players;
 pub mod bind_popman;
+pub mod bind_spawn_debugger;
 pub mod bind_recipe_manager;
 pub mod bind_registry;
 pub mod bind_render;
@@ -308,6 +309,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_iso_enums::register(mgr);
     bind_global_objects::register(mgr);
     bind_popman::register(&mut mgr.thread);
+    bind_spawn_debugger::register(&mut mgr.thread);
     bind_zombie::register_shared(&mut mgr.thread);
     bind_vehicles::register(&mut mgr.thread);
     bind_radio::register(&mut mgr.thread);
