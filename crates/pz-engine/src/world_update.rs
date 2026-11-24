@@ -875,8 +875,14 @@ impl IsoWorld {
     /// (TODO(port): `DesignationZone`).
     pub fn update(&mut self, lua: &mut LuaManager, sim: &FrameSim) -> pz_characters::character::state::StateResult<()> {
         self.frame_no += 1;
+        // `ImprovedFog.update` and `CorpseFlies.update` (client/SP only).
+        if let Ok(mut render) = self.render.try_borrow_mut() {
+            if let Some(r) = render.as_mut() {
+                r.extras.update_tick(sim.multiplier, sim.realworld_seconds);
+            }
+        }
         // TODO(port): `WorldSimulation.instance.update()`,
-        // `HutchManager.updateAll`, `ImprovedFog.update`,
+        // `HutchManager.updateAll`,
         // `helicopter.update`,
         // `metaGrid.getCurrentCellData().checkTriggers()`.
         let emitter_update = pz_lua_api::bind_audio::sound_system().borrow_mut()

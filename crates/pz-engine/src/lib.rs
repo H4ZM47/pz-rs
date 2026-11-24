@@ -20,6 +20,7 @@ mod world_activation;
 pub mod world_dictionary;
 pub mod world_fire;
 pub mod world_hearths;
+pub mod world_extras;
 pub mod world_hud;
 pub mod world_models;
 pub mod world_pick;

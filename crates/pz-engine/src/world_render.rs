@@ -14,7 +14,7 @@ use pz_fs::GameFs;
 use pz_iso_render::cache::ChunkCache;
 use pz_iso_render::chunk::dirty;
 use pz_iso_render::cutaways::{CutawayPlayer, Cutaways};
-use pz_iso_render::frame::{plan_chunks, world_frame_for_player_with, FrameSize, PlayerView};
+use pz_iso_render::frame::{plan_chunks, world_frame_for_player_extras, FrameSize, PlayerView};
 use pz_iso_render::objects::FrameObjects;
 use pz_iso_render::outlines::OutlineHighlight;
 use pz_iso_render::weather::{SurfaceSettings, SurfaceTextures, Surfaces};
@@ -131,6 +131,8 @@ pub struct WorldRender {
     /// `renderlast`.
     pub drawn_players: [bool; MAX_PLAYERS],
     pub drawn_zombies: Vec<usize>,
+    /// Per-world state for `FrameExtras` (ImprovedFog, CorpseFlies, VisPolyChunks, WorldMarkers).
+    pub extras: crate::world_extras::WorldExtras,
     /// `WeatherFxMask.playerFxMasks`.
     fx_masks: [WeatherFxMask; MAX_PLAYERS],
     /// `WeatherFxMask.init`'s stand-in sprites, built on the first frame.
@@ -226,6 +228,7 @@ impl WorldRender {
             pending: PendingRender::new(),
             drawn_players: [false; MAX_PLAYERS],
             drawn_zombies: Vec::new(),
+            extras: crate::world_extras::WorldExtras::new(fs, tm),
             fx_masks: std::array::from_fn(|_| WeatherFxMask::default()),
             fx_sprites: None,
             fx_mask_to_draw: [false; MAX_PLAYERS],
@@ -506,6 +509,7 @@ impl WorldRender {
             self.world.remove_chunk(wx, wy);
             self.infos.forget_chunk(wx, wy);
             self.lighting.remove_chunk(wx, wy);
+            self.extras.on_chunk_removed(wx, wy);
         }
         let mut tex = GameTextures {
             fs,
@@ -535,6 +539,7 @@ impl WorldRender {
                 }
             }
             self.lighting.sync_chunk(view, wx, wy, &hooks)?;
+            self.extras.on_chunk_added();
             events.added.remove(0);
         }
         Ok(())
@@ -1061,13 +1066,18 @@ impl WorldRender {
             let Ok(mut fx) = fx.try_borrow_mut() else { return };
             render_weather_fx(&mut fx, mask, &fx_chars, &fx_sprites, &fx_view, &fx_frame, out);
         };
-        let cmds = world_frame_for_player_with(
+        self.extras.drain_vispoly(&mut self.pending);
+        let mut extras = self
+            .extras
+            .build_frame(view, &cam, v, &self.lighting, &order);
+        let cmds = world_frame_for_player_extras(
             &r,
             size,
             v.split_view,
             &chunks,
             &objects,
             self.drop_shadow.clone(),
+            &mut extras,
             v.screen,
             cmds,
             &mut late,
