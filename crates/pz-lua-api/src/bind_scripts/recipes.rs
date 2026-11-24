@@ -44,7 +44,7 @@ fn source_value(h: &ScriptHandle, i: usize) -> Value {
     )
 }
 
-fn item_recipe_value(h: &ScriptHandle, name: &str) -> Value {
+pub(crate) fn item_recipe_value(h: &ScriptHandle, name: &str) -> Value {
     let (n, nm) = (name.to_string(), name.to_string());
     h.child_mut(
         ITEM_RECIPE_CLASS,

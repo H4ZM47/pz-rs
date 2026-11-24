@@ -26,7 +26,7 @@ mod item;
 mod item_recipes;
 pub(crate) use item_recipes::RecipeKnowledge;
 mod models;
-mod recipes;
+pub(crate) mod recipes;
 mod vehicles;
 
 pub(crate) use crafting::icon_texture_value as recipe_icon_texture;

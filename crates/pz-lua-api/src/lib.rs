@@ -17,6 +17,7 @@ pub mod bind_body;
 pub mod bind_body_damage;
 pub mod bind_character_sim;
 pub mod bind_eat;
+pub mod bind_evolved_recipe;
 pub mod bind_cheat_type;
 pub mod bind_characters;
 pub mod bind_audio;
