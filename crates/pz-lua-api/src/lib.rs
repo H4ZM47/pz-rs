@@ -55,6 +55,7 @@ pub mod bind_java_util;
 pub mod bind_misc;
 pub mod bind_misc_classes;
 pub mod bind_mods;
+pub mod bind_monitors;
 pub mod bind_nutrition;
 pub mod bind_performance;
 pub mod bind_object_picker;
@@ -321,6 +322,8 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_zombie::register_shared(&mut mgr.thread);
     bind_vehicles::register(&mut mgr.thread);
     bind_radio::register(&mut mgr.thread);
+    bind_monitors::set_recipe_monitor_save_dir(mgr.fs.borrow().cache_dir().join("RecipeMonitor"));
+    bind_monitors::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     hud::register(&mut mgr.thread);
     worldmap::register(&mut mgr.thread);
