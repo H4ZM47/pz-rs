@@ -549,9 +549,10 @@ impl GameState for IngameState {
             w.reset_radio();
             w.reset_render_effects();
         }
+        pz_lua_api::bind_stash::reset();
         // TODO(port): `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,
-        // `IsoGenerator`, `StashSystem`, `LootRespawn`, `VehicleCache`,
+        // `IsoGenerator`, `LootRespawn`, `VehicleCache`,
         // `VehicleIDMap`, `IsoChunk`, `ChunkChecksum`,
         // the atlases and `FBORenderChunkManager.Reset`.
         // `IsoWorld.instance.KillCell()`: the cell and the world's state go.

@@ -983,8 +983,8 @@ impl IsoWorld {
                 .map(|g| (g.min_x, g.min_y, g.max_x, g.max_y))
         });
         pz_lua_api::bind_climate::init_climate_manager(&mut lua.thread, bounds);
-        // TODO(port): `SafeHouse.init`, `VirtualZombieManager.instance.init`,
-        // `StashSystem.init`.
+        pz_lua_api::bind_stash::init(&mut lua.thread);
+        // TODO(port): `SafeHouse.init`, `VirtualZombieManager.instance.init`.
         self.init_designation_registry()?;
         pz_lua_api::bind_basements::before_on_load_map_zones();
         lua.trigger_event("OnLoadMapZones", &[]);
@@ -1532,6 +1532,9 @@ end
                 pz_lua_api::bind_randomized_world::install_unique_rds_spawned(
                     &self.meta_world.unique_rds_spawned,
                 );
+                if let Some(stash) = self.meta_world.stash.clone() {
+                    pz_lua_api::bind_stash::install_state(stash);
+                }
                 match result {
                     Ok(())=>{},
                     Err(DesignationIoError::Io(error))=>self.errors.push(format!("IsoMetaGrid.load: {error}")),

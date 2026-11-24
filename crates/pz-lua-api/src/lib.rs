@@ -65,6 +65,7 @@ pub mod bind_performance;
 pub mod bind_object_picker;
 pub mod bind_safehouse;
 pub mod bind_global_moddata;
+pub mod bind_stash;
 mod world_menu_logic;
 pub mod bind_players;
 pub mod bind_popman;
@@ -304,6 +305,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_safehouse::register(&mut mgr.thread);
     bind_spawn_points::register(&mut mgr.thread);
     bind_global_moddata::register(&mut mgr.thread);
+    bind_stash::register(&mut mgr.thread);
     world_menu_logic::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
     bind_template_text::register(
