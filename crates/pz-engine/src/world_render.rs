@@ -988,6 +988,37 @@ impl WorldRender {
             ..Default::default()
         };
         let mut late = |out: &mut Vec<DrawCmd>| {
+            let iso_markers = pz_lua_api::hud::iso_markers::snapshot();
+            if !iso_markers.is_empty() {
+                let mut markers = pz_iso_render::markers::MarkersFrame {
+                    iso_markers: iso_markers
+                        .into_iter()
+                        .map(|m| pz_iso_render::markers::IsoMarker {
+                            x: m.x,
+                            y: m.y,
+                            z: m.z,
+                            z_layer: m.z_layer,
+                            rgba: m.rgba,
+                            active: m.active,
+                            circle_size: m.circle_size,
+                            textures: m.textures,
+                            item_model: None,
+                        })
+                        .collect(),
+                    player_z: Some(v.z),
+                    white: pz_render::get_shared_texture("media/white.png"),
+                    ..Default::default()
+                };
+                let mut levels: Vec<i32> = markers.iso_markers.iter().map(|m| m.z_layer).collect();
+                levels.sort_unstable();
+                levels.dedup();
+                for z in levels {
+                    markers.render_iso_markers(&r, z, out);
+                }
+                if !markers.lines.is_empty() {
+                    pz_iso_render::area_highlights::render_lines(&cam, &markers.lines, out);
+                }
+            }
             let Some(fx) = weather_fx else { return };
             let Ok(mut fx) = fx.try_borrow_mut() else { return };
             render_weather_fx(&mut fx, mask, &fx_chars, &fx_sprites, &fx_view, &fx_frame, out);

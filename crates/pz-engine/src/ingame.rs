@@ -297,7 +297,7 @@ impl IngameState {
         // (`isFollowGameWorld`, `getRenderThisPlayerOnly`).
         pz_lua_api::hud::render_progress_bar(&mut cx.lua.thread, n);
         pz_lua_api::hud::world_markers::render(&mut cx.lua.thread);
-        // TODO(port): `IsoMarkers.instance.render()`.
+        pz_lua_api::hud::iso_markers::update();
         pz_lua_api::hud::text_draw::render_batch(n as i32);
         pz_lua_api::chat::element::ChatElement::render_batch(n);
         // TODO(port): `ParameterRoomTypeEx.renderRoomTones`,
@@ -410,7 +410,7 @@ impl GameState for IngameState {
         if let Err(e) = pz_lua_api::hud::world_markers::with_markers(|m| m.reset()) {
             eprintln!("WorldMarkers.reset: {e:?}");
         }
-        // TODO(port): `IsoMarkers.instance.reset()`.
+        pz_lua_api::hud::iso_markers::reset();
         pz_lua_api::bind_search_mode::reset();
         // TODO(port): `ZomboidRadio.Reset`, `IsoWaveSignal.Reset`,
         // `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
