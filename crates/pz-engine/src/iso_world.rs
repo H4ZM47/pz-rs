@@ -733,16 +733,6 @@ impl IsoWorld {
                 self.log_error(format!("GameTime.load: {e}"));
             }
         }
-        // `GlobalModData.init()`: load `global_mod_data.bin` and fire `OnInitGlobalModData`.
-        match pz_lua_api::bind_global_moddata::load_file(&self.save_dir, no_save) {
-            Ok(loaded) => {
-                lua.trigger_event("OnInitGlobalModData", &[pz_kahlua::Value::Bool(!loaded)]);
-            }
-            Err(e) => {
-                self.log_error(format!("GlobalModData.init: {e}"));
-                lua.trigger_event("OnInitGlobalModData", &[pz_kahlua::Value::Bool(true)]);
-            }
-        }
         // TODO(port): `ImprovedFog.init`; `ZomboidRadio.Init(savedWorldVersion)`
         // (`pz_radio::ZomboidRadio::init` needs the engine's `RadioWorld`).
         if let Err(e) = self.instance_tracker.load_file(&self.save_dir, no_save) {
@@ -767,6 +757,15 @@ impl IsoWorld {
         )?;
         sm.post_world_dictionary_init();
         println!("WorldDictionary.init() end");
+        // `GlobalModData.init()`: reset, load `global_mod_data.bin`, and fire
+        // `OnInitGlobalModData(WorldDictionary.isIsNewGame())`.
+        if let Err(e) = pz_lua_api::bind_global_moddata::load_file(&self.save_dir, no_save) {
+            self.log_error(format!("GlobalModData.init: {e}"));
+        }
+        lua.trigger_event(
+            "OnInitGlobalModData",
+            &[pz_kahlua::Value::Bool(self.dictionary_new_game)],
+        );
         self.items = match (dictionary, self.save_tables.as_ref()) {
             (Some(d), Some(tables)) => {
                 let world_age_hours = pz_lua_api::bind_climate::shared_game_time()

@@ -44,13 +44,39 @@ pub fn get(tag: &str) -> Option<TableRef> {
     TABLES.with(|m| m.borrow().get(tag).cloned())
 }
 
-/// `ModData.create(tag)`: create a fresh table, replacing any previous entry.
-pub fn create(tag: &str) -> TableRef {
+/// `ModData.create(tag)`: creates a fresh table for `tag` if one does not
+/// already exist. Preserves an existing table and returns `None` for
+/// duplicate names (matching `GlobalModData.create(String)`).
+pub fn create(tag: &str) -> Option<TableRef> {
+    if exists(tag) {
+        return None;
+    }
     let tbl = TableRef::new();
     TABLES.with(|m| {
         m.borrow_mut().insert(tag.to_owned(), tbl.clone());
     });
-    tbl
+    Some(tbl)
+}
+
+/// `ModData.create()`: generates a unique table name, creates its table, and
+/// returns the generated name (matching `GlobalModData.create()`).
+pub fn create_anonymous() -> String {
+    loop {
+        let a = pz_core::random::next(i32::MAX) as u32;
+        let b = pz_core::random::next(i32::MAX) as u32;
+        let c = pz_core::random::next(i32::MAX) as u32;
+        let d = pz_core::random::next(i32::MAX) as u32;
+        let tag = format!(
+            "{a:08x}-{:04x}-4{:03x}-{:04x}-{:04x}{d:08x}",
+            (b >> 16) & 0xffff,
+            b & 0x0fff,
+            ((c >> 16) & 0x3fff) | 0x8000,
+            c & 0xffff
+        );
+        if create(&tag).is_some() {
+            return tag;
+        }
+    }
 }
 
 /// `ModData.exists(tag)`.
@@ -75,8 +101,9 @@ pub fn table_names() -> Vec<String> {
     TABLES.with(|m| m.borrow().keys().cloned().collect())
 }
 
-/// Encode all live global mod-data tables in `global_mod_data.bin` format:
-/// `i32(WORLD_VERSION)`, `i32(count)`, then `(StringUTF(tag), KahluaTable)` entries.
+/// Encode all live global mod-data tables in native Build 42 `global_mod_data.bin`
+/// format: `i32(WORLD_VERSION)`, `i32(count)`, then for each entry:
+/// `i32(record_payload_bytes)`, `StringUTF(tag)`, `KahluaTable`.
 pub fn save_bytes() -> Result<Vec<u8>, String> {
     let entries: Vec<(String, TableRef)> = TABLES.with(|m| {
         m.borrow()
@@ -88,20 +115,31 @@ pub fn save_bytes() -> Result<Vec<u8>, String> {
     w.i32(WORLD_VERSION);
     w.i32(entries.len() as i32);
     for (tag, tbl) in &entries {
-        w.string(tag);
-        save_live_table_to_writer(tbl, &mut w)
+        let mut rec = Writer::new();
+        rec.string(tag);
+        save_live_table_to_writer(tbl, &mut rec)
             .map_err(|e| format!("GlobalModData.save({tag}): {e:?}"))?;
+        let payload_len = i32::try_from(rec.buf.len())
+            .map_err(|_| format!("GlobalModData.save({tag}): record exceeds i32::MAX bytes"))?;
+        w.i32(payload_len);
+        w.bytes(&rec.buf);
     }
     Ok(w.buf)
 }
 
-/// Decode `global_mod_data.bin` bytes into the live global mod-data store.
+/// Decode native `global_mod_data.bin` bytes into the live global mod-data store.
 pub fn load_bytes(bytes: &[u8]) -> Result<(), String> {
     let mut r = Reader::new(bytes);
     let version = r.i32().map_err(|e| format!("GlobalModData.load version: {e}"))?;
     let count = r.i32().map_err(|e| format!("GlobalModData.load count: {e}"))?.max(0);
     let mut loaded = IndexMap::with_capacity(count as usize);
     for _ in 0..count {
+        let block_size = r
+            .i32()
+            .map_err(|e| format!("GlobalModData.load record length: {e}"))?;
+        if block_size < 0 {
+            return Err(format!("GlobalModData.load: negative record length {block_size}"));
+        }
         let tag = r.string().map_err(|e| format!("GlobalModData.load tag: {e}"))?;
         let archive = LuaTable::load(&mut r, version)
             .map_err(|e| format!("GlobalModData.load({tag}): {e}"))?;
@@ -115,7 +153,8 @@ pub fn load_bytes(bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// `GlobalModData.save()` to `<save_dir>/global_mod_data.bin`.
+/// `GlobalModData.save()` to `<save_dir>/global_mod_data.bin` via atomic
+/// `.tmp` replacement matching `GlobalModData.save()`.
 pub fn save_file(save_dir: &Path, no_save: bool) -> Result<(), String> {
     if no_save {
         return Ok(());
@@ -126,8 +165,15 @@ pub fn save_file(save_dir: &Path, no_save: bool) -> Result<(), String> {
         return Ok(());
     }
     let bytes = save_bytes()?;
-    std::fs::write(&path, bytes)
-        .map_err(|e| format!("GlobalModData.save({}): {e}", path.display()))
+    let tmp_path = save_dir.join(format!("{GLOBAL_MOD_DATA_FILE}.tmp"));
+    std::fs::write(&tmp_path, bytes)
+        .map_err(|e| format!("GlobalModData.save({}): {e}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &path).or_else(|_| {
+        std::fs::copy(&tmp_path, &path)
+            .map(|_| ())
+            .and_then(|()| std::fs::remove_file(&tmp_path))
+    })
+    .map_err(|e| format!("GlobalModData.save({}): {e}", path.display()))
 }
 
 /// `GlobalModData.load()` from `<save_dir>/global_mod_data.bin`.
@@ -175,8 +221,12 @@ pub fn register(thread: &mut Thread) {
     md.set_str(
         "create",
         Value::Native(NativeFunction::new("ModData.create", |c| {
-            let tag = str_arg(c, 0).ok_or_else(|| LuaError::runtime("ModData.create: tag required"))?;
-            Ok(c.push(Value::Table(create(&tag))))
+            if c.nargs() == 0 || matches!(c.arg(0), Value::Nil) {
+                return Ok(c.push(Value::str(&create_anonymous())));
+            }
+            let tag = str_arg(c, 0).ok_or_else(|| LuaError::runtime("ModData.create: tag must be string"))?;
+            let v = create(&tag).map(Value::Table).unwrap_or(Value::Nil);
+            Ok(c.push(v))
         })),
     );
     md.set_str(
@@ -235,6 +285,7 @@ mod tests {
     fn mod_data_lua_api_and_binary_file_roundtrip() {
         reset();
         let mut t = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
         crate::bind_java_util::register(&mut t);
         register(&mut t);
 
@@ -246,21 +297,50 @@ mod tests {
             fd.zone = "Muldraugh"
             fd.nested = { active = true }
             local same = ModData.getOrCreate("forageData")
+            -- Duplicate create(name) must preserve existing table and return nil.
+            local dup = ModData.create("forageData")
+            -- Zero-arg create() generates a new unique tag name.
+            local anon = ModData.create()
+            local anon_ok = type(anon) == "string" and ModData.exists(anon)
+            ModData.remove(anon)
             ModData.add("UniqueVehiclesSpawned", { police = 2 })
             ModData.transmit("forageData")
             ModData.request("forageData")
-            return same == fd, ModData.exists("forageData"), ModData.getTableNames():size()
+            return same == fd, ModData.exists("forageData"), ModData.getTableNames():size(), dup == nil, ModData.get("forageData").version, anon_ok
             "#,
         );
         assert!(res[0].truthy());
         assert!(res[1].truthy());
         assert_eq!(res[2].as_num(), Some(2.0));
+        assert!(res[3].truthy(), "duplicate ModData.create(tag) must return nil");
+        assert_eq!(res[4].as_num(), Some(42.0), "duplicate ModData.create(tag) must preserve existing table");
+        assert!(res[5].truthy(), "0-arg ModData.create() must return created tag name");
 
         let dir = std::env::temp_dir().join(format!("pz-gmd-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         save_file(&dir, false).unwrap();
-        assert!(dir.join(GLOBAL_MOD_DATA_FILE).exists());
+        let file_path = dir.join(GLOBAL_MOD_DATA_FILE);
+        assert!(file_path.exists());
+
+        // Verify native Build 42 4-byte length-framed record layout:
+        // [version: i32][count: i32] then for each entry [len: i32][payload: len bytes].
+        let raw = std::fs::read(&file_path).unwrap();
+        let mut r = Reader::new(&raw);
+        assert_eq!(r.i32().unwrap(), WORLD_VERSION);
+        assert_eq!(r.i32().unwrap(), 2);
+        for _ in 0..2 {
+            let rec_len = r.i32().unwrap() as usize;
+            let start = r.pos;
+            let _tag = r.string().unwrap();
+            let _tbl = LuaTable::load(&mut r, WORLD_VERSION).unwrap();
+            assert_eq!(
+                r.pos - start,
+                rec_len,
+                "record length prefix must match serialized tag + KahluaTable bytes"
+            );
+        }
+        assert_eq!(r.pos, raw.len());
 
         reset();
         assert!(!exists("forageData"));
