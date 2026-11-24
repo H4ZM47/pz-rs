@@ -233,6 +233,10 @@ pub struct IsoWorld {
     pub player_sql_ids: [i32; 4],
     /// `IsoDoor`'s double-door offset tables, for the square mutations.
     pub door_tables: Option<Rc<pz_world::square_mutation::DoorTables>>,
+    /// Build 42.22 animal genome, breed, track, and migration definitions
+    /// (`AnimalDefinitions`, `AnimalGenomeDefinitions`, `AnimalTracksDefinitions`,
+    /// `MigrationGroupDefinitions`) loaded from `LuaManager.env`.
+    pub animal_defs: Option<Rc<pz_characters::pz_animals::AnimalDefinitionTables>>,
     /// `IsoWorld.frameNo`.
     pub frame_no: i64,
     /// The last `IsoChunk.loadID` handed out.
@@ -370,6 +374,7 @@ impl IsoWorld {
             fire: pz_world::fire::IsoFireManager::new(),
             fire_flags: None,
             door_tables: None,
+            animal_defs: None,
             player_sql_ids: [-1; 4],
             frame_no: 0,
             chunk_load_id: 0,
@@ -603,6 +608,39 @@ impl IsoWorld {
         let _ = params.load_file(&self.save_dir);
     }
 
+    /// Loads `AnimalGenomeDefinitions`, `AnimalDefinitions`, `AnimalTracksDefinitions`,
+    /// and `MigrationGroupDefinitions` from `env` (`LuaManager.env`).
+    pub fn load_animal_definitions(&mut self, env: &pz_kahlua::TableRef) {
+        match pz_characters::pz_animals::AnimalDefinitionTables::load(env) {
+            Ok(tables) => {
+                self.animal_defs = Some(Rc::new(tables));
+            }
+            Err(e) => {
+                self.errors
+                    .push(format!("AnimalDefinitions.getAnimalDefs: {e}"));
+            }
+        }
+    }
+
+    /// Reloads `AnimalTracksDefinitions` from `env` (`loadTracksDefinitions`).
+    pub fn reload_animal_tracks(&mut self, env: &pz_kahlua::TableRef) {
+        match pz_characters::pz_animals::AnimalTracksDefinitions::load_all(env) {
+            Ok(tracks) => {
+                let mut tables = self
+                    .animal_defs
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or_default();
+                tables.tracks = tracks;
+                self.animal_defs = Some(Rc::new(tables));
+            }
+            Err(e) => {
+                self.errors
+                    .push(format!("AnimalTracksDefinitions.loadTracksDefinitions: {e}"));
+            }
+        }
+    }
+
     /// `IsoWorld.init()` on the loader (`GameLoadingState`'s
     /// `runInner`, between `IsoWorld.instance = new IsoWorld()` and
     /// `OnGameTimeLoaded`). Returns `Err` where the original throws out of
@@ -785,8 +823,9 @@ impl IsoWorld {
         self.door_tables = Some(Rc::new(pz_world::square_mutation::DoorTables::from_jar(
             &pz_classfile::Jar::open(self.jar()).map_err(|e| e.to_string())?,
         )?));
-        // TODO(port): `AnimalDefinitions.getAnimalDefs()`
-        // (`pz_animals::AnimalDefinitionTables::load`), `WeatherFxMask.init`.
+        // `AnimalDefinitions.getAnimalDefs()` (`pz_animals::AnimalDefinitionTables::load`).
+        self.load_animal_definitions(lua.thread.globals());
+        // TODO(port): `WeatherFxMask.init`.
         pz_lua_api::bind_template_text::initialize(&mut lua.thread);
         // `IsoRegions.init()`.
         let chunk_grid_width = {

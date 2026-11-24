@@ -890,11 +890,14 @@ all installed assets, render paths or foreign platforms.
 - [ ] Water rendering reads `IsoWaterFlow` from
       `lua_world::shared_water_flow()`; `IsoWaterFlow.Reset` on world
       unload (#224).
-- [ ] Animal definitions: `pz_animals::AnimalDefinitionTables::load(&env)`
+- [x] Animal definitions: `pz_animals::AnimalDefinitionTables::load(&env)`
       over `LuaManager.env` once shared Lua is loaded, as `IsoWorld.init`
       calls `AnimalDefinitions.getAnimalDefs()` (which loads the genome
       definitions); tracks reload where `IsoWorld` calls
-      `loadTracksDefinitions` (#191).
+      `loadTracksDefinitions` (#191; wired in `IsoWorld::load_animal_definitions`
+      / `reload_animal_tracks`, plus `SimContext::{month, time_of_day,
+      time_since_apo, animal_sandbox, rain_manager_is_raining,
+      rain_manager_intensity}` in `sim.rs`).
 - [ ] Live animals (`ws/animals-characters`): implement
       `StateWorld::animal_host(chr)` (the definition tables and a
       `pz_animals::AnimalWorld` bound to that animal: rain, vehicle speed,
