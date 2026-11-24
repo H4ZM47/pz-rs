@@ -403,7 +403,8 @@ impl IngameState {
 
     /// `renderframeui()`.
     fn renderframeui(&mut self, cx: &mut StateCx<'_>, out: &mut DrawList) {
-        // TODO(port): `TextManager.DrawTextFromGameWorld`, `SkyBox.draw`.
+        pz_lua_api::bind_text::draw_text_from_game_world();
+        // TODO(port): `SkyBox.draw`.
         pz_ui::UIManager::render(&mut cx.lua.thread);
         // TODO(port): `ZomboidRadio.render`, `drawDebugChunkMap`,
         // `DeadBodyAtlas`/`WorldItemAtlas.renderUI`, the FPS graph,

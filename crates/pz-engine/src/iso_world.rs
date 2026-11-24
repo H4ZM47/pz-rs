@@ -1065,10 +1065,12 @@ impl IsoWorld {
         // TODO(port): `TutorialManager.activeControlZombies`;
         // `ReanimatedPlayers.loadReanimatedPlayers`.
         if let Some(p) = pz_lua_api::bind_players::player_instance() {
-            // TODO(port): `ScriptManager.checkAutoLearn`, `checkMetaRecipes`,
-            // `VerifyAllCraftRecipesAreLearnable`.
+            // `ScriptManager.checkAutoLearn` & `checkMetaRecipes`.
+            // TODO(port): `VerifyAllCraftRecipesAreLearnable`.
             // `IsoPlayer.setCurrentSquareFromPosition()`.
             let mut c = p.borrow_mut();
+            pz_lua_api::bind_scripts::check_auto_learn(&sm, &mut c);
+            pz_lua_api::bind_scripts::check_meta_recipes(&sm, &mut c);
             let (x, y, z) = (
                 pz_world::java::fastfloor(c.vars.x),
                 pz_world::java::fastfloor(c.vars.y),
