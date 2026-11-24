@@ -379,10 +379,12 @@ pub(super) fn register(b: &ClassBuilder) {
             .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
         Ok(with_square(x, y, z, |square| Ok(square.has_stairs_west(&sprites)))?.into())
     });
+    // `hasFloor()` / `hasFloor(north)`: the one-argument form also accepts a
+    // solid floor on the neighbouring square to the north (`true`) or west.
     get(b, "hasFloor", |c| {
         let (x, y, z) = self_square(c)?;
         let sprites = crate::bind_sprites::manager()?;
-        let has = with_square(x, y, z, |square| {
+        let own = with_square(x, y, z, |square| {
             let sprites = sprites
                 .try_borrow()
                 .map_err(|_| crate::bind_world_object::borrowed("IsoSpriteManager"))?;
@@ -391,15 +393,48 @@ pub(super) fn register(b: &ClassBuilder) {
                 .map_err(crate::bind_world_object::host_error)?
                 .is_some())
         })?;
-        Ok(has.into())
+        if own || c.nargs() < 2 {
+            return Ok(own.into());
+        }
+        let (nx, ny) = if bool_arg(c, 1) { (x, y - 1) } else { (x - 1, y) };
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| crate::bind_world_object::borrowed("IsoSpriteManager"))?;
+        let solid = sprites.tables.flag.solidfloor;
+        let neighbour = cell(|cell| {
+            Ok(match cell.get_grid_square(nx, ny, z) {
+                Some(square) => square
+                    .try_borrow()
+                    .map_err(|_| LuaError::runtime("IsoGridSquare is in use"))?
+                    .has(solid),
+                None => false,
+            })
+        })?;
+        Ok(neighbour.into())
     });
+    // `isFreeOrMidair(countOthers[, doZombie])`: no floor needed. Counting
+    // other characters, any moving object makes the square not free (with
+    // `doZombie`, dead bodies would not count, but the port keeps corpses in
+    // static_moving, so every moving object here is a live character). Then
+    // solid, solidtrans or a tree block it, and stairs always free it.
     get(b, "isFreeOrMidair", |c| {
         let (x, y, z) = self_square(c)?;
+        let count_others = bool_arg(c, 1);
         let sprites = crate::bind_sprites::manager()?;
         let sprites = sprites
             .try_borrow()
             .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
-        Ok(with_square(x, y, z, |square| Ok(square.is_free_static(&sprites)))?.into())
+        let free = with_square(x, y, z, |square| {
+            if count_others && !square.moving_objects.is_empty() {
+                return Ok(false);
+            }
+            let (f, ty) = (&sprites.tables.flag, &sprites.tables.ty);
+            if square.has_stairs_north(&sprites) || square.has_stairs_west(&sprites) {
+                return Ok(true);
+            }
+            Ok(!(square.has(f.solid) || square.has(f.solidtrans) || square.has_type(ty.tree)))
+        })?;
+        Ok(free.into())
     });
     b.method("RecalcProperties", |c| {
         let (x, y, z) = self_square(c)?;
