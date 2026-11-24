@@ -22,6 +22,7 @@ pub mod world_hud;
 pub mod world_models;
 pub mod world_pick;
 pub mod world_radio;
+pub mod world_ragdolls;
 pub mod world_regions;
 pub mod world_render;
 pub mod world_update;

@@ -74,6 +74,7 @@ struct CharacterModel {
     lights: HashMap<usize, PlayerLightData>,
     shadow: HashMap<usize, ShadowSmoothing>,
     initial_turn_around_target: f32,
+    ragdoll: Option<pz_ragdoll::RagdollController>,
 }
 
 /// `ModelManager`'s live character slots, indexed by the world's character
@@ -180,6 +181,7 @@ impl WorldModels {
                 lights: HashMap::new(),
                 shadow: HashMap::new(),
                 initial_turn_around_target: 0.0,
+                ragdoll: None,
             };
             if let Some(old) = self.characters.insert(chr.id, model) {
                 retire(old, &mut self.retired_textures);
@@ -232,17 +234,153 @@ impl WorldModels {
         dt: f32,
         modifiers: Option<pz_characters::character::state::MoveDeltaModifiers>,
     ) -> Result<Vec<AnimEventRecord>, String> {
+        self.finish_character_update_with_ragdoll(chr, dt, modifiers, None)
+    }
+
+    /// Resume character animation update, driving `AnimationPlayer::update_with_ragdoll`
+    /// when `ragdoll` (`WorldRagdolls` + live `StateCx` + `multiplier`) is supplied.
+    pub fn finish_character_update_with_ragdoll(
+        &mut self,
+        chr: &mut LuaGameCharacter,
+        dt: f32,
+        modifiers: Option<pz_characters::character::state::MoveDeltaModifiers>,
+        ragdoll: Option<(
+            &mut crate::world_ragdolls::WorldRagdolls,
+            pz_characters::character::state::StateCx<'_, pz_lua_api::bind_characters::LuaItem>,
+            f32,
+        )>,
+    ) -> Result<Vec<AnimEventRecord>, String> {
         let model = self
             .characters
             .get_mut(&chr.id)
             .ok_or("character model is not initialized")?;
         apply_deltas(model, chr, modifiers);
-        model.player.update(dt, Some(&*chr));
+        let ran_ragdoll = if let Some((wr, cx, multiplier)) = ragdoll {
+            if let Some(assets) = self.assets.as_ref() {
+                wr.ensure_builder(assets);
+            }
+            wr.update_player_with_ragdoll(
+                &mut model.player,
+                &mut model.ragdoll,
+                chr,
+                cx,
+                dt,
+                multiplier,
+            )
+        } else {
+            false
+        };
+        if !ran_ragdoll {
+            model.player.update(dt, Some(&*chr));
+        }
         model.animator.dispatch_track_events(&mut model.player, chr);
         // Callback animation variables read the real player's result on
         // the next simulation/action-context update.
         publish_animation_variables(model, chr);
         Ok(std::mem::take(&mut model.animator.events))
+    }
+
+    /// Live ragdoll pelvis position for `StateWorld::ragdoll_pelvis`.
+    pub fn ragdoll_pelvis(&self, id: i32) -> Option<[f32; 3]> {
+        let ctrl = self.characters.get(&id)?.ragdoll.as_ref()?;
+        let p = ctrl.pelvis_position();
+        Some([p.x, p.y, p.z])
+    }
+
+    /// Packed animation skeleton for `StateWorld::ballistics_skeleton`.
+    pub fn ballistics_skeleton(
+        &self,
+        id: i32,
+    ) -> Option<pz_characters::character::firearm::TargetSkeleton> {
+        let model = self.characters.get(&id)?;
+        Some(crate::world_ragdolls::pack_target_skeleton(&model.player))
+    }
+
+    /// Primary hand model's `MUZZLE` attachment world position/direction for
+    /// `StateWorld::muzzle_attachment`.
+    pub fn muzzle_attachment(
+        &self,
+        id: i32,
+        chr_pos: [f32; 3],
+    ) -> Option<pz_characters::character::firearm::MuzzleAttachment> {
+        let model = self.characters.get(&id)?;
+        let slot = model.slot.as_ref()?;
+        let hand_idx = slot.primary_hand?;
+        let inst = slot.instance(hand_idx);
+        let att_rc = inst
+            .attachment(Some("muzzle"))
+            .or_else(|| inst.attachment(Some("MUZZLE")))?;
+        let att = att_rc.borrow();
+        let angle = model.player.rendered_angle();
+        let hand_bone = pz_ragdoll::skeleton_bone::from_name("Bip01_Prop1")
+            .and_then(|sb| pz_ragdoll::skeleton_bone::find_bone(model.player.skeleton(), sb))
+            .or_else(|| {
+                pz_ragdoll::skeleton_bone::from_name("Bip01_R_Hand").and_then(|sb| {
+                    pz_ragdoll::skeleton_bone::find_bone(model.player.skeleton(), sb)
+                })
+            });
+        let base = match hand_bone {
+            Some(b) => pz_ragdoll::controller::bone_to_world(
+                &model.player,
+                pz_ragdoll::Vec3::new(chr_pos[0], chr_pos[1], chr_pos[2]),
+                None,
+                b,
+            ),
+            None => pz_ragdoll::Vec3::new(chr_pos[0], chr_pos[1], chr_pos[2] + 0.5),
+        };
+        let off = att.offset();
+        let world_off = pz_ragdoll::controller::vector_to_world(
+            base,
+            angle,
+            pz_ragdoll::Vec3::new(off.x, off.y, off.z),
+        );
+        let dir = [angle.cos(), angle.sin(), 0.0];
+        Some(pz_characters::character::firearm::MuzzleAttachment {
+            position: [world_off.x, world_off.y, world_off.z],
+            direction: dir,
+        })
+    }
+
+    /// Freezes a dying character's ragdoll pose into `IsoDeadBody.ragdoll`.
+    pub fn corpse_ragdoll_bones(
+        &self,
+        id: i32,
+        ragdoll_fall: bool,
+    ) -> Option<Vec<pz_world::save::visual::BoneTransform>> {
+        let model = self.characters.get(&id)?;
+        crate::world_ragdolls::freeze_corpse_ragdoll(&model.player, ragdoll_fall)
+    }
+
+    /// Releases every active `RagdollController` from Bullet (call before
+    /// `WorldVehicles::reset()` / `WorldModels::clear()`).
+    pub fn release_all_ragdolls(&mut self, ragdolls: &mut crate::world_ragdolls::WorldRagdolls) {
+        for (&id, model) in self.characters.iter_mut() {
+            ragdolls.release_controller(&mut model.player, &mut model.ragdoll, id);
+        }
+    }
+
+    /// Like [`Self::retain_characters`], also releasing any live
+    /// `RagdollController`s of retired characters from Bullet.
+    pub fn retain_characters_with_ragdolls(
+        &mut self,
+        ids: impl IntoIterator<Item = i32>,
+        mut ragdolls: Option<&mut crate::world_ragdolls::WorldRagdolls>,
+    ) {
+        let live: HashSet<i32> = ids.into_iter().collect();
+        let retired: Vec<i32> = self
+            .characters
+            .keys()
+            .copied()
+            .filter(|id| !live.contains(id))
+            .collect();
+        for id in retired {
+            if let Some(mut model) = self.characters.remove(&id) {
+                if let Some(wr) = ragdolls.as_deref_mut() {
+                    wr.release_controller(&mut model.player, &mut model.ragdoll, id);
+                }
+                retire(model, &mut self.retired_textures);
+            }
+        }
     }
 
     /// The state world's thump/root-motion/turn-alerted hooks must use
@@ -373,7 +511,14 @@ impl WorldModels {
         let shadow_input = ShadowInput {
             player: Some(&model.player),
             anim_angle: model.player.angle(),
-            ragdoll_direction: None,
+            ragdoll_direction: model
+                .ragdoll
+                .as_ref()
+                .filter(|c| c.is_simulation_active())
+                .map(|c| {
+                    let d = c.state().simulation_direction;
+                    [d.x, d.y]
+                }),
             height_above_floor: view.height_above_floor,
             alpha: view.alpha,
             skeleton: model.skeleton,
@@ -437,8 +582,56 @@ impl WorldModels {
                 lights: HashMap::new(),
                 shadow: HashMap::new(),
                 initial_turn_around_target: 0.0,
+                ragdoll: None,
             },
         );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_primary_hand_muzzle(&mut self, id: i32, offset: [f32; 3]) {
+        use pz_character_model::model_tree::{InstanceKind, ModelInstance, ModelSlot, TextureSource};
+        use pz_scripts::objects::models::{ModelAttachment, ModelScript};
+
+        let Some(model) = self.characters.get_mut(&id) else {
+            return;
+        };
+        let mut att = ModelAttachment::new("muzzle").unwrap();
+        att.offset_mut().set(offset[0], offset[1], offset[2]);
+        let mut script = ModelScript::new();
+        script.add_attachment(Rc::new(RefCell::new(att)));
+        let script_ref = Rc::new(RefCell::new(script));
+        let hand = ModelInstance {
+            kind: InstanceKind::PrimaryHand,
+            mesh_name: "synthetic_gun".into(),
+            model_texture: None,
+            is_static: true,
+            shader: None,
+            tex: TextureSource::None,
+            tint: [1.0; 3],
+            hue: 0.0,
+            depth_bias: 0.0,
+            parent: None,
+            parent_bone: -1,
+            parent_bone_name: None,
+            attachment_name_self: None,
+            attachment_name_parent: None,
+            scale: 1.0,
+            model_script: Some(script_ref),
+            item_visual: None,
+            mask_variable_value: None,
+            texture_init: None,
+            equipped_texture: Default::default(),
+            sub: Vec::new(),
+        };
+        model.slot = Some(ModelSlot {
+            instances: vec![hand],
+            model: 0,
+            sub: vec![0],
+            attached_models: Vec::new(),
+            primary_hand: Some(0),
+            secondary_hand: None,
+            mask_variables: Vec::new(),
+        });
     }
 }
 

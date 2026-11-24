@@ -271,6 +271,39 @@ pub trait StatesEngine {
         false
     }
 
+    // ---- physics, firearms and ragdolls ----
+
+    /// `WorldSimulation`'s shared Bullet physics world (`StateWorld::physics`).
+    fn physics(&mut self) -> Option<&mut dyn pz_characters::character::firearm::PhysicsWorld> {
+        None
+    }
+    /// Primary hand model's `MUZZLE` attachment world position/direction.
+    fn muzzle_attachment(
+        &self,
+        _chr: i32,
+    ) -> Option<pz_characters::character::firearm::MuzzleAttachment> {
+        None
+    }
+    /// Aiming reticle in isometric world coordinates.
+    fn aim_reticle_iso(&self, _chr: i32) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+    /// Character's animation skeleton packed for `BallisticsTarget`.
+    fn ballistics_skeleton(
+        &self,
+        _chr: i32,
+    ) -> Option<pz_characters::character::firearm::TargetSkeleton> {
+        None
+    }
+    /// Vehicle aim modifiers for a character inside a vehicle.
+    fn vehicle_aim(&self, _chr: i32) -> Option<pz_characters::character::firearm::VehicleAim> {
+        None
+    }
+    /// Live `RagdollController` pelvis world position, if ragdolling.
+    fn ragdoll_pelvis(&self, _chr: i32) -> Option<[f32; 3]> {
+        None
+    }
+
     // ---- characters (pz-characters' owner) ----
 
     /// A character by id, as the thump code reads it.
@@ -1536,6 +1569,149 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     fn square_is_outside(&self, sq: (i32, i32, i32)) -> bool {
         self.at(sq)
             .is_some_and(|s| self.env().sq_has(&s.borrow(), "exterior"))
+    }
+
+    fn physics(&mut self) -> Option<&mut dyn pz_characters::character::firearm::PhysicsWorld> {
+        self.engine.physics()
+    }
+
+    fn muzzle_attachment(
+        &self,
+        chr: i32,
+    ) -> Option<pz_characters::character::firearm::MuzzleAttachment> {
+        self.engine.muzzle_attachment(chr)
+    }
+
+    fn aim_reticle_iso(&self, chr: i32) -> (f32, f32) {
+        self.engine.aim_reticle_iso(chr)
+    }
+
+    fn ballistics_skeleton(
+        &self,
+        chr: i32,
+    ) -> Option<pz_characters::character::firearm::TargetSkeleton> {
+        self.engine.ballistics_skeleton(chr)
+    }
+
+    fn first_blocking_square(
+        &self,
+        from: (i32, i32, i32),
+        to: (i32, i32, i32),
+    ) -> pz_characters::character::firearm::BlockingSquare {
+        use pz_characters::character::state::TestResults as CharTestResults;
+        let hooks = self.env().hooks();
+        let env = VisionEnv::new(&*self.cell, self.sprites, &hooks);
+        let (mut x0, mut y0, mut z0) = from;
+        let (x1, y1, z1) = to;
+        let mut prev = self.at((x0, y0, z0));
+        let mut dy = y1 - y0;
+        let mut dx = x1 - x0;
+        let mut dz = z1 - z0;
+        let mut t = 0.5f32;
+        let mut t2 = 0.5f32;
+        let mut best = pz_world::los::TestResults::Clear;
+
+        let mut step = |nx: i32, ny: i32, nz: i32| -> Option<pz_characters::character::firearm::BlockingSquare> {
+            let next = self.at((nx, ny, nz));
+            if let (Some(a), Some(b)) = (&next, &prev) {
+                let (ab, bb) = (a.borrow(), b.borrow());
+                let res = ab.test_vision_adjacent(
+                    bb.x - ab.x,
+                    bb.y - ab.y,
+                    bb.z - ab.z,
+                    true,
+                    false,
+                    &env,
+                );
+                if res == pz_world::los::TestResults::Blocked {
+                    return Some(pz_characters::character::firearm::BlockingSquare {
+                        result: CharTestResults::Blocked,
+                        square: Some((nx, ny, nz)),
+                        position: (nx as f32 + 0.5, ny as f32 + 0.5),
+                    });
+                }
+                if best == pz_world::los::TestResults::Clear {
+                    best = res;
+                }
+            }
+            prev = next;
+            None
+        };
+
+        if dx.abs() > dy.abs() && dx.abs() > dz.abs() {
+            let mut m = dy as f32 / dx as f32;
+            let mut m2 = dz as f32 / dx as f32;
+            t += y0 as f32;
+            t2 += z0 as f32;
+            dx = if dx < 0 { -1 } else { 1 };
+            m *= dx as f32;
+            m2 *= dx as f32;
+            while x0 != x1 {
+                x0 += dx;
+                t += m;
+                t2 += m2;
+                if let Some(hit) = step(x0, t.floor() as i32, t2.floor() as i32) {
+                    return hit;
+                }
+            }
+        } else if dy.abs() >= dx.abs() && dy.abs() > dz.abs() {
+            let mut m = dx as f32 / dy as f32;
+            let mut m2 = dz as f32 / dy as f32;
+            t += x0 as f32;
+            t2 += z0 as f32;
+            dy = if dy < 0 { -1 } else { 1 };
+            m *= dy as f32;
+            m2 *= dy as f32;
+            while y0 != y1 {
+                t += m;
+                y0 += dy;
+                t2 += m2;
+                if let Some(hit) = step(t.floor() as i32, y0, t2.floor() as i32) {
+                    return hit;
+                }
+            }
+        } else if dz != 0 {
+            let mut m = dx as f32 / dz as f32;
+            let mut m2 = dy as f32 / dz as f32;
+            t += x0 as f32;
+            t2 += y0 as f32;
+            dz = if dz < 0 { -1 } else { 1 };
+            m *= dz as f32;
+            m2 *= dz as f32;
+            while z0 != z1 {
+                t += m;
+                t2 += m2;
+                z0 += dz;
+                if let Some(hit) = step(t.floor() as i32, t2.floor() as i32, z0) {
+                    return hit;
+                }
+            }
+        }
+
+        let mapped = match best {
+            pz_world::los::TestResults::Clear => CharTestResults::Clear,
+            pz_world::los::TestResults::ClearThroughOpenDoor => {
+                CharTestResults::ClearThroughOpenDoor
+            }
+            pz_world::los::TestResults::ClearThroughWindow => CharTestResults::ClearThroughWindow,
+            pz_world::los::TestResults::Blocked => CharTestResults::Blocked,
+            pz_world::los::TestResults::ClearThroughClosedDoor => {
+                CharTestResults::ClearThroughClosedDoor
+            }
+        };
+        pz_characters::character::firearm::BlockingSquare {
+            result: mapped,
+            square: None,
+            position: (x1 as f32 + 0.5, y1 as f32 + 0.5),
+        }
+    }
+
+    fn vehicle_aim(&self, chr: i32) -> Option<pz_characters::character::firearm::VehicleAim> {
+        self.engine.vehicle_aim(chr)
+    }
+
+    fn ragdoll_pelvis(&self, chr: i32) -> Option<[f32; 3]> {
+        self.engine.ragdoll_pelvis(chr)
     }
 
     // ---- windows, sheet ropes and walls ----

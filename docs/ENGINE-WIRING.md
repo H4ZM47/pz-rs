@@ -1711,50 +1711,42 @@ registered):
       once per frame instead of `update`, so player rooms become meta-grid
       buildings (`WorldRegionToMetaGrid`) (#97; wired in `world_regions.rs` +
       `world_update.rs`).
-- [ ] Bullet world ownership: the world/engine owns the one `PzBullet`
-      (`WorldSimulation`) and counts its steps (`getBulletFrameNo`); the
-      characters reach it through `StateWorld::physics()` (`PzBullet`
-      implements `pz_characters::character::firearm::PhysicsWorld` with
-      the `bullet` feature) (#114).
-- [ ] Firearm hooks on `StateWorld`: `muzzle_attachment(chr)` (the
-      primary hand model's MUZZLE attachment world position/direction),
-      `aim_reticle_iso(chr)` (`AimingReticle` x/y through `XToIso/YToIso`),
-      `ballistics_skeleton(chr)` (bone count, `getAngle()`, packed bone
-      transforms), `first_blocking_square` (`LosUtil` for tracers),
-      `square_is_outside`, `vehicle_aim`, `ragdoll_pelvis(chr)` (the
-      pz-ragdoll controller's pelvis); `SimContext::wind_intensity`, the
-      firearm sandbox options and `active_ragdoll_simulations`
-      (`RagdollGlobals.number_of_active_simulations`) (#114).
+- [x] Bullet world ownership: the world/engine owns the one `PzBullet`
+      (`WorldVehicles` / `SharedBullet`, stepping via `WorldSimulation`) and
+      counts its steps (`world_sim::state().bullet_frame_no` /
+      `getBulletFrameNo`); characters reach it through `StateWorld::physics()`
+      (`SharedBullet` implements `pz_characters::character::firearm::PhysicsWorld`
+      with the `pz-characters/bullet` feature) (#114).
+- [ ] Firearm hooks on `StateWorld`: `muzzle_attachment(chr)`,
+      `aim_reticle_iso(chr)`, `ballistics_skeleton(chr)`,
+      `first_blocking_square`, `square_is_outside`, `ragdoll_pelvis(chr)`,
+      and `SimContext::{wind_intensity, firearm_*, active_ragdoll_simulations,
+      max_active_ragdolls}` are wired through `StatesEngine` /
+      `StatesWorldAdapter` -> `EngineStates`. Still open: `vehicle_aim`
+      (currently returns `None` until vehicle raycast aiming is wired) (#114).
 - [ ] Per frame, ballistics (`IsoGameCharacter.updateInternal` order):
-      each non-animal character `update_ballistics_target(ctx, world)`;
-      a character aiming an aimed firearm (`getUseHandWeapon`) runs
-      `setAngleFromAim` then `update_ballistics(sm, chars, ctx, world)`;
-      `CombatManager.update` for player 0 with a ready ranged weapon and
-      the reticle mode: `calculate_attack_vars` + `calculate_ranged_hit_info_list`
-      (`updateReticle`; the reticle chance comes from
-      `calculate_hit_chance_data(cx, w, None, vehicle)`); in the
-      character's postupdate `ballistics_controller.post_update()`; on
-      release `release_ballistics_controller` / `release_ballistics_target`.
-      Physics steps after the character updates (#114).
+      non-animal characters run `update_ballistics_target(ctx, world)` (players
+      in `update_player`, zombies in `world_update`); players aiming an aimed
+      firearm run `setAngleFromAim` + `update_ballistics` in `update_player`
+      and `ballistics_controller.post_update()` in `postupdate_player`;
+      corpse placement releases `ballistics_controller` / `ballistics_target`,
+      and `PzBullet` steps after character updates. Still open:
+      `CombatManager.update` reticle chance loop (`calculate_attack_vars` +
+      `calculate_ranged_hit_info_list` + `calculate_hit_chance_data`) (#114).
 - [ ] Shots: the anim event `AttackCollisionCheck` runs the ranged path
       of `attack_collision_check`; Lua's `ISReloadWeaponAction.onShoot`
       (`OnWeaponSwingHitPoint`) spends the round through the bound
-      HandWeapon methods; `SimEvent::BulletTracer`, `MuzzleFlash`,
-      `BulletHitSound`, `CharacterAddBlood`, `CombatStatistic`,
-      `ReticleMode` go to the effects, sound, visuals and statistics
-      (#114).
-- [ ] Per frame, ragdolls: before the animation update call
-      `update_ragdoll_variables(ctx)` (the `canRagdoll` variable the death
-      and shot nodes test); pass
+      HandWeapon methods; `SimEvent::BulletHitSound` routes to the world sound
+      manager. Still open: `SimEvent::BulletTracer`, `MuzzleFlash`,
+      `CharacterAddBlood`, `CombatStatistic`, and `ReticleMode` visual/stats
+      consumers (#114).
+- [x] Per frame, ragdolls: `WorldRagdolls::update_character` calls
+      `update_ragdoll_variables(ctx)` before animation update, passes
       `firearm::CharacterRagdoll::new(&mut chr, StateCx)` (pz-characters'
-      `bullet` feature) as `RagdollEnv::character` (it reads
-      `can_ragdoll_uncapped`, writes the fall flags, `onFloor` and the
-      deferred movement, slides away from walls on start and takes the
-      pending shot with the attacker's position from
-      `StateWorld::character_mut`); after the update call
-      `CharacterRagdoll::track(&mut chr, &player, controller)` so
-      `chr.ragdoll` (`RagdollTracking`) and `isRagdollSimulationActive`
-      follow the controller (#114, char-ragdoll PR).
+      `bullet` feature) as `RagdollEnv::character`, and calls
+      `CharacterRagdoll::track(&mut chr, &player, controller)` after the
+      update so `chr.ragdoll` (`RagdollTracking`) and
+      `isRagdollSimulationActive` follow the controller (#114, char-ragdoll PR).
 - [ ] Per frame, PlayerInput adapter: once per frame the rendering side
       implements `pz_characters::character::player::PlayerInput` over
       `pz_input` (`InputState`, `Core::get_key`/`get_key_binding`, the
@@ -1806,29 +1798,21 @@ registered):
       `SimContext::wet_ground_final_value` and `clothing_degradation`
       (#135).
 
-- [ ] Ragdolls, boot: after ScriptManager loads `media/scripts/ragdolls`,
-      `RagdollScripts::load_file` per file then `to_bullet(&mut bullet,
-      false)` (`RagdollScript.toBullet`); once the world exists
-      (`IsoChunk.addRagdollControllers`), `RagdollBuilder::initialize` with
-      the `bob/bob_tpose` skeleton and the `Bob_TPose` clip; keep one
-      `RagdollGlobals` (max active ragdolls from Core) (#142).
-- [ ] Ragdolls, per character: keep an `Option<RagdollController>` beside
-      its `AnimationPlayer` and update the player with
-      `update_with_ragdoll(dt, vars, &mut RagdollFrame { env: RagdollEnv {
-      bullet, globals, builder, character, bullet_frame_no:
-      WorldSimulation's frame number, time_delta, debug }, controller,
-      multiplier })` instead of `update`, with `CharacterRagdoll` as the
-      character (see the per-frame ragdoll line above). Before `stopAll`
-      or releasing the player call `release_ragdoll_controller(Some(host))`
-      so the ragdoll leaves the world; `vehicle_collision` from
-      `IsoZombie`'s vehicle contact (#142).
-- [ ] Ragdoll corpses: when an `IsoDeadBody` is made from a character,
-      `DeadBody.ragdoll_fall = isRagdollFall()` and
-      `died_bone_transforms = pz_ragdoll::corpse::died_bone_transforms(
-      player, ragdoll_fall, can_use_current_pose_for_corpse(player,
-      culled, has_active_model))`; from saves,
-      `corpse::died_bone_transforms_from_saved(n, &ragdoll bones)` with
-      pz-world's `IsoDeadBody.ragdoll` (#142).
+- [x] Ragdolls, boot: `WorldRagdolls` loads `media/scripts/ragdolls/*.txt`
+      via `RagdollScripts::load_file` -> `to_bullet(&mut bullet, false)`
+      (`RagdollScript.toBullet`), lazily initializes `RagdollBuilder::initialize`
+      with the `Skinned/MaleBody` skeleton and `Bob/Bob_TPose` clip, and owns
+      one `RagdollGlobals` (max active ragdolls from `Core`) (#142).
+- [ ] Ragdolls, per character: `CharacterModel` keeps an
+      `Option<RagdollController>` beside its `AnimationPlayer`, updates it via
+      `update_with_ragdoll(...)` with `CharacterRagdoll`, and calls
+      `release_ragdoll_controller` before retiring/clearing models or exiting
+      `IngameState`. Still open: `vehicle_collision` from `IsoZombie`'s
+      vehicle contact (#142).
+- [ ] Ragdoll corpses: `place_new_corpses` populates `IsoDeadBody.ragdoll_fall`
+      and `IsoDeadBody.ragdoll` via `pz_ragdoll::corpse::died_bone_transforms(...)`
+      when a character dies. Still open: `corpse::died_bone_transforms_from_saved`
+      in corpse rendering when restoring saved bodies (#142).
 - [x] Radio: keep one `pz_radio::ZomboidRadio` per world
       (`ZomboidRadio::new(GameTime hour)`, with the game mode set) and
       implement `RadioWorld` (GameTime hour / nightsSurvived / multiplier,

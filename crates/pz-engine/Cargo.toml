@@ -16,7 +16,8 @@ pz-gpu = { path = "../pz-gpu" }
 pz-character-model = { path = "../pz-character-model" }
 pz-model = { path = "../pz-model" }
 pz-anim.workspace = true
-pz-characters.workspace = true
+pz-characters = { workspace = true, features = ["bullet"] }
+pz-ragdoll.workspace = true
 pz-inventory.workspace = true
 pz-entity.workspace = true
 pz-scripts.workspace = true

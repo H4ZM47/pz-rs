@@ -41,7 +41,7 @@ use pz_vehicles::env::{
     self, GameTimeState, ItemFactory, LightbarState, SandboxVehicle, SquareInfo, VehicleEvents,
     VehicleWorld,
 };
-use pz_vehicles::physics::{Bullet, NoPhysics};
+use pz_vehicles::physics::{Bullet, JavaCallbacks, NoPhysics, PhysicsResult, VehiclePhysics};
 use pz_vehicles::save::from_save;
 use pz_vehicles::spawn::{CellSpawnWorld, ChunkSpawner, SpawnOptions};
 use pz_vehicles::vehicles_db::RuntimeVehicleSaver;
@@ -61,6 +61,366 @@ pz_vehicles::pathfind_adapter!(pz_pathfind);
 
 /// Default vehicle shadow texture path (`BaseVehicle.getShadowTexture`).
 const DEFAULT_SHADOW_TEXTURE: &str = "media/vehicleShadow.png";
+
+/// Shared handle to the single world [`PzBullet`] instance (`WorldSimulation`),
+/// implementing both [`VehiclePhysics`] (for `pz-vehicles`) and
+/// [`pz_characters::character::firearm::PhysicsWorld`] (for `StateWorld::physics`).
+#[derive(Clone)]
+pub struct SharedBullet(pub Rc<RefCell<PzBullet>>);
+
+thread_local! {
+    static SHARED_BULLET: RefCell<Option<SharedBullet>> = const { RefCell::new(None) };
+}
+
+/// Returns the active world's shared Bullet handle, if initialized.
+pub fn shared_bullet() -> Option<SharedBullet> {
+    SHARED_BULLET.with(|b| b.borrow().clone())
+}
+
+impl SharedBullet {
+    pub fn new() -> Self {
+        Self(Rc::new(RefCell::new(PzBullet::new())))
+    }
+}
+
+impl VehiclePhysics for SharedBullet {
+    fn init_world(
+        &mut self,
+        min_cell_x: i32,
+        min_cell_y: i32,
+        max_cell_x: i32,
+        max_cell_y: i32,
+        offset_x: i32,
+        offset_y: i32,
+        is_server: bool,
+    ) -> PhysicsResult<()> {
+        self.0.borrow_mut().init_world(
+            min_cell_x,
+            min_cell_y,
+            max_cell_x,
+            max_cell_y,
+            offset_x,
+            offset_y,
+            is_server,
+        )
+    }
+    fn destroy_world(&mut self) {
+        self.0.borrow_mut().destroy_world()
+    }
+    fn activate_chunk_map(
+        &mut self,
+        player_index: i32,
+        wx: i32,
+        wy: i32,
+        chunk_grid_width: i32,
+    ) -> PhysicsResult<()> {
+        self.0
+            .borrow_mut()
+            .activate_chunk_map(player_index, wx, wy, chunk_grid_width)
+    }
+    fn deactivate_chunk_map(&mut self, player_index: i32) -> PhysicsResult<()> {
+        self.0.borrow_mut().deactivate_chunk_map(player_index)
+    }
+    fn scroll_chunk_map(&mut self, player_index: i32, dir: i32) -> PhysicsResult<()> {
+        self.0.borrow_mut().scroll_chunk_map(player_index, dir)
+    }
+    fn set_chunk_min_max_level(
+        &mut self,
+        wx: i32,
+        wy: i32,
+        min_level: i32,
+        max_level: i32,
+    ) -> PhysicsResult<()> {
+        self.0
+            .borrow_mut()
+            .set_chunk_min_max_level(wx, wy, min_level, max_level)
+    }
+    fn to_bullet(&mut self, buf: &[u8]) {
+        self.0.borrow_mut().to_bullet(buf)
+    }
+    fn define_vehicle_script(&mut self, full_name: &str, params: &[f32]) -> PhysicsResult<()> {
+        self.0.borrow_mut().define_vehicle_script(full_name, params)
+    }
+    fn define_vehicle_physics_mesh(
+        &mut self,
+        full_name: &str,
+        shape_index: i32,
+        points: &[f32],
+    ) -> PhysicsResult<()> {
+        self.0
+            .borrow_mut()
+            .define_vehicle_physics_mesh(full_name, shape_index, points)
+    }
+    fn add_vehicle(
+        &mut self,
+        id: i32,
+        x: f32,
+        y: f32,
+        z: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        script_name: &str,
+    ) -> PhysicsResult<()> {
+        self.0
+            .borrow_mut()
+            .add_vehicle(id, x, y, z, qx, qy, qz, qw, script_name)
+    }
+    fn remove_vehicle(&mut self, id: i32) -> PhysicsResult<()> {
+        self.0.borrow_mut().remove_vehicle(id)
+    }
+    fn control_vehicle(
+        &mut self,
+        id: i32,
+        engine_force: f32,
+        braking_force: f32,
+        steering: f32,
+    ) -> PhysicsResult<()> {
+        self.0
+            .borrow_mut()
+            .control_vehicle(id, engine_force, braking_force, steering)
+    }
+    fn set_vehicle_active(&mut self, id: i32, active: bool) -> PhysicsResult<()> {
+        self.0.borrow_mut().set_vehicle_active(id, active)
+    }
+    fn set_vehicle_static(&mut self, id: i32, is_static: bool) -> PhysicsResult<i32> {
+        self.0.borrow_mut().set_vehicle_static(id, is_static)
+    }
+    fn apply_central_force_to_vehicle(
+        &mut self,
+        id: i32,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> PhysicsResult<()> {
+        self.0
+            .borrow_mut()
+            .apply_central_force_to_vehicle(id, x, y, z)
+    }
+    fn apply_torque_to_vehicle(&mut self, id: i32, x: f32, y: f32, z: f32) -> PhysicsResult<()> {
+        self.0.borrow_mut().apply_torque_to_vehicle(id, x, y, z)
+    }
+    fn teleport_vehicle(
+        &mut self,
+        id: i32,
+        x: f32,
+        y: f32,
+        z: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+    ) -> PhysicsResult<()> {
+        self.0
+            .borrow_mut()
+            .teleport_vehicle(id, x, y, z, qx, qy, qz, qw)
+    }
+    fn set_tire_inflation(
+        &mut self,
+        id: i32,
+        wheel_index: i32,
+        inflation: f32,
+    ) -> PhysicsResult<()> {
+        self.0
+            .borrow_mut()
+            .set_tire_inflation(id, wheel_index, inflation)
+    }
+    fn set_tire_removed(&mut self, id: i32, wheel_index: i32, removed: bool) -> PhysicsResult<()> {
+        self.0
+            .borrow_mut()
+            .set_tire_removed(id, wheel_index, removed)
+    }
+    fn step_simulation(
+        &mut self,
+        time_step: f32,
+        max_sub_steps: i32,
+        fixed_time_step: f32,
+        cb: &mut dyn JavaCallbacks,
+    ) -> PhysicsResult<()> {
+        self.0
+            .borrow_mut()
+            .step_simulation(time_step, max_sub_steps, fixed_time_step, cb)
+    }
+    fn get_vehicle_count(&mut self) -> PhysicsResult<i32> {
+        self.0.borrow_mut().get_vehicle_count()
+    }
+    fn get_vehicle_physics(&mut self, offset: i32, out: &mut [f32]) -> PhysicsResult<i32> {
+        self.0.borrow_mut().get_vehicle_physics(offset, out)
+    }
+    fn get_own_vehicle_physics(&mut self, id: i32, out: &mut [f32]) -> PhysicsResult<i32> {
+        self.0.borrow_mut().get_own_vehicle_physics(id, out)
+    }
+    fn set_own_vehicle_physics(
+        &mut self,
+        id: i32,
+        params: &mut [f32],
+        force: bool,
+    ) -> PhysicsResult<i32> {
+        self.0
+            .borrow_mut()
+            .set_own_vehicle_physics(id, params, force)
+    }
+    fn set_vehicle_params(&mut self, id: i32, params: &mut [f32]) -> PhysicsResult<i32> {
+        self.0.borrow_mut().set_vehicle_params(id, params)
+    }
+    fn set_vehicle_mass(&mut self, id: i32, mass: f32) -> PhysicsResult<i32> {
+        self.0.borrow_mut().set_vehicle_mass(id, mass)
+    }
+    fn get_object_physics(&mut self, out: &mut [f32]) -> PhysicsResult<i32> {
+        self.0.borrow_mut().get_object_physics(out)
+    }
+    fn set_vehicle_velocity_multiplier(
+        &mut self,
+        id: i32,
+        max_speed: f32,
+        multiplier: f32,
+    ) -> PhysicsResult<()> {
+        self.0
+            .borrow_mut()
+            .set_vehicle_velocity_multiplier(id, max_speed, multiplier)
+    }
+    fn add_6dof_constraint(&mut self, id_a: i32, id_b: i32, p: &[f32; 18]) -> PhysicsResult<i32> {
+        self.0.borrow_mut().add_6dof_constraint(id_a, id_b, p)
+    }
+    fn add_rope_constraint(
+        &mut self,
+        id_a: i32,
+        id_b: i32,
+        ax: f32,
+        ay: f32,
+        az: f32,
+        bx: f32,
+        by: f32,
+        bz: f32,
+        max_distance: f32,
+    ) -> PhysicsResult<i32> {
+        self.0
+            .borrow_mut()
+            .add_rope_constraint(id_a, id_b, ax, ay, az, bx, by, bz, max_distance)
+    }
+    fn set_constraint_erp(&mut self, constraint_id: i32, erp: f32, axis: i32) -> PhysicsResult<()> {
+        self.0
+            .borrow_mut()
+            .set_constraint_erp(constraint_id, erp, axis)
+    }
+    fn remove_constraint(&mut self, constraint_id: i32) -> PhysicsResult<()> {
+        self.0.borrow_mut().remove_constraint(constraint_id)
+    }
+}
+
+impl pz_characters::character::firearm::PhysicsWorld for SharedBullet {
+    fn frame_no(&self) -> i32 {
+        world_sim::state().bullet_frame_no as i32
+    }
+    fn update_ballistics(&mut self, id: i32, x: f32, y: f32, z: f32) {
+        self.0.borrow_mut().update_ballistics(id, x, y, z)
+    }
+    fn update_ballistics_aim_reticle_position(&mut self, id: i32, x: f32, y: f32, z: f32) {
+        self.0
+            .borrow_mut()
+            .update_ballistics_aim_reticle_position(id, x, y, z)
+    }
+    fn update_ballistics_muzzle_aim_direction(&mut self, id: i32, x: f32, y: f32, z: f32) {
+        self.0
+            .borrow_mut()
+            .update_ballistics_muzzle_aim_direction(id, x, y, z)
+    }
+    fn update_ballistics_aim_reticle_quaternion(
+        &mut self,
+        id: i32,
+        x: f32,
+        y: f32,
+        z: f32,
+        w: f32,
+    ) {
+        self.0
+            .borrow_mut()
+            .update_ballistics_aim_reticle_quaternion(id, x, y, z, w)
+    }
+    fn set_ballistics_size(&mut self, id: i32, size: f32) {
+        self.0.borrow_mut().set_ballistics_size(id, size)
+    }
+    fn set_ballistics_color(&mut self, id: i32, r: f32, g: f32, b: f32) {
+        self.0.borrow_mut().set_ballistics_color(id, r, g, b)
+    }
+    fn set_ballistics_range(&mut self, id: i32, range: f32) {
+        self.0.borrow_mut().set_ballistics_range(id, range)
+    }
+    fn get_ballistics_targets(&mut self, id: i32, range: f32, count: i32, out: &mut [f32]) -> i32 {
+        self.0
+            .borrow_mut()
+            .get_ballistics_targets(id, range, count, out)
+            .unwrap_or(0)
+    }
+    fn get_ballistics_targets_spread_data(
+        &mut self,
+        id: i32,
+        range: f32,
+        spread: f32,
+        weight_center: f32,
+        count: i32,
+        max: i32,
+        out: &mut [f32],
+    ) -> i32 {
+        self.0
+            .borrow_mut()
+            .get_ballistics_targets_spread_data(id, range, spread, weight_center, count, max, out)
+            .unwrap_or(0)
+    }
+    fn get_ballistics_camera_targets(
+        &mut self,
+        id: i32,
+        range: f32,
+        count: i32,
+        parts: bool,
+        out: &mut [f32],
+    ) -> i32 {
+        self.0
+            .borrow_mut()
+            .get_ballistics_camera_targets(id, range, count, parts, out)
+            .unwrap_or(0)
+    }
+    fn remove_ballistics(&mut self, id: i32) {
+        let _ = self.0.borrow_mut().remove_ballistics(id);
+    }
+    fn add_ballistics_target(&mut self, id: i32) -> i32 {
+        self.0.borrow_mut().add_ballistics_target(id).unwrap_or(0)
+    }
+    fn remove_ballistics_target(&mut self, id: i32) -> i32 {
+        self.0.borrow_mut().remove_ballistics_target(id)
+    }
+    fn set_ballistics_target_axis(&mut self, id: i32, x: f32, y: f32, z: f32) {
+        self.0.borrow_mut().set_ballistics_target_axis(id, x, y, z)
+    }
+    fn update_ballistics_target(
+        &mut self,
+        id: i32,
+        x: f32,
+        y: f32,
+        z: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        b: bool,
+    ) {
+        let _ = self
+            .0
+            .borrow_mut()
+            .update_ballistics_target(id, x, y, z, qx, qy, qz, qw, b);
+    }
+    fn update_ballistics_target_skeleton(&mut self, id: i32, count: i32, data: &[f32]) {
+        self.0
+            .borrow_mut()
+            .update_ballistics_target_skeleton(id, count, data)
+    }
+    fn set_ballistics_target_adjusting_shape_scale(&mut self, x: f32, y: f32, z: f32) {
+        self.0
+            .borrow_mut()
+            .set_ballistics_target_adjusting_shape_scale(x, y, z)
+    }
+}
 
 /// Shared mutable state accessed by [`EngineVehicleEvents`] and drained on the
 /// main loop outside vehicle borrows.
@@ -443,6 +803,7 @@ pub fn define_all_vehicle_scripts(sm: &ScriptManager) -> usize {
 /// Engine-owned Bullet physics and vehicle runtime attached to [`IsoWorld`].
 pub struct WorldVehicles {
     pub ids: Rc<RefCell<VehicleIds>>,
+    bullet: SharedBullet,
     chunk_physics: Rc<RefCell<ChunkPhysics>>,
     events_state: Rc<RefCell<VehicleEventsState>>,
     render_store: RefCell<VehicleRenderStore>,
@@ -457,6 +818,15 @@ pub struct WorldVehicles {
 }
 
 impl WorldVehicles {
+    /// Returns a cloned handle to the shared [`PzBullet`] world.
+    pub fn bullet(&self) -> SharedBullet {
+        self.bullet.clone()
+    }
+
+    /// Returns the underlying `Rc<RefCell<PzBullet>>` for ragdoll integration.
+    pub fn bullet_rc(&self) -> Rc<RefCell<PzBullet>> {
+        self.bullet.0.clone()
+    }
     /// Initializes Bullet (`PzBullet`), uploads `VehicleScript` definitions,
     /// loads `VehicleZoneDistribution`, initializes `VehicleIds` from
     /// `vehicles.db`, installs `VehicleWorld`/`VehicleEvents`/`ItemFactory`,
@@ -485,8 +855,10 @@ impl WorldVehicles {
         virtual_vehicle::with_manager(|m| m.reset());
         spawn_reset();
 
-        // Install live Bullet physics backend.
-        let _ = Bullet::install(Box::new(PzBullet::new()));
+        // Install live shared Bullet physics backend.
+        let bullet = SharedBullet::new();
+        SHARED_BULLET.with(|b| *b.borrow_mut() = Some(bullet.clone()));
+        let _ = Bullet::install(Box::new(bullet.clone()));
 
         let sm = pz_lua_api::bind_registry::shared_script_manager();
         pz_vehicles::vehicle::set_script_manager(sm.clone());
@@ -523,6 +895,7 @@ impl WorldVehicles {
 
         Self {
             ids,
+            bullet,
             chunk_physics,
             events_state,
             render_store: RefCell::new(VehicleRenderStore::new(game_dir.to_path_buf())),
@@ -1001,6 +1374,7 @@ impl WorldVehicles {
         vehicle_type::reset();
         spawn_reset();
         env::set_vehicle_ids(None);
+        SHARED_BULLET.with(|b| *b.borrow_mut() = None);
         let _ = Bullet::install(Box::new(NoPhysics));
     }
 
