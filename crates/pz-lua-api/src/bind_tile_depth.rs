@@ -338,16 +338,17 @@ impl SeamRegistry {
             .cloned()
     }
 
+    /// `SeamFile.Tile.isMasterTile`: the tile itself has a non-empty join list.
     fn is_master_tile(&self, mod_id: &str, tileset: &str, col: i32, row: i32) -> bool {
-        let target = format!("{tileset}_{}", col + row * 8);
-        let Some(data) = self.mod_data.get(mod_id) else {
-            return false;
-        };
-        data.tilesets.values().any(|ts| {
-            ts.tiles
-                .values()
-                .any(|t| t.properties.get("master").is_some_and(|m| m == &target))
-        })
+        self.mod_data
+            .get(mod_id)
+            .and_then(|data| data.get_tile(tileset, col, row))
+            .is_some_and(|t| {
+                !t.east.is_empty()
+                    || !t.south.is_empty()
+                    || !t.below_east.is_empty()
+                    || !t.below_south.is_empty()
+            })
     }
 }
 
@@ -445,46 +446,11 @@ fn register_tile_depth_texture_manager(thread: &mut Thread) {
     b.static_fn("getInstance", |c| {
         Ok(c.push(Value::Object(Rc::new(LuaTileDepthTextureManager))))
     });
-    b.method("getTexture", |c| {
-        let (ts, idx) = if c.nargs() >= 4 {
-            let ts_s = str_arg(c, 2);
-            (ts_s.as_deref().unwrap_or("").to_string(), int_arg(c, 3))
-        } else {
-            let ts_s = str_arg(c, 1);
-            (ts_s.as_deref().unwrap_or("").to_string(), int_arg(c, 2))
-        };
-        if ts.is_empty() || idx < 0 {
-            return Ok(c.push(Value::Nil));
-        }
-        let tex = Rc::new(LuaTileDepthTexture {
-            name: format!("{ts}_{idx}"),
-            index: idx,
-            width: 128,
-            height: 256,
-        });
-        Ok(c.push(Value::Object(tex)))
-    });
-    b.method("getTextureFromTileName", |c| {
-        let name_s = if c.nargs() >= 3 {
-            str_arg(c, 2)
-        } else {
-            str_arg(c, 1)
-        };
-        let Some(name) = name_s.filter(|s| !s.is_empty()) else {
-            return Ok(c.push(Value::Nil));
-        };
-        let idx = name
-            .rsplit_once('_')
-            .and_then(|(_, s)| s.parse::<i32>().ok())
-            .unwrap_or(0);
-        let tex = Rc::new(LuaTileDepthTexture {
-            name: name.to_string(),
-            index: idx,
-            width: 128,
-            height: 256,
-        });
-        Ok(c.push(Value::Object(tex)))
-    });
+    // This binding loads no depth tilesets (the engine's renderer owns them),
+    // so every lookup answers as the original does for a tileset without a
+    // depth texture: nil.
+    b.method("getTexture", |c| Ok(c.push(Value::Nil)));
+    b.method("getTextureFromTileName", |c| Ok(c.push(Value::Nil)));
     b.method("getDefaultDepthTexture", |c| {
         Ok(c.push(Value::Object(Rc::new(LuaTileDepthTexture {
             name: "default".to_string(),
@@ -737,10 +703,9 @@ mod tests {
 
             local dm = TileDepthTextureManager.getInstance()
             assert(dm:isLoadingFinished())
-            local dt = dm:getTexture("game", "sheet_01", 9)
-            assert(dt ~= nil and dt:getName() == "sheet_01_9" and dt:getIndex() == 9)
-            local dt2 = dm:getTextureFromTileName("game", "roofs_01_6")
-            assert(dt2 ~= nil and dt2:getIndex() == 6)
+            assert(dm:getTexture("game", "sheet_01", 9) == nil)
+            assert(dm:getTextureFromTileName("game", "roofs_01_6") == nil)
+            assert(dm:getDefaultDepthTexture() ~= nil)
 
             local sm = SeamManager.getInstance()
             local east = sm:getTileJoinE("game", "roofs_01", 0, 0, false)
@@ -751,11 +716,10 @@ mod tests {
             assert(sm:isMasterTile("game", "roofs_01", 0, 0))
             assert(not sm:isMasterTile("game", "roofs_01", 1, 0))
 
-            return east:size(), dt:getIndex()
+            return east:size()
             "#,
         );
         assert_eq!(out[0].as_num(), Some(2.0));
-        assert_eq!(out[1].as_num(), Some(9.0));
 
         TILE_GEOMETRY_MGR.with(|m| m.borrow_mut().reset());
         SEAM_MGR.with(|m| m.borrow_mut().reset());
