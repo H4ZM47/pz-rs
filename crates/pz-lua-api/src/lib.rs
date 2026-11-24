@@ -28,6 +28,7 @@ pub mod bind_date;
 pub mod bind_designation;
 pub mod bind_credits;
 pub mod bind_debug;
+pub mod bind_line_drawer;
 pub mod bind_climate;
 pub mod bind_puddles;
 pub mod bind_process_items;
@@ -236,6 +237,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_date::register(&mut mgr.thread);
     bind_credits::register(mgr);
     bind_debug::register(&mut mgr.thread);
+    bind_line_drawer::register(&mut mgr.thread);
     bind_input::register(mgr);
     bind_joypad::register(mgr);
     bind_erosion::register(&mut mgr.thread);

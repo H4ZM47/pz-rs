@@ -398,7 +398,8 @@ impl IngameState {
             }
         }
         cx.lua.trigger_event("OnPostRender", &[]);
-        // TODO(port): `LineDrawer.clear`, the animation debug key.
+        pz_lua_api::bind_line_drawer::clear();
+        // TODO(port): the animation debug key.
     }
 
     /// `renderframetext(nPlayer)`.
