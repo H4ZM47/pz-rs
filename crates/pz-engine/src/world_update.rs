@@ -1330,16 +1330,20 @@ impl IsoWorld {
                 SimEvent::FadeIn(seconds) => {
                     pz_ui::with_ui(|m| m.fade(f64::from(seconds), false));
                 }
-                // The rest of `IsoPlayer.OnDeath()`: `OnPlayerDeath` for a
-                // local player, which opens the death screen
-                // (`ISPostDeathUI`). TODO(port): the `PlayerDied` music once
-                // all players are dead, leaving the vehicle,
-                // `removeSaveFile()`, `forceAwake()` for a player that
-                // becomes a zombie, `getMoodles().Update()` and
-                // `getCell().setDrag(null, index)`.
+                // The rest of `IsoPlayer.OnDeath()`: `forceAwake()`,
+                // `OnPlayerDeath` for a local player (opens `ISPostDeathUI`),
+                // and `PlayerDied` music once all players are dead.
+                // TODO(port): leaving the vehicle, `removeSaveFile()`,
+                // `getMoodles().Update()` and `getCell().setDrag(null, index)`.
                 SimEvent::PlayerDeath { local } if chr.is_some() => {
+                    chr.unwrap().borrow_mut().asleep = false;
                     if local {
                         lua.trigger_event("OnPlayerDeath", std::slice::from_ref(&cv));
+                    }
+                    if pz_lua_api::bind_players::all_players_dead() {
+                        pz_lua_api::bind_audio::sound_system()
+                            .borrow_mut()
+                            .with(|m, _| m.set_music_state("PlayerDied"));
                     }
                 }
                 // TODO(port): the other `SimEvent`s (sounds, visuals, XP,
@@ -1888,11 +1892,74 @@ impl IsoWorld {
                 let mut host = pz_world_states::population_host(rand, &mut ops);
                 f(pop, &mut host, &frame)
             };
-            // TODO(port): `checkAndSpawnZombieForBuildingKey` for
-            // `ops.building_keys`.
+            // `VirtualZombieManager.checkAndSpawnZombieForBuildingKey`.
+            let building_keys = std::mem::take(&mut ops.building_keys);
+            drop(ops);
+            spawn_building_keys_for_zombies(cell, meta, zombies, &building_keys, rand);
             Some(r)
         })
     }
+}
+
+/// `VirtualZombieManager.checkAndSpawnZombieForBuildingKey`: for each zombie
+/// whose `trySpawnBuildingKey` roll succeeded, if its current square is in a
+/// building with a valid `key_id` (`!= -1`), queue a random house key
+/// (`Base.Key1`..`Base.Key5`) with that `key_id` in `items_to_spawn_at_death`.
+fn spawn_building_keys_for_zombies(
+    cell: &IsoCell,
+    meta: &IsoMetaGrid,
+    zombies: &mut [LuaGameCharacter],
+    ids: &[i32],
+    rand: &mut StandardRand,
+) {
+    const HOUSE_KEYS: [&str; 5] = [
+        "Base.Key1",
+        "Base.Key2",
+        "Base.Key3",
+        "Base.Key4",
+        "Base.Key5",
+    ];
+    for &id in ids {
+        let Some(z) = zombies.iter_mut().find(|z| z.id == id) else {
+            continue;
+        };
+        let (x, y, z_lvl) = z.path.current_square.unwrap_or((
+            z.vars.x.floor() as i32,
+            z.vars.y.floor() as i32,
+            z.vars.z.floor() as i32,
+        ));
+        let Some(sq) = cell.get_grid_square(x, y, z_lvl) else {
+            continue;
+        };
+        let key_id = sq
+            .try_borrow()
+            .ok()
+            .and_then(|s| s.room_def(meta))
+            .and_then(|r| r.building)
+            .and_then(|b| meta.building_defs.get(b.0 as usize))
+            .map(|b| b.key_id)
+            .unwrap_or(-1);
+        if key_id == -1 {
+            continue;
+        }
+        let key_type = HOUSE_KEYS[(rand.next(HOUSE_KEYS.len() as i32).rem_euclid(5)) as usize];
+        let Some(key_ref) = pz_lua_api::bind_items::create_item(key_type, 1.0) else {
+            continue;
+        };
+        let mut key = key_ref.borrow().clone();
+        key.set_key_id(key_id, &pz_inventory::env::NoItemEnv);
+        if !z
+            .zombie
+            .items_to_spawn_at_death
+            .iter()
+            .any(|i| i.id == key.id)
+        {
+            z.zombie.items_to_spawn_at_death.push(key);
+        }
+    }
+}
+
+impl IsoWorld {
 
     /// `ZombiePopulationManager.instance.updateMain()` (with
     /// `MapCollisionData.updateMain` and the in-line `MCDThread` pass).
@@ -2104,9 +2171,63 @@ impl IsoWorld {
                 StreamEvent::SaveFailed { wx, wy, error } => {
                     self.log_update_error(format!("IsoChunk.Save {wx},{wy}: {error}"));
                 }
-                // TODO(port): `HotSave` (`world_save::hot_save_ancillary`),
-                // `GenAnimalsPath`, the vehicle events.
+                StreamEvent::HotSave => {
+                    self.hot_save_ancillary();
+                }
+                // TODO(port): `GenAnimalsPath`, the vehicle events.
                 _ => {}
+            }
+        }
+    }
+
+    /// `ChunkSaveWorker.HotsaveAncilliarySystems` for `StreamEvent::HotSave`:
+    /// write `map_meta.bin`, `map_zone.bin`, `map_animals.bin`, queued meta
+    /// cells, `map_t.bin`, then `PlayerDB.savePlayers()` when allowed.
+    fn hot_save_ancillary(&mut self) {
+        let core = pz_lua_api::bind_core::shared_core();
+        let no_save = core.borrow().is_no_save();
+        let gt = pz_lua_api::bind_climate::shared_game_time();
+        let IsoWorld {
+            save_dir,
+            meta_world,
+            spawned_zones,
+            uuids,
+            ..
+        } = self;
+        let result = with_world(|w| {
+            let Some(meta) = w.meta_grid.as_mut() else {
+                return None;
+            };
+            let gt = gt.borrow();
+            let core = core.borrow();
+            let mut hs = pz_lua_api::world_save::HotSave {
+                save_dir,
+                no_save,
+                meta,
+                meta_world,
+                spawned_zones,
+                uuids,
+                game_time: &gt,
+                core: &core,
+            };
+            Some(pz_lua_api::world_save::hot_save_ancillary_actual(&mut hs))
+        });
+        match result {
+            Some(Ok(errors)) => {
+                for e in errors {
+                    self.log_update_error(format!("HotSave: {e}"));
+                }
+            }
+            Some(Err(e)) => {
+                self.log_update_error(format!("HotSave: {e:?}"));
+                return;
+            }
+            None => return,
+        }
+        if !no_save && self.player_db.as_ref().is_some_and(|db| db.can_save_players) {
+            let sim = FrameSim::capture();
+            if let Err(e) = self.save_local_players(&sim, "HotSave.PlayerDB.savePlayers") {
+                self.log_update_error(format!("HotSave PlayerDB.savePlayers: {e}"));
             }
         }
     }
@@ -2983,5 +3104,44 @@ mod quit_save_tests {
                 fail_prefix
             );
         }
+    }
+
+    #[test]
+    fn hot_save_ancillary_writes_meta_and_time_files() {
+        let (fixture, mut world, _lua) = Fixture::new(false, "Sandbox", true);
+        world.hot_save_ancillary();
+        assert!(world.errors.is_empty(), "errors: {:?}", world.errors);
+        assert!(fixture.dir.join("map_meta.bin").exists());
+        assert!(fixture.dir.join("map_zone.bin").exists());
+        assert!(fixture.dir.join("map_animals.bin").exists());
+        assert!(fixture.dir.join("map_t.bin").exists());
+    }
+
+    #[test]
+    fn player_death_event_forces_awake_and_triggers_lua() {
+        let (_fixture, mut world, mut lua) = Fixture::new(true, "Sandbox", false);
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let chr = Rc::new(RefCell::new(LuaGameCharacter::new(
+            &sm,
+            pz_characters::CharacterKind::Player,
+        )));
+        chr.borrow_mut().asleep = true;
+        run_lua(
+            &mut lua,
+            r#"
+            deathCount = 0
+            Events.OnPlayerDeath.Add(function() deathCount = deathCount + 1 end)
+        "#,
+        );
+        let sim = FrameSim::capture();
+        sim.events
+            .borrow_mut()
+            .push(SimEvent::PlayerDeath { local: true });
+        world.fire_sim_events(&mut lua, Some(&chr), &sim);
+        assert!(!chr.borrow().asleep);
+        assert_eq!(
+            lua.thread.globals().get_str("deathCount").as_num(),
+            Some(1.0)
+        );
     }
 }
