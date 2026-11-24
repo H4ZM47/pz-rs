@@ -35,6 +35,7 @@ pub fn reset_session_bindings() {
 
     crate::bind_tile_overlays::shared_tile_overlays().borrow_mut().reset();
     crate::bind_tile_overlays::shared_container_overlays().borrow_mut().reset();
+    crate::bind_tile_depth_assign::reset();
     // The binding's BentFences.Reset clears these definition collections;
     // per-world sandbox values are populated when the next world loads.
     {

@@ -78,6 +78,30 @@ impl TileDepthTextureAssignments {
         self.parse(&java::decode_utf8(&bytes))
     }
 
+    /// `save()`: writes `<media>/tileDepthTextureAssignments.txt` in Build 42
+    /// script-block format.
+    pub fn save(&self, media_dir: &Path) -> io::Result<()> {
+        let mut keys: Vec<&String> = self
+            .assignments
+            .keys()
+            .filter(|k| k.as_str() != "VERSION")
+            .collect();
+        keys.sort();
+        let mut out = String::new();
+        out.push_str("tileDepthTextureAssignments\n{\n");
+        out.push_str(&format!("\tVERSION = {},\n", self.version.max(VERSION_LATEST)));
+        for key in keys {
+            if let Some(val) = self.assignments.get(key) {
+                out.push_str(&format!("\t{key} = {val},\n"));
+            }
+        }
+        out.push_str("}\n");
+        if let Some(parent) = media_dir.join(FILE_NAME).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(media_dir.join(FILE_NAME), out)
+    }
+
     /// `parseFile(text)`: the first block's `VERSION` must be 1; every
     /// `key = value` of that block (`VERSION` included) is an assignment.
     pub fn parse(&mut self, text: &str) -> io::Result<()> {
@@ -142,6 +166,55 @@ impl TileDepthTextureAssignmentManager {
     /// `getModData(modID)`.
     pub fn mod_data(&self, mod_id: &str) -> Option<&AssignmentModData> {
         self.mod_data.iter().find(|d| d.mod_id == mod_id)
+    }
+
+    /// Mutable `getModData(modID)`.
+    pub fn mod_data_mut(&mut self, mod_id: &str) -> Option<&mut AssignmentModData> {
+        self.mod_data.iter_mut().find(|d| d.mod_id == mod_id)
+    }
+
+    /// Ensure an `AssignmentModData` entry exists for `mod_id`.
+    pub fn ensure_mod_data(&mut self, mod_id: &str, media_dir: PathBuf) -> &mut AssignmentModData {
+        if let Some(idx) = self.mod_data.iter().position(|d| d.mod_id == mod_id) {
+            return &mut self.mod_data[idx];
+        }
+        self.mod_data.push(AssignmentModData {
+            mod_id: mod_id.to_string(),
+            media_dir,
+            assignments: TileDepthTextureAssignments::new(),
+        });
+        let last = self.mod_data.len() - 1;
+        &mut self.mod_data[last]
+    }
+
+    /// `assignTileName(modID, assignTo, otherTile)`.
+    pub fn assign_tile_name(&mut self, mod_id: &str, assign_to: &str, other_tile: &str) {
+        if let Some(d) = self.mod_data_mut(mod_id) {
+            d.assignments.assign_tile_name(assign_to, other_tile);
+        }
+    }
+
+    /// `getAssignedTileName(modID, tileName)`.
+    pub fn assigned_tile_name_for_mod(&self, mod_id: &str, tile_name: &str) -> Option<&str> {
+        self.mod_data(mod_id)?.assignments.assigned_tile_name(tile_name)
+    }
+
+    /// `clearAssignedTileName(modID, assignTo)`.
+    pub fn clear_assigned_tile_name(&mut self, mod_id: &str, assign_to: &str) {
+        if let Some(d) = self.mod_data_mut(mod_id) {
+            d.assignments.clear_assigned_tile_name(assign_to);
+        }
+    }
+
+    /// `save(modID)`.
+    pub fn save_mod(&self, mod_id: &str) -> io::Result<()> {
+        let Some(d) = self.mod_data(mod_id) else {
+            return Ok(());
+        };
+        if d.media_dir.as_os_str().is_empty() {
+            return Ok(());
+        }
+        d.assignments.save(&d.media_dir)
     }
 
     /// `getAssignedTileName(tileName)`: the first mod data that assigns it.
