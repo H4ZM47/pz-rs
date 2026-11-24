@@ -5,7 +5,7 @@
 //! component setters.
 
 use super::{chr_of, float_arg, float_value, CharacterKind, CharacterObject, LuaGameCharacterRef, CONTEXT};
-use crate::expose::{bool_arg, int_arg, ClassBuilder, JavaEnum};
+use crate::expose::{bool_arg, int_arg, num_arg, ClassBuilder, JavaEnum};
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_world::IsoDirections;
 
@@ -458,6 +458,113 @@ pub(super) fn register_player(b: &ClassBuilder) {
         let v = crate::bind_misc::zomb_rand((1.0 / chance) as f64) == 0.0;
         Ok(c.push(v))
     });
+    // `isGhostMode()` / `setGhostMode(bool)`: `INVISIBLE` cheat flag.
+    b.method("isGhostMode", |c| {
+        let ctx = CONTEXT.with(|cx| cx.borrow().clone());
+        let v = chr_of(c)?.borrow().is_ghost_mode(&*ctx);
+        Ok(c.push(v))
+    });
+    b.method("setGhostMode", |c| {
+        let on = bool_arg(c, 1);
+        let ctx = CONTEXT.with(|cx| cx.borrow().clone());
+        chr_of(c)?.borrow_mut().cheats.set(&*ctx, "INVISIBLE", on);
+        Ok(0)
+    });
+    // `addMechanicsItem(itemID, vehicle, time)` / `getMechanicsItem(itemID)`:
+    // per-player cooldown map persisted in `player_fields.mechanics_item`.
+    b.method("addMechanicsItem", |c| {
+        let id = match c.arg(1) {
+            Value::Str(s) => s.parse::<i64>().unwrap_or(0),
+            Value::Num(n) => n as i64,
+            _ => 0,
+        };
+        let time = num_arg(c, 3) as i64;
+        let chr = chr_of(c)?;
+        let mut chr = chr.borrow_mut();
+        let list = &mut chr.player_fields.mechanics_item;
+        if let Some(entry) = list.iter_mut().find(|(k, _)| *k == id) {
+            entry.1 = time;
+        } else {
+            list.push((id, time));
+        }
+        Ok(0)
+    });
+    b.method("getMechanicsItem", |c| {
+        let id = match c.arg(1) {
+            Value::Str(s) => s.parse::<i64>().unwrap_or(0),
+            Value::Num(n) => n as i64,
+            _ => 0,
+        };
+        let chr = chr_of(c)?;
+        let chr = chr.borrow();
+        let found = chr
+            .player_fields
+            .mechanics_item
+            .iter()
+            .find(|(k, _)| *k == id)
+            .map(|(_, t)| Value::Num(*t as f64))
+            .unwrap_or(Value::Nil);
+        Ok(c.push(found))
+    });
+    b.method("getTagColor", |c| {
+        let [r, g, b_col] = chr_of(c)?.borrow().player_fields.tag_color;
+        Ok(c.push(Value::Object(std::rc::Rc::new(
+            pz_ui::ColorObject::new(r, g, b_col, 1.0),
+        ))))
+    });
+    b.method("getSteamID", |c| Ok(c.push(Value::str("0"))));
+    b.method("getDisguisedDisplayName", |c| {
+        let chr = chr_of(c)?;
+        let chr = chr.borrow();
+        let name = chr
+            .chat
+            .username
+            .clone()
+            .or_else(|| {
+                chr.descriptor.as_ref().map(|d| {
+                    let d = d.borrow();
+                    format!(
+                        "{} {}",
+                        d.forename.as_deref().unwrap_or(""),
+                        d.surname.as_deref().unwrap_or("")
+                    )
+                    .trim()
+                    .to_string()
+                })
+            })
+            .unwrap_or_default();
+        Ok(c.push(Value::str(&name)))
+    });
+    b.method("getAttachedAnimals", |c| {
+        Ok(c.push(Value::Object(std::rc::Rc::new(
+            crate::bind_java_util::JavaList::new(Vec::new()),
+        ))))
+    });
+    b.method("playerVoiceSound", |_c| Ok(0));
+    b.method("setFishingStage", |c| {
+        let stage = crate::expose::str_arg(c, 1)
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let id = std::rc::Rc::as_ptr(&chr_of(c)?) as usize;
+        FISHING_STAGE.with(|m| {
+            if stage.is_empty() {
+                m.borrow_mut().remove(&id);
+            } else {
+                m.borrow_mut().insert(id, stage);
+            }
+        });
+        Ok(0)
+    });
+    b.method("getFishingStage", |c| {
+        let id = std::rc::Rc::as_ptr(&chr_of(c)?) as usize;
+        let stage = FISHING_STAGE.with(|m| m.borrow().get(&id).cloned());
+        Ok(c.push(stage.as_deref().map_or(Value::Nil, Value::str)))
+    });
+}
+
+thread_local! {
+    static FISHING_STAGE: std::cell::RefCell<std::collections::HashMap<usize, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 #[cfg(test)]

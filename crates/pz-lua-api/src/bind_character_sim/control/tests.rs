@@ -192,3 +192,30 @@ fn a_new_character_at_a_reused_address_has_no_object_fields() {
     assert!(super::object_field(&fresh, super::ObjectField::Bed).is_nil());
     assert!(super::object_field(&fresh, super::ObjectField::SitOnFurniture).is_nil());
 }
+
+#[test]
+fn player_mechanics_fishing_ghost_and_tag_methods() {
+    let (mut t, _player, _) = setup();
+    crate::bind_java_util::register(&mut t);
+    let r = run(
+        &mut t,
+        r#"
+        player:addMechanicsItem("42", nil, 1000)
+        local m = player:getMechanicsItem("42")
+        player:setFishingStage("cast")
+        local fs = player:getFishingStage()
+        local steam = player:getSteamID()
+        local col = player:getTagColor()
+        local animals = player:getAttachedAnimals()
+        player:playerVoiceSound("Pain")
+        player:setGhostMode(false)
+        assert(m == 1000)
+        assert(fs == "cast")
+        assert(steam == "0")
+        assert(col ~= nil)
+        assert(animals:size() == 0)
+        assert(player:isGhostMode() == false)
+        "#,
+    );
+    let _ = r;
+}
