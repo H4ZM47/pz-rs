@@ -141,6 +141,9 @@ impl IngameState {
             // `VirtualVehicleManager.update`,
             // `LoopedRangedWeaponSounds`, `FliesSound`, `CorpseFlies`.
             pz_lua_api::item_sound::update();
+            pz_lua_api::bind_world_flares::update(
+                pz_lua_api::bind_climate::game_time_delta(),
+            );
             // `WorldMapVisited.update()`: its getInstance NPE (no meta grid)
             // propagates out of the update like the original's.
             if let Err(fault) = pz_lua_api::worldmap::visited::update() {
@@ -412,6 +415,7 @@ impl GameState for IngameState {
         }
         // TODO(port): `IsoMarkers.instance.reset()`.
         pz_lua_api::bind_search_mode::reset();
+        pz_lua_api::bind_world_flares::clear();
         // TODO(port): `ZomboidRadio.Reset`, `IsoWaveSignal.Reset`,
         // `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,
