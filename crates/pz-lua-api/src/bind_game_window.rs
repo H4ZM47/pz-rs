@@ -44,6 +44,7 @@ impl pz_kahlua::value::LuaObject for LoadingQueueStateObject {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForcedState {
     LoadingQueue,
+    Editor(&'static str),
 }
 
 thread_local! {
@@ -171,6 +172,13 @@ pub fn register(thread: &mut Thread, jar: Option<&pz_classfile::Jar>, cache_dir:
             pz_kahlua::value::Value::Nil => None,
             pz_kahlua::value::Value::Object(o) if o.as_any().is::<LoadingQueueStateObject>() => {
                 Some(ForcedState::LoadingQueue)
+            }
+            pz_kahlua::value::Value::Object(o)
+                if crate::bind_editor_states::editor_state_class(&*o).is_some() =>
+            {
+                Some(ForcedState::Editor(
+                    crate::bind_editor_states::editor_state_class(&*o).unwrap(),
+                ))
             }
             v => {
                 return Err(pz_kahlua::LuaError::runtime(format!(
