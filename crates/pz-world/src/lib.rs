@@ -34,6 +34,7 @@ pub mod meta_zones;
 pub mod nav_streets;
 pub mod object_containers;
 pub mod object_mod_data;
+pub mod object_ids;
 pub mod object_slot;
 pub mod objects;
 pub mod process_items;
@@ -66,6 +67,7 @@ pub use map_files::{LotHeader, MapFiles, MapInfo};
 pub use meta_grid::{
     CreateParams, IsoMetaCell, IsoMetaChunk, IsoMetaGrid, WorldGenBounds, ZombieVoronoi,
 };
+pub use object_ids::{ImportantArea, ImportantAreaManager, ObjectIDManager, ObjectIDType};
 pub use object_slot::{IsoObjectRef, ObjectSlot};
 pub use objects::{
     IsoObject, NoHooks, ObjectKind, ObjectLoadHooks, ObjectLoadSettings, ObjectTables,

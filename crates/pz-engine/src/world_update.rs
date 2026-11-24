@@ -2722,6 +2722,20 @@ impl IsoWorld {
         }
         // Queue active virtual vehicles onto the streamer before saving chunks.
         self.save_virtual_vehicles();
+        // `ObjectIDManager.checkForSaveDataFile(true)` & `ImportantAreaManager.saveDataFile()`.
+        let no_save = pz_lua_api::bind_core::shared_core().borrow().is_no_save();
+        if let Err(e) = self
+            .object_ids
+            .save_file(&self.save_dir, crate::iso_world::WORLD_VERSION, true, no_save)
+        {
+            self.log_update_error(format!("ObjectIDManager.save: {e}"));
+        }
+        if let Err(e) =
+            self.important_areas
+                .save_file(&self.save_dir, crate::iso_world::WORLD_VERSION, no_save)
+        {
+            self.log_update_error(format!("ImportantAreaManager.save: {e}"));
+        }
         // `saveLocalPlayersForce` above already queued them.
         let mut report = self.game_window_save(lua, &sandbox, false)?;
         // Ordinary quitting keeps its callback even when saving is disabled
