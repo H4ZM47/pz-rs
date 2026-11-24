@@ -2573,6 +2573,12 @@ impl IsoWorld {
                     let sim = FrameSim::capture();
                     self.with_population(&sim, &mut |pop, host, _| pop.save(&host.zombies.infos()));
                     self.update_regions(None);
+                    let no_save = pz_lua_api::bind_core::shared_core().borrow().is_no_save();
+                    if let Err(e) =
+                        pz_lua_api::bind_global_moddata::save_file(&self.save_dir, no_save)
+                    {
+                        report.errors.push(e);
+                    }
                     with_save_game(self, sandbox, can_save_players, |g| {
                         save_game_finish(g, &mut hooks, &mut report)
                     });
