@@ -699,9 +699,10 @@ impl IsoWorld {
         // TODO(port): `ProcessItems`: dispatch real item update/finishupdate
         // and world-item updates. Saved codec items are not runtime ItemRefs.
         self.process_remove_items();
-        self.process_iso_objects(lua);
+        self.process_iso_objects(lua, sim);
         self.update_characters(lua, sim)?;
-        // TODO(port): `ProcessStaticUpdaters`, `ObjectDeletionAddition`,
+        self.process_static_updaters(sim);
+        // TODO(port): `ObjectDeletionAddition`,
         // `IsoDeadBody.updateBodies`, `FishSchoolManager.update` and the
         // rain scroll.
         self.update_weather_fx();
@@ -757,11 +758,35 @@ impl IsoWorld {
         pz_core::random::with_standard(|rand| fx.update(rand, &frame));
     }
 
-    fn process_iso_objects(&mut self, lua: &mut LuaManager) {
+    fn object_update_context(&self, sim: &FrameSim) -> pz_world::object_update::ObjectUpdateContext {
+        let (world_age_hours, delta_game_seconds) = {
+            let gt = sim.game_time.borrow();
+            let hours = gt.world_age_hours();
+            let dt = gt
+                .game_world_seconds_since_last_update(&pz_lua_api::bind_climate::LuaClimateContext::new())
+                .max(0.0)
+                .floor() as i32;
+            (hours, dt)
+        };
+        let generator_fuel_mult =
+            pz_lua_api::bind_sandbox::current_double("GeneratorFuelConsumption").unwrap_or(1.0)
+                as f32;
+        let compost_hours = pz_lua_api::bind_sandbox::with_current(|sb| sb.compost_hours())
+            .unwrap_or(336);
+        pz_world::object_update::ObjectUpdateContext {
+            world_age_hours,
+            generator_fuel_mult,
+            compost_hours,
+            delta_game_seconds,
+        }
+    }
+
+    fn process_iso_objects(&mut self, lua: &mut LuaManager, sim: &FrameSim) {
         let lists = with_world(|w| w.cell.as_ref().map(|c| c.process_objects.clone()));
         let Some(lists) = lists else { return };
         let retired = lists.borrow_mut().drain_removed();
         drop(retired);
+        let ctx = self.object_update_context(sim);
         // Pending removal is applied on the next frame. Additions during
         // update run next frame too, matching the native captured list size.
         let size = lists.borrow().process().len();
@@ -772,8 +797,23 @@ impl IsoWorld {
                 if let Err(error) = pz_lua_api::bind_world_object::trough::update(&mut lua.thread, &object) {
                     self.log_update_error(format!("feeding trough update: {error}"));
                 }
+                continue;
             }
-            // Other updater subclasses have their own simulation systems.
+            let _ = pz_world::object_update::update_iso_object(&mut object.borrow_mut(), &ctx);
+        }
+    }
+
+    /// `IsoCell.ProcessStaticUpdaters`: tick objects registered in
+    /// `IsoCell.StaticUpdaterObjectList`.
+    fn process_static_updaters(&mut self, sim: &FrameSim) {
+        let lists = with_world(|w| w.cell.as_ref().map(|c| c.process_objects.clone()));
+        let Some(lists) = lists else { return };
+        let ctx = self.object_update_context(sim);
+        let size = lists.borrow().static_updaters().len();
+        for index in 0..size {
+            let object = lists.borrow().static_updaters().get(index).cloned();
+            let Some(object) = object else { break };
+            let _ = pz_world::object_update::update_iso_object(&mut object.borrow_mut(), &ctx);
         }
     }
 

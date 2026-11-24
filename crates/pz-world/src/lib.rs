@@ -35,6 +35,7 @@ pub mod nav_streets;
 pub mod object_containers;
 pub mod object_mod_data;
 pub mod object_slot;
+pub mod object_update;
 pub mod objects;
 pub mod process_items;
 pub mod process_objects;

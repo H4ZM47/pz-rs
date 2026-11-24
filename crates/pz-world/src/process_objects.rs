@@ -65,6 +65,10 @@ impl ProcessObjects {
         &self.process.objects
     }
 
+    pub fn static_updaters(&self) -> &[IsoObjectRef] {
+        &self.static_updaters.objects
+    }
+
     pub fn static_updater(&mut self, object: &IsoObjectRef, add: bool) {
         if add {
             self.static_updaters.add(object);
