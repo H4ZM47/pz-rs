@@ -1803,16 +1803,16 @@ registered):
       (`RagdollScript.toBullet`), lazily initializes `RagdollBuilder::initialize`
       with the `Skinned/MaleBody` skeleton and `Bob/Bob_TPose` clip, and owns
       one `RagdollGlobals` (max active ragdolls from `Core`) (#142).
-- [ ] Ragdolls, per character: `CharacterModel` keeps an
+- [x] Ragdolls, per character: `CharacterModel` keeps an
       `Option<RagdollController>` beside its `AnimationPlayer`, updates it via
-      `update_with_ragdoll(...)` with `CharacterRagdoll`, and calls
-      `release_ragdoll_controller` before retiring/clearing models or exiting
-      `IngameState`. Still open: `vehicle_collision` from `IsoZombie`'s
-      vehicle contact (#142).
-- [ ] Ragdoll corpses: `place_new_corpses` populates `IsoDeadBody.ragdoll_fall`
+      `update_with_ragdoll(...)` with `CharacterRagdoll`, forwards live
+      vehicle contact (`zombie_vehicle_contact` -> `RagdollController::vehicle_collision`),
+      and calls `release_ragdoll_controller` before retiring/clearing models
+      or exiting `IngameState` (#142).
+- [x] Ragdoll corpses: `place_new_corpses` populates `IsoDeadBody.ragdoll_fall`
       and `IsoDeadBody.ragdoll` via `pz_ragdoll::corpse::died_bone_transforms(...)`
-      when a character dies. Still open: `corpse::died_bone_transforms_from_saved`
-      in corpse rendering when restoring saved bodies (#142).
+      when a character dies, and `world_models/corpses.rs` restores saved
+      bones via `corpse::died_bone_transforms_from_saved` (#142).
 - [x] Radio: keep one `pz_radio::ZomboidRadio` per world
       (`ZomboidRadio::new(GameTime hour)`, with the game mode set) and
       implement `RadioWorld` (GameTime hour / nightsSurvived / multiplier,
