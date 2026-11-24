@@ -701,9 +701,9 @@ impl IsoWorld {
         self.process_remove_items();
         self.process_iso_objects(lua);
         self.update_characters(lua, sim)?;
+        pz_lua_api::bind_fish_school::update(sim.world_age_hours);
         // TODO(port): `ProcessStaticUpdaters`, `ObjectDeletionAddition`,
-        // `IsoDeadBody.updateBodies`, `FishSchoolManager.update` and the
-        // rain scroll.
+        // `IsoDeadBody.updateBodies` and the rain scroll.
         self.update_weather_fx();
         Ok(())
     }
@@ -1944,11 +1944,17 @@ impl IsoWorld {
             }
         }
         let sounds = pz_lua_api::bind_zombie::shared_world_sounds();
+        struct WorldSoundEffects;
+        impl pz_world_sound::SoundEffects for WorldSoundEffects {
+            fn add_fish_noise(&mut self, x: i32, y: i32, radius: i32) {
+                pz_lua_api::bind_fish_school::add_sound_noise(x, y, radius);
+            }
+        }
         with_world(|w| {
             let Some(cell) = w.cell.as_ref() else { return };
-            // TODO(port): the `SoundEffects` (`OnWorldSound`, fish noise,
+            // TODO(port): the remaining `SoundEffects` (`OnWorldSound`,
             // the population's world sounds).
-            let mut fx = pz_world_sound::NoEffects;
+            let mut fx = WorldSoundEffects;
             let a = pz_world_sound::WorldSoundAdapter::new(cell, hearing, &mut fx);
             sounds.borrow_mut().update(&a, active);
         });
@@ -2646,6 +2652,7 @@ impl IsoWorld {
             pz_lua_api::global_objects::reset(side);
         }
         pz_lua_api::global_objects_save::set_save_dir(None);
+        pz_lua_api::bind_fish_school::reset();
     }
 
     /// `MapCollisionData.instance.updateGameState()` (`GameWindow.logic`).
