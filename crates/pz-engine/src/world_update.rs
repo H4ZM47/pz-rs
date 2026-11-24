@@ -137,6 +137,7 @@ mod animation_bridge_tests {
                 floor_world: None,
                 bullet: None,
                 player_firearms: Vec::new(),
+                fire: None,
             };
             let mut world = StatesWorldAdapter::new(
                 &mut cell,
@@ -212,6 +213,36 @@ impl PlayerFirearmSnapshot {
     }
 }
 
+/// Fire simulation context borrowed by [`EngineStates`] for
+/// `StateWorld::character_fire` (`IsoGameCharacter` burning & fire spread).
+pub(crate) struct EngineStatesFire<'a> {
+    pub(crate) manager: &'a mut pz_world::fire::IsoFireManager,
+    pub(crate) hooks: crate::world_fire::EngineFireHooks<'a>,
+    pub(crate) regions: &'a mut IsoRegions,
+    pub(crate) doors: &'a pz_world::square_mutation::DoorTables,
+    pub(crate) no_hooks: pz_world::square_mutation::NoMutationHooks,
+    pub(crate) pathfind: &'a mut QueuedPathfind,
+    pub(crate) render: &'a mut dyn pz_world::square_mutation::RenderSquareHooks,
+    pub(crate) flags: pz_world::fire::manager::FireFlags,
+    pub(crate) settings: pz_world::fire::FireSettings,
+    pub(crate) num_players: i32,
+}
+
+/// Inputs required to attach [`EngineStatesFire`] inside a
+/// `with_states_characters_and_path` call.
+struct StatesFireInput<'a> {
+    manager: &'a mut pz_world::fire::IsoFireManager,
+    state: &'a mut crate::world_fire::WorldFireState,
+    queue: &'a mut crate::world_fire::FireEffectsQueue,
+    regions: &'a mut IsoRegions,
+    doors: &'a pz_world::square_mutation::DoorTables,
+    pathfind: &'a mut QueuedPathfind,
+    render: &'a Rc<RefCell<Option<crate::world_render::WorldRender>>>,
+    flags: pz_world::fire::manager::FireFlags,
+    settings: pz_world::fire::FireSettings,
+    num_players: i32,
+}
+
 /// The engine's side of the character states: the game's `Rand`, the
 /// squares' moving objects outside the zombie list and the squares'
 /// visibility from the renderer's lighting. The rest of
@@ -236,6 +267,8 @@ pub(crate) struct EngineStates<'a> {
     /// `muzzle_attachment` and `aim_reticle_iso` work while the shooter is
     /// mutably borrowed during `advance_player_update` / `update_player_after_actions`.
     pub(crate) player_firearms: Vec<PlayerFirearmSnapshot>,
+    /// Live fire manager + hooks for `StateWorld::character_fire`.
+    pub(crate) fire: Option<EngineStatesFire<'a>>,
 }
 
 impl StatesEngine for EngineStates<'_> {
@@ -505,6 +538,24 @@ impl StatesEngine for EngineStates<'_> {
             .as_deref()
             .and_then(|m| m.ragdoll_pelvis(chr))
     }
+
+    fn fire(&mut self) -> Option<pz_world_states::StatesFire<'_>> {
+        let f = self.fire.as_mut()?;
+        Some(pz_world_states::StatesFire {
+            manager: &mut *f.manager,
+            hooks: &mut f.hooks,
+            mutation: pz_world::fire::manager::FireMutation {
+                regions: &mut *f.regions,
+                doors: f.doors,
+                world: &mut f.no_hooks,
+                pathfind: &mut *f.pathfind,
+                render: &mut *f.render,
+                num_players: f.num_players,
+            },
+            flags: f.flags,
+            settings: f.settings,
+        })
+    }
 }
 
 /// The local players' current squares, for [`EngineStates::movers`].
@@ -563,7 +614,18 @@ pub(crate) fn with_states_and_characters<R>(
     characters: Option<&mut Vec<LuaGameCharacter>>,
     f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
 ) -> Option<R> {
-    with_states_characters_and_path(sprites, runtime, models, sim, floor_world, characters, None, None, f)
+    with_states_characters_and_path(
+        sprites,
+        runtime,
+        models,
+        sim,
+        floor_world,
+        characters,
+        None,
+        None,
+        None,
+        f,
+    )
 }
 
 /// [`with_states_and_characters`] carrying a pre-borrow snapshot of the
@@ -578,6 +640,7 @@ fn with_states_for_player<R>(
     floor_world: Option<&Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
     characters: Option<&mut Vec<LuaGameCharacter>>,
     active_player: PlayerFirearmSnapshot,
+    fire: Option<StatesFireInput<'_>>,
     f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
 ) -> Option<R> {
     with_states_characters_and_path(
@@ -589,7 +652,28 @@ fn with_states_for_player<R>(
         characters,
         None,
         Some(active_player),
+        fire,
         f,
+    )
+}
+
+/// Current sandbox/climate/core fire settings plus zombie hearing level.
+fn current_fire_settings() -> (pz_world::fire::FireSettings, i32) {
+    let fire_spread = pz_lua_api::bind_sandbox::current_bool("FireSpread").unwrap_or(true);
+    let hearing = pz_lua_api::bind_sandbox::with_current(|sb| crate::iso_world::opt_int(sb, "ZombieLore.Hearing"))
+        .unwrap_or(2);
+    let raining = pz_lua_api::bind_climate::shared_game_time()
+        .borrow()
+        .climate
+        .is_raining();
+    let tutorial = pz_lua_api::bind_core::shared_core().borrow().tutorial;
+    (
+        pz_world::fire::FireSettings {
+            fire_spread,
+            raining,
+            tutorial,
+        },
+        hearing,
     )
 }
 
@@ -651,6 +735,7 @@ fn with_states_characters_and_path<R>(
     characters: Option<&mut Vec<LuaGameCharacter>>,
     path: Option<&mut pz_pathfind::host::PathHost>,
     active_player: Option<PlayerFirearmSnapshot>,
+    fire: Option<StatesFireInput<'_>>,
     f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
 ) -> Option<R> {
     let mut movers = player_squares();
@@ -689,6 +774,39 @@ fn with_states_characters_and_path<R>(
         let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else {
             return None;
         };
+        let mut sprites = sprites.borrow_mut();
+        let water = sprites.tables.flag.water;
+        let mut no_render = pz_world::square_mutation::NoMutationHooks;
+        let mut render_guard = fire
+            .as_ref()
+            .and_then(|fi| fi.render.try_borrow_mut().ok());
+        let mut render_inv = match (render_guard.as_mut(), fire.as_ref()) {
+            (Some(rg), Some(fi)) => rg.as_mut().map(|r| r.invalidation(water, fi.num_players)),
+            _ => None,
+        };
+        let fire_states = fire.map(|fi| {
+            let render_hooks: &mut dyn pz_world::square_mutation::RenderSquareHooks =
+                match render_inv.as_mut() {
+                    Some(i) => i,
+                    None => &mut no_render,
+                };
+            EngineStatesFire {
+                manager: fi.manager,
+                hooks: crate::world_fire::EngineFireHooks {
+                    state: fi.state,
+                    queue: fi.queue,
+                    object_names: &w.object_names,
+                },
+                regions: fi.regions,
+                doors: fi.doors,
+                no_hooks: pz_world::square_mutation::NoMutationHooks,
+                pathfind: fi.pathfind,
+                render: render_hooks,
+                flags: fi.flags,
+                settings: fi.settings,
+                num_players: fi.num_players,
+            }
+        });
         let mut engine = EngineStates {
             geometry: Some(&w.geometry),
             sim: Some(sim),
@@ -700,8 +818,8 @@ fn with_states_characters_and_path<R>(
             floor_world: floor_world.cloned(),
             bullet: crate::world_vehicles::shared_bullet(),
             player_firearms,
+            fire: fire_states,
         };
-        let mut sprites = sprites.borrow_mut();
         let sounds = pz_lua_api::bind_zombie::shared_world_sounds();
         let sounds = sounds.borrow();
         let mut adapter = StatesWorldAdapter::new(
@@ -962,11 +1080,38 @@ impl IsoWorld {
             let mut died = false;
             loop {
                 let from = sim.events.borrow().len();
+                let (fire_settings, fire_hearing) = current_fire_settings();
+                let num_players = pz_lua_api::bind_players::num_players();
+                let mut fire_queue = crate::world_fire::FireEffectsQueue::default();
+                let mut fire_pf = QueuedPathfind::default();
                 let r = {
                     let mut chr = p.borrow_mut();
                     if first_phase {
                         chr.preupdate_player();
                         chr.frame_step(input);
+                        let env_res = with_world(|w| {
+                            let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_ref())
+                            else {
+                                return Ok(());
+                            };
+                            fill_square_environment(
+                                &mut chr,
+                                cell,
+                                meta,
+                                self.regions.as_ref(),
+                                &self.fire_state,
+                            )
+                        });
+                        if let Err(error) = env_res {
+                            drop(chr);
+                            return self.finish_state_host_fault(
+                                lua,
+                                Some(&p),
+                                sim,
+                                std::mem::take(&mut u.events),
+                                error.into(),
+                            );
+                        }
                     }
                     let active_player = PlayerFirearmSnapshot::from_character(&chr, input);
                     let IsoWorld {
@@ -977,10 +1122,38 @@ impl IsoWorld {
                         floor_world,
                         regions,
                         zombies,
+                        fire,
+                        fire_state,
+                        fire_flags,
+                        door_tables,
+                        render,
                         ..
                     } = self;
                     let Some(sprites) = sprites.as_mut() else {
                         return Ok(());
+                    };
+                    let mut no_regions = None;
+                    let mut regions_guard = regions.as_ref().map(|r| r.borrow_mut());
+                    let fire_input = match (*fire_flags, door_tables.as_ref()) {
+                        (Some(flags), Some(doors)) => {
+                            let reg = match regions_guard.as_mut() {
+                                Some(r) => &mut **r,
+                                None => no_regions.get_or_insert_with(|| IsoRegions::new(0)),
+                            };
+                            Some(StatesFireInput {
+                                manager: fire,
+                                state: fire_state,
+                                queue: &mut fire_queue,
+                                regions: reg,
+                                doors,
+                                pathfind: &mut fire_pf,
+                                render,
+                                flags,
+                                settings: fire_settings,
+                                num_players,
+                            })
+                        }
+                        _ => None,
                     };
                     with_states_for_player(
                         sprites,
@@ -990,10 +1163,8 @@ impl IsoWorld {
                         floor_world.as_ref(),
                         Some(zombies),
                         active_player,
+                        fire_input,
                         |w| {
-                            if first_phase {
-                                fill_square_environment(&mut chr, w.cell, w.meta, regions.as_ref())?;
-                            }
                             pz_lua_api::bind_states::with_state_registry(|reg| {
                                 let chars = chars.borrow();
                                 let mut cx = StateCx::new(&sm, &chars, &player_sim, w);
@@ -1010,6 +1181,10 @@ impl IsoWorld {
                         },
                     )
                 };
+                if let (Some(h), Some(sp)) = (self.pathfind.as_mut(), self.sprites.as_ref()) {
+                    fire_pf.apply(h, &sp.borrow());
+                }
+                fire_queue.flush(&mut self.fire_state, &self.render, fire_hearing, Some(lua));
                 first_phase = false;
                 died |= died_since(sim, from);
                 match r {
@@ -1092,8 +1267,26 @@ impl IsoWorld {
         // Each zombie is out of the list while it updates; the others and
         // the lent players stay reachable by id.
         let zombie_ids: Vec<i32> = self.zombies.iter().map(|z| z.id).collect();
+        let n_zombies = zombie_ids.len();
+        let (fire_settings, fire_hearing) = current_fire_settings();
+        let num_players = pz_lua_api::bind_players::num_players();
+        let pre_env: HostResult<()> = with_world(|w| {
+            let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_ref()) else {
+                return Ok(());
+            };
+            for z in &mut self.zombies[..n_zombies] {
+                z.preupdate_zombie();
+                fill_square_environment(z, cell, meta, self.regions.as_ref(), &self.fire_state)?;
+            }
+            Ok(())
+        });
+        if let Err(error) = pre_env {
+            return Err(error.into());
+        }
         let players: Vec<LuaGameCharacterRef> = local_players().into_iter().flatten().collect();
         let lent = self.lend_players(&players);
+        let mut fire_queue = crate::world_fire::FireEffectsQueue::default();
+        let mut fire_pf = QueuedPathfind::default();
         let IsoWorld {
             sprites,
             states_runtime,
@@ -1103,48 +1296,80 @@ impl IsoWorld {
             floor_world,
             pathfind,
             regions,
+            fire,
+            fire_state,
+            fire_flags,
+            door_tables,
+            render,
             ..
         } = self;
         let mut dying = Vec::new();
-        let errors = sprites.as_mut().and_then(|sprites| with_states_characters_and_path(
-            sprites,
-            states_runtime,
-            models.as_mut(),
-            sim,
-            floor_world.as_ref(),
-            Some(zombies),
-            pathfind.as_mut(),
-            None,
-            |w| {
-                pz_lua_api::bind_states::with_state_registry(|reg| {
-                    let chars = chars.borrow();
-                    let mut errors = Vec::new();
-                    for &id in &zombie_ids {
-                        let Some(mut z) = StateWorld::<LuaItem>::take_character(w, id) else { continue };
-                        z.preupdate_zombie();
-                        if let Err(error) = fill_square_environment(&mut z, w.cell, w.meta, regions.as_ref()) {
+        let errors = sprites.as_mut().and_then(|sprites| {
+            let mut no_regions = None;
+            let mut regions_guard = regions.as_ref().map(|r| r.borrow_mut());
+            let fire_input = match (*fire_flags, door_tables.as_ref()) {
+                (Some(flags), Some(doors)) => {
+                    let reg = match regions_guard.as_mut() {
+                        Some(r) => &mut **r,
+                        None => no_regions.get_or_insert_with(|| IsoRegions::new(0)),
+                    };
+                    Some(StatesFireInput {
+                        manager: fire,
+                        state: fire_state,
+                        queue: &mut fire_queue,
+                        regions: reg,
+                        doors,
+                        pathfind: &mut fire_pf,
+                        render,
+                        flags,
+                        settings: fire_settings,
+                        num_players,
+                    })
+                }
+                _ => None,
+            };
+            with_states_characters_and_path(
+                sprites,
+                states_runtime,
+                models.as_mut(),
+                sim,
+                floor_world.as_ref(),
+                Some(zombies),
+                pathfind.as_mut(),
+                None,
+                fire_input,
+                |w| {
+                    pz_lua_api::bind_states::with_state_registry(|reg| {
+                        let chars = chars.borrow();
+                        let mut errors = Vec::new();
+                        for &id in &zombie_ids {
+                            let Some(mut z) = StateWorld::<LuaItem>::take_character(w, id) else {
+                                continue;
+                            };
+                            let from = sim.events.borrow().len();
+                            z.update_ballistics_target(sim, &mut *w);
+                            let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
+                            let result = z.update_zombie(reg, action_groups, &mut cx);
+                            let state = cx.state_result();
+                            let zombie_id = z.id;
                             StateWorld::<LuaItem>::put_character(w, z);
-                            return Err(error.into());
+                            state?;
+                            if died_since(sim, from) {
+                                dying.push(zombie_id);
+                            }
+                            if let Err(e) = result {
+                                errors.push(format!("IsoZombie.update: {e}"));
+                            }
                         }
-                        let from = sim.events.borrow().len();
-                        z.update_ballistics_target(sim, &mut *w);
-                        let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
-                        let result = z.update_zombie(reg, action_groups, &mut cx);
-                        let state = cx.state_result();
-                        let zombie_id = z.id;
-                        StateWorld::<LuaItem>::put_character(w, z);
-                        state?;
-                        if died_since(sim, from) {
-                            dying.push(zombie_id);
-                        }
-                        if let Err(e) = result {
-                            errors.push(format!("IsoZombie.update: {e}"));
-                        }
-                    }
-                    Ok::<_, pz_characters::character::state::StateFailure>(errors)
-                })
-            },
-        ));
+                        Ok::<_, pz_characters::character::state::StateFailure>(errors)
+                    })
+                },
+            )
+        });
+        if let (Some(h), Some(sp)) = (self.pathfind.as_mut(), self.sprites.as_ref()) {
+            fire_pf.apply(h, &sp.borrow());
+        }
+        fire_queue.flush(&mut self.fire_state, &self.render, fire_hearing, Some(lua));
         self.return_players(&players, lent);
         match errors {
             Some(Ok(errors)) => {
@@ -2109,6 +2334,7 @@ impl IsoWorld {
                 floor_world: floor_world.clone(),
                 bullet: crate::world_vehicles::shared_bullet(),
                 player_firearms: Vec::new(),
+                fire: None,
             };
             let mut adapter = StatesWorldAdapter::new(
                 cell,
@@ -2208,12 +2434,27 @@ impl IsoWorld {
         });
     }
 
+    /// `IsoFireManager.Reset()` on `IngameState.exit`.
+    pub fn reset_fire(&mut self) {
+        let object_names = std::collections::HashMap::new();
+        let mut queue = crate::world_fire::FireEffectsQueue::default();
+        let mut hooks = crate::world_fire::EngineFireHooks {
+            state: &mut self.fire_state,
+            queue: &mut queue,
+            object_names: &object_names,
+        };
+        self.fire.reset(&mut hooks);
+        self.fire_state.reset(&self.render);
+    }
+
     /// `IsoFireManager.Update()`. `Err` is the exception a burn threw
     /// (logged here: `UpdateStuff` catches and logs it, then goes on).
     pub fn update_fire(
         &mut self,
         sim: &FrameSim,
         settings: pz_world::fire::FireSettings,
+        hearing: i32,
+        lua: Option<&mut LuaManager>,
     ) -> Result<(), String> {
         if self.fire_flags.is_none() {
             let Some(sprites) = self.sprites.as_ref() else {
@@ -2251,6 +2492,7 @@ impl IsoWorld {
         let num_players = pz_lua_api::bind_players::num_players();
         let IsoWorld {
             fire,
+            fire_state,
             fire_flags,
             door_tables,
             sprites,
@@ -2277,6 +2519,7 @@ impl IsoWorld {
         // has let go of the sprites (`PathfindNative.squareChanged` builds
         // its tasks from the cell as it is then).
         let mut pf = QueuedPathfind::default();
+        let mut fire_queue = crate::world_fire::FireEffectsQueue::default();
         let r = with_world(|w| {
             let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else {
                 return Ok(());
@@ -2289,10 +2532,6 @@ impl IsoWorld {
                 Some(i) => i,
                 None => &mut no_render,
             };
-            // TODO(port): the engine's `SquareMutationHooks` (Lua events,
-            // the add/remove-from-world registries) and the `FireHooks`
-            // (sounds, lights through `FireLightLinks`, burning characters,
-            // heat sources, hutches).
             let mutation = pz_world::fire::manager::FireMutation {
                 regions,
                 doors,
@@ -2301,7 +2540,11 @@ impl IsoWorld {
                 render,
                 num_players,
             };
-            let mut hooks = pz_world::fire::manager::NoFireHooks;
+            let mut hooks = crate::world_fire::EngineFireHooks {
+                state: fire_state,
+                queue: &mut fire_queue,
+                object_names: &w.object_names,
+            };
             let mut fw = pz_world::fire::FireWorld {
                 cell,
                 meta,
@@ -2318,6 +2561,7 @@ impl IsoWorld {
         }
         drop(sprites);
         drop(regions_guard);
+        fire_queue.flush(&mut self.fire_state, &self.render, hearing, lua);
         if let Err(e) = &r {
             self.log_exception(e.clone());
         }
@@ -2443,10 +2687,13 @@ impl IsoWorld {
 
 /// The parts of the character's `CharacterEnvironment` the world answers
 /// from `getCurrentSquare()`, refreshed before its update. TODO(port): the
-/// building toxicity, can-see, heat sources and the vehicle.
+/// building toxicity, can-see, and the vehicle.
 fn fill_square_environment(
-    chr: &mut LuaGameCharacter, cell: &IsoCell, meta: &IsoMetaGrid,
+    chr: &mut LuaGameCharacter,
+    cell: &IsoCell,
+    meta: &IsoMetaGrid,
     regions: Option<&Rc<RefCell<pz_world::isoregion::IsoRegions>>>,
+    fire_state: &crate::world_fire::WorldFireState,
 ) -> HostResult<()> {
     let cur = chr.path.current_square;
     let sq_owner = cur.and_then(|(x, y, z)| cell.get_grid_square(x, y, z));
@@ -2464,6 +2711,7 @@ fn fill_square_environment(
             .borrow()
             .get_stress_from_sounds(x, y, z)
     });
+    let heat_sources = fire_state.heat_sources_for(chr.vars.x, chr.vars.y, chr.vars.z, cell);
     let e = &mut chr.environment;
     e.has_current_square = sq.is_some();
     e.on_last_square = cur.is_some() && cur == chr.vars.last_square;
@@ -2477,6 +2725,7 @@ fn fill_square_environment(
         .filter(|s| s.room_id != -1)
         .map(|s| s.room_id as u64);
     e.stress_from_sounds = stress;
+    e.heat_sources = heat_sources;
     Ok(())
 }
 
