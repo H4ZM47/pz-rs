@@ -901,8 +901,17 @@ impl IsoWorld {
                 self.log_error(format!("GameTime.load: {e}"));
             }
         }
-        // TODO(port): `ImprovedFog.init`; `GlobalModData.init`.
+        // TODO(port): `ImprovedFog.init`.
         self.init_radio(lua, &sb, no_save);
+        // `GlobalModData.init()`, right after `ZomboidRadio.Init`: reset, load `global_mod_data.bin`, and fire
+        // `OnInitGlobalModData(WorldDictionary.isIsNewGame())`.
+        if let Err(e) = pz_lua_api::bind_global_moddata::load_file(&self.save_dir, no_save) {
+            self.log_error(format!("GlobalModData.init: {e}"));
+        }
+        lua.trigger_event(
+            "OnInitGlobalModData",
+            &[pz_kahlua::Value::Bool(self.dictionary_new_game)],
+        );
         if let Err(e) = self.instance_tracker.load_file(&self.save_dir, no_save) {
             self.log_error(format!("InstanceTracker.load: {e}"));
         }
