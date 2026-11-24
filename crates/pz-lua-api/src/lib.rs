@@ -18,6 +18,7 @@ pub mod bind_cheat_type;
 pub mod bind_characters;
 pub mod bind_audio;
 pub mod bind_erosion;
+pub mod bind_firemanager_stash;
 pub mod bind_colors;
 pub mod bind_core;
 pub mod bind_craft_recipe_manager;
@@ -285,6 +286,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_tile_overlays::register(&mut mgr.thread);
     bind_broken_fences::register(&mut mgr.thread);
     bind_object_picker::register(&mut mgr.thread);
+    bind_firemanager_stash::register(&mut mgr.thread);
     bind_safehouse::register(&mut mgr.thread);
     world_menu_logic::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
