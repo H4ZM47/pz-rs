@@ -2052,7 +2052,7 @@ registered):
       Production erosion, MapObjects/LoadGridsquare and other addToWorld
       subsystem registries still need their actual adapters. Cursor square
       replacement errors are explicit; chunks are not yet canonical owners.
-- [ ] Mannequins: from each `IsoMannequin` (script anim set, state,
+- [x] Mannequins: from each `IsoMannequin` (script anim set, state,
       validated pose, direction, surfaces below/on its square, outside /
       room, interpolated light, highlight tint) build a `Mannequin`, pose an
       `AnimationPlayer` on the body skeleton with `mannequin::pose`, build
@@ -2060,7 +2060,8 @@ registered):
       outfit's clothing), and the frame its chunk texture is recorded push
       `mannequin::chunk_models(.., chunk texture, camera square)` into
       `FrameObjects.chunk_models`; every frame `mannequins` gets an
-      `ObjectRender` with `Mannequin::shadow(lightInfo)` (#125).
+      `ObjectRender` with `Mannequin::shadow(lightInfo)` (#125; wired in
+      `world_models/mannequins.rs` + `world_render.rs`).
 - [ ] Animal corpses: `DeadBody { animal: true, animal_anim_set:
       animalAnimSet, animal_size }`, a slot from
       `ModelSlot::single_body(model script mesh, Body/<skin texture>,
