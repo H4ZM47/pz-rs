@@ -1998,12 +1998,13 @@ end
             }
             p_ref.apply_character_traits_recipes(sm);
         }
-        // `IsoWorld.init`: mark spawn room/building explored and notify
+        // `IsoWorld.init`: mark the spawn room/building (and any overlapping
+        // basement) explored and notify
         // `ZombiePopulationManager.playerSpawnedAt`; pick poisonous flora.
         if let Some((x, y, z)) = sq {
             with_world(|w| {
                 if let Some(meta) = w.meta_grid.as_mut() {
-                    mark_spawn_explored(meta, x, y, z);
+                    meta.mark_spawn_explored(x, y, z);
                     if let Some(pop) = self.population.as_mut() {
                         pop.manager.player_spawned_at(meta, x, y, z);
                     }
@@ -2027,76 +2028,6 @@ end
         println!("triggerEvent OnNewGame");
         lua.trigger_event("OnNewGame", &[pv, sv]);
         Ok(())
-    }
-}
-
-/// Mark the new player's spawn room and all rooms in its building explored
-/// (`RoomDef.setExplored(true)`, `BuildingDef.setAllExplored(true)`, `seen`).
-fn mark_spawn_explored(meta: &mut IsoMetaGrid, x: i32, y: i32, z: i32) {
-    let Some(room_idx) = meta
-        .get_chunk_data_from_tile(x, y)
-        .and_then(|c| c.get_room_at(&meta.room_defs, x, y, z))
-    else {
-        return;
-    };
-    let room = &mut meta.room_defs[room_idx.0 as usize];
-    room.explored = true;
-    let Some(building_idx) = room.building else {
-        return;
-    };
-    let b = &mut meta.building_defs[building_idx.0 as usize];
-    b.seen = true;
-    b.has_been_visited = true;
-    let rooms = b.rooms.clone();
-    for r in rooms {
-        meta.room_defs[r.0 as usize].explored = true;
-    }
-}
-
-#[cfg(test)]
-mod spawn_explored_tests {
-    use super::*;
-    use pz_world::defs::{BuildingDef, BuildingIdx, RoomDef, RoomIdx, RoomRect};
-
-    struct ZeroRand;
-    impl pz_world::GameRand for ZeroRand {
-        fn next(&mut self, _: i32) -> i32 { 0 }
-        fn next_range(&mut self, min: i32, _: i32) -> i32 { min }
-    }
-
-    #[test]
-    fn mark_spawn_explored_marks_room_and_sibling_building_rooms() {
-        let mut meta = IsoMetaGrid::blank(0, 0, 0, 0);
-        meta.create_cell(0, 0);
-        let mut r0 = RoomDef::new(1, "bedroom".to_string());
-        r0.level = 0;
-        r0.x = 10;
-        r0.y = 10;
-        r0.x2 = 14;
-        r0.y2 = 14;
-        r0.building = Some(BuildingIdx(0));
-        r0.rects.push(RoomRect { x: 10, y: 10, w: 4, h: 4 });
-        let mut r1 = RoomDef::new(2, "kitchen".to_string());
-        r1.level = 0;
-        r1.x = 14;
-        r1.y = 10;
-        r1.x2 = 18;
-        r1.y2 = 14;
-        r1.building = Some(BuildingIdx(0));
-        r1.rects.push(RoomRect { x: 14, y: 10, w: 4, h: 4 });
-        let mut b = BuildingDef::new(&mut ZeroRand);
-        b.rooms = vec![RoomIdx(0), RoomIdx(1)];
-        meta.room_defs.push(r0);
-        meta.room_defs.push(r1);
-        meta.building_defs.push(b);
-        meta.add_room_to_cell(0, 0, RoomIdx(0));
-        meta.add_room_to_cell(0, 0, RoomIdx(1));
-
-        mark_spawn_explored(&mut meta, 11, 11, 0);
-        assert!(meta.room_defs[0].explored);
-        assert!(meta.room_defs[1].explored);
-        assert!(meta.building_defs[0].seen);
-        assert!(meta.building_defs[0].has_been_visited);
     }
 }
 
