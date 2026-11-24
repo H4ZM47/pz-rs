@@ -87,13 +87,16 @@ fn cooking_level(chars: &RefCell<Characters>, value: &Value) -> LuaResult<i32> {
 
 pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Characters>>) {
     let b = expose_class(thread, RECIPE_MANAGER_CLASS, None);
+    let sm_ev = sm.clone();
+    let chars_ev = chars.clone();
     b.static_fn("getEvolvedRecipe", move |c| {
         let item = crate::bind_world_object::item_argument(&c.arg(0))?;
         let chr = c.arg(1);
         let include = bool_arg(c, 3);
-        let list = evolved_recipes_for(&sm, &item.borrow(), || cooking_level(&chars, &chr), include)?;
+        let list = evolved_recipes_for(&sm_ev, &item.borrow(), || cooking_level(&chars_ev, &chr), include)?;
         Ok(c.push(script_list(&list)))
     });
+    crate::bind_recipe_manager_classic::register_classic_statics(&b, sm, chars);
 }
 
 #[cfg(test)]

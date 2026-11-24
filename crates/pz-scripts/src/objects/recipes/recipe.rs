@@ -361,6 +361,17 @@ impl Recipe {
     pub fn lua_calls(&self) -> &HashMap<LuaCall, String> {
         &self.lua_calls
     }
+
+    pub fn set_lua_call(&mut self, call: LuaCall, name: Option<String>) {
+        match name {
+            Some(v) => {
+                self.lua_calls.insert(call, v);
+            }
+            None => {
+                self.lua_calls.remove(&call);
+            }
+        }
+    }
 }
 
 impl Default for Recipe {
