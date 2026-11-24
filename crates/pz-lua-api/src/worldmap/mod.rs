@@ -144,6 +144,12 @@ pub fn end_frame() {
     pz_worldmap::pyramid::end_frame();
 }
 
+/// `WorldMapImages.Reset()`: clears cached world map image pyramids when
+/// entering a new game load.
+pub fn reset_images() {
+    pz_worldmap::pyramid::reset();
+}
+
 /// Install the file system the map resolves `media/...` names with.
 pub fn install_fs(fs: Rc<std::cell::RefCell<pz_fs::GameFs>>) {
     FS.with(|f| *f.borrow_mut() = Some(fs));

@@ -787,6 +787,16 @@ impl SoundManager {
         emitter.tick(ctx);
     }
 
+    /// `Purge()`: stops any lingering UI sounds and named music tracks
+    /// before entering a new state (such as `GameLoadingState`), while
+    /// keeping the combined music event alive for the new `MusicState`.
+    pub fn purge(&mut self, ctx: &mut Ctx) {
+        if let Some(e) = &mut self.ui_emitter {
+            e.stop_all(ctx);
+        }
+        self.stop_music_all(ctx.backend);
+    }
+
     /// `stop()`: stops the manager's own emitters and the master group.
     pub fn stop(&mut self, ctx: &mut Ctx) {
         if let Some(e) = &mut self.ui_emitter {
@@ -894,5 +904,30 @@ mod tests {
         m.update(true, &mut ctx!(b, g));
         assert!(!m.allow_music());
         assert!(b.calls.contains(&"volume 1 0".to_string()), "{:?}", b.calls);
+    }
+
+    #[test]
+    fn purge_stops_ui_emitter_and_named_music() {
+        let mut b = Mock::default();
+        let mut g = sounds(
+            &[
+                ("UIClick", Some("UI/Click"), None),
+                ("TrackA", Some("Music/TrackA"), None),
+            ],
+            &mut b,
+        );
+        let mut m = SoundManager::new(8);
+        m.set_music_inputs(MusicInputs {
+            music_volume_option: 5,
+            ..Default::default()
+        });
+        let ui_id = m.play_ui_sound("UIClick", None, &mut ctx!(b, g));
+        assert!(ui_id > 0);
+        assert!(m.is_playing_ui_sound("UIClick"));
+        m.play_music("TrackA", &mut ctx!(b, g));
+        assert!(m.is_playing_music(&mut b));
+        m.purge(&mut ctx!(b, g));
+        assert!(!m.is_playing_ui_sound("UIClick"));
+        assert!(!m.is_playing_music(&mut b));
     }
 }

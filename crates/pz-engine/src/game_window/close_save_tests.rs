@@ -75,7 +75,8 @@ impl Fixture {
         set_cell(has_cell.then(IsoCell::default));
         let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&dir)));
         fs.borrow_mut().set_cache_dir(&dir);
-        let lua = LuaManager::init(fs).unwrap();
+        let mut lua = LuaManager::init(fs).unwrap();
+        pz_lua_api::bind_game_window::set_ok_to_save_on_exit(Some(&mut lua.thread), true);
         let phases = Rc::new(RefCell::new(Vec::new()));
         let errors = Rc::new(RefCell::new(Vec::new()));
         let mut states = GameStateMachine::default();
@@ -303,4 +304,35 @@ fn a_save_during_play_writes_the_world_and_fires_only_on_save() {
     assert!(fixture.app.world.as_ref().unwrap().errors.is_empty());
     // The world goes on: nothing closed it.
     assert!(with_world(|world| world.cell.is_some()));
+}
+
+#[test]
+fn close_skips_save_when_ok_to_save_on_exit_is_false() {
+    let _deferral = pz_kahlua::gc::defer_collection();
+    let mut fixture = Fixture::new(false, true);
+    let saves = Rc::new(Cell::new(0));
+    let saves_in = saves.clone();
+    fixture
+        .app
+        .lua
+        .as_ref()
+        .unwrap()
+        .thread
+        .globals()
+        .set_str(
+            "observeSave",
+            Value::Native(NativeFunction::new("observeSave", move |_| {
+                saves_in.set(saves_in.get() + 1);
+                Ok(0)
+            })),
+        );
+    fixture.lua("Events.OnSave.Add(function() observeSave() end)");
+    pz_lua_api::bind_game_window::set_ok_to_save_on_exit(
+        Some(&mut fixture.app.lua.as_mut().unwrap().thread),
+        false,
+    );
+    fixture.app.close();
+    assert_eq!(saves.get(), 0, "close must not save when okToSaveOnExit is false");
+    assert!(!fixture.dir.join("map_ver.bin").exists());
+    assert_eq!(*fixture.phases.borrow(), vec!["exit"]);
 }

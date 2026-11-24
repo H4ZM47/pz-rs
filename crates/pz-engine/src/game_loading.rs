@@ -203,10 +203,10 @@ impl GameLoadingState {
     }
 
     /// `SendDone()` (single player).
-    fn send_done(&mut self) {
+    fn send_done(&mut self, cx: &mut StateCx<'_>) {
         println!("game loading took {} seconds", (self.start_time.elapsed().as_millis() + 999) / 1000);
         self.done = true;
-        // TODO(port): `GameKeyboard.noEventsWhileLoading = false`.
+        pz_lua_api::bind_input::set_no_events_while_loading(Some(&mut cx.lua.thread), false);
     }
 
     /// `runInner` up to `waitForAssetLoadingToFinish2`.
@@ -248,9 +248,11 @@ impl GameLoadingState {
             if !new_game {
                 self.game_loading_string = "Saving converted world.".into();
             }
-            // TODO(port): `GameWindow.save(true)` (`world_save::save_game`
-            // with the engine's `SaveGameHooks`), which writes `map_ver.bin`
-            // and the rest of a new world.
+            if let Some(world) = cx.world.as_mut() {
+                world
+                    .save_during_play(cx.lua)
+                    .map_err(|error| format!("initial world save: {error}"))?;
+            }
         }
         // `ChatUtility.InitAllowedChatIcons()` (TODO(port):
         // `Texture.collectAllIcons`), then `ChatManager.init(true, player)`.
@@ -276,14 +278,14 @@ impl GameLoadingState {
     }
 
     /// `runInner` after `waitForAssetLoadingToFinish2`.
-    fn run_inner_2(&mut self, _cx: &mut StateCx<'_>) {
+    fn run_inner_2(&mut self, cx: &mut StateCx<'_>) {
         println!("bWaitForAssetLoadingToFinish2 end");
         // TODO(port): `FBORenderChunkManager.instance.gameLoaded()`,
         // `Bullet.initPhysicsMeshes()`, `RBTableStoryBase.initStories()`,
         // `IsoPlayer.visitAllPlayers(ECSEntity::onGameLoadingStateEnter)`.
         self.player_created = true;
         self.game_loading_string.clear();
-        self.send_done();
+        self.send_done(cx);
     }
 
     /// The loader's `run()`: `runInner` throwing sets `unexpectedError`;
@@ -356,10 +358,11 @@ impl GameState for GameLoadingState {
 
     fn enter(&mut self, cx: &mut StateCx<'_>) {
         self.load_quick_tip_list();
-        // TODO(port): `WorldMapImages.Reset()`.
+        pz_lua_api::worldmap::reset_images();
         pz_lua_api::worldmap::visited::reset();
         pz_lua_api::bind_video::release_all_video_textures();
-        // TODO(port): `GameWindow.loadedAsClient` / `okToSaveOnExit = false`.
+        pz_lua_api::bind_game_window::set_loaded_as_client(Some(&mut cx.lua.thread), false);
+        pz_lua_api::bind_game_window::set_ok_to_save_on_exit(Some(&mut cx.lua.thread), false);
         self.showed_ui = false;
         // TODO(port): `ChunkMapFilenames.instance.clear()`.
         let core = pz_lua_api::bind_core::shared_core();
@@ -430,7 +433,7 @@ impl GameState for GameLoadingState {
         self.click_to_skip_alpha = 1.0;
         self.click_to_skip_fade_in = false;
         self.start_time = Instant::now();
-        // TODO(port): `SoundManager.instance.Purge()`.
+        pz_lua_api::bind_audio::sound_system().borrow_mut().with(|m, ctx| m.purge(ctx));
         set_music_state("Loading");
         cx.lua.trigger_event("OnPreMapLoad", &[]);
         self.new_game = !save_dir.join("map_ver.bin").exists();
@@ -446,7 +449,7 @@ impl GameState for GameLoadingState {
         }
         // `WorldDictionary.setIsNewGame(newGame)`: the loader hands
         // `newGame` to `IsoWorld` (`dictionary_new_game`).
-        // TODO(port): `GameKeyboard.noEventsWhileLoading = true`.
+        pz_lua_api::bind_input::set_no_events_while_loading(Some(&mut cx.lua.thread), true);
         // `loader.start()`: `runInner` waits on `assetLock1` first.
         self.wait_for_asset_loading_to_finish1 = true;
         self.loader = Loader::WaitAssets1;
@@ -466,10 +469,29 @@ impl GameState for GameLoadingState {
         self.loader = Loader::None;
         self.done = false;
         self.stage = 0;
+        pz_lua_api::bind_input::set_no_events_while_loading(Some(&mut cx.lua.thread), false);
         // TODO(port): `IsoCamera.SetCharacterToFollow(IsoPlayer.getInstance())`.
         pz_lua_api::bind_audio::sound_system().borrow_mut().with(|m, ctx| m.stop_music(Some(""), ctx.backend));
-        // TODO(port): `AmbientStreamManager.instance.init()`; the asleep
-        // player's fade and game speed.
+        // TODO(port): `AmbientStreamManager.instance.init()`.
+        let p0_asleep = pz_lua_api::bind_players::player(0)
+            .or_else(pz_lua_api::bind_players::player_instance)
+            .is_some_and(|p| p.borrow().is_asleep());
+        if p0_asleep {
+            pz_ui::with_ui(|m| {
+                m.fade_before_ui = true;
+                m.fade_in_time_max = 1;
+                m.set_fade_in_time(0.0);
+                m.fading_out = true;
+                m.set_fade_alpha(1.0);
+                let pf = &mut m.player_fade_info[0];
+                pf.fade_before_ui = true;
+                pf.fade_time_max = 1;
+                pf.fade_time = 0;
+                pf.fading_out = true;
+                pf.fade_alpha = 1.0;
+            });
+            pz_lua_api::hud::set_game_speed(4);
+        }
         let core = pz_lua_api::bind_core::shared_core();
         let no_save = core.borrow().is_no_save();
         let mods = pz_lua_api::savefile::active_mods_by_id("currentGame");
@@ -495,7 +517,7 @@ impl GameState for GameLoadingState {
                 }
             }
         }
-        // TODO(port): `GameWindow.okToSaveOnExit = true`.
+        pz_lua_api::bind_game_window::set_ok_to_save_on_exit(Some(&mut cx.lua.thread), true);
     }
 
     fn render(&mut self, cx: &mut StateCx<'_>, out: &mut DrawList) {
@@ -663,5 +685,115 @@ impl GameState for GameLoadingState {
             return StateAction::Continue;
         }
         StateAction::Remain
+    }
+}
+
+#[cfg(test)]
+mod loading_lifecycle_tests {
+    use super::*;
+    use crate::game_window::{Launch, Start};
+    use pz_core::core::Core;
+    use pz_lua_api::LuaManager;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn exit_sets_ok_to_save_clears_loading_input_lock_and_applies_asleep_fade_and_speed() {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "pz-engine-loading-lifecycle-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let save_dir = dir.join("Saves").join("Sandbox").join("test_save");
+        std::fs::create_dir_all(&save_dir).unwrap();
+
+        let old_core = pz_lua_api::bind_core::shared_core();
+        let mut core = Core::default();
+        let initializers = [("SANDBOX", "Sandbox"), ("TUTORIAL", "Tutorial"), ("TEST_LAST_STAND", "LastStand"), ("MULTIPLAYER", "Multiplayer")]
+            .map(|(field, id)| pz_classfile::StaticInit {
+                class: "zombie/core/GameMode".into(),
+                field: field.into(),
+                value: pz_classfile::Value::Call {
+                    class: "zombie/core/GameMode".into(),
+                    name: "registerBase".into(),
+                    descriptor: "(Ljava/lang/String;)Lzombie/core/GameMode;".into(),
+                    args: vec![pz_classfile::Value::Str(id.into())],
+                },
+            });
+        let modes = Rc::new(
+            pz_scripts::native_game_modes::NativeGameModeStatics::from_class_initializers(&initializers).unwrap(),
+        );
+        core.install_game_mode_statics(modes).unwrap();
+        core.set_game_mode("Sandbox").unwrap();
+        core.game_save_world = "test_save".into();
+        let core = Rc::new(RefCell::new(core));
+        pz_lua_api::bind_core::install_core(core);
+        pz_lua_api::bind_players::reset();
+
+        let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&dir)));
+        fs.borrow_mut().set_cache_dir(&dir);
+        let mut lua = LuaManager::init(fs).unwrap();
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let player = Rc::new(RefCell::new(pz_lua_api::bind_character_sim::LuaGameCharacter::new(
+            &sm,
+            pz_characters::CharacterKind::Player,
+        )));
+        player.borrow_mut().asleep = true;
+        pz_lua_api::bind_players::set_player(0, Some(player.clone()));
+        pz_lua_api::bind_players::set_player_instance(Some(player));
+
+        let launch = Launch {
+            game_dir: dir.clone(),
+            cache_dir: dir.clone(),
+            start: Start::MainMenu,
+        };
+        let mut world = None;
+        let mut error = None;
+        let mut retired_models = Vec::new();
+        let mut state = GameLoadingState::default();
+
+        // Simulate loading lock & pre-exit state
+        pz_lua_api::bind_input::set_no_events_while_loading(Some(&mut lua.thread), true);
+        pz_lua_api::bind_game_window::set_ok_to_save_on_exit(Some(&mut lua.thread), false);
+        assert!(pz_lua_api::bind_input::no_events_while_loading());
+        assert!(!pz_lua_api::bind_game_window::ok_to_save_on_exit());
+
+        {
+            let mut cx = StateCx {
+                lua: &mut lua,
+                launch: &launch,
+                screen_w: 1280,
+                screen_h: 720,
+                multiplier: 1.0,
+                time_delta: 0.016,
+                world: &mut world,
+                shutdown: false,
+                error: &mut error,
+                retired_models: &mut retired_models,
+            };
+            state.exit(&mut cx);
+        }
+
+        assert!(error.is_none());
+        assert!(!pz_lua_api::bind_input::no_events_while_loading());
+        assert!(pz_lua_api::bind_game_window::ok_to_save_on_exit());
+        assert_eq!(pz_ui::with_ui(|m| m.fade_alpha), 1.0);
+        assert_eq!(pz_ui::with_ui(|m| m.player_fade_info[0].fade_alpha), 1.0);
+        assert_eq!(
+            pz_ui::with_ui(|m| {
+                m.speed_controls
+                    .as_ref()
+                    .and_then(|e| e.ext::<pz_lua_api::hud::speed_controls::SpeedControls>())
+                    .map(|sc| sc.get_current_game_speed())
+            }),
+            Some(4)
+        );
+        assert!(save_dir.join("mods.txt").is_file());
+
+        pz_lua_api::bind_players::reset();
+        pz_lua_api::bind_core::install_core(old_core);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -158,7 +158,10 @@ impl App {
             drain_retired_host_owners();
             return;
         };
-        if in_game && !self.core.borrow().process_exit_requested() {
+        if in_game
+            && pz_lua_api::bind_game_window::ok_to_save_on_exit()
+            && !self.core.borrow().process_exit_requested()
+        {
             if let Some(world) = self.world.as_mut() {
                 if let Err(error) = world.save_on_window_close(lua) {
                     crate::failure::record_first(&mut self.error, (format!("PlayerDB save host failure: {error}")).into());

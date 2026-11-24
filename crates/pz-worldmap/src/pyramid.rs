@@ -826,6 +826,19 @@ pub fn end_frame() {
     });
 }
 
+/// `WorldMapImages.Reset()`: clears the cached map image pyramids and
+/// drops any in-flight tile queues.
+pub fn reset() {
+    let entries: Vec<Rc<WorldMapImages>> = IMAGES.with(|m| m.borrow_mut().drain().map(|(_, v)| v).collect());
+    for i in entries {
+        let mut p = i.pyramid.borrow_mut();
+        p.textures.clear();
+        p.required.clear();
+        p.queue_loading.clear();
+        p.queue_cancel.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1158,6 +1171,31 @@ mod tests {
             .count();
         assert_eq!(ready, 8);
         assert!(p.get_lower_res_texture(3, 0, 0).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_clears_cached_world_map_images() {
+        let dir = std::env::temp_dir().join(format!("pz-wm-reset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pyramid.zip");
+        std::fs::write(
+            &path,
+            zip(&[(
+                "pyramid.txt",
+                b"VERSION=1\nbounds=0 0 256 256\nresolution=1\n".to_vec(),
+            )]),
+        )
+        .unwrap();
+        let p_str = path.to_str().unwrap();
+        let first = WorldMapImages::get_or_create(p_str).expect("cached");
+        let second = WorldMapImages::get_or_create(p_str).expect("same Rc");
+        assert!(Rc::ptr_eq(&first, &second));
+        reset();
+        let after = WorldMapImages::get_or_create(p_str).expect("fresh Rc");
+        assert!(!Rc::ptr_eq(&first, &after));
+        reset();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -149,6 +149,23 @@ thread_local! {
     };
 }
 
+/// `GameKeyboard.noEventsWhileLoading`.
+pub fn no_events_while_loading() -> bool {
+    GK.with(|g| g.borrow().no_events_while_loading)
+}
+
+/// Set `GameKeyboard.noEventsWhileLoading`, updating both the host flag
+/// and the Lua `GameKeyboard.noEventsWhileLoading` field when a thread is
+/// provided.
+pub fn set_no_events_while_loading(thread: Option<&mut Thread>, on: bool) {
+    GK.with(|g| g.borrow_mut().no_events_while_loading = on);
+    if let Some(t) = thread {
+        if let Value::Table(tbl) = t.globals().get_str("GameKeyboard") {
+            tbl.set_str("noEventsWhileLoading", Value::Bool(on));
+        }
+    }
+}
+
 /// `Keyboard.isKeyDown(key)`: the physical key, if GLFW maps it.
 pub fn keyboard_is_key_down(key: i32) -> bool {
     if keys::class(key) == KeyClass::Unmapped {
