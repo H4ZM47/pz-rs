@@ -204,6 +204,7 @@ impl IngameState {
                         tutorial,
                     },
                 );
+                w.update_hearths(&sim);
                 // TODO(port): `RainManager.Update`, `Meta.instance.update`,
                 // `VirtualZombieManager.instance.update`.
                 // `MapCollisionData.updateMain` +
@@ -497,6 +498,7 @@ impl GameState for IngameState {
         // TODO(port): the `ScreenFader` fade to black, rendering the world
         // until it ends; `RenderThread.setWaitForRenderState(false)`.
         if let Some(w) = cx.world.as_mut() {
+            w.reset_hearths();
             w.reset_ragdolls();
             if let Some(models) = w.models.take() {
                 cx.retired_models.push(models);

@@ -235,6 +235,8 @@ pub struct IsoWorld {
     /// The cell's live `IsoHeatSource` list (permanent fires and hearths).
     pub heat_sources: crate::world_fire::HeatSourceRegistry,
     pub fire_flags: Option<pz_world::fire::manager::FireFlags>,
+    /// Per-world `IsoFireplace` and `IsoBarbecue` visual, light, heat, and sound state.
+    pub hearths: crate::world_hearths::WorldHearths,
     /// Each local player's `IsoPlayer.sqlId` (its `localPlayers` row; -1
     /// before its first save).
     pub player_sql_ids: [i32; 4],
@@ -383,6 +385,7 @@ impl IsoWorld {
             fire_sounds: crate::world_fire::FireSoundSlots::new(),
             heat_sources: crate::world_fire::HeatSourceRegistry::new(),
             fire_flags: None,
+            hearths: crate::world_hearths::WorldHearths::new(),
             door_tables: None,
             animal_defs: None,
             player_sql_ids: [-1; 4],

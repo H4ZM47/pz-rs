@@ -1042,6 +1042,7 @@ impl IsoWorld {
                         regions,
                         heat_sources,
                         zombies,
+                        hearths,
                         ..
                     } = self;
                     let Some(sprites) = sprites.as_mut() else {
@@ -1064,6 +1065,7 @@ impl IsoWorld {
                                     Some(&*w.sprites),
                                     regions.as_ref(),
                                     Some(heat_sources),
+                                    hearths,
                                 )?;
                             }
                             pz_lua_api::bind_states::with_state_registry(|reg| {
@@ -1176,6 +1178,7 @@ impl IsoWorld {
             pathfind,
             regions,
             heat_sources,
+            hearths,
             ..
         } = self;
         let mut dying = Vec::new();
@@ -1202,6 +1205,7 @@ impl IsoWorld {
                             Some(&*w.sprites),
                             regions.as_ref(),
                             Some(heat_sources),
+                            hearths,
                         ) {
                             StateWorld::<LuaItem>::put_character(w, z);
                             return Err(error.into());
@@ -2724,6 +2728,41 @@ impl IsoWorld {
         r
     }
 
+    /// Advances all loaded `IsoFireplace` and `IsoBarbecue` objects: fuel
+    /// burn/smoulder, attached flame/smoke/log states, fireplace lighting,
+    /// `IsoHeatSource`s, and looped audio emitters.
+    pub fn update_hearths(&mut self, sim: &FrameSim) {
+        let Some(sprites_rc) = self.sprites.as_ref() else {
+            return;
+        };
+        let Ok(sprites) = sprites_rc.try_borrow() else {
+            return;
+        };
+        let (world_age_hours, dt) = {
+            let g = sim.game_time.borrow();
+            let ctx = pz_lua_api::bind_climate::LuaClimateContext::new();
+            (
+                g.world_age_hours(),
+                g.multiplied_seconds_since_last_update(&ctx) * 60.0,
+            )
+        };
+        let mut render_guard = self.render.try_borrow_mut().ok();
+        let render = render_guard.as_deref_mut().and_then(|r| r.as_mut());
+        pz_lua_api::bind_world::with_world(|w| {
+            if let Some(cell) = w.cell.as_ref() {
+                self.hearths
+                    .update(cell, &sprites, render, world_age_hours, dt);
+            }
+        });
+    }
+
+    /// Removes all fireplace lights and stops all looping hearth audio emitters.
+    pub fn reset_hearths(&mut self) {
+        let mut render_guard = self.render.try_borrow_mut().ok();
+        let render = render_guard.as_deref_mut().and_then(|r| r.as_mut());
+        self.hearths.reset(render);
+    }
+
     /// `PolygonalMap2.instance.updateMain()` (`PathfindNative.updateMain`):
     /// the pathfinding thread's pass, then the finished requests handed to
     /// their characters.
@@ -2894,6 +2933,7 @@ fn fill_square_environment(
     sprites: Option<&IsoSpriteManager>,
     regions: Option<&Rc<RefCell<pz_world::isoregion::IsoRegions>>>,
     heat_sources: Option<&crate::world_fire::HeatSourceRegistry>,
+    hearths: &crate::world_hearths::WorldHearths,
 ) -> HostResult<()> {
     let cur = chr.path.current_square;
     let sq_owner = cur.and_then(|(x, y, z)| cell.get_grid_square(x, y, z));
@@ -2939,6 +2979,9 @@ fn fill_square_environment(
         .map(|s| s.room_id as u64);
     e.stress_from_sounds = stress;
     e.heat_sources = heat;
+    if let Some((x, y, z)) = cur {
+        e.heat_sources.extend(hearths.heat_sources_for(x, y, z));
+    }
     Ok(())
 }
 
