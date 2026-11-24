@@ -13,6 +13,8 @@
 //!
 //! The original's static fields are kept in [`Characters`].
 
+pub use pz_animals;
+
 pub mod attached_items;
 pub mod character;
 pub mod color;

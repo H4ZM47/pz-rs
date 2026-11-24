@@ -303,6 +303,17 @@ pub trait StatesEngine {
     fn ragdoll_pelvis(&self, _chr: i32) -> Option<[f32; 3]> {
         None
     }
+    /// Animal definitions and [`pz_animals::AnimalWorld`] bound to `chr`
+    /// (`StateWorld::animal_host`).
+    fn animal_host(&mut self, _chr: i32) -> Option<pz_characters::character::animal::AnimalHost<'_>> {
+        None
+    }
+    /// Called by `StateWorld::virtualize_animal_if_unloaded` when `chr` walks
+    /// toward an unloaded square outside a building. Returns `true` if the
+    /// engine accepted the virtualization request.
+    fn on_virtualize_animal(&mut self, _chr: i32) -> bool {
+        false
+    }
 
     // ---- characters (pz-characters' owner) ----
 
@@ -1573,6 +1584,23 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
 
     fn physics(&mut self) -> Option<&mut dyn pz_characters::character::firearm::PhysicsWorld> {
         self.engine.physics()
+    }
+
+    fn animal_host(
+        &mut self,
+        chr: i32,
+    ) -> Option<pz_characters::character::animal::AnimalHost<'_>> {
+        self.engine.animal_host(chr)
+    }
+
+    fn virtualize_animal_if_unloaded(&mut self, chr: i32, next_x: i32, next_y: i32) -> bool {
+        if self.cell.get_grid_square(next_x, next_y, 0).is_some() {
+            return false;
+        }
+        if self.meta.get_associated_building_at(next_x, next_y).ok().flatten().is_some() {
+            return false;
+        }
+        self.engine.on_virtualize_animal(chr)
     }
 
     fn muzzle_attachment(

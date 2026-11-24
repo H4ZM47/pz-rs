@@ -17,6 +17,7 @@ pub mod sim;
 pub mod sound;
 pub mod ui_models;
 mod world_activation;
+pub mod world_animal_host;
 pub mod world_dictionary;
 pub mod world_hud;
 pub mod world_models;
