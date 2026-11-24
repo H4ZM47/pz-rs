@@ -1708,12 +1708,34 @@ end
             if let Err(e) = r {
                 self.log_error(format!("IsoPlayer.applyTraits: {e:?}"));
             }
-            // TODO(port): the profession's and traits' granted recipes.
+            if let Err(e) = p.borrow_mut().apply_profession_recipes(sm) {
+                self.log_error(format!("IsoPlayer.applyProfessionRecipes: {e:?}"));
+            }
+            p.borrow_mut().apply_character_traits_recipes(sm);
         }
-        // TODO(port): the spawn room explored (`setExplored`,
-        // `setAllExplored`, `setBasementAllExplored`) and
-        // `ZombiePopulationManager.playerSpawnedAt`; `initPoisonousBerry` /
-        // `initPoisonousMushroom`.
+        // Mark the spawn room and its building explored/visited/unalarmed,
+        // and notify `ZombiePopulationManager.playerSpawnedAt`.
+        if let Some((x, y, z)) = sq {
+            with_world(|w| {
+                if let Some(meta) = w.meta_grid.as_mut() {
+                    mark_spawn_explored(meta, x, y, z);
+                    if let Some(pop) = self.population.as_mut() {
+                        pop.manager.player_spawned_at(meta, x, y, z);
+                    }
+                }
+            });
+        }
+        // `Core.initPoisonousBerry()` / `initPoisonousMushroom()` on new games.
+        {
+            let core_ref = pz_lua_api::bind_core::shared_core();
+            let mut core = core_ref.borrow_mut();
+            if core.get_poisonous_berry().is_none() {
+                core.init_poisonous_berry();
+            }
+            if core.get_poisonous_mushroom().is_none() {
+                core.init_poisonous_mushroom();
+            }
+        }
         let pv = player.as_ref().map(character_value).unwrap_or_default();
         let sv = sq
             .map(|(x, y, z)| pz_lua_api::bind_world::square_value(x, y, z))
@@ -1721,6 +1743,33 @@ end
         println!("triggerEvent OnNewGame");
         lua.trigger_event("OnNewGame", &[pv, sv]);
         Ok(())
+    }
+}
+
+/// `IsoWorld.init` new-game spawn exploration: mark the spawn room and its
+/// building explored, seen, visited, and unalarmed so the player's starting
+/// house never triggers an alarm or spawns fresh interior zombies.
+pub(crate) fn mark_spawn_explored(meta: &mut IsoMetaGrid, x: i32, y: i32, z: i32) {
+    let room_idx = meta
+        .get_chunk_data_from_tile(x, y)
+        .and_then(|c| c.get_room_at(&meta.room_defs, x, y, z));
+    let building_idx = if let Some(ridx) = room_idx {
+        let room = &mut meta.room_defs[ridx.0 as usize];
+        room.explored = true;
+        room.building
+    } else {
+        meta.get_associated_building_at(x, y).ok().flatten()
+    };
+    if let Some(bidx) = building_idx {
+        let b = &mut meta.building_defs[bidx.0 as usize];
+        b.seen = true;
+        b.has_been_visited = true;
+        b.alarmed = false;
+        let rooms = b.rooms.clone();
+        let emptyoutside = b.emptyoutside.clone();
+        for r in rooms.into_iter().chain(emptyoutside) {
+            meta.room_defs[r.0 as usize].explored = true;
+        }
     }
 }
 
@@ -1793,6 +1842,45 @@ mod world_gen_params_tests {
             "new world reset the static parameters"
         );
         std::fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn mark_spawn_explored_explores_building_and_disarms_alarm() {
+        use pz_world::{BuildingDef, GameRand, IsoMetaGrid, RoomDef, RoomRect};
+
+        struct ZeroRand;
+        impl GameRand for ZeroRand {
+            fn next(&mut self, _: i32) -> i32 {
+                0
+            }
+        }
+
+        let mut meta = IsoMetaGrid::blank(0, 0, 1, 1);
+        meta.create_cell(0, 0);
+
+        let mut r0 = RoomDef::new(10, "bedroom".into());
+        r0.level = 0;
+        r0.rects.push(RoomRect::new(10, 10, 4, 4));
+        r0.CalculateBounds();
+
+        let mut r1 = RoomDef::new(11, "kitchen".into());
+        r1.level = 0;
+        r1.rects.push(RoomRect::new(14, 10, 4, 4));
+        r1.CalculateBounds();
+
+        let mut b = BuildingDef::new(&mut ZeroRand);
+        b.alarmed = true;
+        let bidx = meta
+            .add_building(0, 0, b, vec![r0, r1], Vec::new())
+            .expect("building added");
+
+        mark_spawn_explored(&mut meta, 11, 11, 0);
+
+        let bdef = &meta.building_defs[bidx.0 as usize];
+        assert!(bdef.seen);
+        assert!(bdef.has_been_visited);
+        assert!(!bdef.alarmed);
+        assert!(bdef.rooms.iter().all(|r| meta.room_defs[r.0 as usize].explored));
     }
 }
 
