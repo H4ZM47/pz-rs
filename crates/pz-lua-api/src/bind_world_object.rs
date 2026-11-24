@@ -393,6 +393,7 @@ pub(crate) fn register_classes(thread: &mut Thread) {
     sprite_edit::register(&object);
     thumpable::register(thread);
     construction::register(thread);
+    hearth::register(thread);
     map_entity::register(thread);
     compost::register(thread);
     hutch::register(thread);
@@ -842,6 +843,7 @@ mod tests;
 mod sprite_edit;
 mod thumpable;
 mod construction;
+mod hearth;
 pub mod map_entity;
 mod compost;
 pub mod hutch;
