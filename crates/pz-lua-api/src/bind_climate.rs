@@ -17,8 +17,6 @@
 //! halves, as the original does mid-update.
 //!
 //! Not exposed: the network `transmit*` calls are no-ops (single player),
-//! `getAirTemperatureForCharacter`/`getAirTemperatureForSquare` and
-//! `Temperature.getWindChillAmountForPlayer` (TODO(IsoGridSquare)),
 //! `GameTime.getCalender` (TODO(PZCalendar)), `ErosionSeason.getWinterStartDay`.
 //! `ClimateColorInfo.getInterior`/`getExterior` return a copy of the colour.
 
@@ -28,7 +26,7 @@ use crate::LuaManager;
 use pz_classfile::class::Constant;
 use pz_classfile::Jar;
 use pz_core::game_time::{GameTime, GameTimeContext, GameTimeEvent};
-use pz_core::weather::manager::{AirFront, FLOAT_MAX};
+use pz_core::weather::manager::{AirFront, AirTemperatureQuery, FLOAT_MAX};
 use pz_core::weather::{
     temperature, ClimateColorInfo, ClimateContext, ClimateEvent, ClimateManager, ClimateValues, ColorRef,
     ErosionSeason, PeriodId, SeasonConfig, WeatherPeriod,
@@ -987,6 +985,85 @@ fn register_climate_manager(thread: &mut Thread) {
             Ok(c.push(fv(v)))
         });
     }
+    // `getAirTemperatureForSquare(square[, vehicle[, doWindChill]])`
+    b.method("getAirTemperatureForSquare", |c| {
+        let sq = crate::bind_world::square_coords(&c.arg(1));
+        let (veh_val, wind_chill) = match c.nargs() {
+            n if n >= 4 => (Some(c.arg(2)), bool_arg(c, 3)),
+            3 => match c.arg(2) {
+                Value::Bool(b) => (None, b),
+                other => (Some(other), false),
+            },
+            _ => (None, false),
+        };
+        let veh_temp = veh_val
+            .as_ref()
+            .and_then(pz_vehicles::lua::vehicle_from_value)
+            .map(|v| {
+                v.heater()
+                    .and_then(|h| pz_kahlua::exec::raw_tonumber(&h.mod_data().get_str("temperature")))
+                    .unwrap_or(0.0) as f32
+            });
+        let q = sq.map(|(x, y, z)| {
+            let in_room = crate::bind_world::with_cell_square(x, y, z, |s| s.room_id != -1)
+                .unwrap_or(false);
+            AirTemperatureQuery {
+                in_room,
+                z,
+                vehicle_inside_temperature: veh_temp,
+                hydro_power_on: crate::bind_world::power::hydro_power_on(),
+                heat_source_highest: None,
+            }
+        });
+        let v = with_gt(c, |g, _| {
+            g.climate.get_air_temperature_for_square(q.as_ref(), wind_chill)
+        })?;
+        Ok(c.push(fv(v)))
+    });
+    // `getAirTemperatureForCharacter(chr[, doWindChill])`
+    b.method("getAirTemperatureForCharacter", |c| {
+        let wind_chill = c.nargs() >= 3 && bool_arg(c, 2);
+        let chr_opt = match c.arg(1) {
+            Value::Object(o) => o
+                .as_any()
+                .downcast_ref::<crate::bind_character_sim::CharacterObject>()
+                .map(|ch| ch.0.clone()),
+            _ => None,
+        };
+        let q = chr_opt.map(|chr_ref| {
+            let chr = chr_ref.borrow();
+            let (x, y, z) = (
+                chr.vars.x.floor() as i32,
+                chr.vars.y.floor() as i32,
+                chr.vars.z.floor() as i32,
+            );
+            let in_room = crate::bind_world::with_cell_square(x, y, z, |s| s.room_id != -1)
+                .unwrap_or(false);
+            let veh_temp = chr.path.vehicle.and_then(|vid| {
+                pz_vehicles::manager::cell_vehicles()
+                    .into_iter()
+                    .find(|v| v.id() == vid)
+                    .map(|v| {
+                        v.heater()
+                            .and_then(|h| {
+                                pz_kahlua::exec::raw_tonumber(&h.mod_data().get_str("temperature"))
+                            })
+                            .unwrap_or(0.0) as f32
+                    })
+            });
+            AirTemperatureQuery {
+                in_room,
+                z,
+                vehicle_inside_temperature: veh_temp,
+                hydro_power_on: crate::bind_world::power::hydro_power_on(),
+                heat_source_highest: None,
+            }
+        });
+        let v = with_gt(c, |g, _| {
+            g.climate.get_air_temperature_for_square(q.as_ref(), wind_chill)
+        })?;
+        Ok(c.push(fv(v)))
+    });
     // Doubles: the offsets and world age keep their precision.
     type D = fn(&ClimateManager) -> f64;
     let doubles: [(&str, D); 5] = [
@@ -2316,6 +2393,42 @@ fn register_misc(thread: &mut Thread) {
     b.static_fn("getValueColor", |c| {
         let v = temperature::value_color(farg(c, 0));
         Ok(c.push(Value::Object(Rc::new(pz_ui::ColorObject::new(v[0], v[1], v[2], v[3])))))
+    });
+    b.static_fn("getWindChillAmountForPlayer", |c| {
+        let chr_opt = match c.arg(0) {
+            Value::Object(o) => o
+                .as_any()
+                .downcast_ref::<crate::bind_character_sim::CharacterObject>()
+                .map(|ch| ch.0.clone()),
+            _ => None,
+        };
+        let (q, in_vehicle) = match chr_opt {
+            Some(chr_ref) => {
+                let chr = chr_ref.borrow();
+                let (x, y, z) = (
+                    chr.vars.x.floor() as i32,
+                    chr.vars.y.floor() as i32,
+                    chr.vars.z.floor() as i32,
+                );
+                let in_room = crate::bind_world::with_cell_square(x, y, z, |s| s.room_id != -1)
+                    .unwrap_or(false);
+                let in_veh = chr.path.vehicle.is_some();
+                (
+                    Some(AirTemperatureQuery {
+                        in_room,
+                        z,
+                        vehicle_inside_temperature: None,
+                        hydro_power_on: crate::bind_world::power::hydro_power_on(),
+                        heat_source_highest: None,
+                    }),
+                    in_veh,
+                )
+            }
+            None => (None, false),
+        };
+        let gt = shared_game_time();
+        let amount = gt.borrow().climate.wind_chill_amount(q.as_ref(), in_vehicle);
+        Ok(c.push(fv(amount)))
     });
     b.static_fn("reset", |_| Ok(0));
 }
