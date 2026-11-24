@@ -445,3 +445,27 @@ fn corpse_has_the_iso_object_methods() {
     "#,
     );
 }
+
+#[test]
+fn special_objects_floor_stairs_dead_body_and_vehicle_queries() {
+    let mut f = Fixture::new();
+    crate::bind_dead_body::register(&mut f.thread);
+    f.square(|sq| {
+        let body = pz_world::save::visual::IsoDeadBody::for_tests(1.5, 1.5, 0.0);
+        sq.static_moving.push(Rc::new(RefCell::new(body)));
+    });
+    f.run(
+        r#"
+        assert(a:getSpecialObjects():size() == 0)
+        assert(a:isSolidTrans() == false)
+        assert(a:TreatAsSolidFloor() == false)
+        assert(a:HasStairs() == false)
+        assert(a:HasStairsNorth() == false)
+        assert(a:HasStairsWest() == false)
+        assert(a:hasFloor() == false)
+        assert(a:isVehicleIntersecting() == false)
+        assert(a:getDeadBody() == a:getStaticMovingObjects():get(0))
+        a:RecalcProperties()
+    "#,
+    );
+}

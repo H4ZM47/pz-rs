@@ -320,6 +320,138 @@ pub(super) fn register(b: &ClassBuilder) {
             .collect::<LuaResult<Vec<_>>>()?;
         Ok(crate::bind_java_util::list_value(items))
     });
+    // `getSpecialObjects()`: the square's special objects (doors, windows,
+    // thumpables, curtains, etc.) resolved from `special_objects`.
+    get(b, "getSpecialObjects", |c| {
+        let (x, y, z) = self_square(c)?;
+        let objects = with_square(x, y, z, |square| {
+            let mut out = Vec::with_capacity(square.special_objects.len());
+            for &id in &square.special_objects {
+                if let Some(slot) = square.objects.iter().find(|s| s.borrow().id == id) {
+                    out.push(slot.ref_handle());
+                }
+            }
+            Ok(out)
+        })?;
+        let items = objects
+            .iter()
+            .map(|object| square_object_value(object, (x, y, z)))
+            .collect::<LuaResult<Vec<_>>>()?;
+        Ok(crate::bind_java_util::list_value(items))
+    });
+    get(b, "isSolidTrans", |c| {
+        let (x, y, z) = self_square(c)?;
+        let sprites = crate::bind_sprites::manager()?;
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        Ok(with_square(x, y, z, |square| Ok(square.is_solid_trans(&sprites)))?.into())
+    });
+    get(b, "TreatAsSolidFloor", |c| {
+        let (x, y, z) = self_square(c)?;
+        let sprites = crate::bind_sprites::manager()?;
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        Ok(with_square(x, y, z, |square| Ok(square.treat_as_solid_floor(&sprites)))?.into())
+    });
+    get(b, "HasStairs", |c| {
+        let (x, y, z) = self_square(c)?;
+        let sprites = crate::bind_sprites::manager()?;
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        Ok(with_square(x, y, z, |square| Ok(square.has_stairs(&sprites)))?.into())
+    });
+    get(b, "HasStairsNorth", |c| {
+        let (x, y, z) = self_square(c)?;
+        let sprites = crate::bind_sprites::manager()?;
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        Ok(with_square(x, y, z, |square| Ok(square.has_stairs_north(&sprites)))?.into())
+    });
+    get(b, "HasStairsWest", |c| {
+        let (x, y, z) = self_square(c)?;
+        let sprites = crate::bind_sprites::manager()?;
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        Ok(with_square(x, y, z, |square| Ok(square.has_stairs_west(&sprites)))?.into())
+    });
+    // `hasFloor()` / `hasFloor(north)`: the one-argument form also accepts a
+    // solid floor on the neighbouring square to the north (`true`) or west.
+    get(b, "hasFloor", |c| {
+        let (x, y, z) = self_square(c)?;
+        let sprites = crate::bind_sprites::manager()?;
+        let own = with_square(x, y, z, |square| {
+            let sprites = sprites
+                .try_borrow()
+                .map_err(|_| crate::bind_world_object::borrowed("IsoSpriteManager"))?;
+            Ok(square
+                .try_floor_index(&sprites)
+                .map_err(crate::bind_world_object::host_error)?
+                .is_some())
+        })?;
+        if own || c.nargs() < 2 {
+            return Ok(own.into());
+        }
+        let (nx, ny) = if bool_arg(c, 1) { (x, y - 1) } else { (x - 1, y) };
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| crate::bind_world_object::borrowed("IsoSpriteManager"))?;
+        let solid = sprites.tables.flag.solidfloor;
+        let neighbour = cell(|cell| {
+            Ok(match cell.get_grid_square(nx, ny, z) {
+                Some(square) => square
+                    .try_borrow()
+                    .map_err(|_| LuaError::runtime("IsoGridSquare is in use"))?
+                    .has(solid),
+                None => false,
+            })
+        })?;
+        Ok(neighbour.into())
+    });
+    // `isFreeOrMidair(countOthers[, doZombie])`: no floor needed. Counting
+    // other characters, any moving object makes the square not free (with
+    // `doZombie`, dead bodies would not count, but the port keeps corpses in
+    // static_moving, so every moving object here is a live character). Then
+    // solid, solidtrans or a tree block it, and stairs always free it.
+    get(b, "isFreeOrMidair", |c| {
+        let (x, y, z) = self_square(c)?;
+        let count_others = bool_arg(c, 1);
+        let sprites = crate::bind_sprites::manager()?;
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        let free = with_square(x, y, z, |square| {
+            if count_others && !square.moving_objects.is_empty() {
+                return Ok(false);
+            }
+            let (f, ty) = (&sprites.tables.flag, &sprites.tables.ty);
+            if square.has_stairs_north(&sprites) || square.has_stairs_west(&sprites) {
+                return Ok(true);
+            }
+            Ok(!(square.has(f.solid) || square.has(f.solidtrans) || square.has_type(ty.tree)))
+        })?;
+        Ok(free.into())
+    });
+    b.method("RecalcProperties", |c| {
+        let (x, y, z) = self_square(c)?;
+        let sprites = crate::bind_sprites::manager()?;
+        let sprites = sprites
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
+        with_world_state_cell(|w| {
+            let w = w.borrow();
+            if let Some(sq) = w.cell.as_ref().and_then(|cell| cell.get_grid_square(x, y, z)) {
+                if let Ok(mut sq) = sq.try_borrow_mut() {
+                    sq.recalc_properties(&sprites);
+                }
+            }
+        });
+        Ok(0)
+    });
     // `getStaticMovingObjects()`: the corpses on the square.
     get(b, "getStaticMovingObjects", |c| {
         let (x, y, z) = self_square(c)?;
@@ -363,6 +495,25 @@ pub(super) fn register(b: &ClassBuilder) {
             .find(|v| v.is_intersecting_square(x, y, z))
             .map_or(Value::Nil, pz_vehicles::lua::vehicle_value))
     });
+    get(b, "isVehicleIntersecting", |c| {
+        let (x, y, z) = self_square(c)?;
+        let min_x = fastfloor((x as f32 - 4.0) / 8.0);
+        let min_y = fastfloor((y as f32 - 4.0) / 8.0);
+        let max_x = ((x as f32 + 4.0) / 8.0).ceil() as i32;
+        let max_y = ((y as f32 + 4.0) / 8.0).ceil() as i32;
+        let mut vehicles = Vec::new();
+        cell(|cell| {
+            for cy in min_y..max_y {
+                for cx in min_x..max_x {
+                    vehicles.extend(
+                        pz_vehicles::cell_link::chunk_vehicles(cell, cx, cy).unwrap_or_default(),
+                    );
+                }
+            }
+            Ok(())
+        })?;
+        Ok(vehicles.iter().any(|v| v.is_intersecting_square(x, y, z)).into())
+    });
     get(b, "getLightLevel", |c| {
         let (x, y, z) = self_square(c)?;
         let player = player_index(c, 1, true)?;
@@ -400,13 +551,10 @@ pub(super) fn register(b: &ClassBuilder) {
     // `getDeadBody()`: the first IsoDeadBody of `staticMovingObjects`.
     get(b, "getDeadBody", |c| {
         let (x, y, z) = self_square(c)?;
-        let count = with_square(x, y, z, |square| Ok(square.static_moving.len()))?;
-        if count != 0 {
-            return Err(crate::bind_world_object::unsupported(
-                "IsoGridSquare.getDeadBody: IsoDeadBody is not exposed to Lua",
-            ));
-        }
-        Ok(Value::Nil)
+        let first = with_square(x, y, z, |square| Ok(square.static_moving.first().cloned()))?;
+        Ok(first
+            .as_ref()
+            .map_or(Value::Nil, crate::bind_dead_body::dead_body_value))
     });
     // `haveGraffiti()`: an object with an attached sprite named
     // `overlay_graffiti`, `overlay_messages` or `constructedobjects_signs_01_4`.
