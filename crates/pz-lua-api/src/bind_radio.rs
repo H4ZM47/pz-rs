@@ -209,6 +209,16 @@ pub fn install_hooks(hooks: Rc<dyn RadioLuaHooks>) {
     HOOKS.with(|h| *h.borrow_mut() = hooks);
 }
 
+/// Clears all world-scoped radio hooks, translator, script tick hook, and
+/// active `ZomboidRadio` instance so exiting a world never retains old
+/// world/render state.
+pub fn reset_world_bindings() {
+    UPDATE_SCRIPTS_HOOK.with(|h| *h.borrow_mut() = None);
+    RADIO.with(|r| *r.borrow_mut() = None);
+    HOOKS.with(|h| *h.borrow_mut() = Rc::new(NoHooks));
+    TEXT.with(|t| *t.borrow_mut() = Rc::new(KeyText));
+}
+
 fn text() -> Rc<dyn LuaRadioText> {
     TEXT.with(|t| t.borrow().clone())
 }

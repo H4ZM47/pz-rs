@@ -401,6 +401,199 @@ fn object_load_hooks_caches_device_data_and_exposes_channel_lists() {
 }
 
 #[test]
+fn dropped_world_device_releases_emitter_and_reset_drops_world_hooks() {
+    reset_louisville_obfuscation_for_test();
+    let root = temp_dir("emitter_cleanup");
+    let game_dir = root.join("game");
+    let cache_dir = root.join("cache");
+    let save_dir = root.join("save");
+    std::fs::create_dir_all(game_dir.join("media/radio")).unwrap();
+    std::fs::write(game_dir.join("media/radio/RadioData.xml"), minimal_radio_xml()).unwrap();
+    std::fs::create_dir_all(&save_dir).unwrap();
+
+    let mut lua = fresh_lua(&game_dir, &cache_dir);
+    let sb = Rc::new(RefCell::new(pz_sandbox::SandboxOptions::default()));
+    let sprites = Rc::new(RefCell::new(IsoSpriteManager::new(
+        pz_world::sprite::test_tables(),
+    )));
+    let render = Rc::new(RefCell::new(None));
+    let weak_render = Rc::downgrade(&render);
+    let weak_sprites = Rc::downgrade(&sprites);
+
+    let wr = WorldRadio::init(
+        &game_dir,
+        save_dir.clone(),
+        -1,
+        true,
+        &mut lua,
+        &sb,
+        Some(sprites.clone()),
+        render.clone(),
+    )
+    .unwrap();
+
+    // Register a TV and allocate an emitter owned by it, then drop the last
+    // `Rc<IsoObject>` BEFORE `unregister_chunk` runs (simulating chunk unload
+    // or stale object teardown).
+    let tv_obj = Rc::new(RefCell::new(IsoObject::new(
+        1,
+        ObjectKind::Television(DeviceData {
+            is_television: true,
+            ..Default::default()
+        }),
+        None,
+    )));
+    wr.register_world_object(&tv_obj, (10, 20, 0));
+    let dev_id = *wr.state.borrow().world_devices.keys().next().unwrap();
+    {
+        let mut audio = EngineRadioAudio::new(wr.emitters.clone(), Some(dev_id));
+        let eid = audio.get_free_emitter(10.0, 20.0, 0);
+        assert!(wr.emitters.borrow().emitters.contains_key(&eid));
+    }
+    drop(tv_obj);
+
+    wr.unregister_chunk(10i32.div_euclid(8), 20i32.div_euclid(8), &render);
+    assert!(
+        wr.emitters.borrow().emitters.is_empty(),
+        "emitter owned by dropped world device must be returned on chunk unload"
+    );
+
+    // Also verify stale-object cleanup in `update_devices` returns emitters.
+    let radio_obj = Rc::new(RefCell::new(IsoObject::new(
+        2,
+        ObjectKind::Radio(DeviceData::default()),
+        None,
+    )));
+    wr.register_world_object(&radio_obj, (12, 22, 0));
+    let dev_id2 = *wr.state.borrow().world_devices.keys().next().unwrap();
+    {
+        let mut audio = EngineRadioAudio::new(wr.emitters.clone(), Some(dev_id2));
+        let eid = audio.get_free_emitter(12.0, 22.0, 0);
+        assert!(wr.emitters.borrow().emitters.contains_key(&eid));
+    }
+    drop(radio_obj);
+    wr.update_devices(&mut lua, Some(&sprites), &render);
+    assert!(
+        wr.emitters.borrow().emitters.is_empty(),
+        "emitter owned by dropped world device must be returned during stale update cleanup"
+    );
+
+    // Queueing world-device chat renders into ChatElement::render_batch(0)
+    // when a local player is within hearing range of the TV.
+    let sm_chat = pz_lua_api::bind_registry::shared_script_manager();
+    let listener = Rc::new(RefCell::new(
+        pz_lua_api::bind_character_sim::LuaGameCharacter::new(
+            &sm_chat,
+            pz_characters::CharacterKind::Player,
+        ),
+    ));
+    {
+        let mut p = listener.borrow_mut();
+        p.vars.x = 10.5;
+        p.vars.y = 20.5;
+        p.vars.z = 0.0;
+    }
+    pz_lua_api::bind_players::set_player(0, Some(listener.clone()));
+    pz_lua_api::bind_players::set_player_instance(Some(listener));
+
+    let chat_tv = Rc::new(RefCell::new(IsoObject::new(
+        3,
+        ObjectKind::Television(DeviceData {
+            is_television: true,
+            ..Default::default()
+        }),
+        None,
+    )));
+    wr.register_world_object(&chat_tv, (10, 20, 0));
+    {
+        let st = wr.state.borrow();
+        let entry = st.world_devices.values().next().unwrap();
+        entry.chat.borrow_mut().add_chat_line_full(
+            "Hello Knox Country!",
+            1.0,
+            1.0,
+            1.0,
+            UIFont::Medium,
+            20.0,
+            "default",
+            true,
+            true,
+            true,
+            true,
+            true,
+            true,
+        );
+        assert!(entry.chat.borrow().get_has_chat_to_display());
+    }
+    wr.queue_device_chat(0);
+    pz_lua_api::chat::element::ChatElement::render_batch(0);
+    pz_lua_api::bind_players::set_player(0, None);
+    pz_lua_api::bind_players::set_player_instance(None);
+
+    // Reset must reinstall NoHooks/KeyText so the old render/sprites are not pinned.
+    wr.reset(&render);
+    drop(wr);
+    drop(render);
+    drop(sprites);
+    assert!(
+        weak_render.upgrade().is_none(),
+        "reset must release EngineRadioLuaHooks's WorldRender reference"
+    );
+    assert!(
+        weak_sprites.upgrade().is_none(),
+        "reset must release EngineRadioLuaHooks's IsoSpriteManager reference"
+    );
+
+    // `query_square_power` must include `TimeSinceApo` apocalypse months.
+    let mut cell = IsoCell::default();
+    let mut chunk = IsoChunk::new(0, 0);
+    let sq = IsoGridSquare::new(2, 2, 0);
+    chunk.set_square(2, 2, 0, Some(sq.into()));
+    cell.chunks.insert((0, 0), chunk);
+    let meta = pz_world::IsoMetaGrid::blank(0, 0, 1, 1);
+    pz_lua_api::bind_world::set_cell(Some(cell));
+    pz_lua_api::bind_world::set_meta_grid(Some(meta));
+    let sp = Rc::new(RefCell::new(IsoSpriteManager::new(
+        pz_world::sprite::test_tables(),
+    )));
+    {
+        let gt = pz_lua_api::bind_climate::shared_game_time();
+        let mut g = gt.borrow_mut();
+        g.nights_survived = 0;
+        g.time_of_day = 9.0;
+    }
+    let cfg_day0 = RadioPowerConfig {
+        time_since_apo: 1,
+        elec_shut_modifier: 14,
+        ..Default::default()
+    };
+    let (MainsPower::Square(Some(p_day0)), _) = query_square_power((2, 2, 0), Some(&sp), cfg_day0) else {
+        panic!("expected square power");
+    };
+    assert!(p_day0.grid_power, "day 0 with elec_shut_modifier=14 should have grid power");
+
+    let cfg_six_months = RadioPowerConfig {
+        time_since_apo: 7,
+        elec_shut_modifier: 14,
+        ..Default::default()
+    };
+    let (MainsPower::Square(Some(p_late)), _) =
+        query_square_power((2, 2, 0), Some(&sp), cfg_six_months)
+    else {
+        panic!("expected square power");
+    };
+    assert!(
+        !p_late.grid_power,
+        "six months later (TimeSinceApo=7) with elec_shut_modifier=14 must have no grid power"
+    );
+
+    pz_lua_api::bind_world::set_cell(None);
+    pz_lua_api::bind_world::set_meta_grid(None);
+    reset_louisville_obfuscation_for_test();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 #[ignore = "reads installed Build 42 game files via PZ_GAME_DIR"]
 fn installed_build42_radio_init_loads_vanilla_channels_and_media() {
     let game_dir = PathBuf::from(

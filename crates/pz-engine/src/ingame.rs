@@ -393,6 +393,9 @@ impl IngameState {
         pz_lua_api::hud::world_markers::render(&mut cx.lua.thread);
         // TODO(port): `IsoMarkers.instance.render()`.
         pz_lua_api::hud::text_draw::render_batch(n as i32);
+        if let Some(w) = cx.world.as_ref() {
+            w.queue_radio_device_chat(n);
+        }
         pz_lua_api::chat::element::ChatElement::render_batch(n);
         // TODO(port): `ParameterRoomTypeEx.renderRoomTones`,
         // `ThumpDamageRender`, `Core.EndFrameText`.

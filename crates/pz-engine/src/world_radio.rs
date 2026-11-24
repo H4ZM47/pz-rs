@@ -138,10 +138,12 @@ pub fn radio_source(
     }
 }
 
-/// Cached radio emitter plus its live `DeviceVolume` parameter cell.
+/// Cached radio emitter plus its live `DeviceVolume` parameter cell and
+/// owning world device (if any) so dropped objects still release emitters.
 struct OwnedRadioEmitter {
     emitter: EmitterRef,
     device_volume: Rc<Cell<f32>>,
+    owner: Option<DeviceId>,
 }
 
 /// Pool of sound emitters currently held by active radio/TV devices.
@@ -154,6 +156,25 @@ struct RadioEmitterPool {
 impl RadioEmitterPool {
     fn return_all(&mut self) {
         let drained: Vec<_> = self.emitters.drain().map(|(_, e)| e.emitter).collect();
+        Self::release_emitters(drained);
+    }
+
+    /// Stops and returns every emitter owned by `owner`, even if the owning
+    /// `IsoObject` was already dropped before cleanup ran.
+    fn return_for_device(&mut self, owner: DeviceId) {
+        let ids: Vec<EmitterId> = self
+            .emitters
+            .iter()
+            .filter_map(|(&eid, e)| (e.owner == Some(owner)).then_some(eid))
+            .collect();
+        let drained: Vec<_> = ids
+            .into_iter()
+            .filter_map(|eid| self.emitters.remove(&eid).map(|e| e.emitter))
+            .collect();
+        Self::release_emitters(drained);
+    }
+
+    fn release_emitters(drained: Vec<EmitterRef>) {
         if drained.is_empty() {
             return;
         }
@@ -172,11 +193,12 @@ impl RadioEmitterPool {
 /// [`DeviceAudio`] over the shared `SoundSystem::world_emitters`.
 struct EngineRadioAudio {
     pool: Rc<RefCell<RadioEmitterPool>>,
+    owner: Option<DeviceId>,
 }
 
 impl EngineRadioAudio {
-    fn new(pool: Rc<RefCell<RadioEmitterPool>>) -> Self {
-        Self { pool }
+    fn new(pool: Rc<RefCell<RadioEmitterPool>>, owner: Option<DeviceId>) -> Self {
+        Self { pool, owner }
     }
 
     fn emitter_of(&self, id: EmitterId) -> Option<EmitterRef> {
@@ -216,6 +238,7 @@ impl DeviceAudio for EngineRadioAudio {
             OwnedRadioEmitter {
                 emitter,
                 device_volume,
+                owner: self.owner,
             },
         );
         id
@@ -401,6 +424,7 @@ enum PendingLuaEvent {
 /// power checks (`canBePoweredHere`).
 #[derive(Clone, Copy, Debug)]
 struct RadioPowerConfig {
+    time_since_apo: i32,
     elec_shut_modifier: i32,
     allow_exterior_generator: bool,
     generator_tile_range: i32,
@@ -411,6 +435,7 @@ struct RadioPowerConfig {
 impl Default for RadioPowerConfig {
     fn default() -> Self {
         Self {
+            time_since_apo: 1,
             elec_shut_modifier: 14,
             allow_exterior_generator: true,
             generator_tile_range: 20,
@@ -510,8 +535,7 @@ fn query_square_power(
     };
     let world_age_days = pz_lua_api::bind_climate::shared_game_time()
         .borrow()
-        .world_age_hours() as f32
-        / 24.0;
+        .world_age_days_since_begin(cfg.time_since_apo) as f32;
     with_world(|w| {
         let (Some(cell), Some(meta)) = (w.cell.as_ref(), w.meta_grid.as_ref()) else {
             return (MainsPower::Square(None), false);
@@ -632,6 +656,7 @@ impl EngineDeviceEnv {
         sprites: Option<&Rc<RefCell<IsoSpriteManager>>>,
         power_cfg: RadioPowerConfig,
         pool: Rc<RefCell<RadioEmitterPool>>,
+        owner: Option<DeviceId>,
     ) -> Self {
         let (mains, in_room) = query_square_power(pos, sprites, power_cfg);
         Self {
@@ -647,7 +672,7 @@ impl EngineDeviceEnv {
             has_sound_source: true,
             in_room,
             item_player_deaf: None,
-            audio: EngineRadioAudio::new(pool),
+            audio: EngineRadioAudio::new(pool, owner),
             events: Vec::new(),
         }
     }
@@ -679,7 +704,7 @@ impl EngineDeviceEnv {
             has_sound_source: has_source,
             in_room,
             item_player_deaf: deaf,
-            audio: EngineRadioAudio::new(pool),
+            audio: EngineRadioAudio::new(pool, None),
             events: Vec::new(),
         }
     }
@@ -1223,6 +1248,7 @@ impl RadioWorld for EngineRadioWorld<'_> {
                 self.sprites.as_ref(),
                 power_cfg,
                 self.emitters.clone(),
+                Some(device),
             );
             let listener = listener_index.map(|i| {
                 pz_lua_api::bind_players::player(i).map(|p| Listener {
@@ -1425,17 +1451,18 @@ impl RadioLuaHooks for EngineRadioLuaHooks {
                     let pos = id
                         .and_then(|id| st.world_devices.get(&id).map(|e| e.pos))
                         .unwrap_or((0, 0, 0));
-                    (id.unwrap_or(DeviceId(0)), pos, st.power)
+                    (id, pos, st.power)
                 };
                 let inner = EngineDeviceEnv::for_world_object(
                     pos,
                     self.sprites.as_ref(),
                     power_cfg,
                     self.emitters.clone(),
+                    id,
                 );
                 Some(Box::new(LuaCallbackDeviceEnv {
                     inner,
-                    target: EventTarget::World(id),
+                    target: EventTarget::World(id.unwrap_or(DeviceId(0))),
                     state: self.state.clone(),
                     render: self.render.clone(),
                 }))
@@ -1481,7 +1508,7 @@ impl RadioLuaHooks for EngineRadioLuaHooks {
                     has_sound_source: true,
                     in_room: false,
                     item_player_deaf: None,
-                    audio: EngineRadioAudio::new(self.emitters.clone()),
+                    audio: EngineRadioAudio::new(self.emitters.clone(), None),
                     events: Vec::new(),
                 };
                 Some(Box::new(LuaCallbackDeviceEnv {
@@ -1670,9 +1697,11 @@ impl WorldRadio {
         let hour = pz_lua_api::bind_climate::shared_game_time().borrow().hour();
         let (time_since_apo, power) = {
             let s = sb.borrow();
+            let time_since_apo = opt_int(&s, "TimeSinceApo").max(1);
             (
-                opt_int(&s, "TimeSinceApo").max(1),
+                time_since_apo,
                 RadioPowerConfig {
+                    time_since_apo,
                     elec_shut_modifier: opt_int(&s, "ElecShutModifier"),
                     allow_exterior_generator: opt_bool(&s, "AllowExteriorGenerator"),
                     generator_tile_range: opt_int(&s, "GeneratorTileRange").max(1),
@@ -1760,7 +1789,10 @@ impl WorldRadio {
             emitters,
             device_data_cache,
         };
-        init_result.map_err(|e| e.0)?;
+        if let Err(e) = init_result {
+            bind_radio::reset_world_bindings();
+            return Err(e.0);
+        }
         Ok(wr)
     }
 
@@ -1918,8 +1950,13 @@ impl WorldRadio {
         }
         if let Some(obj) = entry.object.upgrade() {
             let power_cfg = self.state.borrow().power;
-            let mut env =
-                EngineDeviceEnv::for_world_object(entry.pos, None, power_cfg, self.emitters.clone());
+            let mut env = EngineDeviceEnv::for_world_object(
+                entry.pos,
+                None,
+                power_cfg,
+                self.emitters.clone(),
+                Some(id),
+            );
             if let Ok(mut o) = obj.try_borrow_mut() {
                 if let Some(d) = kind_device_data_mut(&mut o.kind) {
                     d.remove_light(&mut env);
@@ -1927,6 +1964,9 @@ impl WorldRadio {
                 }
             }
         }
+        // Even if the `IsoObject` was already dropped before unregister/stale
+        // cleanup ran, release any emitter owned by `id` so audio never leaks.
+        self.emitters.borrow_mut().return_for_device(id);
     }
 
     /// `IsoWaveSignal.update()` for every live world radio/TV, plus
@@ -1952,6 +1992,7 @@ impl WorldRadio {
             let snapshot = {
                 let st = self.state.borrow();
                 st.world_devices.get(&id).map(|e| {
+                    e.chat.borrow_mut().update();
                     (
                         e.object.upgrade(),
                         e.pos,
@@ -1995,8 +2036,13 @@ impl WorldRadio {
                 None
             };
 
-            let mut base_env =
-                EngineDeviceEnv::for_world_object(pos, sprites, power_cfg, self.emitters.clone());
+            let mut base_env = EngineDeviceEnv::for_world_object(
+                pos,
+                sprites,
+                power_cfg,
+                self.emitters.clone(),
+                Some(id),
+            );
             {
                 let radio_guard = self.radio.borrow();
                 let mut env = WithRadio::new(&mut base_env, &radio_guard, &EngineRadioText);
@@ -2174,12 +2220,41 @@ impl WorldRadio {
         radio.save(&world);
     }
 
+    /// Projects each visible world radio/TV that has active dialogue lines and
+    /// queues its `ChatElement` for `ChatElement::render_batch(player)`
+    /// (`IsoWaveSignal.renderlast`).
+    pub fn queue_device_chat(&self, player: usize) {
+        let zoom = pz_lua_api::hud::host::with_host(|h| h.camera.zoom(player)).max(0.01);
+        let tile_scale = pz_lua_api::bind_core::shared_core()
+            .try_borrow()
+            .map_or(2, |c| c.tile_scale)
+            .max(1) as f32;
+        let devices: Vec<((i32, i32, i32), Rc<RefCell<ChatElement>>)> = {
+            let st = self.state.borrow();
+            st.world_devices
+                .values()
+                .filter(|e| e.object.strong_count() > 0 && e.chat.borrow().get_has_chat_to_display())
+                .map(|e| (e.pos, e.chat.clone()))
+                .collect()
+        };
+        for (pos, chat) in devices {
+            let (sx, sy) = pz_lua_api::hud::screen_iso::iso_to_screen(
+                player,
+                pos.0 as f32 + 0.5,
+                pos.1 as f32 + 0.5,
+                pos.2 as f32,
+            );
+            // Offset dialogue above the radio/TV tile (`IsoWaveSignal.renderlast`).
+            let y = sy - (32.0 * tile_scale) / zoom;
+            ChatElement::render_batched(&chat, player, sx as i32, y as i32, false);
+        }
+    }
+
     /// `ZomboidRadio.getInstance().Reset()` and `IsoWaveSignal.Reset()`
     /// (`IngameState.exit`). Preserves `louisvilleObfuscation` across resets.
     pub fn reset(&self, render: &Rc<RefCell<Option<WorldRender>>>) {
         LOUISVILLE_OBFUSCATION.with(|c| c.set(self.radio.borrow().louisville_obfuscation));
-        bind_radio::install_update_scripts_hook(None);
-        bind_radio::install_radio(None);
+        bind_radio::reset_world_bindings();
         self.device_data_cache.borrow_mut().clear();
 
         // Remove all TV lamppost lights from the renderer.
@@ -2285,13 +2360,19 @@ impl IsoWorld {
         }
     }
 
+    /// Queues visible world radio/TV `ChatElement`s for `ChatElement::render_batch(player)`.
+    pub(crate) fn queue_radio_device_chat(&self, player: usize) {
+        if let Some(radio) = &self.radio {
+            radio.queue_device_chat(player);
+        }
+    }
+
     /// `ZomboidRadio.getInstance().Reset()` and `IsoWaveSignal.Reset()`.
     pub fn reset_radio(&mut self) {
         if let Some(radio) = self.radio.take() {
             radio.reset(&self.render);
         } else {
-            bind_radio::install_update_scripts_hook(None);
-            bind_radio::install_radio(None);
+            bind_radio::reset_world_bindings();
         }
     }
 }

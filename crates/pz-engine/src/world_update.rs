@@ -2168,8 +2168,11 @@ impl IsoWorld {
             }));
             retired
         });
-        drop(retired);
+        // Unregister chunk radios/TVs while `retired` still keeps objects alive
+        // so `clean_sounds_and_emitter` and `remove_light` run cleanly before
+        // dropping the chunk's objects.
         self.unregister_radio_chunk(wx, wy);
+        drop(retired);
         if let Some(h) = self.pathfind.as_mut() {
             h.service_mut().remove_chunk_from_world(wx, wy);
         }
