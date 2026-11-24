@@ -54,6 +54,7 @@ pub mod bind_java_util;
 pub mod bind_misc;
 pub mod bind_misc_classes;
 pub mod bind_mods;
+pub mod bind_nonpvp_faction_rand;
 pub mod bind_nutrition;
 pub mod bind_performance;
 pub mod bind_object_picker;
@@ -286,6 +287,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_broken_fences::register(&mut mgr.thread);
     bind_object_picker::register(&mut mgr.thread);
     bind_safehouse::register(&mut mgr.thread);
+    bind_nonpvp_faction_rand::register(&mut mgr.thread);
     world_menu_logic::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
     bind_item_picker::register(&mut mgr.thread);
