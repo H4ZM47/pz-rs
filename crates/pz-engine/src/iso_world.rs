@@ -1290,8 +1290,10 @@ end
             rain: c.rain,
         };
         pz_lua_api::bind_climate::start_erosion_season(&mut lua.thread, &cfg, temperature);
-        // `ErosionMain.instance`; `mainTimer` reads the `GameTime` date.
-        // TODO(port): the erosion tick and the square / chunk load hooks.
+        // `ErosionMain.instance`: `mainTimer` runs via `EveryTenMinutes`
+        // (`bind_erosion::every_ten_minutes`) and chunk load/unload hooks run
+        // in `IsoWorld::chunk_added` / `chunk_removed`.
+        // TODO(port): per-square `load_grid_square` sprite mutation pass.
         let main = Rc::new(RefCell::new(main));
         let hooks = pz_lua_api::bind_erosion::ErosionLuaHooks {
             game_date: Some(Box::new(|| {

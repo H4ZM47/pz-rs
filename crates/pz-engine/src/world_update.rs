@@ -2381,13 +2381,14 @@ impl IsoWorld {
             sprites,
             pathfind,
             chunk_load_id,
+            erosion,
             ..
         } = self;
         let Some(sp) = sprites.as_ref() else { return };
         *chunk_load_id = chunk_load_id.wrapping_add(1);
         let load_id = *chunk_load_id;
         with_world(|w| {
-            let (Some(cell), Some(meta)) = (w.cell.as_ref(), w.meta_grid.as_ref()) else {
+            let (Some(cell), Some(meta)) = (w.cell.as_mut(), w.meta_grid.as_ref()) else {
                 return;
             };
             if let Some(p) = population.as_mut() {
@@ -2395,6 +2396,9 @@ impl IsoWorld {
             }
             if let Some(h) = pathfind.as_mut() {
                 add_chunk_to_pathfinder(h, cell, meta, &sp.borrow(), wx, wy, load_id);
+            }
+            if let (Some(er), Some(chunk)) = (erosion.as_ref(), cell.chunks.get_mut(&(wx, wy))) {
+                er.borrow_mut().chunk_loaded(chunk);
             }
         });
         if let Some(wv) = self.vehicles_runtime.as_mut() {
@@ -2434,6 +2438,9 @@ impl IsoWorld {
             let cz = host.zombies.chunk_zombies(wx, wy, &|_| false);
             pop.remove_chunk_from_world(host, wx, wy, &cz);
         });
+        if let Some(er) = self.erosion.as_ref() {
+            er.borrow_mut().chunk_unloaded(wx, wy);
+        }
         if let Some(wv) = self.vehicles_runtime.as_mut() {
             wv.chunk_removed(wx, wy);
         }
