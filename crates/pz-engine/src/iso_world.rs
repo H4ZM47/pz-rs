@@ -208,6 +208,10 @@ pub struct IsoWorld {
     pub(crate) house_alarms: crate::sound::house_alarms::HouseAlarms,
     pub meta_tracker: Rc<RefCell<MetaTracker>>,
     pub statistics: Statistics,
+    /// `ObjectIDManager.getInstance()` (`id_manager_data.bin`).
+    pub object_ids: pz_world::ObjectIDManager,
+    /// `ImportantAreaManager.getInstance()` (`important_area_data.bin`).
+    pub important_areas: pz_world::ImportantAreaManager,
     /// The sandbox preset `map_sand.bin` named.
     pub preset: String,
     /// `IsoCell.getZombieList()`: the real zombies.
@@ -353,6 +357,8 @@ impl IsoWorld {
             house_alarms: Default::default(),
             meta_tracker: Default::default(),
             statistics: Statistics::default(),
+            object_ids: pz_world::ObjectIDManager::new(),
+            important_areas: pz_world::ImportantAreaManager::new(),
             preset: String::new(),
             zombies: Vec::new(),
             player_stand_ins: Vec::new(),
@@ -631,8 +637,18 @@ impl IsoWorld {
                 core_rc.borrow_mut().game_map = map;
             }
         }
-        // TODO(port): `ObjectIDManager.load` (`id_manager_data.bin`) and
+        // `ObjectIDManager.load` (`id_manager_data.bin`) and
         // `ImportantAreaManager.load` (`important_area_data.bin`).
+        self.object_ids.clear();
+        self.important_areas.clear();
+        if !no_save {
+            if let Err(e) = self.object_ids.load_file(&self.save_dir) {
+                self.log_error(format!("ObjectIDManager.load: {e}"));
+            }
+            if let Err(e) = self.important_areas.load_file(&self.save_dir) {
+                self.log_error(format!("ImportantAreaManager.load: {e}"));
+            }
+        }
         // `WorldGenParams.INSTANCE.load()`; a new single-player world keeps
         // the seed the menu set (`MapSpawnSelect.saveGenParams`).
         self.load_world_gen_params();
