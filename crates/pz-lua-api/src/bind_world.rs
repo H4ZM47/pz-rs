@@ -575,6 +575,31 @@ fn building_get(b: &ClassBuilder, name: &str, f: impl Fn(&BuildingDef) -> Value 
     });
 }
 
+/// One `IsoGridSquare:startWaterSplash(isBigSplash[, dx, dy])` request queued
+/// from Lua (e.g. `Fishing/Fish.lua`) for the world renderer's `FishSplashes`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WaterSplashRequest {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub big: bool,
+    pub offset: Option<(f32, f32)>,
+}
+
+thread_local! {
+    static WATER_SPLASHES: RefCell<Vec<WaterSplashRequest>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Drain queued water splash requests since the previous frame.
+pub fn drain_water_splashes() -> Vec<WaterSplashRequest> {
+    WATER_SPLASHES.with(|q| std::mem::take(&mut *q.borrow_mut()))
+}
+
+/// Clear queued water splash requests on world exit.
+pub fn reset_water_splashes() {
+    WATER_SPLASHES.with(|q| q.borrow_mut().clear());
+}
+
 pub fn register(thread: &mut Thread) {
     register_world(thread, None);
 }
@@ -2097,6 +2122,24 @@ fn register_grid_square(thread: &mut Thread) {
     }
     square_queries::register(&b);
     power::register(&b);
+    void(&b, "startWaterSplash", |c| {
+        let (x, y, z) = self_square(c)?;
+        let big = bool_arg(c, 1);
+        let offset = match (c.arg(2).as_num(), c.arg(3).as_num()) {
+            (Some(dx), Some(dy)) => Some((dx as f32, dy as f32)),
+            _ => None,
+        };
+        WATER_SPLASHES.with(|q| {
+            q.borrow_mut().push(WaterSplashRequest {
+                x,
+                y,
+                z,
+                big,
+                offset,
+            });
+        });
+        Ok(())
+    });
     for (method, local) in [("playSound", false), ("playSoundLocal", true)] {
         get(&b, method, move |c| {
             let (x, y, z) = self_square(c)?;
@@ -2686,5 +2729,48 @@ mod tests {
             check(r[1].file == "media/maps/Test/spawnpoints.lua")
             "#,
         );
+    }
+
+    #[test]
+    fn start_water_splash_queues_and_drains_requests() {
+        reset_water_splashes();
+        let mut cell = IsoCell::default();
+        let mut ch = IsoChunk::new(12, 25);
+        ch.set_square(4, 0, 0, Some(IsoGridSquare::new(100, 200, 0).into()));
+        cell.chunks.insert((12, 25), ch);
+        set_cell(Some(cell));
+        let mut t = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        register(&mut t);
+        t.globals().set_str("sq", square_value(100, 200, 0));
+        run(
+            &mut t,
+            r#"
+            sq:startWaterSplash(true, 0.25, -0.5)
+            sq:startWaterSplash(false)
+            "#,
+        );
+        let drained = drain_water_splashes();
+        set_cell(None);
+        assert_eq!(
+            drained,
+            vec![
+                WaterSplashRequest {
+                    x: 100,
+                    y: 200,
+                    z: 0,
+                    big: true,
+                    offset: Some((0.25, -0.5)),
+                },
+                WaterSplashRequest {
+                    x: 100,
+                    y: 200,
+                    z: 0,
+                    big: false,
+                    offset: None,
+                },
+            ]
+        );
+        assert!(drain_water_splashes().is_empty());
     }
 }

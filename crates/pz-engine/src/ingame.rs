@@ -412,6 +412,8 @@ impl GameState for IngameState {
         }
         // TODO(port): `IsoMarkers.instance.reset()`.
         pz_lua_api::bind_search_mode::reset();
+        pz_lua_api::bind_randomized_world::reset_unique_rds_spawned();
+        pz_lua_api::bind_world::reset_water_splashes();
         // TODO(port): `ZomboidRadio.Reset`, `IsoWaveSignal.Reset`,
         // `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,

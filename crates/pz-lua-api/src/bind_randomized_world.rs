@@ -21,10 +21,15 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 pub const CLASS: &str = "zombie.randomizedWorld.RandomizedWorldBase";
+pub const RBBASIC_CLASS: &str = "zombie.randomizedWorld.randomizedBuilding.RBBasic";
 
 thread_local! {
     /// The static lists, by field name.
     static LISTS: RefCell<HashMap<String, Rc<JavaList>>> = RefCell::default();
+    /// `RBBasic.uniqueRDSSpawned`: live static `ArrayList<String>` saved in `map_meta.bin`.
+    static UNIQUE_RDS_SPAWNED: Rc<JavaList> = Rc::new(JavaList::new(Vec::new()));
+    /// Whether `IsoWorld` has initialized `RBBasic.uniqueRDSSpawned` for the active world.
+    static UNIQUE_RDS_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// `IsoWorld.instance.getRandomizedWorldBase()`.
@@ -37,6 +42,53 @@ impl LuaObject for LuaRandomizedWorldBase {
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+/// `IsoWorld.instance.getRBBasic()` (`zombie.randomizedWorld.randomizedBuilding.RBBasic`).
+pub struct LuaRBBasic;
+
+impl LuaObject for LuaRBBasic {
+    fn class_name(&self) -> &str {
+        RBBASIC_CLASS
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// `RBBasic.getUniqueRDSSpawned().clear()` on `IsoWorld.init` / world exit.
+pub fn clear_unique_rds_spawned() {
+    UNIQUE_RDS_SPAWNED.with(|l| l.items.borrow_mut().clear());
+    UNIQUE_RDS_ACTIVE.with(|a| a.set(true));
+}
+
+/// Release `RBBasic.uniqueRDSSpawned` tracking on `IngameState.exit`.
+pub fn reset_unique_rds_spawned() {
+    UNIQUE_RDS_SPAWNED.with(|l| l.items.borrow_mut().clear());
+    UNIQUE_RDS_ACTIVE.with(|a| a.set(false));
+}
+
+/// Replace `RBBasic.uniqueRDSSpawned` in-place from `map_meta.bin`.
+pub fn install_unique_rds_spawned(names: &[String]) {
+    UNIQUE_RDS_SPAWNED.with(|l| {
+        let mut items = l.items.borrow_mut();
+        items.clear();
+        items.extend(names.iter().map(|s| Value::str(s)));
+    });
+    UNIQUE_RDS_ACTIVE.with(|a| a.set(true));
+}
+
+/// Snapshot `RBBasic.uniqueRDSSpawned` for `map_meta.bin` (`None` if inactive).
+pub fn snapshot_unique_rds_spawned() -> Option<Vec<String>> {
+    if !UNIQUE_RDS_ACTIVE.with(|a| a.get()) {
+        return None;
+    }
+    Some(UNIQUE_RDS_SPAWNED.with(|l| {
+        l.snapshot()
+            .iter()
+            .map(pz_kahlua::exec::java_value_of)
+            .collect()
+    }))
 }
 
 /// The `(method, static field)` pairs of the class's list getters, in
@@ -91,6 +143,26 @@ pub fn register(thread: &mut Thread, getters: &[(String, String)]) {
             Ok(c.push(Value::Object(list_of(&field))))
         });
     }
+    let rb = expose_class(thread, RBBASIC_CLASS, Some(CLASS));
+    let get_unique = |c: &mut pz_kahlua::NativeCall<'_>| {
+        let list = UNIQUE_RDS_SPAWNED.with(|l| Value::Object(l.clone()));
+        Ok(c.push(list))
+    };
+    rb.static_fn("getUniqueRDSSpawned", get_unique);
+    rb.method("getUniqueRDSSpawned", get_unique);
+    rb.method("getName", |c| {
+        crate::expose::this::<LuaRBBasic>(c)?;
+        Ok(c.push(Value::str("RBBasic")))
+    });
+    rb.method("getSurvivorStories", |c| {
+        crate::expose::this::<LuaRBBasic>(c)?;
+        Ok(c.push(Value::Object(Rc::new(JavaList::new(Vec::new())))))
+    });
+    rb.method("getSurvivorProfession", |c| {
+        crate::expose::this::<LuaRBBasic>(c)?;
+        Ok(c.push(Value::Object(Rc::new(JavaList::new(Vec::new())))))
+    });
+
     let w = expose_class(thread, "zombie.iso.IsoWorld", Some("java.lang.Object"));
     let rwb = Value::Object(Rc::new(LuaRandomizedWorldBase));
     w.method("getRandomizedWorldBase", move |c| {
@@ -104,6 +176,19 @@ pub fn register(thread: &mut Thread, getters: &[(String, String)]) {
             }
         }
         Ok(c.push(rwb.clone()))
+    });
+    let rb_val = Value::Object(Rc::new(LuaRBBasic));
+    w.method("getRBBasic", move |c| {
+        match c.arg(0) {
+            Value::Object(o) if o.class_name() == "zombie.iso.IsoWorld" => {}
+            other => {
+                return Err(pz_kahlua::LuaError::runtime(format!(
+                    "Expected zombie.iso.IsoWorld but got {}",
+                    pz_kahlua::stdlib::java_class_name(&other)
+                )))
+            }
+        }
+        Ok(c.push(rb_val.clone()))
     });
 }
 
@@ -146,5 +231,40 @@ mod tests {
         let f = pz_kahlua::stdlib::load_string(src, Some("test"), t.globals().clone()).unwrap();
         t.call(&f, &[]).unwrap();
         assert_eq!(clutter("barnClutter"), ["Base.Hat", "Base.Hat"]);
+    }
+
+    #[test]
+    fn rbbasic_unique_rds_spawned_roundtrip_and_clear() {
+        reset_unique_rds_spawned();
+        assert!(snapshot_unique_rds_spawned().is_none());
+
+        let mut t = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        crate::bind_java_util::register(&mut t);
+        register(&mut t, &[]);
+
+        clear_unique_rds_spawned();
+        let src = r#"
+            local l = RBBasic.getUniqueRDSSpawned()
+            l:add("RDSPoliceAtHouse")
+            l:add("RDSBedroom")
+            return l:size()
+        "#;
+        let f = pz_kahlua::stdlib::load_string(src, Some("test"), t.globals().clone()).unwrap();
+        let out = t.call(&f, &[]).unwrap();
+        assert_eq!(out[0].as_num(), Some(2.0));
+        assert_eq!(
+            snapshot_unique_rds_spawned(),
+            Some(vec!["RDSPoliceAtHouse".into(), "RDSBedroom".into()])
+        );
+
+        install_unique_rds_spawned(&["RestoredStory".into()]);
+        assert_eq!(
+            snapshot_unique_rds_spawned(),
+            Some(vec!["RestoredStory".into()])
+        );
+
+        reset_unique_rds_spawned();
+        assert!(snapshot_unique_rds_spawned().is_none());
     }
 }
