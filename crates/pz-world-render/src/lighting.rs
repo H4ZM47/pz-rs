@@ -921,6 +921,19 @@ impl WorldLighting {
             .map_or(&[], |l| &l.lights[..])
     }
 
+    /// Current JNI light ids of the `IsoRoomLight`s belonging to `room_id`
+    /// (`ModelInstance.updateLights` room-light filtering).
+    pub fn room_light_ids(&self, room_id: i64) -> Vec<i32> {
+        self.room_light_keys
+            .iter()
+            .filter_map(|(&(rid, _), &key)| {
+                (rid == room_id)
+                    .then(|| self.sync.room_light_id(key))
+                    .flatten()
+            })
+            .collect()
+    }
+
     /// One frame for one player: `checkLights`, `calculateVisionCone`,
     /// `updatePlayer` (sending flagged chunks), decoding the results the
     /// last lighting update produced, then the lighting thread's update

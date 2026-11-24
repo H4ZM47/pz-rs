@@ -23,7 +23,9 @@ use pz_iso_render::weather_fx_mask::{
     render_weather_fx, FxMaskCharacters, FxMaskFrame, FxMaskPlayer, FxMaskSprites, WeatherFxMask,
 };
 use pz_iso_render::{Camera, ChunkRenderer, CutawayWorld, RenderInfos};
-use pz_lighting::jni::{IsoDirection, VisionConeInput};
+use pz_lighting::jni::{
+    detection_range, effective_fatigue, IsoDirection, PlayerInput, VisionConeInput,
+};
 use pz_lua_api::bind_character_sim::LuaGameCharacter;
 use pz_render::tile_depth::{
     TileDepthTextureAssignmentManager, TileDepthTextureManager, TileGeometryManager,
@@ -31,16 +33,239 @@ use pz_render::tile_depth::{
 use pz_render::{DrawCmd, ScreenParams, Texture, TextureManager};
 use pz_world::isoregion::IsoRegions;
 use pz_world::square::IsoDirections;
+use pz_world::world_state::{generator_power_range, PlayerLights, PowerSettings, WorldState};
 use pz_world_render::{
-    check_changed_buildings, default_player, ClimateSettings, GameTextures, NoWorldHooks,
-    master_region, PendingRender, PlayerFrameInput, PuddleInputs, RenderInvalidation, RenderWorld,
-    SpriteCache, WorldFxMask, WorldLighting, WorldView,
+    check_changed_buildings, default_player, master_region, ClimateSettings, GameTextures,
+    PendingRender, PlayerFrameInput, PuddleInputs, RenderInvalidation, RenderWorld, SpriteCache,
+    WorldFxMask, WorldLighting, WorldView,
 };
 use std::cell::RefCell;
 use std::time::Instant;
 
 #[cfg(test)]
 mod host_tests;
+
+/// Current grid/generator power settings read from `GameTime`, `SandboxOptions`,
+/// and `IsoGenerator` range statics.
+fn current_power_settings() -> PowerSettings {
+    let world_age_days = pz_lua_api::bind_climate::shared_game_time()
+        .borrow()
+        .world_age_hours() as f32
+        / 24.0;
+    let elec_shut_modifier =
+        pz_lua_api::bind_sandbox::current_double("ElecShutModifier").unwrap_or(14.0) as i32;
+    let allow_exterior_generator =
+        pz_lua_api::bind_sandbox::current_bool("AllowExteriorGenerator").unwrap_or(true);
+    let range = generator_power_range();
+    PowerSettings {
+        hydro_power_on: pz_lua_api::bind_world::power::hydro_power_on(),
+        world_age_days,
+        elec_shut_modifier,
+        allow_exterior_generator,
+        generator_tile_range: range.radius,
+        generator_vertical_power_range: range.vertical,
+    }
+}
+
+/// Owned snapshot of one local player's active light-emitting items
+/// (`getSecondaryHandItem`, `getPrimaryHandItem`, then `getAttachedItems`),
+/// so [`WorldState`] can borrow them without holding character `RefCell`s.
+struct OwnedPlayerLights {
+    index: i32,
+    x: f32,
+    y: f32,
+    z: f32,
+    look_x: f32,
+    look_y: f32,
+    items: Vec<pz_inventory::InventoryItem>,
+}
+
+impl OwnedPlayerLights {
+    fn as_view(&self) -> PlayerLights<'_> {
+        PlayerLights {
+            index: self.index,
+            x: self.x,
+            y: self.y,
+            z: self.z,
+            look_x: self.look_x,
+            look_y: self.look_y,
+            items: self.items.iter().collect(),
+        }
+    }
+}
+
+fn normalized_look(chr: &LuaGameCharacter) -> (f32, f32) {
+    let (fx, fy) = (chr.vars.forward_x, chr.vars.forward_y);
+    let len = (fx * fx + fy * fy).sqrt();
+    if len > 1e-4 {
+        (fx / len, fy / len)
+    } else {
+        let dir = IsoDirection::ALL[chr.vars.dir as usize];
+        let (dx, dy) = dir.delta();
+        let dlen = ((dx * dx + dy * dy) as f32).sqrt();
+        (dx as f32 / dlen, dy as f32 / dlen)
+    }
+}
+
+/// Active light-emitting items of `chr` in `getActiveLightItems()` order
+/// (secondary hand, primary hand, then attached items).
+fn collect_active_light_items(chr: &LuaGameCharacter) -> Vec<pz_inventory::InventoryItem> {
+    let mut items = Vec::new();
+    let mut push_ref = |item_ref: Option<pz_inventory::shared::ItemRef>| {
+        if let Some(r) = item_ref {
+            if let Ok(body) = r.try_borrow() {
+                if body.is_emitting_light() && !items.iter().any(|i: &pz_inventory::InventoryItem| i.id == body.id) {
+                    items.push(body.clone());
+                }
+            }
+        }
+    };
+    push_ref(chr.items.secondary_hand_item());
+    push_ref(chr.items.primary_hand_item());
+    for (_, item) in &chr.zombie.attached_items {
+        if item.is_emitting_light() && !items.iter().any(|i| i.id == item.id) {
+            items.push(item.clone());
+        }
+    }
+    items
+}
+
+/// Strongest active torch strength carried by `chr`, for `LightContext`.
+fn character_torch_strength(chr: &LuaGameCharacter) -> f32 {
+    collect_active_light_items(chr)
+        .into_iter()
+        .map(|i| i.get_light_strength())
+        .fold(0.0f32, f32::max)
+}
+
+fn collect_local_player_lights() -> Vec<OwnedPlayerLights> {
+    let mut out = Vec::new();
+    for i in 0..MAX_PLAYERS {
+        let Some(p) = pz_lua_api::bind_players::player(i) else {
+            continue;
+        };
+        let Ok(chr) = p.try_borrow() else {
+            continue;
+        };
+        if chr.is_dead() {
+            continue;
+        }
+        let items = collect_active_light_items(&chr);
+        if items.is_empty() {
+            continue;
+        }
+        let (look_x, look_y) = normalized_look(&chr);
+        out.push(OwnedPlayerLights {
+            index: i as i32,
+            x: chr.vars.x,
+            y: chr.vars.y,
+            z: chr.vars.z,
+            look_x,
+            look_y,
+            items,
+        });
+    }
+    out
+}
+
+/// Build the live `PlayerInput` and `VisionConeInput` for local player `p`,
+/// falling back to `default_player` if the player slot is absent.
+fn build_player_lighting_inputs(
+    p: usize,
+    v: &RenderView,
+    view: &WorldView<'_>,
+) -> (PlayerInput, VisionConeInput) {
+    let forward = IsoDirection::ALL[v.dir as usize];
+    let Some(player_ref) = pz_lua_api::bind_players::player(p) else {
+        return (
+            default_player(v.x, v.y, v.z, forward),
+            VisionConeInput {
+                worn_items_vision_multiplier: 1.0,
+                ..Default::default()
+            },
+        );
+    };
+    let Ok(chr) = player_ref.try_borrow() else {
+        return (
+            default_player(v.x, v.y, v.z, forward),
+            VisionConeInput {
+                worn_items_vision_multiplier: 1.0,
+                ..Default::default()
+            },
+        );
+    };
+    let sm = pz_lua_api::bind_registry::shared_script_manager();
+    let chars = pz_lua_api::bind_characters::shared_characters();
+    let (fatigue, fatigue_at_max, intoxication) = {
+        let chars = chars.borrow();
+        let fat_stat = chars.sim.character_stats.field("FATIGUE").ok();
+        let intox_stat = chars.sim.character_stats.field("INTOXICATION").ok();
+        let fatigue = fat_stat.as_ref().map_or(0.0, |s| chr.stats.get(s));
+        let fatigue_at_max = fat_stat.as_ref().is_some_and(|s| chr.stats.is_at_maximum(s));
+        let intoxication = intox_stat.as_ref().map_or(0.0, |s| chr.stats.get(s));
+        (fatigue, fatigue_at_max, intoxication)
+    };
+    let drunk_level = chr.moodles.moodle_level_of(&sm, "DRUNK").unwrap_or(0);
+    let panic_level = chr.moodles.moodle_level_of(&sm, "PANIC").unwrap_or(0);
+    let deaf = chr.has_trait(&sm, "DEAF").unwrap_or(false);
+    let keen_hearing = chr.has_trait(&sm, "KEEN_HEARING").unwrap_or(false);
+    let hard_of_hearing = chr.has_trait(&sm, "HARD_OF_HEARING").unwrap_or(false);
+    let short_sighted = chr.has_trait(&sm, "SHORT_SIGHTED").unwrap_or(false);
+    let eagle_eyed = chr.has_trait(&sm, "EAGLE_EYED").unwrap_or(false);
+    let night_vision = chr.has_trait(&sm, "NIGHT_VISION").unwrap_or(false);
+    let worn_vision = chr.worn_items_vision_multiplier();
+    let worn_hearing = chr.worn_items_hearing_multiplier();
+    let (look_x, look_y) = normalized_look(&chr);
+    let in_room = view
+        .cell
+        .get_grid_square(
+            v.x.floor() as i32,
+            v.y.floor() as i32,
+            v.z.floor() as i32,
+        )
+        .is_some_and(|sq| sq.try_borrow().is_ok_and(|s| s.room_id != -1));
+    let sim = crate::sim::FrameSim::capture();
+    let ghost = chr.is_ghost_mode(&sim);
+    let in_vehicle = chr.path.vehicle.is_some();
+
+    let player_input = PlayerInput {
+        x: v.x,
+        y: v.y,
+        z: v.z,
+        look_x,
+        look_y,
+        reversing_driver: false,
+        reanimated: chr.zombie.reanimated_player,
+        ghost,
+        short_sighted,
+        effective_fatigue: effective_fatigue(fatigue),
+        detection_range: detection_range(
+            deaf,
+            keen_hearing,
+            hard_of_hearing,
+            worn_hearing,
+            fatigue,
+            intoxication,
+        ),
+        forward: Some(forward),
+    };
+    let cone_input = VisionConeInput {
+        day_light_strength: 0.0,
+        in_vehicle,
+        fatigue,
+        fatigue_at_max,
+        drunk_level,
+        intoxication,
+        panic_level,
+        luma_inverted: 0.0,
+        in_room,
+        eagle_eyed,
+        night_vision,
+        headlights: false,
+        worn_items_vision_multiplier: worn_vision,
+    };
+    (player_input, cone_input)
+}
 
 /// `IsoPlayer.MAX`.
 const MAX_PLAYERS: usize = 4;
@@ -433,11 +658,13 @@ impl WorldRender {
             self.world.puddles_recalc.extend(self.world.squares.keys().copied());
             for cache in &mut self.caches { cache.invalidate_all(dirty::REDRAW); }
         }
+        let power = current_power_settings();
+        let hooks = WorldState::new(view.cell, view.meta, view.sprites, power);
         self.pending.apply(
             view,
             &mut self.world,
             &mut self.lighting,
-            &NoWorldHooks,
+            &hooks,
             &mut self.sprites,
             &mut tex,
             PuddleInputs {
@@ -488,9 +715,8 @@ impl WorldRender {
             assignments: &self.assignments,
             geometry: &self.geometry,
         };
-        // TODO(port): `NoWorldHooks`: thumpables, barricades, power and
-        // the players' torches (`WorldHooks`).
-        let hooks = NoWorldHooks;
+        let power = current_power_settings();
+        let hooks = WorldState::new(view.cell, view.meta, view.sprites, power);
         // Preserve the current and remaining host notifications on a fault;
         // a Drain destructor would silently discard every unprocessed entry.
         while let Some(&(wx, wy)) = events.added.first() {
@@ -655,19 +881,19 @@ impl WorldRender {
         // `LightingJNI.update` for the player, then the decoded results
         // into the render squares.
         if !self.lighting_error {
+            let (player, cone) = build_player_lighting_inputs(p, v, view);
             let input = PlayerFrameInput {
                 index: p as i32,
-                // TODO(port): the player's fatigue, detection range and
-                // the worn items' vision multiplier.
-                player: default_player(v.x, v.y, v.z, IsoDirection::ALL[v.dir as usize]),
-                cone: VisionConeInput {
-                    worn_items_vision_multiplier: 1.0,
-                    ..Default::default()
-                },
+                player,
+                cone,
                 chunk_x_min: v.chunk_map.0,
                 chunk_y_min: v.chunk_map.1,
                 chunk_grid_width: v.chunk_map.2,
             };
+            let power = current_power_settings();
+            let owned_lights = collect_local_player_lights();
+            let mut hooks = WorldState::new(view.cell, view.meta, view.sprites, power);
+            hooks.players = owned_lights.iter().map(OwnedPlayerLights::as_view).collect();
             let nanos = self.start.elapsed().as_nanos() as u64;
             let (w, h) = (v.width, v.height);
             let on_screen = |wx: i32, wy: i32, z: i32| {
@@ -677,7 +903,7 @@ impl WorldRender {
                 view,
                 &input,
                 &mut v.climate,
-                &NoWorldHooks,
+                &hooks,
                 nanos,
                 &on_screen,
             ) {
@@ -776,10 +1002,13 @@ impl WorldRender {
                     target_ambient: color,
                     outside: sq.room_id == -1,
                     in_room: sq.room_id != -1,
-                    // TODO(port): room-light ids and the player's equipped torch.
-                    room_light_ids: Vec::new(),
+                    room_light_ids: if sq.room_id != -1 {
+                        self.lighting.room_light_ids(sq.room_id)
+                    } else {
+                        Vec::new()
+                    },
                     player_index: chr.is_player().then_some(chr.player.player_index),
-                    torch_strength: 0.0,
+                    torch_strength: character_torch_strength(chr),
                     forward: [chr.vars.forward_x, chr.vars.forward_y],
                     multiplier: v.multiplier,
                 };
@@ -1177,5 +1406,132 @@ impl IsoWorld {
         // pathfinding/sound/vocals debug renders, `FBORenderAreaHighlights`,
         // `LineDrawer.render`.
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod lighting_hooks_tests {
+    use super::*;
+    use pz_world_render::WorldHooks;
+    use std::rc::Rc;
+
+    #[test]
+    fn active_player_flashlight_produces_world_state_torch_and_model_torch_strength() {
+        struct Cleanup;
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                pz_lua_api::bind_players::reset();
+            }
+        }
+        let _cleanup = Cleanup;
+
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let mut chr = LuaGameCharacter::new(&sm, pz_characters::CharacterKind::Player);
+        chr.vars.x = 10.5;
+        chr.vars.y = 20.5;
+        chr.vars.z = 0.0;
+        chr.vars.forward_x = 1.0;
+        chr.vars.forward_y = 0.0;
+
+        let mut tmpl = pz_inventory::ItemTemplate::new(
+            pz_inventory::ItemClass::Normal,
+            "Base",
+            "Torch",
+        );
+        tmpl.light_distance = 12;
+        tmpl.light_strength = 0.9;
+        tmpl.torch_cone = true;
+        tmpl.torch_dot = 0.7;
+        tmpl.activated_item = true;
+        let mut torch = pz_inventory::InventoryItem::create(Rc::new(tmpl), 1);
+        torch.id = 77;
+        torch.activated = true;
+        let torch_ref = pz_inventory::shared::try_new_item(torch).unwrap();
+        chr.items.inventory.borrow_mut().items.push(torch_ref);
+        chr.items.primary_hand_item = Some(77);
+
+        let strength = character_torch_strength(&chr);
+        assert!((strength - 0.9).abs() < 1e-5, "got strength={strength}");
+
+        let p = Rc::new(RefCell::new(chr));
+        pz_lua_api::bind_players::set_num_players(1);
+        pz_lua_api::bind_players::set_player(0, Some(p));
+
+        let owned = collect_local_player_lights();
+        assert_eq!(owned.len(), 1);
+        let cell = pz_world::IsoCell::default();
+        let meta = pz_world::IsoMetaGrid::empty();
+        let sprites = pz_world::IsoSpriteManager::new(pz_world::sprite::test_tables());
+        let mut state = WorldState::new(&cell, &meta, &sprites, current_power_settings());
+        state.players = owned.iter().map(OwnedPlayerLights::as_view).collect();
+        let torches = state.torches();
+        assert_eq!(torches.len(), 1);
+        assert_eq!(torches[0].id, 1);
+        assert!((torches[0].strength - 0.9).abs() < 1e-5);
+        assert!((torches[0].dist - 12.0).abs() < 1e-5);
+        assert!(torches[0].cone);
+    }
+
+    #[test]
+    fn player_lighting_inputs_read_live_fatigue_and_worn_vision_multiplier() {
+        struct Cleanup;
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                pz_lua_api::bind_players::reset();
+            }
+        }
+        let _cleanup = Cleanup;
+
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let mut chr = LuaGameCharacter::new(&sm, pz_characters::CharacterKind::Player);
+        chr.zombie.worn_items_vision_modifier = 2.0;
+        let p = Rc::new(RefCell::new(chr));
+        pz_lua_api::bind_players::set_num_players(1);
+        pz_lua_api::bind_players::set_player(0, Some(p));
+
+        let cell = pz_world::IsoCell::default();
+        let meta = pz_world::IsoMetaGrid::empty();
+        let sprites = pz_world::IsoSpriteManager::new(pz_world::sprite::test_tables());
+        let wv = WorldView {
+            cell: &cell,
+            meta: &meta,
+            sprites: &sprites,
+        };
+        let rv = RenderView {
+            player: 0,
+            x: 5.0,
+            y: 6.0,
+            z: 0.0,
+            dir: IsoDirections::E,
+            chunk_map: (0, 0, 13),
+            width: 800,
+            height: 600,
+            zoom: 1.0,
+            climate: ClimateSettings {
+                climate: pz_world_render::ClimateInput {
+                    global_light_exterior: [1.0; 4],
+                    global_light_interior: [1.0; 4],
+                    ambient: 1.0,
+                    day_light_strength: 1.0,
+                    night_strength: 0.0,
+                    desaturation: 0.0,
+                    view_distance: 30.0,
+                    fog_intensity: 0.0,
+                    moon_float: 0.0,
+                    game_night: 0.0,
+                    night_darkness: 3,
+                    weather_shader: false,
+                    last_stand: false,
+                },
+                players: [pz_world_render::PlayerRenderInput::default(); MAX_PLAYERS],
+            },
+            screen: ScreenParams::default(),
+            tick: 1,
+            multiplier: 1.0,
+        };
+        let (player_in, cone_in) = build_player_lighting_inputs(0, &rv, &wv);
+        assert_eq!(player_in.x, 5.0);
+        assert_eq!(player_in.y, 6.0);
+        assert!((cone_in.worn_items_vision_multiplier - 0.5).abs() < 1e-5);
     }
 }
