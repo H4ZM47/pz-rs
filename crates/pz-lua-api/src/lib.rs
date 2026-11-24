@@ -18,6 +18,7 @@ pub mod bind_cheat_type;
 pub mod bind_characters;
 pub mod bind_audio;
 pub mod bind_erosion;
+pub mod bind_fog_flares_fish;
 pub mod bind_colors;
 pub mod bind_core;
 pub mod bind_craft_recipe_manager;
@@ -274,6 +275,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_item_visual::register(&mut mgr.thread);
     bind_climate::register(mgr);
     bind_puddles::register(&mut mgr.thread);
+    bind_fog_flares_fish::register(&mut mgr.thread);
     bind_mods::register(mgr);
     bind_map_symbols::register(mgr);
     bind_designation::register(&mut mgr.thread);
