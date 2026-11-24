@@ -93,6 +93,7 @@ pub mod bind_map_objects;
 pub mod farm_definitions;
 pub mod bind_tile_overlays;
 pub mod bind_broken_fences;
+pub mod bind_building_rooms_editor;
 pub mod bind_item_picker;
 pub mod bind_key_namer;
 pub mod bind_world_gen_utils;
@@ -280,6 +281,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_world::register_with_events(&mut mgr.thread, mgr.events.clone());
     bind_world::lua_world::register(&mut mgr.thread, mgr.fs.clone());
     bind_basements::register(&mut mgr.thread);
+    bind_building_rooms_editor::register(&mut mgr.thread);
     bind_bent_fences::register(&mut mgr.thread);
     bind_map_objects::register(&mut mgr.thread);
     bind_tile_overlays::register(&mut mgr.thread);

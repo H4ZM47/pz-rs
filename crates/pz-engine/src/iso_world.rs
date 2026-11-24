@@ -826,7 +826,7 @@ impl IsoWorld {
         pz_lua_api::bind_basements::before_on_load_map_zones();
         lua.trigger_event("OnLoadMapZones", &[]);
         self.before_load_meta_grid();
-        // TODO(port): `BuildingRoomsEditor.load`.
+        pz_lua_api::bind_building_rooms_editor::load();
         self.load_meta_grid_files()?;
         // `Basements.afterLoadMetaGrid()` releases the spawn locations and
         // headers; the port keeps the headers for `onNewChunkLoaded`.

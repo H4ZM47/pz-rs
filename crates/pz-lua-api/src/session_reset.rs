@@ -45,6 +45,7 @@ pub fn reset_session_bindings() {
     }
     crate::bind_broken_fences::shared_broken_fences().borrow_mut().reset();
     crate::bind_basements::before_on_load_map_zones();
+    crate::bind_building_rooms_editor::reset();
     crate::bind_sprites::install_sprite_manager(None);
     crate::bind_erosion::set_instance(None);
     crate::bind_world::set_cell(None);
