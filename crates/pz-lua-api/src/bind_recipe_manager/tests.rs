@@ -18,6 +18,17 @@ fn manager() -> Rc<ScriptManager> {
     std::fs::write(file, RECIPES).unwrap();
     let sm = ScriptManager::new();
     sm.enable_texture_capture();
+    {
+        let reg = sm.registries.get("item_type").unwrap();
+        let mut r = reg.borrow_mut();
+        let _ = r.register_id("base:normal", true);
+        let _ = r.register_id("base:food", true);
+    }
+    {
+        let mut st = sm.statics.items.borrow_mut();
+        st.constants.insert("item_type", "NORMAL", "base:normal");
+        st.constants.insert("item_type", "FOOD", "base:food");
+    }
     sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
     std::fs::remove_dir_all(dir).unwrap();
     Rc::new(sm)
@@ -93,11 +104,106 @@ fn rotten_food_needs_cooking_seven_and_fresh_food_skips_the_read() {
 }
 
 #[test]
-fn items_can_be_use_check_is_an_explicit_gap() {
-    let sm = manager();
-    assert!(names(&sm, &item(&sm, ItemClass::Food, "Apple"), 0, true).unwrap().is_empty());
-    let err = names(&sm, &item(&sm, ItemClass::Normal, "Bowl"), 0, true).unwrap_err();
-    assert!(matches!(err, LuaError::Runtime { class: "pz.host.Unsupported", .. }), "{err:?}");
+fn evolved_recipe_inventory_methods_and_add_item_roundtrip() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let dir = std::env::temp_dir().join(format!("pz-evolved-rt-{}", std::process::id()));
+    let file = dir.join("media/scripts/test.txt");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        "module Base {
+            item Bowl { DisplayName = Bowl, ItemType = base:normal, Weight = 0.5, }
+            item Salad { DisplayName = Salad, ItemType = base:food, Weight = 0.5, HungerChange = 0, }
+            item Carrot { DisplayName = Carrot, ItemType = base:food, Weight = 0.2, HungerChange = -20, Calories = 40, EvolvedRecipe = Salad:10, }
+            item RawMeat { DisplayName = RawMeat, ItemType = base:food, Weight = 0.3, HungerChange = -30, DangerousUncooked = true, EvolvedRecipe = Salad:15, }
+            item Salt { DisplayName = Salt, ItemType = base:food, Weight = 0.1, HungerChange = -5, Spice = true, EvolvedRecipe = Salad:5, }
+            evolvedrecipe Salad { BaseItem = Base.Bowl, ResultItem = Base.Salad, MaxItems = 4, }
+        }",
+    )
+    .unwrap();
+    let sm = ScriptManager::new();
+    sm.enable_texture_capture();
+    {
+        let reg = sm.registries.get("item_type").unwrap();
+        let mut r = reg.borrow_mut();
+        let _ = r.register_id("base:normal", true);
+        let _ = r.register_id("base:food", true);
+    }
+    {
+        let mut st = sm.statics.items.borrow_mut();
+        st.constants.insert("item_type", "NORMAL", "base:normal");
+        st.constants.insert("item_type", "FOOD", "base:food");
+    }
+    sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let sm = Rc::new(sm);
+    crate::bind_registry::install_script_manager(sm.clone());
+
+    let mut chars = Characters::default();
+    let cooking = chars.perks.new_perk("Cooking").unwrap();
+    chars.perks.perks.push(("Cooking".into(), cooking));
+    let chars = Rc::new(RefCell::new(chars));
+
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    crate::bind_items::register(&mut t);
+    crate::bind_item_container::register(&mut t);
+    crate::bind_scripts::register(&mut t, sm.clone());
+    crate::bind_skills::register(&mut t, sm.clone(), chars.clone());
+    register(&mut t, sm.clone(), chars.clone());
+
+    let player = Rc::new(RefCell::new(crate::bind_character_sim::LuaGameCharacter::new(
+        &sm,
+        pz_characters::CharacterKind::Player,
+    )));
+    let inv = player.borrow().items.inventory.clone();
+    let bowl = crate::bind_items::create_item("Base.Bowl", 1.0).unwrap();
+    let carrot = crate::bind_items::create_item("Base.Carrot", 1.0).unwrap();
+    let meat = crate::bind_items::create_item("Base.RawMeat", 1.0).unwrap();
+    let salt = crate::bind_items::create_item("Base.Salt", 1.0).unwrap();
+    crate::bind_item_container::add_item(&mut t, &inv, Some(bowl.clone())).unwrap();
+    crate::bind_item_container::add_item(&mut t, &inv, Some(carrot.clone())).unwrap();
+    crate::bind_item_container::add_item(&mut t, &inv, Some(meat.clone())).unwrap();
+    crate::bind_item_container::add_item(&mut t, &inv, Some(salt.clone())).unwrap();
+
+    t.globals().set_str("player", Value::Object(Rc::new(CharacterObject::try_new(&player).unwrap())));
+    t.globals().set_str("bowl", crate::bind_items::item_value(&bowl));
+    t.globals().set_str("carrot", crate::bind_items::item_value(&carrot));
+    t.globals().set_str("meat", crate::bind_items::item_value(&meat));
+    t.globals().set_str("salt", crate::bind_items::item_value(&salt));
+
+    let out = run(
+        &mut t,
+        "local recipes = RecipeManager.getEvolvedRecipe(bowl, player, nil, true)
+         local r = recipes:get(0)
+         local usable_before = r:getItemsCanBeUse(player, bowl, nil)
+         local need_meat = r:needToBeCooked(meat)
+         local need_carrot = r:needToBeCooked(carrot)
+         local ir = r:getItemRecipe(carrot)
+         local usable_id = r:isItemUsableInRecipe(player, bowl, carrot:getID())
+         local dish = r:addItem(bowl, carrot, player)
+         local usable_after = r:getItemsCanBeUse(player, dish, nil)
+         local spice_before = r:isSpiceAdded(dish, salt)
+         dish = r:addItem(dish, salt, player)
+         local spice_after = r:isSpiceAdded(dish, salt)
+         return recipes:size(), usable_before:size(), need_meat, need_carrot, ir:getUse(),
+             usable_id, dish:getType(), dish:haveExtraItems(), usable_after:size(),
+             spice_before, spice_after, dish:getSpices():size()",
+    )
+    .unwrap();
+    assert_eq!(out[0].as_num(), Some(1.0));
+    assert_eq!(out[1].as_num(), Some(1.0), "only carrot usable before base has ingredients");
+    assert!(out[2].truthy(), "raw dangerous meat needs cooking for salad");
+    assert!(!out[3].truthy(), "carrot does not need cooking");
+    assert_eq!(out[4].as_num(), Some(10.0));
+    assert!(out[5].truthy());
+    assert_eq!(out[6].as_str(), Some("Salad"));
+    assert!(out[7].truthy());
+    assert_eq!(out[8].as_num(), Some(2.0), "carrot (remaining half) and salt both usable after first ingredient");
+    assert!(!out[9].truthy());
+    assert!(out[10].truthy());
+    assert_eq!(out[11].as_num(), Some(1.0));
 }
 
 fn run(t: &mut Thread, src: &str) -> Result<Vec<Value>, String> {

@@ -36,6 +36,18 @@ pub fn evolved_recipes_for(
     cooking_level: impl FnOnce() -> LuaResult<i32>,
     include_items_can_be_use: bool,
 ) -> LuaResult<Vec<ScriptRef>> {
+    evolved_recipes_for_with_filter(sm, item, cooking_level, include_items_can_be_use, |_| Ok(true))
+}
+
+/// Internal variant allowing callers to filter candidate recipes with
+/// `EvolvedRecipe.getItemsCanBeUse` when `include_items_can_be_use` is true.
+fn evolved_recipes_for_with_filter(
+    sm: &ScriptManager,
+    item: &InventoryItem,
+    cooking_level: impl FnOnce() -> LuaResult<i32>,
+    include_items_can_be_use: bool,
+    mut has_usable_items: impl FnMut(&EvolvedRecipe) -> LuaResult<bool>,
+) -> LuaResult<Vec<ScriptRef>> {
     let mut out = Vec::new();
     if item.is_rotten() && cooking_level()? < 7 {
         return Ok(out);
@@ -58,10 +70,8 @@ pub fn evolved_recipes_for(
         if item.get_type() == "WaterPot" && f64::from(item.get_current_uses_float()) < 0.75 {
             continue;
         }
-        if include_items_can_be_use {
-            // TODO(EvolvedRecipe.getItemsCanBeUse): the ingredient search over
-            // the containers, with its spice, poison and frozen-food checks.
-            return Err(crate::bind_world_object::unsupported("EvolvedRecipe.getItemsCanBeUse"));
+        if include_items_can_be_use && !has_usable_items(&recipe)? {
+            continue;
         }
         out.push(script.clone());
     }
@@ -86,12 +96,38 @@ fn cooking_level(chars: &RefCell<Characters>, value: &Value) -> LuaResult<i32> {
 }
 
 pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Characters>>) {
+    crate::bind_evolved_recipe::register(thread, sm.clone(), chars.clone());
     let b = expose_class(thread, RECIPE_MANAGER_CLASS, None);
     b.static_fn("getEvolvedRecipe", move |c| {
         let item = crate::bind_world_object::item_argument(&c.arg(0))?;
-        let chr = c.arg(1);
+        let chr_val = c.arg(1);
+        let containers_val = c.arg(2);
         let include = bool_arg(c, 3);
-        let list = evolved_recipes_for(&sm, &item.borrow(), || cooking_level(&chars, &chr), include)?;
+        let chr_ref = match &chr_val {
+            Value::Object(o) => (&**o as &dyn Any)
+                .downcast_ref::<CharacterObject>()
+                .map(|ch| ch.0.clone()),
+            _ => None,
+        };
+        let list = evolved_recipes_for_with_filter(
+            &sm,
+            &item.borrow(),
+            || cooking_level(&chars, &chr_val),
+            include,
+            |recipe| {
+                let Some(chr) = chr_ref.as_ref() else {
+                    return Ok(false);
+                };
+                Ok(!crate::bind_evolved_recipe::items_can_be_use(
+                    recipe,
+                    &chars,
+                    chr,
+                    &item,
+                    &containers_val,
+                )
+                .is_empty())
+            },
+        )?;
         Ok(c.push(script_list(&list)))
     });
 }
