@@ -53,6 +53,7 @@ pub fn reset_session_bindings() {
     crate::bind_sprites::install_sprite_manager(None);
     crate::bind_sprite_models::reset();
     crate::bind_erosion::set_instance(None);
+    crate::bind_fbo_anim_debug::reset_session_handles();
     crate::bind_world::set_cell(None);
     crate::bind_world::set_meta_grid(None);
     crate::worldmap::map_definitions::reset();

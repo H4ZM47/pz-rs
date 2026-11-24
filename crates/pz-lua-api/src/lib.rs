@@ -21,6 +21,7 @@ pub mod bind_cheat_type;
 pub mod bind_characters;
 pub mod bind_audio;
 pub mod bind_erosion;
+pub mod bind_fbo_anim_debug;
 pub mod bind_colors;
 pub mod bind_core;
 pub mod bind_craft_recipe_manager;
@@ -343,6 +344,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     worldmap::install_fs(mgr.fs.clone());
     gizmo::register(&mut mgr.thread);
     bind_area_highlights::register(&mut mgr.thread);
+    bind_fbo_anim_debug::register(&mut mgr.thread);
     hud::characters::install_character_hud_hosts();
     hud::alarm_clocks::install_alarm_clock_host();
     hud::host::install_debug_options_host();

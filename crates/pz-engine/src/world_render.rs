@@ -1595,6 +1595,14 @@ impl IsoWorld {
                 for pos in w.geometry.take_render_changes() {
                     invalidation.object_geometry_changed(pos);
                 }
+                drop(invalidation);
+                for (wx, wy, z, flags) in
+                    pz_lua_api::bind_fbo_anim_debug::take_render_chunk_invalidations()
+                {
+                    for cache in r.caches.iter_mut().take(num_players.clamp(0, 4) as usize) {
+                        cache.invalidate(wx, wy, z, flags);
+                    }
+                }
                 r.apply_pending(&wv, regions, fs, &mut textures)?;
                 {
                     let re = render_effects
