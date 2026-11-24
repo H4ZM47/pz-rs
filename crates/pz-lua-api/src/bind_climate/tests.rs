@@ -543,3 +543,40 @@ fn game_time_calender_and_winter_start_day_lua() {
     assert!(r[2].truthy());
     assert!(r[3].truthy());
 }
+
+#[test]
+fn air_temperature_and_windchill_lua() {
+    let mut t = setup();
+    let sm = std::rc::Rc::new(pz_scripts::ScriptManager::new());
+    crate::bind_character_sim::register(&mut t, sm.clone(), Default::default());
+    let chr = std::rc::Rc::new(std::cell::RefCell::new(
+        crate::bind_character_sim::LuaGameCharacter::new(
+            &sm,
+            pz_characters::CharacterKind::Player,
+        ),
+    ));
+    let chr_val = crate::bind_character_sim::character_value(&chr);
+    t.globals().set_str("p", chr_val);
+    shared_game_time().borrow_mut().climate.wind_power = 0.5;
+    let r = run(
+        &mut t,
+        r#"
+        local cm = getClimateManager()
+        cm:getClimateFloat(4):setFinalValue(-10.0)
+        cm:getClimateFloat(6):setFinalValue(0.5)
+        local t_nil = cm:getAirTemperatureForSquare(nil)
+        local t_chr = cm:getAirTemperatureForCharacter(p, false)
+        local t_chr_chill = cm:getAirTemperatureForCharacter(p, true)
+        local chill = Temperature.getWindChillAmountForPlayer(p)
+        return t_nil, t_chr, t_chr_chill, chill
+        "#,
+    );
+    let t_nil = pz_kahlua::exec::raw_tonumber(&r[0]).unwrap();
+    let t_chr = pz_kahlua::exec::raw_tonumber(&r[1]).unwrap();
+    let t_chill = pz_kahlua::exec::raw_tonumber(&r[2]).unwrap();
+    let chill = pz_kahlua::exec::raw_tonumber(&r[3]).unwrap();
+    assert!((t_nil - (-10.0)).abs() < 1e-4, "t_nil={t_nil}");
+    assert!((t_chr - (-10.0)).abs() < 1e-4, "t_chr={t_chr}");
+    assert!(t_chill < t_chr, "t_chill={t_chill}, t_chr={t_chr}");
+    assert!(chill > 0.0, "chill={chill}");
+}
