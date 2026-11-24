@@ -977,6 +977,7 @@ impl IsoWorld {
                         floor_world,
                         regions,
                         zombies,
+                        hearths,
                         ..
                     } = self;
                     let Some(sprites) = sprites.as_mut() else {
@@ -992,7 +993,13 @@ impl IsoWorld {
                         active_player,
                         |w| {
                             if first_phase {
-                                fill_square_environment(&mut chr, w.cell, w.meta, regions.as_ref())?;
+                                fill_square_environment(
+                                    &mut chr,
+                                    w.cell,
+                                    w.meta,
+                                    regions.as_ref(),
+                                    hearths,
+                                )?;
                             }
                             pz_lua_api::bind_states::with_state_registry(|reg| {
                                 let chars = chars.borrow();
@@ -1103,6 +1110,7 @@ impl IsoWorld {
             floor_world,
             pathfind,
             regions,
+            hearths,
             ..
         } = self;
         let mut dying = Vec::new();
@@ -1122,7 +1130,13 @@ impl IsoWorld {
                     for &id in &zombie_ids {
                         let Some(mut z) = StateWorld::<LuaItem>::take_character(w, id) else { continue };
                         z.preupdate_zombie();
-                        if let Err(error) = fill_square_environment(&mut z, w.cell, w.meta, regions.as_ref()) {
+                        if let Err(error) = fill_square_environment(
+                            &mut z,
+                            w.cell,
+                            w.meta,
+                            regions.as_ref(),
+                            hearths,
+                        ) {
                             StateWorld::<LuaItem>::put_character(w, z);
                             return Err(error.into());
                         }
@@ -2324,6 +2338,41 @@ impl IsoWorld {
         r
     }
 
+    /// Advances all loaded `IsoFireplace` and `IsoBarbecue` objects: fuel
+    /// burn/smoulder, attached flame/smoke/log states, fireplace lighting,
+    /// `IsoHeatSource`s, and looped audio emitters.
+    pub fn update_hearths(&mut self, sim: &FrameSim) {
+        let Some(sprites_rc) = self.sprites.as_ref() else {
+            return;
+        };
+        let Ok(sprites) = sprites_rc.try_borrow() else {
+            return;
+        };
+        let (world_age_hours, dt) = {
+            let g = sim.game_time.borrow();
+            let ctx = pz_lua_api::bind_climate::LuaClimateContext::new();
+            (
+                g.world_age_hours(),
+                g.multiplied_seconds_since_last_update(&ctx) * 60.0,
+            )
+        };
+        let mut render_guard = self.render.try_borrow_mut().ok();
+        let render = render_guard.as_deref_mut().and_then(|r| r.as_mut());
+        pz_lua_api::bind_world::with_world(|w| {
+            if let Some(cell) = w.cell.as_ref() {
+                self.hearths
+                    .update(cell, &sprites, render, world_age_hours, dt);
+            }
+        });
+    }
+
+    /// Removes all fireplace lights and stops all looping hearth audio emitters.
+    pub fn reset_hearths(&mut self) {
+        let mut render_guard = self.render.try_borrow_mut().ok();
+        let render = render_guard.as_deref_mut().and_then(|r| r.as_mut());
+        self.hearths.reset(render);
+    }
+
     /// `PolygonalMap2.instance.updateMain()` (`PathfindNative.updateMain`):
     /// the pathfinding thread's pass, then the finished requests handed to
     /// their characters.
@@ -2447,6 +2496,7 @@ impl IsoWorld {
 fn fill_square_environment(
     chr: &mut LuaGameCharacter, cell: &IsoCell, meta: &IsoMetaGrid,
     regions: Option<&Rc<RefCell<pz_world::isoregion::IsoRegions>>>,
+    hearths: &crate::world_hearths::WorldHearths,
 ) -> HostResult<()> {
     let cur = chr.path.current_square;
     let sq_owner = cur.and_then(|(x, y, z)| cell.get_grid_square(x, y, z));
@@ -2477,6 +2527,7 @@ fn fill_square_environment(
         .filter(|s| s.room_id != -1)
         .map(|s| s.room_id as u64);
     e.stress_from_sounds = stress;
+    e.heat_sources = cur.map_or_else(Vec::new, |(x, y, z)| hearths.heat_sources_for(x, y, z));
     Ok(())
 }
 

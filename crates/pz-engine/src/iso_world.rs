@@ -222,6 +222,8 @@ pub struct IsoWorld {
     /// `IsoFireManager`.
     pub fire: pz_world::fire::IsoFireManager,
     pub fire_flags: Option<pz_world::fire::manager::FireFlags>,
+    /// Per-world `IsoFireplace` and `IsoBarbecue` visual, light, heat, and sound state.
+    pub hearths: crate::world_hearths::WorldHearths,
     /// Each local player's `IsoPlayer.sqlId` (its `localPlayers` row; -1
     /// before its first save).
     pub player_sql_ids: [i32; 4],
@@ -360,6 +362,7 @@ impl IsoWorld {
             ),
             fire: pz_world::fire::IsoFireManager::new(),
             fire_flags: None,
+            hearths: crate::world_hearths::WorldHearths::new(),
             door_tables: None,
             player_sql_ids: [-1; 4],
             frame_no: 0,
