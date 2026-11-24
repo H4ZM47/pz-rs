@@ -92,6 +92,7 @@ pub mod bind_server_list;
 pub mod bind_map_groups;
 pub mod bind_world;
 pub mod bind_basements;
+pub mod bind_area_highlights;
 pub mod bind_bent_fences;
 pub mod bind_map_objects;
 pub mod farm_definitions;
@@ -333,6 +334,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     worldmap::register(&mut mgr.thread);
     worldmap::install_fs(mgr.fs.clone());
     gizmo::register(&mut mgr.thread);
+    bind_area_highlights::register(&mut mgr.thread);
     hud::characters::install_character_hud_hosts();
     hud::alarm_clocks::install_alarm_clock_host();
     hud::host::install_debug_options_host();

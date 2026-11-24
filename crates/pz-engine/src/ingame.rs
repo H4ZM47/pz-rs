@@ -382,6 +382,21 @@ impl IngameState {
             }
             return;
         }
+        if let Some((ox, oy, oz)) = w.take_opaque_event_square() {
+            if cx.lua.events.callbacks("RenderOpaqueObjectsInWorld") > 0 {
+                let sq = pz_lua_api::bind_world::square_value(ox, oy, oz);
+                cx.lua.trigger_event(
+                    "RenderOpaqueObjectsInWorld",
+                    &[
+                        Value::Num(n as f64),
+                        Value::Num(ox as f64),
+                        Value::Num(oy as f64),
+                        Value::Num(oz as f64),
+                        sq,
+                    ],
+                );
+            }
+        }
         cx.lua.trigger_event("OnPostRender", &[]);
         // TODO(port): `LineDrawer.clear`, the animation debug key.
     }
@@ -403,6 +418,8 @@ impl IngameState {
 
     /// `renderframeui()`.
     fn renderframeui(&mut self, cx: &mut StateCx<'_>, out: &mut DrawList) {
+        // Clear previous UI frame's area highlights before the new UI pass queues them.
+        pz_lua_api::bind_area_highlights::clear();
         pz_lua_api::bind_text::draw_text_from_game_world();
         // TODO(port): `SkyBox.draw`.
         pz_ui::UIManager::render(&mut cx.lua.thread);
@@ -519,6 +536,7 @@ impl GameState for IngameState {
             eprintln!("WorldMarkers.reset: {e:?}");
         }
         pz_lua_api::bind_search_mode::reset();
+        pz_lua_api::bind_area_highlights::clear();
         // `ZomboidRadio.getInstance().Reset()` and `IsoWaveSignal.Reset()`.
         if let Some(w) = cx.world.as_mut() {
             w.reset_radio();

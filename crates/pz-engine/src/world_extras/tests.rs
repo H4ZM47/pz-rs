@@ -145,7 +145,9 @@ fn frame_extras_emits_fog_and_vision_polygon_commands_in_world_frame() {
         multiplier: 1.0,
     };
     let cam = Camera::player(v.x, v.y, v.z, v.width as i32, v.height as i32, v.zoom);
-    let mut extras = renderer.extras.build_frame(&view, &cam, &v, &renderer.lighting, &[(0, 0)]);
+    let mut extras = renderer
+        .extras
+        .build_frame(&view, &cam, &v, &renderer.lighting, &[(0, 0)], None);
     let size = pz_iso_render::frame::FrameSize { width: v.width, height: v.height };
     let depth_mgr = pz_render::tile_depth::TileDepthTextureManager::init(&mut fs, &mut tm);
     let maps = pz_iso_render::seam::WorldDepthMaps {
@@ -174,5 +176,105 @@ fn frame_extras_emits_fog_and_vision_polygon_commands_in_world_frame() {
         cmds.iter().any(|c| matches!(c, DrawCmd::ImprovedFog(_))),
         "expected ImprovedFog draw command from FogFrame"
     );
+    assert!(extras.highlight.is_some());
+    assert!(extras.area_highlights.is_some());
     let _ = &mut v;
+}
+
+#[test]
+fn area_highlights_from_lua_emit_floor_quad_and_outline_commands() {
+    pz_lua_api::bind_area_highlights::clear();
+    pz_lua_api::bind_area_highlights::push_highlight(
+        Some(0),
+        pz_iso_render::area_highlights::AreaHighlight {
+            x1: 1,
+            y1: 1,
+            x2: 3,
+            y2: 3,
+            z: 0,
+            rgba: [0.2, 0.8, 0.2, 0.5],
+        },
+    );
+    let path = Path::new("unused-area-highlights-fixture");
+    let mut fs = GameFs::new(path);
+    let mut tm = TextureManager::new();
+    let mut renderer = crate::world_render::WorldRender::new(path, &mut fs, &mut tm);
+    let cell = IsoCell::default();
+    let meta = IsoMetaGrid::with_bounds(0, 0, 1, 1);
+    let sprites = IsoSpriteManager::new(test_tables());
+    let view = WorldView {
+        cell: &cell,
+        meta: &meta,
+        sprites: &sprites,
+    };
+    let v = RenderView {
+        split_view: None,
+        player: 0,
+        x: 2.5,
+        y: 2.5,
+        z: 0.0,
+        dir: pz_world::square::IsoDirections::S,
+        chunk_map: (0, 0, 1),
+        width: 320,
+        height: 240,
+        zoom: 1.0,
+        climate: ClimateSettings {
+            climate: ClimateInput {
+                global_light_exterior: [1.0; 4],
+                global_light_interior: [1.0; 4],
+                ambient: 1.0,
+                day_light_strength: 1.0,
+                night_strength: 0.0,
+                desaturation: 0.0,
+                view_distance: 30.0,
+                fog_intensity: 0.0,
+                moon_float: 0.0,
+                game_night: 0.0,
+                night_darkness: 3,
+                weather_shader: false,
+                last_stand: false,
+            },
+            players: [PlayerRenderInput::default(); 4],
+        },
+        screen: ScreenParams::default(),
+        tick: 0,
+        multiplier: 1.0,
+    };
+    let cam = Camera::player(v.x, v.y, v.z, v.width as i32, v.height as i32, v.zoom);
+    let mut extras = renderer
+        .extras
+        .build_frame(&view, &cam, &v, &renderer.lighting, &[(0, 0)], None);
+    let ah = extras.area_highlights.as_ref().expect("area_highlights");
+    assert_eq!(ah.user_defined.len(), 1);
+    let size = pz_iso_render::frame::FrameSize {
+        width: v.width,
+        height: v.height,
+    };
+    let depth_mgr = pz_render::tile_depth::TileDepthTextureManager::init(&mut fs, &mut tm);
+    let maps = pz_iso_render::seam::WorldDepthMaps {
+        tiles: &depth_mgr,
+        seams: Vec::new(),
+        cutaways: Vec::new(),
+    };
+    let r = pz_iso_render::ChunkRenderer::new(cam, &maps, (v.width, v.height));
+    let mut late = |_out: &mut Vec<DrawCmd>| {};
+    let cmds = world_frame_extras(
+        &r,
+        size,
+        &[],
+        &pz_iso_render::objects::FrameObjects::default(),
+        None,
+        &mut extras,
+        v.screen,
+        Vec::new(),
+        &mut late,
+    );
+    assert!(
+        cmds.iter()
+            .filter(|c| matches!(c, DrawCmd::Sprite(_)))
+            .count()
+            >= 4,
+        "expected LineDrawer outline sprite commands from AreaHighlightsFrame"
+    );
+    pz_lua_api::bind_area_highlights::clear();
 }
