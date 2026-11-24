@@ -35,6 +35,7 @@ pub mod bind_joypad;
 pub mod bind_fs;
 pub mod bind_global_objects;
 pub mod bind_globals;
+pub mod bind_global_sp_sync;
 pub mod bind_item_container;
 pub mod bind_dead_body;
 pub mod bind_world_object;
@@ -208,6 +209,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     let sink: bind_climate::EventSink = Rc::new(sink);
     bind_java_util::register(&mut mgr.thread);
     bind_globals::register(&mut mgr.thread);
+    bind_global_sp_sync::register(&mut mgr.thread);
     bind_players::register(&mut mgr.thread);
     bind_search_mode::register(&mut mgr.thread);
     // Core: binds the shared instance (`bind_core::install_core` before init).
