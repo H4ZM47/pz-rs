@@ -845,6 +845,7 @@ impl IsoWorld {
         self.process_iso_objects(lua);
         self.update_characters(lua, sim)?;
         self.update_vehicles(lua, sim);
+        self.update_animals(sim);
         // `ProcessStaticUpdaters`: world `IsoRadio` / `IsoTelevision` and
         // local players' equipped radio items.
         self.update_radio_devices(lua);
@@ -2367,8 +2368,9 @@ impl IsoWorld {
                 StreamEvent::SaveFailed { wx, wy, error } => {
                     self.log_update_error(format!("IsoChunk.Save {wx},{wy}: {error}"));
                 }
+                StreamEvent::GenAnimalsPath { wx, wy } => self.animals_gen_path(wx, wy),
                 // TODO(port): `HotSave` (`world_save::hot_save_ancillary`),
-                // `GenAnimalsPath`, the vehicle events.
+                // the remaining vehicle events.
                 _ => {}
             }
         }
@@ -2400,6 +2402,7 @@ impl IsoWorld {
         if let Some(wv) = self.vehicles_runtime.as_mut() {
             wv.note_chunk_handed_off(wx, wy);
         }
+        self.animals_chunk_added(wx, wy);
         self.render_chunks.added.push((wx, wy));
     }
 
@@ -2437,6 +2440,7 @@ impl IsoWorld {
         if let Some(wv) = self.vehicles_runtime.as_mut() {
             wv.chunk_removed(wx, wy);
         }
+        self.animals_chunk_removed(wx, wy);
         self.render_chunks.removed.push((wx, wy));
     }
 }
@@ -2722,6 +2726,7 @@ impl IsoWorld {
         }
         // Queue active virtual vehicles onto the streamer before saving chunks.
         self.save_virtual_vehicles();
+        self.save_animals(&sim);
         // `saveLocalPlayersForce` above already queued them.
         let mut report = self.game_window_save(lua, &sandbox, false)?;
         // Ordinary quitting keeps its callback even when saving is disabled
@@ -2796,6 +2801,8 @@ impl IsoWorld {
     /// `IsoCell.save` asks `PlayerDB.savePlayers()` with
     /// `canSavePlayers`, which the world start sets.
     pub fn save_during_play(&mut self, lua: &mut LuaManager) -> pz_characters::character::save::CharacterPersistenceResult<()> {
+        let sim = FrameSim::capture();
+        self.save_animals(&sim);
         let sandbox = self.sandbox_save_bytes(lua);
         let can_save_players = self.player_db.as_ref().is_some_and(|db| db.can_save_players);
         let mut report = self.game_window_save(lua, &sandbox, can_save_players)?;
