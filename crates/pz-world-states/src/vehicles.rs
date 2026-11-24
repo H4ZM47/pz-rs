@@ -87,6 +87,24 @@ impl VehicleGeometry {
         }
     }
 
+    /// The geometry of a live runtime `BaseVehicle` from its current `jni_transform`.
+    pub fn from_runtime(v: &pz_vehicles::BaseVehicle, script: VehicleBox) -> Self {
+        let t = v.world_transform();
+        let (ox, oy) = pz_vehicles::env::offset();
+        let b = t.basis;
+        let q = t.rotation();
+        VehicleGeometry {
+            basis: [
+                [b.m00, b.m01, b.m02],
+                [b.m10, b.m11, b.m12],
+                [b.m20, b.m21, b.m22],
+            ],
+            origin: [t.origin.x + ox, t.origin.y, t.origin.z + oy],
+            script,
+            q_x_negative: q.x < 0.0,
+        }
+    }
+
     /// `getLocalPos(worldX, worldY, worldZ)`: the world z is not used.
     pub fn local_pos(&self, wx: f32, wy: f32) -> [f32; 3] {
         let t = transpose(&self.basis);
@@ -103,35 +121,9 @@ impl VehicleGeometry {
 
     /// `getIntersectPoint(start, end, result) != null`.
     pub fn intersects(&self, start: (f32, f32, f32), end: (f32, f32, f32)) -> bool {
-        let s = &self.script;
-        let ext = [
-            s.extents[0] * 0.5 + s.center_of_mass_offset[0],
-            s.extents[1] * 0.5 + s.center_of_mass_offset[1],
-            s.extents[2] * 0.5 + s.center_of_mass_offset[2],
-        ];
         let a = self.local_pos(start.0, start.1);
         let b = self.local_pos(end.0, end.1);
-        let (mut tmin, mut tmax) = (0.0f32, 1.0f32);
-        for i in 0..3 {
-            let d = b[i] - a[i];
-            let (lo, hi) = (-ext[i], ext[i]);
-            if d.abs() < 1.0e-6 {
-                if a[i] < lo || a[i] > hi {
-                    return false;
-                }
-                continue;
-            }
-            let (mut t1, mut t2) = ((lo - a[i]) / d, (hi - a[i]) / d);
-            if t1 > t2 {
-                std::mem::swap(&mut t1, &mut t2);
-            }
-            tmin = tmin.max(t1);
-            tmax = tmax.min(t2);
-            if tmin > tmax {
-                return false;
-            }
-        }
-        true
+        slab_intersects(a, b, &self.script)
     }
 
     /// `getPoly()` (`VehiclePoly.init(vehicle, 0)`) corners.
@@ -196,9 +188,66 @@ fn closest_point_on_segment(a: (f32, f32), b: (f32, f32), px: f32, py: f32) -> f
     d2(a.0 as f64 + u * dx, a.1 as f64 + u * dy)
 }
 
+fn slab_intersects(a: [f32; 3], b: [f32; 3], s: &VehicleBox) -> bool {
+    let ext = [
+        s.extents[0] * 0.5 + s.center_of_mass_offset[0],
+        s.extents[1] * 0.5 + s.center_of_mass_offset[1],
+        s.extents[2] * 0.5 + s.center_of_mass_offset[2],
+    ];
+    let (mut tmin, mut tmax) = (0.0f32, 1.0f32);
+    for i in 0..3 {
+        let d = b[i] - a[i];
+        let (lo, hi) = (-ext[i], ext[i]);
+        if d.abs() < 1.0e-6 {
+            if a[i] < lo || a[i] > hi {
+                return false;
+            }
+            continue;
+        }
+        let (mut t1, mut t2) = ((lo - a[i]) / d, (hi - a[i]) / d);
+        if t1 > t2 {
+            std::mem::swap(&mut t1, &mut t2);
+        }
+        tmin = tmin.max(t1);
+        tmax = tmax.min(t2);
+        if tmin > tmax {
+            return false;
+        }
+    }
+    true
+}
+
+fn runtime_vehicle_box(
+    v: &pz_vehicles::BaseVehicle,
+    engine: &dyn StatesEngine,
+) -> Option<VehicleBox> {
+    if let Some(script) = v.script() {
+        let s = script.borrow();
+        let e = s.extents();
+        let com = s.center_of_mass_offset();
+        return Some(VehicleBox {
+            extents: [e.x, e.y, e.z],
+            center_of_mass_offset: [com.x, com.y, com.z],
+        });
+    }
+    let st = v.st();
+    engine.vehicle_box(&st.script_name)
+}
+
+fn runtime_vehicle_intersects(
+    v: &pz_vehicles::BaseVehicle,
+    script: &VehicleBox,
+    start: (f32, f32, f32),
+    end: (f32, f32, f32),
+) -> bool {
+    let a = v.local_pos(start.0, start.1, start.2);
+    let b = v.local_pos(end.0, end.1, end.2);
+    slab_intersects([a.x, a.y, a.z], [b.x, b.y, b.z], script)
+}
+
 /// The vehicles chunk loading put in `IsoChunk.vehicles` (chunk files and
-/// `vehicles.db` rows); entries the vehicle runtime has replaced with its
-/// own objects are not seen here.
+/// `vehicles.db` rows); live runtime vehicles in `pz_vehicles::manager`
+/// override matching entries when active.
 fn for_each_vehicle(cell: &IsoCell, f: &mut dyn FnMut(&BaseVehicle) -> bool) {
     for ch in cell.chunks.values() {
         for v in ch.vehicles.loaded() {
@@ -209,16 +258,32 @@ fn for_each_vehicle(cell: &IsoCell, f: &mut dyn FnMut(&BaseVehicle) -> bool) {
     }
 }
 
-/// `IsoZombie.isVehicleBetween`: any vehicle with a script crossed by the
-/// segment.
+/// `IsoZombie.isVehicleBetween`: any live cell vehicle or loaded chunk vehicle
+/// with a script crossed by the segment.
 pub fn vehicle_between(
     cell: &IsoCell,
     engine: &dyn StatesEngine,
     from: (f32, f32, f32),
     to: (f32, f32, f32),
 ) -> bool {
+    let live = pz_vehicles::manager::cell_vehicles();
+    let mut seen_ids = Vec::with_capacity(live.len());
+    for v in &live {
+        let vid = v.st().vehicle_id;
+        if vid >= 0 {
+            seen_ids.push(vid);
+        }
+        if let Some(b) = runtime_vehicle_box(v, engine) {
+            if runtime_vehicle_intersects(v, &b, from, to) {
+                return true;
+            }
+        }
+    }
     let mut hit = false;
     for_each_vehicle(cell, &mut |v| {
+        if v.vehicle_id >= 0 && seen_ids.contains(&v.vehicle_id) {
+            return false;
+        }
         if let Some(b) = engine.vehicle_box(&v.script_name) {
             hit = VehicleGeometry::of(v, b).intersects(from, to);
         }
@@ -236,6 +301,16 @@ pub fn vehicle_dist_squared(
     x: f32,
     y: f32,
 ) -> f32 {
+    if let Some(v) = pz_vehicles::manager::vehicle_by_id(id) {
+        if v.script().is_some() {
+            return v.closest_point_on_poly(x, y).0;
+        }
+        let script_name = v.st().script_name.clone();
+        return match engine.vehicle_box(&script_name) {
+            Some(b) => VehicleGeometry::from_runtime(&v, b).closest_dist_sq(x, y),
+            None => 0.0,
+        };
+    }
     let mut d = f32::MAX;
     for_each_vehicle(cell, &mut |v| {
         if v.vehicle_id != id {
@@ -248,4 +323,79 @@ pub fn vehicle_dist_squared(
         true
     });
     d
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pz_world::{GameRand, IsoCell};
+
+    struct DummyEngine {
+        v_box: VehicleBox,
+        rand: ZeroRand,
+    }
+    struct ZeroRand;
+    impl GameRand for ZeroRand {
+        fn next(&mut self, _max: i32) -> i32 {
+            0
+        }
+    }
+    impl StatesEngine for DummyEngine {
+        fn rand(&mut self) -> &mut dyn GameRand {
+            &mut self.rand
+        }
+        fn vehicle_box(&self, script_name: &str) -> Option<VehicleBox> {
+            (script_name == "Base.CarNormal").then_some(self.v_box)
+        }
+    }
+
+    #[test]
+    fn live_runtime_vehicles_drive_vehicle_between_and_dist_squared() {
+        pz_vehicles::manager::reset();
+        let v = pz_vehicles::BaseVehicle::new();
+        {
+            let mut st = v.st_mut();
+            st.vehicle_id = 17;
+            st.script_name = "Base.CarNormal".into();
+            st.x = 50.0;
+            st.y = 60.0;
+            st.z = 0.0;
+            st.saved_physics_z = 0.0;
+            st.jni_transform.origin.set(50.0, 0.0, 60.0);
+        }
+        pz_vehicles::manager::id_map_put(17, &v);
+        pz_vehicles::manager::cell_add(&v);
+        pz_vehicles::manager::process_add_vehicles();
+
+        let engine = DummyEngine {
+            v_box: VehicleBox {
+                extents: [2.0, 1.5, 4.0],
+                center_of_mass_offset: [0.0, 0.0, 0.0],
+            },
+            rand: ZeroRand,
+        };
+        let cell = IsoCell::default();
+
+        // Ray crossing x=50, y=60 hits the live runtime vehicle.
+        assert!(vehicle_between(
+            &cell,
+            &engine,
+            (45.0, 60.0, 0.1),
+            (55.0, 60.0, 0.1)
+        ));
+        // Ray far away misses it.
+        assert!(!vehicle_between(
+            &cell,
+            &engine,
+            (10.0, 10.0, 0.1),
+            (20.0, 10.0, 0.1)
+        ));
+        // Distance squared from (53.0, 60.0) to 2x4 box centered at (50, 60) => dx=2 => dist^2 = 4.
+        let d2 = vehicle_dist_squared(&cell, &engine, 17, 53.0, 60.0);
+        assert!((d2 - 4.0).abs() < 1e-3, "expected ~4.0, got {d2}");
+        // Unknown vehicle id still returns f32::MAX.
+        assert_eq!(vehicle_dist_squared(&cell, &engine, 999, 53.0, 60.0), f32::MAX);
+
+        pz_vehicles::manager::reset();
+    }
 }

@@ -13,6 +13,7 @@ use std::rc::Rc;
 pub struct FrameSim {
     pub game_time: Rc<RefCell<GameTime>>,
     hearing_players: pz_lua_api::bind_audio::HearingPlayers,
+    zomboid_globals: pz_characters::character::ZomboidGlobals,
     input: std::cell::OnceCell<pz_player_input::EnginePlayerInput>,
     /// `Core.bDebug`.
     pub debug: bool,
@@ -60,6 +61,7 @@ impl FrameSim {
             FrameSim {
                 game_time: game_time.clone(),
                 hearing_players: pz_lua_api::bind_audio::HearingPlayers::capture(),
+                zomboid_globals: pz_lua_api::bind_character_sim::zomboid_globals(),
                 input: Default::default(),
                 debug,
                 game_mode,
@@ -92,6 +94,9 @@ impl FrameSim {
 pub(crate) struct PlayerSim<'a>(&'a FrameSim);
 
 impl SimContext for PlayerSim<'_> {
+    fn zomboid_globals(&self) -> &pz_characters::character::ZomboidGlobals {
+        self.0.zomboid_globals()
+    }
     fn hydro_power_on(&self) -> bool { self.0.hydro_power_on() }
     fn lore_hearing(&self) -> i32 { self.0.lore_hearing() }
     fn is_listener_in_range(&self, x: f32, y: f32, range: f32) -> bool { self.0.is_listener_in_range(x, y, range) }
@@ -147,6 +152,21 @@ impl SimContext for PlayerSim<'_> {
     fn last_time_of_day(&self) -> f32 {
         self.0.game_time.borrow().last_time_of_day
     }
+    fn month(&self) -> i32 {
+        self.0.game_time.borrow().month
+    }
+    fn time_since_apo(&self) -> i32 {
+        self.0.time_since_apo()
+    }
+    fn animal_sandbox(&self) -> pz_characters::pz_animals::AnimalSandbox {
+        self.0.animal_sandbox()
+    }
+    fn rain_manager_is_raining(&self) -> bool {
+        self.0.rain_manager_is_raining()
+    }
+    fn rain_manager_intensity(&self) -> f32 {
+        self.0.rain_manager_intensity()
+    }
     fn num_players(&self) -> i32 {
         pz_lua_api::bind_players::num_players()
     }
@@ -189,6 +209,9 @@ impl SimContext for PlayerSim<'_> {
 }
 
 impl SimContext for FrameSim {
+    fn zomboid_globals(&self) -> &pz_characters::character::ZomboidGlobals {
+        &self.zomboid_globals
+    }
     fn hydro_power_on(&self) -> bool { pz_lua_api::bind_world::power::hydro_power_on() }
     fn lore_hearing(&self) -> i32 {
         pz_lua_api::bind_sandbox::current_double("ZombieLore.Hearing").unwrap_or(2.0) as i32
@@ -224,6 +247,65 @@ impl SimContext for FrameSim {
     }
     fn world_age_hours(&self) -> f64 {
         self.world_age_hours
+    }
+    fn time_of_day(&self) -> f32 {
+        self.game_time
+            .try_borrow()
+            .map(|g| g.time_of_day)
+            .unwrap_or(0.0)
+    }
+    fn last_time_of_day(&self) -> f32 {
+        self.game_time
+            .try_borrow()
+            .map(|g| g.last_time_of_day)
+            .unwrap_or(0.0)
+    }
+    fn month(&self) -> i32 {
+        self.game_time.try_borrow().map(|g| g.month).unwrap_or(7)
+    }
+    fn time_since_apo(&self) -> i32 {
+        pz_lua_api::bind_sandbox::current_double("TimeSinceApo")
+            .map(|v| v as i32)
+            .unwrap_or(1)
+    }
+    fn animal_sandbox(&self) -> pz_characters::pz_animals::AnimalSandbox {
+        let mut s = pz_characters::pz_animals::AnimalSandbox::default();
+        if let Some(v) = pz_lua_api::bind_sandbox::current_double("AnimalStatsModifier") {
+            s.animal_stats_modifier = v as i32;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_double("AnimalMetaStatsModifier") {
+            s.animal_meta_stats_modifier = v as i32;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_double("AnimalPregnancyTime") {
+            s.animal_pregnancy_time = v as i32;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_double("AnimalAgeModifier") {
+            s.animal_age_modifier = v as i32;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_double("AnimalMilkIncModifier") {
+            s.animal_milk_inc_modifier = v as i32;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_double("AnimalWoolIncModifier") {
+            s.animal_wool_inc_modifier = v as i32;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_bool("AnimalMetaPredator") {
+            s.animal_meta_predator = v;
+        }
+        if let Some(v) = pz_lua_api::bind_sandbox::current_bool("AnimalMatingSeason") {
+            s.animal_mating_season = v;
+        }
+        s
+    }
+    fn rain_manager_is_raining(&self) -> bool {
+        self.game_time
+            .try_borrow()
+            .is_ok_and(|g| g.climate.is_raining())
+    }
+    fn rain_manager_intensity(&self) -> f32 {
+        self.game_time
+            .try_borrow()
+            .map(|g| g.climate.get_rain_intensity())
+            .unwrap_or(0.0)
     }
     fn climate(&self) -> Option<Ref<'_, ClimateManager>> {
         self.game_time
@@ -428,5 +510,66 @@ mod tests {
 
         pz_core::debug::debug_options().borrow_mut().set_boolean(key, false);
         assert!(!debug_on.debug_always_trip_over_fence());
+    }
+
+    #[test]
+    fn zomboid_globals_load_reaches_frame_sim_player_sim_and_item_env() {
+        use pz_inventory::context::ItemContext;
+        struct Restore(Option<pz_characters::character::ZomboidGlobals>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                pz_lua_api::bind_character_sim::set_zomboid_globals(self.0.take());
+            }
+        }
+        let _restore = Restore(None);
+
+        let env = pz_kahlua::TableRef::new();
+        let zg = pz_kahlua::TableRef::new();
+        zg.set_str("HungerIncrease", 0.0000096);
+        zg.set_str("ThirstIncrease", 0.0000080);
+        zg.set_str("FatigueIncrease", 0.0000345);
+        zg.set_str("StressDecrease", 0.00003);
+        zg.set_str("ImobileEnduranceIncrease", 0.000031);
+        zg.set_str("EquippedOrWornEncumbranceMultiplier", 0.3);
+        zg.set_str("CorpseSicknessFilterDrainMultiplier", 0.3);
+        env.set_str("ZomboidGlobals", zg);
+
+        let loaded = pz_lua_api::bind_character_sim::load_zomboid_globals(&env);
+        assert_eq!(loaded.hunger_increase, 0.0000096);
+        assert_eq!(loaded.stress_reduction, 0.00003);
+        assert_eq!(loaded.imobile_endurance_reduce, 0.000031);
+        assert_eq!(loaded.sitting_endurance_multiplier, 5.0);
+        assert_eq!(loaded.equipped_or_worn_encumbrance_multiplier, 0.3);
+
+        let sim = FrameSim::capture();
+        assert_eq!(sim.zomboid_globals().hunger_increase, 0.0000096);
+        assert_eq!(sim.player_context().zomboid_globals().thirst_increase, 0.0000080);
+        assert_eq!(
+            sim.player_context()
+                .zomboid_globals()
+                .corpse_sickness_filter_drain_multiplier,
+            0.3
+        );
+        let item_env = pz_lua_api::bind_items::GameItemEnv::new(None);
+        assert_eq!(item_env.equipped_or_worn_encumbrance_multiplier(), 0.3);
+    }
+
+    #[test]
+    fn sim_context_reads_live_calendar_month_and_animal_sandbox() {
+        let prev_time = pz_lua_api::bind_climate::shared_game_time();
+        let time = Rc::new(RefCell::new(GameTime::default()));
+        time.borrow_mut().month = 10;
+        time.borrow_mut().time_of_day = 14.25;
+        pz_lua_api::bind_climate::install_game_time(time);
+
+        let frame = FrameSim::capture();
+        assert_eq!(frame.month(), 10);
+        assert_eq!(frame.player_context().month(), 10);
+        assert!((frame.time_of_day() - 14.25).abs() < 0.001);
+        let sandbox = frame.animal_sandbox();
+        assert_eq!(sandbox.animal_stats_modifier, 4);
+        assert!(sandbox.animal_mating_season);
+
+        pz_lua_api::bind_climate::install_game_time(prev_time);
     }
 }

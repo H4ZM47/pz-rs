@@ -537,7 +537,7 @@ impl StatesWorldAdapter<'_> {
         let d = (self.object_damage(r) - damage) as i16 as i32;
         self.runtime.object_damage.insert(r, d);
         if d <= 0 {
-            self.engine.destroy_fence(self.cell, r, dir);
+            self.destroy_fence(r, dir);
         }
     }
 }

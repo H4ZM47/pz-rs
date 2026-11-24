@@ -91,6 +91,47 @@ pub fn capture_thumbnail(
     }
 }
 
+/// `IsoCamera.getScreenLeft/Top/Width/Height` for player `player` out of
+/// `num_players` on a `(screen_w, screen_h)` window.
+pub fn player_screen(player: usize, num_players: usize, screen_w: i32, screen_h: i32) -> PlayerScreen {
+    let w = screen_w.max(1);
+    let h = screen_h.max(1);
+    match num_players {
+        0 | 1 => PlayerScreen { left: 0, top: 0, width: w, height: h },
+        2 => PlayerScreen {
+            left: if player == 1 { w / 2 } else { 0 },
+            top: 0,
+            width: w / 2,
+            height: h,
+        },
+        _ => PlayerScreen {
+            left: if player % 2 == 1 { w / 2 } else { 0 },
+            top: if player >= 2 { h / 2 } else { 0 },
+            width: w / 2,
+            height: h / 2,
+        },
+    }
+}
+
+/// Capture `thumb.png` for `player` from `gpu` using the current offscreen or
+/// main surface dimensions.
+pub fn capture_for_player(
+    gpu: &mut Gpu,
+    player: usize,
+    num_players: usize,
+    screen_w: i32,
+    screen_h: i32,
+) -> Option<Thumbnail> {
+    let ps = player_screen(player, num_players, screen_w, screen_h);
+    let p0 = player_screen(0, num_players, screen_w, screen_h);
+    let params = ScreenParams {
+        offscreen_width: ps.width as f32,
+        offscreen_height: ps.height as f32,
+        ..ScreenParams::default()
+    };
+    capture_thumbnail(gpu, ps, p0, params)
+}
+
 #[cfg(test)]
 #[path = "save_thumbnail_tests.rs"]
 mod tests;

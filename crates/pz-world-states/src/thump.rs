@@ -1038,7 +1038,7 @@ impl StatesWorldAdapter<'_> {
             }
             if breakable {
                 let dir = self.break_dir(r, t);
-                self.engine.destroy_fence(self.cell, r, dir);
+                self.destroy_fence(r, dir);
                 return;
             }
             self.destroy_thumpable(r);
@@ -1453,7 +1453,7 @@ impl StatesWorldAdapter<'_> {
             *out = Some(None);
             if breakable {
                 let dir = self.break_dir(r, t);
-                self.engine.destroy_fence(self.cell, r, dir);
+                self.destroy_fence(r, dir);
                 return;
             }
             self.engine.play_sound(t.id, "BreakObject", Some(r));

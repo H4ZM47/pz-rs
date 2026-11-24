@@ -21,7 +21,7 @@ fn names(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
-fn tables() -> SpriteTables {
+pub(crate) fn tables() -> SpriteTables {
     SpriteTables::new(
         names(&[
             "collideW",

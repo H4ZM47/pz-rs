@@ -193,14 +193,17 @@ pub(super) fn register(b: &ClassBuilder) {
         Ok(c.push(float_value(v)))
     });
     // `DistToSquared(float x, float y)` / `DistToSquared(IsoMovingObject)`.
-    // TODO(port): the vehicle polygon cases (`BaseVehicle.getClosestPointOnPoly`).
     b.method("DistToSquared", |c| {
         let (x, y) = { let chr = chr_of(c)?; let chr = chr.borrow(); (chr.vars.x, chr.vars.y) };
         let v = match c.arg(1) {
             Value::Num(_) => dist_sq(float_arg(c, 1), float_arg(c, 2), x, y),
-            _ => {
-                let (ox, oy) = object_xy(c, 1)?.ok_or_else(npe)?;
-                dist_sq(x, y, ox, oy)
+            other => {
+                if let Some(vehicle) = pz_vehicles::lua::vehicle_from_value(&other) {
+                    vehicle.closest_point_on_poly(x, y).0
+                } else {
+                    let (ox, oy) = object_xy(c, 1)?.ok_or_else(npe)?;
+                    dist_sq(x, y, ox, oy)
+                }
             }
         };
         Ok(c.push(float_value(v)))
@@ -209,8 +212,14 @@ pub(super) fn register(b: &ClassBuilder) {
     // `IsoUtils.DistanceTo` otherwise (the same distance).
     b.method("DistToProper", |c| {
         let (x, y) = { let chr = chr_of(c)?; let chr = chr.borrow(); (chr.vars.x, chr.vars.y) };
-        let (ox, oy) = object_xy(c, 1)?.ok_or_else(npe)?;
-        Ok(c.push(float_value(dist_sq(x, y, ox, oy).sqrt())))
+        let other = c.arg(1);
+        let d_sq = if let Some(vehicle) = pz_vehicles::lua::vehicle_from_value(&other) {
+            vehicle.closest_point_on_poly(x, y).0
+        } else {
+            let (ox, oy) = object_xy(c, 1)?.ok_or_else(npe)?;
+            dist_sq(x, y, ox, oy)
+        };
+        Ok(c.push(float_value(d_sq.sqrt())))
     });
     b.method("isSitOnGround", |c| {
         let v = chr_of(c)?.borrow().sit_on_ground;

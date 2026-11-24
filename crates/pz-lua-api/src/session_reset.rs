@@ -21,17 +21,22 @@ pub fn reset_session_bindings() {
     crate::bind_game_window::take_save_request();
 
     crate::bind_players::reset();
+    crate::bind_tutorial_manager::reset_session_handles();
+    crate::bind_line_drawer::reset_session_handles();
     crate::bind_character_sim::reset_session_handles();
     crate::bind_states::reset_session_handles();
     crate::bind_body::reset_session_handles();
     crate::bind_nutrition::reset_session_handles();
     crate::bind_characters::reset_session_handles();
+    crate::bind_animals::reset();
     crate::bind_scripts::reset_session_handles();
     crate::bind_registry::reset_session_handles();
     crate::bind_item_visual::reset_session_handles();
     crate::chat::reset_session_callbacks();
     crate::bind_climate::reset_session_handles();
     crate::bind_puddles::reset_session_handles();
+    crate::bind_template_text::reset();
+    crate::bind_spawn_points::reset();
 
     crate::bind_tile_overlays::shared_tile_overlays().borrow_mut().reset();
     crate::bind_tile_overlays::shared_container_overlays().borrow_mut().reset();
@@ -46,7 +51,10 @@ pub fn reset_session_bindings() {
     crate::bind_broken_fences::shared_broken_fences().borrow_mut().reset();
     crate::bind_basements::before_on_load_map_zones();
     crate::bind_sprites::install_sprite_manager(None);
+    crate::bind_sprite_models::reset();
     crate::bind_erosion::set_instance(None);
+    crate::bind_fbo_anim_debug::reset_session_handles();
     crate::bind_world::set_cell(None);
     crate::bind_world::set_meta_grid(None);
+    crate::worldmap::map_definitions::reset();
 }

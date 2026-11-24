@@ -283,6 +283,72 @@ fn register_character_methods(thread: &mut Thread) {
         Ok(c.push(v))
     });
     crate::bind_combat::register_character_methods(&b);
+    register_force_open_state(thread);
+}
+
+const FORCE_OPEN_STATE_CLASS: &str = "zombie.ai.states.ForceOpenState";
+const FORCING_VARS: &[(&str, &str, &str)] = &[
+    (
+        "bForceOpenDoorLeft",
+        "ForceOpenDoorLeftOutcome",
+        "StopAfterForceDoorLeftAnimLooped",
+    ),
+    (
+        "bForceOpenDoorRight",
+        "ForceOpenDoorRightOutcome",
+        "StopAfterForceDoorRightAnimLooped",
+    ),
+    (
+        "bForceOpenGarageDoor",
+        "ForceOpenGarageDoorOutcome",
+        "StopAfterForceGarageDoorAnimLooped",
+    ),
+    (
+        "bForceOpenWindow",
+        "ForceOpenWindowOutcome",
+        "StopAfterForceWindowAnimLooped",
+    ),
+];
+
+fn register_force_open_state(thread: &mut Thread) {
+    let f = expose_class(thread, FORCE_OPEN_STATE_CLASS, Some(STATE_CLASS));
+    f.static_fn("instance", |c| Ok(c.push(object_of(FORCE_OPEN_STATE_CLASS))));
+    f.method("forceSucceeded", |c| {
+        if let Some(chr) = crate::bind_character_sim::chr_from_value(&c.arg(1)) {
+            let mut ch = chr.borrow_mut();
+            let mut matched = false;
+            for &(forcing_var, outcome_var, _) in FORCING_VARS {
+                if ch.get_variable_boolean(forcing_var) {
+                    ch.set_variable(outcome_var, VariableValue::String("success".into()));
+                    matched = true;
+                }
+            }
+            if !matched {
+                for &(_, outcome_var, _) in FORCING_VARS {
+                    ch.set_variable(outcome_var, VariableValue::String("success".into()));
+                }
+            }
+        }
+        Ok(0)
+    });
+    f.method("forceStopped", |c| {
+        if let Some(chr) = crate::bind_character_sim::chr_from_value(&c.arg(1)) {
+            let mut ch = chr.borrow_mut();
+            let mut matched = false;
+            for &(forcing_var, _, stop_var) in FORCING_VARS {
+                if ch.get_variable_boolean(forcing_var) {
+                    ch.set_variable(stop_var, VariableValue::Bool(true));
+                    matched = true;
+                }
+            }
+            if !matched {
+                for &(_, _, stop_var) in FORCING_VARS {
+                    ch.set_variable(stop_var, VariableValue::Bool(true));
+                }
+            }
+        }
+        Ok(0)
+    });
 }
 
 /// `register` on the shared ScriptManager.
@@ -411,5 +477,23 @@ mod retained_animal_cause_tests {
         assert!(matches!(values[0], Value::Bool(false)) && matches!(values[2], Value::Bool(false)));
         assert_eq!(values[1].as_str(), values[3].as_str());
         assert!(!later.get());
+    }
+
+    #[test]
+    fn force_open_state_methods_update_character_variables() {
+        let (mut t, player, _) = crate::bind_character_sim::tests::setup_with(ScriptManager::new());
+        register(&mut t, &shared_script_manager());
+        crate::bind_character_sim::tests::run(
+            &mut t,
+            r#"
+            player:setVariable("bForceOpenWindow", true)
+            ForceOpenState.instance():forceSucceeded(player)
+            assert(player:getVariableString("ForceOpenWindowOutcome") == "success")
+            ForceOpenState.instance():forceStopped(player)
+            assert(player:getVariableBoolean("StopAfterForceWindowAnimLooped") == true)
+            "#,
+        )
+        .unwrap();
+        assert!(player.borrow().get_variable_boolean("StopAfterForceWindowAnimLooped"));
     }
 }

@@ -23,6 +23,7 @@ pub mod gameplay;
 pub mod io;
 pub mod item;
 pub mod item_components;
+pub mod item_configurator;
 pub mod item_texture;
 pub mod java;
 pub mod key_namer;

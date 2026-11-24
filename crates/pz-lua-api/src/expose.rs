@@ -16,6 +16,62 @@ use std::rc::Rc;
 
 pub type Method = dyn Fn(&mut NativeCall<'_>) -> LuaResult<usize>;
 
+#[derive(Default)]
+struct ExposedClass {
+    superclass: Option<String>,
+    methods: Vec<String>,
+    statics: Vec<String>,
+}
+
+#[derive(Default)]
+struct ExposedRegistry {
+    globals: Vec<String>,
+    classes: HashMap<String, ExposedClass>,
+}
+
+thread_local! {
+    static EXPOSED: RefCell<ExposedRegistry> = RefCell::new(ExposedRegistry::default());
+}
+
+fn push_unique(list: &mut Vec<String>, name: &str) {
+    if !list.iter().any(|existing| existing == name) {
+        list.push(name.to_string());
+    }
+}
+
+/// Global function names registered via [`global`], in registration order.
+pub fn exposed_globals() -> Vec<String> {
+    EXPOSED.with(|r| r.borrow().globals.clone())
+}
+
+/// Public methods exposed on `class_name` and each of its superclasses,
+/// class first, deduplicated while preserving order. Accepts either a bare
+/// Java FQN (`zombie.characters.IsoPlayer`) or `Class.toString()` form
+/// (`class zombie.characters.IsoPlayer`).
+pub fn exposed_class_methods(class_name: &str) -> Vec<String> {
+    let fqn = class_name.strip_prefix("class ").unwrap_or(class_name);
+    EXPOSED.with(|r| {
+        let reg = r.borrow();
+        let mut out = Vec::new();
+        let mut cur = Some(fqn.to_string());
+        let mut hops = 0usize;
+        while let Some(name) = cur {
+            if hops > 32 {
+                break;
+            }
+            hops += 1;
+            let Some(cls) = reg.classes.get(&name) else {
+                break;
+            };
+            for m in &cls.methods {
+                push_unique(&mut out, m);
+            }
+            cur = cls.superclass.clone();
+        }
+        out
+    })
+}
+
 /// Builder returned by [`expose_class`].
 pub struct ClassBuilder {
     pub fqn: &'static str,
@@ -82,6 +138,13 @@ pub fn expose_class(
     if env.get_own(&Value::str(simple)).is_nil() {
         env.set_str(simple, container.clone());
     }
+    EXPOSED.with(|r| {
+        let mut reg = r.borrow_mut();
+        let entry = reg.classes.entry(fqn.to_string()).or_default();
+        if entry.superclass.is_none() {
+            entry.superclass = superclass.map(str::to_string);
+        }
+    });
     ClassBuilder {
         fqn,
         statics: container,
@@ -98,6 +161,11 @@ impl ClassBuilder {
     ) -> &Self {
         self.methods
             .set_str(name, Value::Native(NativeFunction::new(name, f)));
+        EXPOSED.with(|r| {
+            let mut reg = r.borrow_mut();
+            let entry = reg.classes.entry(self.fqn.to_string()).or_default();
+            push_unique(&mut entry.methods, name);
+        });
         self
     }
     /// Static method, called as `Class.name(...)`.
@@ -108,6 +176,11 @@ impl ClassBuilder {
     ) -> &Self {
         self.statics
             .set_str(name, Value::Native(NativeFunction::new(name, f)));
+        EXPOSED.with(|r| {
+            let mut reg = r.borrow_mut();
+            let entry = reg.classes.entry(self.fqn.to_string()).or_default();
+            push_unique(&mut entry.statics, name);
+        });
         self
     }
     /// Public static field value (copied at exposure time, like Kahlua).
@@ -134,6 +207,7 @@ pub fn global(
     thread
         .globals()
         .set_str(name, Value::Native(NativeFunction::new(name, f)));
+    EXPOSED.with(|r| push_unique(&mut r.borrow_mut().globals, name));
 }
 
 /// Downcast `self` (argument 0) of a method call.

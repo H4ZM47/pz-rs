@@ -693,4 +693,33 @@ pub fn register_zone(thread: &mut Thread) {
     ] {
         expose_class(thread, sub, Some("zombie.iso.zones.Zone"));
     }
+    // `LuaManager.GlobalObject` vehicle-zone and cell-bounds queries backed by
+    // `IsoWorld.instance.metaGrid` (`getZone`/`getZones` left to peer foraging branch).
+    global(thread, "getVehicleZoneAt", |c| {
+        let (x, y, z) = (int_arg(c, 0), int_arg(c, 1), int_arg(c, 2));
+        let v = with_world_state_cell(|w| {
+            let w = w.borrow();
+            match w.meta_grid.as_ref() {
+                Some(g) => zone_value(g, g.get_vehicle_zone_at(x, y, z)),
+                None => Value::Nil,
+            }
+        });
+        Ok(c.push(v))
+    });
+    global(thread, "getCellMinX", |c| {
+        let v = with_world_state_cell(|w| w.borrow().meta_grid.as_ref().map_or(0, |g| g.min_x));
+        Ok(c.push(v as f64))
+    });
+    global(thread, "getCellMaxX", |c| {
+        let v = with_world_state_cell(|w| w.borrow().meta_grid.as_ref().map_or(0, |g| g.max_x));
+        Ok(c.push(v as f64))
+    });
+    global(thread, "getCellMinY", |c| {
+        let v = with_world_state_cell(|w| w.borrow().meta_grid.as_ref().map_or(0, |g| g.min_y));
+        Ok(c.push(v as f64))
+    });
+    global(thread, "getCellMaxY", |c| {
+        let v = with_world_state_cell(|w| w.borrow().meta_grid.as_ref().map_or(0, |g| g.max_y));
+        Ok(c.push(v as f64))
+    });
 }

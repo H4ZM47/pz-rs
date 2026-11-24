@@ -115,6 +115,124 @@ pub fn update_tile_overlay_sprite(
     Ok(())
 }
 
+/// `TileOverlays.instance.fixTableTopOverlays(square)`: for each table object
+/// (`IsTable`) on `objects` that has a table-top or another table object
+/// above it, remove any attached overlay sprite whose name belongs to that
+/// table's `tabletop` overlay entries. Returns whether any overlay instance
+/// was removed.
+pub fn fix_table_top_overlays(objects: &[pz_world::IsoObjectRef]) -> LuaResult<bool> {
+    let busy = |what: &str| LuaError::runtime(format!("fixTableTopOverlays: {what} is in use"));
+    let sprites = crate::bind_sprites::manager()?;
+    let mut removed_any = false;
+    for index in 0..objects.len() {
+        let (is_table, sprite_name, has_on_top) = {
+            let manager = sprites.try_borrow().map_err(|_| busy("IsoSpriteManager"))?;
+            let has = |o: &pz_world::IsoObjectRef, prop: &str| -> LuaResult<bool> {
+                let body = o.try_borrow().map_err(|_| busy("IsoObject"))?;
+                let sprite = body
+                    .sprite
+                    .try_read(&manager)
+                    .map_err(|e| LuaError::runtime(format!("fixTableTopOverlays: sprite: {e:?}")))?;
+                Ok(sprite.is_some_and(|s| manager.has_prop(&s, prop)))
+            };
+            if !has(&objects[index], "IsTable")? {
+                (false, None, false)
+            } else {
+                let mut on_top = false;
+                for o in &objects[index + 1..] {
+                    if has(o, "IsTableTop")? || has(o, "IsTable")? {
+                        on_top = true;
+                        break;
+                    }
+                }
+                let name = {
+                    let body = objects[index].try_borrow().map_err(|_| busy("IsoObject"))?;
+                    let res = body
+                        .sprite
+                        .try_read(&manager)
+                        .map_err(|e| LuaError::runtime(format!("fixTableTopOverlays: sprite: {e:?}")))?
+                        .and_then(|s| s.name.clone());
+                    res
+                };
+                (true, name, on_top)
+            }
+        };
+        if !is_table || !has_on_top {
+            continue;
+        }
+        let Some(sprite_name) = sprite_name else {
+            continue;
+        };
+        let to_remove: Vec<String> = shared_tile_overlays()
+            .try_borrow()
+            .map_err(|_| busy("TileOverlays"))?
+            .table_top_overlay_names(&sprite_name)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        if to_remove.is_empty() {
+            continue;
+        }
+        let manager = sprites.try_borrow().map_err(|_| busy("IsoSpriteManager"))?;
+        let mut body = objects[index]
+            .try_borrow_mut()
+            .map_err(|_| busy("IsoObject"))?;
+        if let Some(attached) = body.attached_anim_sprite.as_mut() {
+            let before = attached.len();
+            attached.retain(|inst| {
+                let name = manager
+                    .sprites
+                    .get(inst.sprite)
+                    .and_then(|s| s.name.as_deref());
+                !name.is_some_and(|n| to_remove.iter().any(|r| r == n))
+            });
+            if attached.len() != before {
+                removed_any = true;
+            }
+        }
+    }
+    Ok(removed_any)
+}
+
+fn object_sprite_name(obj: &pz_world::IsoObjectRef) -> LuaResult<Option<String>> {
+    let busy = |what: &str| LuaError::runtime(format!("overlay sprite lookup: {what} is in use"));
+    let sprites = crate::bind_sprites::manager()?;
+    let manager = sprites.try_borrow().map_err(|_| busy("IsoSpriteManager"))?;
+    let body = obj.try_borrow().map_err(|_| busy("IsoObject"))?;
+    let sprite = body
+        .sprite
+        .try_read(&manager)
+        .map_err(|e| LuaError::runtime(format!("overlay sprite lookup: {e:?}")))?;
+    Ok(sprite.and_then(|s| s.name.clone()))
+}
+
+fn square_objects_and_room(
+    x: i32,
+    y: i32,
+    z: i32,
+) -> LuaResult<Option<(Vec<pz_world::IsoObjectRef>, Option<String>)>> {
+    crate::bind_world::try_with_world_read(|w| {
+        let Some(cell) = w.cell.as_ref() else {
+            return Ok(None);
+        };
+        let Some(sq_ref) = cell.get_grid_square(x, y, z) else {
+            return Ok(None);
+        };
+        let sq = sq_ref
+            .try_borrow()
+            .map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed("overlay square"))?;
+        let objects: Vec<pz_world::IsoObjectRef> =
+            sq.objects.iter().map(|s| s.ref_handle()).collect();
+        let room = w
+            .meta_grid
+            .as_ref()
+            .and_then(|meta| sq.room_def(meta))
+            .map(|r| r.name.clone());
+        Ok(Some((objects, room)))
+    })
+    .map_err(|e| LuaError::runtime(format!("overlay square lookup: {e:?}")))
+}
+
 /// `ContainerOverlays.instance.updateContainerOverlaySprite(obj)`
 /// (`ItemPickerJava.updateOverlaySprite`) for `object` on square `sq`: the
 /// "many items" or "few items" (fewer than 7) overlay for its sprite and
@@ -152,33 +270,68 @@ pub fn update_container_overlay_sprite(
 /// `IsoObject.setOverlaySprite(name)` (colour -1, the overlay colour
 /// cleared): a null or blank name removes the overlay; the same name with
 /// no colour is left alone; otherwise the named sprite (created under that
-/// name when missing) becomes the overlay.
-/// TODO(port): `invalidateRenderChunkLevel` for a change after load.
+/// name when missing) becomes the overlay, then notifies the installed
+/// chunk invalidator (if any) when attached to a square.
 pub fn set_overlay_sprite(object: &pz_world::IsoObjectRef, name: Option<&str>) -> LuaResult<()> {
     let busy = |what: &str| LuaError::runtime(format!("setOverlaySprite: {what} is in use"));
     let name = name.filter(|n| !n.trim().is_empty());
-    let mut body = object.try_borrow_mut().map_err(|_| busy("IsoObject"))?;
-    let Some(name) = name else {
-        body.overlay_sprite = None;
-        return Ok(());
-    };
-    if let Some(ov) = &body.overlay_sprite {
-        if ov.color.is_none() && matches!(&ov.name, pz_world::objects::SpriteName::Str(n) if n == name) {
-            return Ok(());
+    let square_pos = {
+        let mut body = object.try_borrow_mut().map_err(|_| busy("IsoObject"))?;
+        let sq_pos = body
+            .square_slot()
+            .and_then(|sq| sq.try_borrow().ok().map(|s| (s.x, s.y, s.z)));
+        if let Some(name) = name {
+            if let Some(ov) = &body.overlay_sprite {
+                if ov.color.is_none()
+                    && matches!(&ov.name, pz_world::objects::SpriteName::Str(n) if n == name)
+                {
+                    return Ok(());
+                }
+            }
+            let sprites = crate::bind_sprites::manager()?;
+            let mut manager = sprites
+                .try_borrow_mut()
+                .map_err(|_| busy("IsoSpriteManager"))?;
+            let idx = match manager.named_map.get(name) {
+                Some(&idx) => idx,
+                None => manager.add_sprite_named(name),
+            };
+            manager.sprites[idx].name = Some(name.to_string());
+            body.overlay_sprite = Some(pz_world::objects::OverlaySprite {
+                name: pz_world::objects::SpriteName::Str(name.to_string()),
+                color: None,
+            });
+            sq_pos
+        } else {
+            if body.overlay_sprite.take().is_none() {
+                return Ok(());
+            }
+            sq_pos
         }
-    }
-    let sprites = crate::bind_sprites::manager()?;
-    let mut manager = sprites.try_borrow_mut().map_err(|_| busy("IsoSpriteManager"))?;
-    let idx = match manager.named_map.get(name) {
-        Some(&idx) => idx,
-        None => manager.add_sprite_named(name),
     };
-    manager.sprites[idx].name = Some(name.to_string());
-    body.overlay_sprite = Some(pz_world::objects::OverlaySprite {
-        name: pz_world::objects::SpriteName::Str(name.to_string()),
-        color: None,
-    });
+    if let Some((x, y, z)) = square_pos {
+        notify_overlay_changed(x, y, z);
+    }
     Ok(())
+}
+
+/// Callback installed by the engine so `setOverlaySprite` after load calls
+/// `invalidateRenderChunkLevel` on the object's chunk/level.
+pub type OverlayInvalidator = Rc<dyn Fn(i32, i32, i32)>;
+
+thread_local! {
+    static OVERLAY_INVALIDATOR: RefCell<Option<OverlayInvalidator>> = const { RefCell::new(None) };
+}
+
+pub fn install_overlay_invalidator(hook: Option<OverlayInvalidator>) {
+    OVERLAY_INVALIDATOR.with(|slot| *slot.borrow_mut() = hook);
+}
+
+fn notify_overlay_changed(x: i32, y: i32, z: i32) {
+    let hook = OVERLAY_INVALIDATOR.with(|slot| slot.borrow().clone());
+    if let Some(hook) = hook {
+        hook(x, y, z);
+    }
 }
 
 /// `TileOverlays.instance`.
@@ -391,6 +544,54 @@ pub fn register(thread: &mut Thread) {
         });
         Ok(c.push(v))
     });
+    t.method("hasOverlays", |c| {
+        crate::expose::this::<LuaTileOverlays>(c)?;
+        let arg = c.arg(1);
+        let Some(world) = crate::bind_world_object::object_from_value(&arg) else {
+            return Ok(c.push(false));
+        };
+        let name = object_sprite_name(&world.object)?;
+        let has = TILES.with(|t| t.borrow().has_overlays(name.as_deref()));
+        Ok(c.push(has))
+    });
+    t.method("updateTileOverlaySprite", |c| {
+        crate::expose::this::<LuaTileOverlays>(c)?;
+        let arg = c.arg(1);
+        let Some(world) = crate::bind_world_object::object_from_value(&arg) else {
+            return Ok(0);
+        };
+        let sq_val = crate::bind_world_object::object_square(world)?;
+        let Some((x, y, z)) = crate::bind_world::square_coords(&sq_val) else {
+            return Ok(0);
+        };
+        let Some(sprite_name) = object_sprite_name(&world.object)? else {
+            return Ok(0);
+        };
+        let Some((objects, room)) = square_objects_and_room(x, y, z)? else {
+            return Ok(0);
+        };
+        let Some(index) = objects.iter().position(|o| Rc::ptr_eq(o, &world.object)) else {
+            return Ok(0);
+        };
+        let sq = pz_world::tile_overlays::OverlaySquare {
+            x,
+            y,
+            z,
+            room: room.as_deref(),
+        };
+        update_tile_overlay_sprite(&objects, index, &sprite_name, sq)?;
+        Ok(0)
+    });
+    t.method("fixTableTopOverlays", |c| {
+        crate::expose::this::<LuaTileOverlays>(c)?;
+        let Some((x, y, z)) = crate::bind_world::square_coords(&c.arg(1)) else {
+            return Ok(0);
+        };
+        if let Some((objects, _)) = square_objects_and_room(x, y, z)? {
+            fix_table_top_overlays(&objects)?;
+        }
+        Ok(0)
+    });
     t.method("Reset", |c| {
         crate::expose::this::<LuaTileOverlays>(c)?;
         TILES.with(|t| t.borrow_mut().reset());
@@ -412,6 +613,36 @@ pub fn register(thread: &mut Thread) {
             names_value(name.as_deref().and_then(|n| k.underlying_sprite_names(n)))
         });
         Ok(c.push(v))
+    });
+    k.method("hasOverlays", |c| {
+        crate::expose::this::<LuaContainerOverlays>(c)?;
+        let arg = c.arg(1);
+        let Some(world) = crate::bind_world_object::object_from_value(&arg) else {
+            return Ok(c.push(false));
+        };
+        let name = object_sprite_name(&world.object)?;
+        let has = CONTAINERS.with(|k| k.borrow().has_overlays(name.as_deref()));
+        Ok(c.push(has))
+    });
+    k.method("updateContainerOverlaySprite", |c| {
+        crate::expose::this::<LuaContainerOverlays>(c)?;
+        let arg = c.arg(1);
+        let Some(world) = crate::bind_world_object::object_from_value(&arg) else {
+            return Ok(0);
+        };
+        let sq_val = crate::bind_world_object::object_square(world)?;
+        let Some((x, y, z)) = crate::bind_world::square_coords(&sq_val) else {
+            return Ok(0);
+        };
+        let room = square_objects_and_room(x, y, z)?.and_then(|(_, r)| r);
+        let sq = pz_world::tile_overlays::OverlaySquare {
+            x,
+            y,
+            z,
+            room: room.as_deref(),
+        };
+        update_container_overlay_sprite(&world.object, sq)?;
+        Ok(0)
     });
     k.method("Reset", |c| {
         crate::expose::this::<LuaContainerOverlays>(c)?;
@@ -637,5 +868,81 @@ mod tests {
             assert_eq!(backing.borrow().len(), 3);
             assert_eq!(current.borrow().len(), 1);
         }
+    }
+
+    #[test]
+    fn fix_table_top_overlays_strips_tabletop_overlays_when_object_placed_above() {
+        let mut sm = pz_world::IsoSpriteManager::new(pz_world::sprite::test_tables());
+        let mut values = pz_world::sprite::PropertyValueMap::default();
+        values.put("IsTable", vec![String::new()]);
+        values.put("IsTableTop", vec![String::new()]);
+        sm.alias = pz_world::sprite::TilePropertyAliasMap::generate(&values, &[]);
+        let table_idx = sm.add_sprite_named("table_0");
+        sm.sprites[table_idx].name = Some("table_0".into());
+        sm.sprites[table_idx]
+            .properties
+            .set(&sm.tables, &sm.alias, "IsTable", "", false);
+        let top_idx = sm.add_sprite_named("lamp_0");
+        sm.sprites[top_idx].name = Some("lamp_0".into());
+        sm.sprites[top_idx]
+            .properties
+            .set(&sm.tables, &sm.alias, "IsTableTop", "", false);
+        let ov_tt_idx = sm.add_sprite_named("ov_tabletop");
+        sm.sprites[ov_tt_idx].name = Some("ov_tabletop".into());
+        let ov_keep_idx = sm.add_sprite_named("ov_keep");
+        sm.sprites[ov_keep_idx].name = Some("ov_keep".into());
+        crate::bind_sprites::install_sprite_manager(Some(Rc::new(RefCell::new(sm))));
+
+        shared_tile_overlays().borrow_mut().reset();
+        shared_tile_overlays()
+            .borrow_mut()
+            .add_overlays(&[OverlayDef {
+                tile: "table_0".into(),
+                entries: vec![
+                    OverlayEntryDef {
+                        room: Some("other".into()),
+                        chance: 1,
+                        usage: Some("tabletop".into()),
+                        tiles: vec!["ov_tabletop".into()],
+                    },
+                    OverlayEntryDef {
+                        room: Some("other".into()),
+                        chance: 1,
+                        usage: Some(String::new()),
+                        tiles: vec!["ov_keep".into()],
+                    },
+                ],
+            }])
+            .unwrap();
+
+        let mut table_obj = pz_world::IsoObject::new(
+            1,
+            pz_world::objects::ObjectKind::Object,
+            Some(table_idx),
+        );
+        table_obj.attached_anim_sprite = Some(vec![
+            pz_world::objects::IsoSpriteInstance::new(ov_tt_idx),
+            pz_world::objects::IsoSpriteInstance::new(ov_keep_idx),
+        ]);
+        let table_ref = pz_world::ObjectSlot::new(table_obj).ref_handle();
+        let top_ref = pz_world::ObjectSlot::new(pz_world::IsoObject::new(
+            2,
+            pz_world::objects::ObjectKind::Object,
+            Some(top_idx),
+        ))
+        .ref_handle();
+
+        // Without an object on top, tabletop overlays stay.
+        assert!(!fix_table_top_overlays(&[table_ref.clone()]).unwrap());
+        assert_eq!(table_ref.borrow().attached_anim_sprite.as_ref().unwrap().len(), 2);
+
+        // With an IsTableTop object above it, only the tabletop overlay is removed.
+        assert!(fix_table_top_overlays(&[table_ref.clone(), top_ref]).unwrap());
+        let remaining = table_ref.borrow().attached_anim_sprite.clone().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].sprite, ov_keep_idx);
+
+        shared_tile_overlays().borrow_mut().reset();
+        crate::bind_sprites::install_sprite_manager(None);
     }
 }

@@ -7,7 +7,10 @@
 //! Each exposed class gets a global table (statics, `new`, `class`) and a
 //! metatable in `Thread::class_metatables` keyed by its Java class name.
 
+pub mod bind_animals;
+pub mod bind_animal_parts;
 pub mod bind_appearance;
+pub mod bind_game_sounds_visited;
 pub mod bind_game_window;
 pub mod bind_attached_items;
 pub mod bind_body;
@@ -18,6 +21,7 @@ pub mod bind_cheat_type;
 pub mod bind_characters;
 pub mod bind_audio;
 pub mod bind_erosion;
+pub mod bind_fbo_anim_debug;
 pub mod bind_colors;
 pub mod bind_core;
 pub mod bind_craft_recipe_manager;
@@ -25,6 +29,7 @@ pub mod bind_date;
 pub mod bind_designation;
 pub mod bind_credits;
 pub mod bind_debug;
+pub mod bind_line_drawer;
 pub mod bind_climate;
 pub mod bind_puddles;
 pub mod bind_process_items;
@@ -54,10 +59,12 @@ pub mod bind_java_util;
 pub mod bind_misc;
 pub mod bind_misc_classes;
 pub mod bind_mods;
+pub mod bind_monitors;
 pub mod bind_nutrition;
 pub mod bind_performance;
 pub mod bind_object_picker;
 pub mod bind_safehouse;
+pub mod bind_global_moddata;
 mod world_menu_logic;
 pub mod bind_players;
 pub mod bind_popman;
@@ -69,6 +76,7 @@ pub mod bind_save;
 pub mod bind_scripts;
 pub mod bind_search_mode;
 pub mod bind_skills;
+pub mod bind_spawn_points;
 pub mod bind_survival_guide;
 pub mod bind_xui;
 pub mod bind_states;
@@ -77,6 +85,7 @@ pub mod bind_zombie_outfits;
 pub mod chat;
 pub mod bind_text;
 pub mod bind_ui;
+pub mod bind_tutorial_manager;
 pub mod gizmo;
 pub mod hud;
 pub mod bind_ui3d;
@@ -88,16 +97,20 @@ pub mod bind_server_list;
 pub mod bind_map_groups;
 pub mod bind_world;
 pub mod bind_basements;
+pub mod bind_area_highlights;
 pub mod bind_bent_fences;
 pub mod bind_map_objects;
 pub mod farm_definitions;
+pub mod bind_template_text;
 pub mod bind_tile_overlays;
+pub mod bind_tile_depth;
 pub mod bind_broken_fences;
 pub mod bind_item_picker;
 pub mod bind_key_namer;
 pub mod bind_world_gen_utils;
 pub mod bind_world_gen_params;
 pub mod bind_randomized_world;
+pub mod bind_sprite_models;
 pub mod bind_sprites;
 pub mod bind_vehicles;
 pub mod bind_radio;
@@ -226,6 +239,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_date::register(&mut mgr.thread);
     bind_credits::register(mgr);
     bind_debug::register(&mut mgr.thread);
+    bind_line_drawer::register(&mut mgr.thread);
     bind_input::register(mgr);
     bind_joypad::register(mgr);
     bind_erosion::register(&mut mgr.thread);
@@ -253,6 +267,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_scripts::register(&mut mgr.thread, bind_registry::shared_script_manager());
     bind_xui::register(&mut mgr.thread);
     bind_characters::register_shared(&mut mgr.thread);
+    bind_animals::register(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
     bind_character_sim::register_shared(&mut mgr.thread);
     bind_recipe_manager::register(
@@ -283,11 +298,19 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_bent_fences::register(&mut mgr.thread);
     bind_map_objects::register(&mut mgr.thread);
     bind_tile_overlays::register(&mut mgr.thread);
+    bind_tile_depth::register(&mut mgr.thread, Some(&mgr.fs));
     bind_broken_fences::register(&mut mgr.thread);
     bind_object_picker::register(&mut mgr.thread);
     bind_safehouse::register(&mut mgr.thread);
+    bind_spawn_points::register(&mut mgr.thread);
+    bind_global_moddata::register(&mut mgr.thread);
     world_menu_logic::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
+    bind_template_text::register(
+        &mut mgr.thread,
+        Some(bind_characters::shared_characters()),
+        Some(mgr.events.clone()),
+    );
     bind_item_picker::register(&mut mgr.thread);
     bind_item_picker::install_event_sink(mgr.events.clone());
     bind_world_gen_utils::register(&mut mgr.thread, mgr.fs.clone());
@@ -300,25 +323,36 @@ pub fn register_all(mgr: &mut LuaManager) {
         bind_cheat_type::register_from_jar(&mut mgr.thread, jar.as_ref());
     }
     bind_sprites::register(&mut mgr.thread);
+    bind_sprite_models::register(&mut mgr.thread, mgr.fs.clone());
     bind_map_groups::install_host(Rc::new(bind_map_groups::GameFsHost::new(mgr.fs.clone())));
     bind_map_groups::register(&mut mgr.thread, move || fs.borrow().media_file("maps"));
     bind_server::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
     bind_server_list::register(&mut mgr.thread, mgr.fs.clone());
     bind_audio::register(&mut mgr.thread);
+    bind_game_sounds_visited::register(&mut mgr.thread);
     bind_iso_enums::register(mgr);
+    bind_animal_parts::register(&mut mgr.thread);
     bind_global_objects::register(mgr);
     bind_popman::register(&mut mgr.thread);
     bind_zombie::register_shared(&mut mgr.thread);
     bind_vehicles::register(&mut mgr.thread);
     bind_radio::register(&mut mgr.thread);
+    bind_monitors::set_recipe_monitor_save_dir(mgr.fs.borrow().cache_dir().join("RecipeMonitor"));
+    bind_monitors::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
+    bind_tutorial_manager::register(&mut mgr.thread);
     hud::register(&mut mgr.thread);
     worldmap::register(&mut mgr.thread);
     worldmap::install_fs(mgr.fs.clone());
     gizmo::register(&mut mgr.thread);
+    bind_area_highlights::register(&mut mgr.thread);
+    bind_fbo_anim_debug::register(&mut mgr.thread);
     hud::characters::install_character_hud_hosts();
     hud::alarm_clocks::install_alarm_clock_host();
     hud::host::install_debug_options_host();
+    hud::host::install_console_methods_host(Some(
+        mgr.fs.borrow().base.join("projectzomboid.jar"),
+    ));
     bind_ui3d::register(&mut mgr.thread);
     bind_uitextbox2::register(&mut mgr.thread);
     bind_voice::register(&mut mgr.thread);

@@ -239,8 +239,9 @@ impl GameLoadingState {
         let events = cx.lua.events.clone();
         pz_lua_api::global_objects::init_server_systems(&mut cx.lua.thread, &events);
         pz_lua_api::global_objects::init_client_systems(&mut cx.lua.thread, &events);
-        // TODO(port): `IsoObjectPicker.Instance.Init()`,
-        // `TutorialManager.instance.init()` / `CreateQuests()`.
+        pz_lua_api::bind_tutorial_manager::init();
+        pz_lua_api::bind_tutorial_manager::create_quests();
+        // TODO(port): `IsoObjectPicker.Instance.Init()`.
         let saved = cx.world.as_ref().map_or(-1, |w| w.saved_world_version);
         let save_dir = Self::current_save_dir(cx)?;
         let new_game = !save_dir.join("map_ver.bin").exists();
@@ -252,9 +253,17 @@ impl GameLoadingState {
             // with the engine's `SaveGameHooks`), which writes `map_ver.bin`
             // and the rest of a new world.
         }
-        // `ChatUtility.InitAllowedChatIcons()` (TODO(port):
-        // `Texture.collectAllIcons`), then `ChatManager.init(true, player)`.
-        pz_lua_api::chat::set_allowed_chat_icons(Default::default(), Default::default());
+        // `ChatUtility.InitAllowedChatIcons()` (`Texture.collectAllIcons`),
+        // `IsoGameCharacter.s_staticSounds`, then `ChatManager.init(true, player)`.
+        let (icons, full) = pz_lua_api::bind_render::textures()
+            .borrow()
+            .collect_all_icons();
+        pz_lua_api::chat::set_allowed_chat_icons(icons, full);
+        if let Ok(jar) = pz_classfile::Jar::open(cx.launch.game_dir.join("projectzomboid.jar")) {
+            pz_lua_api::chat::characters::set_static_sounds(
+                pz_lua_api::chat::characters::static_sounds_from_jar(&jar),
+            );
+        }
         if let Some(p) = pz_lua_api::bind_players::player_instance() {
             if let Err(e) = pz_lua_api::chat::with_chat_manager(|m| m.init(true, p)) {
                 eprintln!("ChatManager.init: {e:?}");

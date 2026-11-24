@@ -284,7 +284,16 @@ pub fn register_shared(thread: &mut Thread) {
             // `UseAndSync()`: the character applies what the use asks of
             // its inventory (the used-up food leaves it).
             let id = item.borrow().id;
-            let used = with_ctx(c, &v, |ctx| Ok(chr.borrow_mut().use_held_item(&sm, ctx, id, false, false, false)))?;
+            let mut floor = crate::bind_character_sim::FloorAccess::capture()
+                .map_err(crate::bind_world_object::host_error)?;
+            let used = with_ctx(c, &v, |ctx| {
+                let cx = floor
+                    .has_service()
+                    .then(|| pz_characters::character::FloorCx::new(ctx, &mut floor));
+                Ok(chr
+                    .borrow_mut()
+                    .use_held_item_with_floor(&sm, ctx, id, false, false, false, cx))
+            })?;
             if used.is_none() {
                 let owner = e.owner(&item);
                 let out = item.borrow_mut().use_with(false, false, false, owner.as_ref(), e.context());

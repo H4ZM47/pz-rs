@@ -35,6 +35,8 @@ use crate::ui_models::Assets;
 
 mod corpses;
 pub use corpses::{CorpseDraw, CorpseSquare};
+mod mannequins;
+pub use mannequins::{MannequinDraw, MannequinId, MannequinSquare};
 
 /// Camera-dependent character state. Lighting comes from the actual
 /// square's lighting result, rather than a fixed white model light.
@@ -88,6 +90,9 @@ pub struct WorldModels {
     assets: Option<Assets>,
     characters: HashMap<i32, CharacterModel>,
     corpses: corpses::Corpses,
+    mannequins: mannequins::Mannequins,
+    animal_defs: HashMap<String, pz_animals::AnimalDefinitions>,
+    animal_defs_loaded: bool,
     retired_textures: Vec<Texture>,
 }
 
@@ -100,8 +105,42 @@ impl WorldModels {
             assets: None,
             characters: HashMap::new(),
             corpses: corpses::Corpses::default(),
+            mannequins: mannequins::Mannequins::default(),
+            animal_defs: HashMap::new(),
+            animal_defs_loaded: false,
             retired_textures: Vec::new(),
         }
+    }
+
+    /// Load `AnimalDefinitions.animals` from the Lua environment once so animal
+    /// corpses (and future live animal renderers) can resolve model scripts,
+    /// skin textures and animation sets.
+    pub fn ensure_animal_definitions(&mut self, env: &pz_kahlua::TableRef) {
+        if self.animal_defs_loaded {
+            return;
+        }
+        if let Ok(defs) = pz_animals::AnimalDefinitions::load_all(env) {
+            if !defs.is_empty() {
+                self.animal_defs = defs
+                    .iter()
+                    .map(|(k, v)| (k.to_lowercase(), v.clone()))
+                    .collect();
+                self.animal_defs_loaded = true;
+            }
+        }
+    }
+
+    /// Replace the cached `AnimalDefinitions` map (used by tests and callers
+    /// that have already loaded `AnimalDefinitionTables`).
+    pub fn set_animal_definitions(
+        &mut self,
+        defs: HashMap<String, pz_animals::AnimalDefinitions>,
+    ) {
+        self.animal_defs = defs
+            .into_iter()
+            .map(|(k, v)| (k.to_lowercase(), v))
+            .collect();
+        self.animal_defs_loaded = true;
     }
 
     /// Load or rebuild the slot and advance the actual character's
@@ -447,6 +486,9 @@ impl WorldModels {
             if let Err(e) = self.corpses.create_textures(a, &fs) {
                 eprintln!("ERROR: DeadBodyAtlas: {e}");
             }
+            if let Err(e) = self.mannequins.create_textures(a, &fs) {
+                eprintln!("ERROR: IsoMannequin.createTextures: {e}");
+            }
         }
         let mut tm = self.tm.borrow_mut();
         let model_flags = flags::COMPRESS | flags::LIMIT_TEXTURE_SIZE_1;
@@ -454,7 +496,8 @@ impl WorldModels {
             .characters
             .values_mut()
             .filter_map(|m| Some((m.slot.as_mut()?, &mut m.jobs)))
-            .chain(self.corpses.slots_mut());
+            .chain(self.corpses.slots_mut())
+            .chain(self.mannequins.slots_mut());
         for (slot, jobs) in slots {
             let mut file =
                 |tm: &mut TextureManager, p: &str| tm.shared_texture_flags(&fs, p, model_flags);
@@ -552,6 +595,7 @@ impl WorldModels {
             retire(model, &mut self.retired_textures);
         }
         self.corpses.retire(&mut self.retired_textures);
+        self.mannequins.retire(&mut self.retired_textures);
     }
 
     /// Release the world's composites while its GPU still exists.
