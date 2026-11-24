@@ -92,6 +92,7 @@ pub mod bind_bent_fences;
 pub mod bind_map_objects;
 pub mod farm_definitions;
 pub mod bind_tile_overlays;
+pub mod bind_tile_depth;
 pub mod bind_broken_fences;
 pub mod bind_item_picker;
 pub mod bind_key_namer;
@@ -283,6 +284,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_bent_fences::register(&mut mgr.thread);
     bind_map_objects::register(&mut mgr.thread);
     bind_tile_overlays::register(&mut mgr.thread);
+    bind_tile_depth::register(&mut mgr.thread, Some(&mgr.fs));
     bind_broken_fences::register(&mut mgr.thread);
     bind_object_picker::register(&mut mgr.thread);
     bind_safehouse::register(&mut mgr.thread);
