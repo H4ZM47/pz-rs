@@ -62,6 +62,7 @@ mod world_menu_logic;
 pub mod bind_players;
 pub mod bind_popman;
 pub mod bind_recipe_manager;
+pub mod bind_recipe_manager_classic;
 pub mod bind_registry;
 pub mod bind_render;
 pub mod bind_sandbox;
