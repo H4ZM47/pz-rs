@@ -25,6 +25,7 @@ pub mod speed_controls;
 pub mod text_draw;
 pub mod tooltip;
 pub mod vehicle_gauge;
+pub mod iso_markers;
 pub mod world_markers;
 
 use crate::bind_ui::{element_of, UIELEMENT, UIMANAGER};
@@ -344,6 +345,7 @@ pub fn register(thread: &mut Thread) {
     register_radial(thread);
     register_radial_menu(thread);
     text_draw::register(thread);
+    iso_markers::register(thread);
     world_markers::register(thread);
     iso_utils::register(thread);
     register_vehicle_gauge(thread);
