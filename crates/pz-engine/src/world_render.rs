@@ -23,7 +23,10 @@ use pz_iso_render::weather_fx_mask::{
     render_weather_fx, FxMaskCharacters, FxMaskFrame, FxMaskPlayer, FxMaskSprites, WeatherFxMask,
 };
 use pz_iso_render::{Camera, ChunkRenderer, CutawayWorld, RenderInfos};
-use pz_lighting::jni::{IsoDirection, VisionConeInput};
+use pz_lighting::jni::{
+    detection_range, effective_fatigue, player_torch_id, IsoDirection, PlayerInput, TorchInfo,
+    VisionConeInput,
+};
 use pz_lua_api::bind_character_sim::LuaGameCharacter;
 use pz_render::tile_depth::{
     TileDepthTextureAssignmentManager, TileDepthTextureManager, TileGeometryManager,
@@ -679,15 +682,11 @@ impl WorldRender {
         // `LightingJNI.update` for the player, then the decoded results
         // into the render squares.
         if !self.lighting_error {
+            let (player_input, cone_input) = player_lighting_inputs(p, view, v);
             let input = PlayerFrameInput {
                 index: p as i32,
-                // TODO(port): the player's fatigue, detection range and
-                // the worn items' vision multiplier.
-                player: default_player(v.x, v.y, v.z, IsoDirection::ALL[v.dir as usize]),
-                cone: VisionConeInput {
-                    worn_items_vision_multiplier: 1.0,
-                    ..Default::default()
-                },
+                player: player_input,
+                cone: cone_input,
                 chunk_x_min: v.chunk_map.0,
                 chunk_y_min: v.chunk_map.1,
                 chunk_grid_width: v.chunk_map.2,
@@ -800,10 +799,10 @@ impl WorldRender {
                     target_ambient: color,
                     outside: sq.room_id == -1,
                     in_room: sq.room_id != -1,
-                    // TODO(port): room-light ids and the player's equipped torch.
+                    // TODO(port): room-light ids.
                     room_light_ids: Vec::new(),
                     player_index: chr.is_player().then_some(chr.player.player_index),
-                    torch_strength: 0.0,
+                    torch_strength: player_torch_strength(chr),
                     forward: [chr.vars.forward_x, chr.vars.forward_y],
                     multiplier: v.multiplier,
                 };
@@ -1089,14 +1088,226 @@ fn surface_values() -> (SurfaceSettings, f32) {
     (settings, age)
 }
 
-/// `WorldHooks` forwarding active vehicle headlights into `LightingJNI.checkLights`.
+/// `IsoPlayer.getTorchStrength()` from primary/secondary hand active light items.
+fn player_torch_strength(chr: &LuaGameCharacter) -> f32 {
+    if !chr.is_player() {
+        return 0.0;
+    }
+    [chr.items.primary_hand_item(), chr.items.secondary_hand_item()]
+        .into_iter()
+        .flatten()
+        .find(|i| i.borrow().is_emitting_light())
+        .map_or(0.0, |i| i.borrow().get_light_strength())
+}
+
+/// Build `LightingJNI.updatePlayer` inputs (`PlayerInput` + `VisionConeInput`)
+/// from the live `IsoPlayer` at `player_index`, falling back to `default_player`
+/// when no player is bound or borrowed.
+fn player_lighting_inputs(
+    player_index: usize,
+    view: &WorldView<'_>,
+    v: &RenderView,
+) -> (PlayerInput, VisionConeInput) {
+    let dir = IsoDirection::ALL[v.dir as usize];
+    let mut player = default_player(v.x, v.y, v.z, dir);
+    let in_room = view
+        .cell
+        .get_grid_square(v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32)
+        .is_some_and(|sq| sq.borrow().room_id != -1);
+    let mut cone = VisionConeInput {
+        in_room,
+        worn_items_vision_multiplier: 1.0,
+        ..Default::default()
+    };
+    let Some(p_ref) = pz_lua_api::bind_players::player(player_index) else {
+        return (player, cone);
+    };
+    let Ok(chr) = p_ref.try_borrow() else {
+        return (player, cone);
+    };
+
+    let sm = pz_lua_api::bind_registry::shared_script_manager();
+    let chars = pz_lua_api::bind_characters::shared_characters();
+    let chars = chars.borrow();
+
+    let (fatigue, fatigue_at_max) = chars
+        .sim
+        .character_stats
+        .field("FATIGUE")
+        .map(|s| (chr.stats.get(&s), chr.stats.is_at_maximum(&s)))
+        .unwrap_or((0.0, false));
+    let intoxication = chars
+        .sim
+        .character_stats
+        .field("INTOXICATION")
+        .map(|s| chr.stats.get(&s))
+        .unwrap_or(0.0);
+    let drunk_level = chr.moodles.moodle_level_of(&sm, "DRUNK").unwrap_or(0);
+    let panic_level = chr.moodles.moodle_level_of(&sm, "PANIC").unwrap_or(0);
+
+    let short_sighted = chr.has_trait(&sm, "SHORT_SIGHTED").unwrap_or(false);
+    let eagle_eyed = chr.has_trait(&sm, "EAGLE_EYED").unwrap_or(false);
+    let night_vision = chr.has_trait(&sm, "NIGHT_VISION").unwrap_or(false);
+    let deaf = chr.has_trait(&sm, "DEAF").unwrap_or(false);
+    let keen_hearing = chr.has_trait(&sm, "KEEN_HEARING").unwrap_or(false);
+    let hard_of_hearing = chr.has_trait(&sm, "HARD_OF_HEARING").unwrap_or(false);
+
+    let hearing_mult = chr.worn_items_hearing_multiplier();
+    let vision_mult = chr.worn_items_vision_multiplier();
+    let (fx, fy) = (chr.vars.forward_x, chr.vars.forward_y);
+    let flen = fx.hypot(fy);
+    if flen > 1e-4 {
+        player.look_x = fx / flen;
+        player.look_y = fy / flen;
+    }
+    player.short_sighted = short_sighted;
+    player.effective_fatigue = effective_fatigue(fatigue);
+    player.detection_range = detection_range(
+        deaf,
+        keen_hearing,
+        hard_of_hearing,
+        hearing_mult,
+        fatigue,
+        intoxication,
+    );
+
+    cone.fatigue = fatigue;
+    cone.fatigue_at_max = fatigue_at_max;
+    cone.drunk_level = drunk_level;
+    cone.intoxication = intoxication;
+    cone.panic_level = panic_level;
+    cone.eagle_eyed = eagle_eyed;
+    cone.night_vision = night_vision;
+    cone.worn_items_vision_multiplier = vision_mult;
+
+    // Check if the player is currently seated in a vehicle with headlights on.
+    if let Some(vid) = chr.path.vehicle {
+        cone.in_vehicle = true;
+        if let Some(veh) = pz_vehicles::manager::cell_vehicles()
+            .into_iter()
+            .find(|v| v.id() == vid)
+        {
+            cone.headlights = veh.headlights_on();
+        }
+    }
+
+    (player, cone)
+}
+
+/// Active emitting hand flashlights/torches for all local players.
+fn player_hand_torches() -> Vec<TorchInfo> {
+    let mut out = Vec::new();
+    let num = pz_lua_api::bind_players::num_players().max(0) as usize;
+    for pi in 0..num.min(MAX_PLAYERS) {
+        let Some(p_ref) = pz_lua_api::bind_players::player(pi) else {
+            continue;
+        };
+        let Ok(chr) = p_ref.try_borrow() else {
+            continue;
+        };
+        let (fx, fy) = (chr.vars.forward_x, chr.vars.forward_y);
+        let flen = fx.hypot(fy);
+        let (ax, ay) = if flen > 1e-4 {
+            (fx / flen, fy / flen)
+        } else {
+            (0.0, 1.0)
+        };
+        let mut slot = 0i32;
+        for hand in [chr.items.primary_hand_item(), chr.items.secondary_hand_item()]
+            .into_iter()
+            .flatten()
+        {
+            let Ok(item) = hand.try_borrow() else {
+                continue;
+            };
+            if !item.is_emitting_light() {
+                continue;
+            }
+            let dist = item.get_light_distance() as f32;
+            let strength = item.get_light_strength();
+            if dist <= 0.0 || strength <= 0.0 {
+                continue;
+            }
+            out.push(TorchInfo {
+                id: player_torch_id(pi as i32, slot),
+                x: chr.vars.x,
+                y: chr.vars.y,
+                z: chr.vars.z,
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                angle_x: ax,
+                angle_y: ay,
+                dist,
+                strength,
+                cone: item.is_torch_cone(),
+                dot: item.get_torch_dot(),
+                focusing: 0,
+            });
+            slot += 1;
+        }
+    }
+    out
+}
+
+/// `WorldHooks` forwarding active vehicle headlights and local players'
+/// equipped flashlights/torches into `LightingJNI.checkLights`.
 struct VehicleTorchesHooks;
 
 impl pz_world::SquareHooks for VehicleTorchesHooks {}
 
 impl pz_world_render::WorldHooks for VehicleTorchesHooks {
-    fn torches(&self) -> Vec<pz_lighting::jni::TorchInfo> {
-        crate::world_vehicles::cell_torches()
+    fn torches(&self) -> Vec<TorchInfo> {
+        let mut torches = crate::world_vehicles::cell_torches();
+        torches.extend(player_hand_torches());
+        torches
+    }
+}
+
+#[cfg(test)]
+mod player_lighting_tests {
+    use super::*;
+    use pz_characters::CharacterKind;
+    use pz_inventory::item::InventoryItem;
+    use pz_inventory::template::{ItemClass, ItemTemplate};
+    use pz_lua_api::bind_character_sim::LuaGameCharacter;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[test]
+    fn active_hand_torch_emits_torch_info_and_strength() {
+        pz_lua_api::bind_players::reset();
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let mut chr = LuaGameCharacter::new(&sm, CharacterKind::Player);
+        chr.set_x(12.5);
+        chr.set_y(34.5);
+        chr.set_z(0.0);
+        chr.vars.forward_x = 1.0;
+        chr.vars.forward_y = 0.0;
+
+        let mut tpl = ItemTemplate::new(ItemClass::Normal, "Base", "Torch");
+        tpl.light_distance = 12;
+        tpl.light_strength = 0.85;
+        tpl.torch_cone = true;
+        tpl.torch_dot = 0.7;
+        let mut item = InventoryItem::create(Rc::new(tpl), 1);
+        item.activated = true;
+        let item_ref = Rc::new(RefCell::new(item));
+        chr.items.inventory.borrow_mut().items.push(item_ref.clone());
+        chr.items.primary_hand_item = Some(item_ref.borrow().id);
+
+        assert!((player_torch_strength(&chr) - 0.85).abs() < 1e-5);
+
+        let chr_ref = Rc::new(RefCell::new(chr));
+        pz_lua_api::bind_players::set_player(0, Some(chr_ref));
+        let torches = player_hand_torches();
+        assert_eq!(torches.len(), 1);
+        assert_eq!(torches[0].id, player_torch_id(0, 0));
+        assert!((torches[0].dist - 12.0).abs() < 1e-5);
+        assert!((torches[0].strength - 0.85).abs() < 1e-5);
+        assert!(torches[0].cone);
+        assert!((torches[0].angle_x - 1.0).abs() < 1e-5);
+        pz_lua_api::bind_players::reset();
     }
 }
 
