@@ -193,6 +193,9 @@ pub(super) fn register(t: &mut Thread) {
         "setFuel",
         "setCondition",
         "setConnected",
+        "setActivated",
+        "getTotalPowerUsing",
+        "setTotalPowerUsing",
     ] {
         g.method(method, move |c| {
             let obj = receiver_object(c)?;
@@ -215,11 +218,108 @@ pub(super) fn register(t: &mut Thread) {
                     g.condition = int_arg(c, 1).clamp(0, 100);
                     0
                 }
-                _ => {
+                "setConnected" => {
                     g.connected = bool_arg(c, 1);
+                    if !g.connected {
+                        g.activated = false;
+                    }
+                    0
+                }
+                "setActivated" => {
+                    let on = bool_arg(c, 1);
+                    if !on || (g.connected && g.fuel > 0.0) {
+                        g.activated = on;
+                    }
+                    0
+                }
+                "getTotalPowerUsing" => c.push(g.total_power_using as f64),
+                _ => {
+                    g.total_power_using = (num_arg(c, 1) as f32).max(0.0);
                     0
                 }
             })
         });
     }
+    g.method("getItemsPowered", |c| {
+        Ok(c.push(crate::bind_java_util::list_value(Vec::new())))
+    });
+    g.method("getNumberOfElectricalItems", |c| Ok(c.push(0i32)));
+    g.method("isTooCloseToOtherGenerators", |c| {
+        let this = c.arg(0);
+        let Some(wo) = object_from_value(&this) else {
+            return Ok(c.push(false));
+        };
+        let sq_val = object_square(wo)?;
+        let Some((gx, gy, gz)) = square_coords(&sq_val) else {
+            return Ok(c.push(false));
+        };
+        let obj_rc = wo.object.clone();
+        let too_close = crate::bind_world::with_world(|w| {
+            let Some(cell) = w.cell.as_ref() else {
+                return false;
+            };
+            for ch in cell.chunks.values() {
+                for sq_slot in ch.squares() {
+                    let sq = sq_slot.borrow();
+                    if (sq.z - gz).abs() > 3 {
+                        continue;
+                    }
+                    let dx = sq.x - gx;
+                    let dy = sq.y - gy;
+                    if dx * dx + dy * dy > 400 {
+                        continue;
+                    }
+                    for slot in &sq.objects {
+                        if Rc::ptr_eq(&slot.ref_handle(), &obj_rc) {
+                            continue;
+                        }
+                        if matches!(slot.borrow().kind, ObjectKind::Generator(_)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        });
+        Ok(c.push(too_close))
+    });
+    g.method("failToStart", |c| {
+        let obj = receiver_object(c)?;
+        let mut body = obj.try_borrow_mut().map_err(|_| borrowed("IsoGenerator"))?;
+        if let ObjectKind::Generator(gen) = &mut body.kind {
+            gen.activated = false;
+        }
+        Ok(0)
+    });
+    g.method("remove", |c| {
+        let this = c.arg(0);
+        let Some(wo) = object_from_value(&this) else {
+            return Ok(0);
+        };
+        let sq_val = object_square(wo)?;
+        let obj_rc = wo.object.clone();
+        if let Ok(mut body) = obj_rc.try_borrow_mut() {
+            if let ObjectKind::Generator(gen) = &mut body.kind {
+                gen.activated = false;
+                gen.connected = false;
+            }
+        }
+        if let Some((x, y, z)) = square_coords(&sq_val) {
+            crate::bind_world::with_world(|w| {
+                if let Some(sq) = w.cell.as_mut().and_then(|c| c.get_grid_square(x, y, z)) {
+                    sq.borrow_mut()
+                        .objects
+                        .retain(|slot| !Rc::ptr_eq(&slot.ref_handle(), &obj_rc));
+                }
+            });
+        }
+        Ok(0)
+    });
+    g.static_fn("updateGenerator", |c| {
+        // `IsoGenerator.updateGenerator(sq)`: triggers power recalculation when
+        // objects are placed/removed near an active generator.
+        let _ = square_coords(&c.arg(0));
+        Ok(0)
+    });
+    g.static_fn("Reset", |_c| Ok(0));
 }
