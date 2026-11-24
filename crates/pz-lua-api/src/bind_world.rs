@@ -503,6 +503,22 @@ pub(crate) fn with_cell_square<R>(x: i32, y: i32, z: i32, f: impl FnOnce(&pz_wor
     })
 }
 
+/// Run `f` mutably on the loaded square at `(x, y, z)` of the current cell;
+/// `None` when there is no such square or it is already borrowed.
+pub(crate) fn with_cell_square_mut<R>(
+    x: i32,
+    y: i32,
+    z: i32,
+    f: impl FnOnce(&mut pz_world::IsoGridSquare) -> R,
+) -> Option<R> {
+    with_world_state_cell(|w| {
+        let w = w.borrow();
+        let square = w.cell.as_ref()?.get_grid_square(x, y, z)?;
+        let mut square = square.try_borrow_mut().ok()?;
+        Some(f(&mut square))
+    })
+}
+
 fn square_exists(x: i32, y: i32, z: i32) -> bool {
     with_world_state_cell(|w| {
         w.borrow()
