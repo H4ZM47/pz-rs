@@ -587,7 +587,7 @@ mod tests {
     fn run(t: &mut Thread, code: &str) -> Vec<Value> {
         let f = load_string(code, Some("bind_fire_test"), t.globals().clone()).unwrap();
         t.pcall(&f, &[])
-            .unwrap_or_else(|(e, trace)| panic!("{}\n{trace}", pz_kahlua::exec::java_value_of(&e)))
+            .unwrap_or_else(|(e, trace)| panic!("{e:?}\n{trace}"))
     }
 
     #[test]
