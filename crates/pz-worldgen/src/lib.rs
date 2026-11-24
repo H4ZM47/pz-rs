@@ -35,6 +35,7 @@ pub mod pzby;
 pub mod roads;
 pub mod simplex;
 pub mod veins;
+pub mod zombie_voronoi;
 pub mod zones;
 
 use std::rc::Rc;

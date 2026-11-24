@@ -10,8 +10,15 @@
 //! functions return what to do, drawing `Rand` (`RandStandard`) where the
 //! original does.
 
-use pz_world::IsoDirections;
+use pz_pathfind::mover::ObjectRef;
+use pz_world::chunk::CHUNK_WIDTH;
+use pz_world::objects::{IsoObject, ObjectKind};
+use pz_world::{
+    IsoCell, IsoDirections, IsoGridSquare, IsoMetaGrid, IsoObjectRef, IsoSpriteManager, ObjectSlot,
+};
 use std::collections::HashMap;
+
+use crate::{StatesEngine, StatesWorldAdapter};
 
 /// `RandStandard.INSTANCE` as the fence code draws it.
 pub trait FenceRand {
@@ -318,6 +325,455 @@ impl BrokenFences {
     }
 }
 
+/// Host callbacks used by [`destroy_fence_in_cell`] and friends for random
+/// draws, break sounds, debris item drops, and geometry/path/region invalidation.
+pub trait FenceWorldHooks: FenceRand {
+    fn play_break_sound(&mut self, _sound: &str, _obj: ObjectRef) {}
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_debris_item(
+        &mut self,
+        _cell: &mut IsoCell,
+        _meta: &IsoMetaGrid,
+        _sprites: &mut IsoSpriteManager,
+        _sq: (i32, i32, i32),
+        _item_type: &str,
+        _x: f32,
+        _y: f32,
+    ) {
+    }
+
+    fn geometry_changed(
+        &mut self,
+        _cell: &IsoCell,
+        _meta: &IsoMetaGrid,
+        _sprites: &IsoSpriteManager,
+        _pos: (i32, i32, i32),
+    ) {
+    }
+}
+
+fn sprite_name_of(obj: &IsoObject, sprites: &IsoSpriteManager) -> Option<String> {
+    obj.sprite
+        .try_read(sprites)
+        .ok()
+        .flatten()
+        .and_then(|s| s.name.clone())
+}
+
+fn obj_has_flag(obj: &IsoObject, sprites: &IsoSpriteManager, flag_name: &str) -> bool {
+    let Some(flag) = sprites.tables.flag_from_string(flag_name) else {
+        return false;
+    };
+    obj.sprite
+        .try_read(sprites)
+        .ok()
+        .flatten()
+        .is_some_and(|s| s.properties.has(flag))
+}
+
+fn obj_prop(obj: &IsoObject, sprites: &IsoSpriteManager, key: &str) -> Option<String> {
+    obj.sprite
+        .try_read(sprites)
+        .ok()
+        .flatten()
+        .and_then(|s| s.properties.get(&sprites.alias, key).map(str::to_string))
+}
+
+fn sprite_named(sprites: &mut IsoSpriteManager, name: &str) -> usize {
+    match sprites.named_map.get(name) {
+        Some(&idx) => idx,
+        None => {
+            let idx = sprites.add_sprite_named(name);
+            sprites.sprites[idx].name = Some(name.to_string());
+            idx
+        }
+    }
+}
+
+fn replace_sprite_in_cell(cell: &mut IsoCell, object: &IsoObjectRef, sprite: usize) {
+    let (old, native_class) = {
+        let mut object = object.borrow_mut();
+        let native_class = object.kind.native_class_name();
+        let old = std::mem::replace(&mut object.sprite, Some(sprite).into());
+        (old, native_class)
+    };
+    let mut retired = pz_entity::RetiredComponents::new();
+    retired.push_payload(Box::new(old));
+    cell.retire_components(retired);
+    pz_world::object_slot::observe_object(object, native_class);
+}
+
+fn find_object_on_cell(cell: &IsoCell, r: ObjectRef) -> Option<(usize, IsoObjectRef)> {
+    let sq_owner = cell.get_grid_square(r.x, r.y, r.z)?;
+    let sq = sq_owner.borrow();
+    let idx = sq.object_index(r.id)?;
+    Some((idx, sq.objects[idx].ref_handle()))
+}
+
+/// `BrokenFences.destroyFence` break sound selection: `IsoThumpable.getBreakSound()`,
+/// else `"ZombieThumpWoodCollapse"` when `ThumpSound == "ZombieThumpWood"`,
+/// else `"BreakObject"`.
+pub fn fence_break_sound(obj: &IsoObject, sprites: &IsoSpriteManager) -> String {
+    if let ObjectKind::Thumpable(t) = &obj.kind {
+        if let Some(s) = t.break_sound.as_deref().filter(|s| !s.is_empty()) {
+            return s.to_string();
+        }
+    }
+    if obj_prop(obj, sprites, "ThumpSound").as_deref() == Some("ZombieThumpWood") {
+        return "ZombieThumpWoodCollapse".to_string();
+    }
+    "BreakObject".to_string()
+}
+
+/// `[Material, Material2, Material3]` properties of `obj` for [`BrokenFences::add_items`].
+pub fn object_materials(obj: &IsoObject, sprites: &IsoSpriteManager) -> [Option<String>; 3] {
+    [
+        obj_prop(obj, sprites, "Material"),
+        obj_prop(obj, sprites, "Material2"),
+        obj_prop(obj, sprites, "Material3"),
+    ]
+}
+
+/// `BrokenFences.getBreakableObject(square, north)`.
+pub fn breakable_object_on_square(
+    fences: &BrokenFences,
+    sq: &IsoGridSquare,
+    sprites: &IsoSpriteManager,
+    north: bool,
+) -> Option<IsoObjectRef> {
+    let names: Vec<(Option<String>, bool, bool)> = sq
+        .objects
+        .iter()
+        .map(|slot| {
+            let o = slot.borrow();
+            (
+                sprite_name_of(&o, sprites),
+                obj_has_flag(&o, sprites, "collideN"),
+                obj_has_flag(&o, sprites, "collideW"),
+            )
+        })
+        .collect();
+    let refs: Vec<(Option<&str>, bool, bool)> = names
+        .iter()
+        .map(|(n, cn, cw)| (n.as_deref(), *cn, *cw))
+        .collect();
+    let idx = fences.get_breakable_object(&refs, north)?;
+    Some(sq.objects[idx].ref_handle())
+}
+
+/// `BrokenFences.addItems(obj, square)` on `cell`.
+pub fn add_debris_items_in_cell(
+    cell: &mut IsoCell,
+    meta: &IsoMetaGrid,
+    sprites: &mut IsoSpriteManager,
+    sq_pos: (i32, i32, i32),
+    materials: [Option<String>; 3],
+    hooks: &mut dyn FenceWorldHooks,
+) {
+    let mat_refs = [
+        materials[0].as_deref(),
+        materials[1].as_deref(),
+        materials[2].as_deref(),
+    ];
+    let items = BrokenFences::add_items(mat_refs, hooks);
+    for item in items {
+        hooks.spawn_debris_item(cell, meta, sprites, sq_pos, item.item_type, item.x, item.y);
+    }
+}
+
+/// `BrokenFences.updateSprite(obj, brokenLeft, brokenRight)` on `cell`.
+#[allow(clippy::too_many_arguments)]
+pub fn update_fence_sprite_in_cell(
+    fences: &BrokenFences,
+    cell: &mut IsoCell,
+    meta: &IsoMetaGrid,
+    sprites: &mut IsoSpriteManager,
+    r: ObjectRef,
+    broken_left: bool,
+    broken_right: bool,
+    hooks: &mut dyn FenceWorldHooks,
+) -> bool {
+    let Some((_, obj_ref)) = find_object_on_cell(cell, r) else {
+        return false;
+    };
+    let name = {
+        let o = obj_ref.borrow();
+        sprite_name_of(&o, sprites)
+    };
+    if !fences.is_breakable_sprite(name.as_deref()) {
+        return false;
+    }
+    let Some(new_name) = fences.update_sprite_name(name.as_deref(), broken_left, broken_right, hooks)
+    else {
+        return false;
+    };
+    let new_idx = sprite_named(sprites, &new_name);
+    replace_sprite_in_cell(cell, &obj_ref, new_idx);
+    cell.recalc_all_with_neighbours(r.x, r.y, r.z, meta, sprites);
+    hooks.geometry_changed(cell, meta, sprites, (r.x, r.y, r.z));
+    true
+}
+
+/// `BrokenFences.setDestroyed(obj)` on `cell`.
+pub fn set_fence_destroyed_in_cell(
+    fences: &BrokenFences,
+    cell: &mut IsoCell,
+    meta: &IsoMetaGrid,
+    sprites: &mut IsoSpriteManager,
+    r: ObjectRef,
+    hooks: &mut dyn FenceWorldHooks,
+) -> bool {
+    let Some((_, obj_ref)) = find_object_on_cell(cell, r) else {
+        return false;
+    };
+    obj_ref.borrow_mut().attached_anim_sprite = None;
+    // `square.removeBlood(false, false)`: strip floor blood splats on this tile.
+    let wx = r.x.div_euclid(CHUNK_WIDTH);
+    let wy = r.y.div_euclid(CHUNK_WIDTH);
+    if let Some(chunk) = cell.chunks.get_mut(&(wx, wy)) {
+        chunk.saved.floor_blood_splats.retain(|sp| {
+            sp.x.floor() as i32 != r.x || sp.y.floor() as i32 != r.y || sp.z.floor() as i32 != r.z
+        });
+    }
+    update_fence_sprite_in_cell(fences, cell, meta, sprites, r, true, true, hooks)
+}
+
+/// `BrokenFences.setDamagedLeft(obj)` on `cell`.
+pub fn set_fence_damaged_left_in_cell(
+    fences: &BrokenFences,
+    cell: &mut IsoCell,
+    meta: &IsoMetaGrid,
+    sprites: &mut IsoSpriteManager,
+    r: ObjectRef,
+    hooks: &mut dyn FenceWorldHooks,
+) -> bool {
+    update_fence_sprite_in_cell(fences, cell, meta, sprites, r, true, false, hooks)
+}
+
+/// `BrokenFences.setDamagedRight(obj)` on `cell`.
+pub fn set_fence_damaged_right_in_cell(
+    fences: &BrokenFences,
+    cell: &mut IsoCell,
+    meta: &IsoMetaGrid,
+    sprites: &mut IsoSpriteManager,
+    r: ObjectRef,
+    hooks: &mut dyn FenceWorldHooks,
+) -> bool {
+    update_fence_sprite_in_cell(fences, cell, meta, sprites, r, false, true, hooks)
+}
+
+/// `BrokenFences.destroyFence(obj, dir)` on `cell`.
+pub fn destroy_fence_in_cell(
+    fences: &BrokenFences,
+    cell: &mut IsoCell,
+    meta: &IsoMetaGrid,
+    sprites: &mut IsoSpriteManager,
+    mut r: ObjectRef,
+    dir: IsoDirections,
+    hooks: &mut dyn FenceWorldHooks,
+) -> Result<bool, &'static str> {
+    let Some((obj_index, obj_ref)) = find_object_on_cell(cell, r) else {
+        return Ok(false);
+    };
+    let (sprite_name, sound, collide_n, collide_w, is_thumpable, materials, raw_sprite) = {
+        let o = obj_ref.borrow();
+        let sprite_name = sprite_name_of(&o, sprites);
+        if !fences.is_breakable_sprite(sprite_name.as_deref()) {
+            return Ok(false);
+        }
+        let sound = fence_break_sound(&o, sprites);
+        let collide_n = obj_has_flag(&o, sprites, "collideN");
+        let collide_w = obj_has_flag(&o, sprites, "collideW");
+        let is_thumpable = matches!(o.kind, ObjectKind::Thumpable(_));
+        let materials = object_materials(&o, sprites);
+        let raw_sprite = o.sprite.clone();
+        (
+            sprite_name,
+            sound,
+            collide_n,
+            collide_w,
+            is_thumpable,
+            materials,
+            raw_sprite,
+        )
+    };
+    hooks.play_break_sound(&sound, r);
+
+    // Replace an `IsoThumpable` fence in place with a plain `IsoObject` at the
+    // same square index so the destroyed stub is no longer thumpable.
+    if is_thumpable {
+        if let Some(sq_owner) = cell.get_grid_square_mut(r.x, r.y, r.z) {
+            let mut sq = sq_owner.borrow_mut();
+            if let Some(i) = sq.object_index(r.id) {
+                let new_id = sq.new_object_id();
+                let mut replacement = IsoObject::new(new_id, ObjectKind::Object, None);
+                replacement.sprite = raw_sprite;
+                let old_slot = sq.remove_object_slot(i);
+                sq.special_objects.retain(|&id| id != r.id);
+                sq.objects.insert(i, ObjectSlot::new(replacement));
+                drop(sq);
+                let mut retired = pz_entity::RetiredComponents::new();
+                retired.push_payload(Box::new(old_slot));
+                cell.retire_components(retired);
+                r.id = new_id;
+            }
+        }
+    }
+
+    // `addDebrisObject(obj, dir)`.
+    if let Some((debris_name, adjacent)) = fences.debris_sprite(sprite_name.as_deref(), dir, hooks)? {
+        let debris_pos = if adjacent {
+            let (dx, dy) = dir.delta();
+            (r.x + dx, r.y + dy, r.z)
+        } else {
+            (r.x, r.y, r.z)
+        };
+        let can_place = cell
+            .get_grid_square(debris_pos.0, debris_pos.1, debris_pos.2)
+            .is_some_and(|sq| sq.borrow().treat_as_solid_floor(sprites));
+        if can_place {
+            let debris_idx = sprite_named(sprites, &debris_name);
+            if let Some(sq_owner) = cell.get_grid_square_mut(debris_pos.0, debris_pos.1, debris_pos.2) {
+                let mut sq = sq_owner.borrow_mut();
+                let id = sq.new_object_id();
+                let debris_obj = IsoObject::new(id, ObjectKind::Object, Some(debris_idx));
+                let insert_at = if debris_pos == (r.x, r.y, r.z) {
+                    obj_index.min(sq.objects.len())
+                } else {
+                    sq.objects.len()
+                };
+                sq.objects.insert(insert_at, ObjectSlot::new(debris_obj));
+                sq.burnt_out = false;
+            }
+            add_debris_items_in_cell(cell, meta, sprites, debris_pos, materials, hooks);
+            cell.recalc_all_with_neighbours(debris_pos.0, debris_pos.1, debris_pos.2, meta, sprites);
+            hooks.geometry_changed(cell, meta, sprites, debris_pos);
+        }
+    }
+
+    // `setDestroyed(obj)`.
+    set_fence_destroyed_in_cell(fences, cell, meta, sprites, r, hooks);
+
+    // `damageAdjacent(square, dirAdjacent, dirBreak)`.
+    for (dir_adj, north) in BrokenFences::destroy_adjacent_dirs(collide_n, collide_w) {
+        let (dx, dy) = dir_adj.delta();
+        let adj_pos = (r.x + dx, r.y + dy, r.z);
+        let adj_hit = cell
+            .get_grid_square(adj_pos.0, adj_pos.1, adj_pos.2)
+            .and_then(|sq| {
+                let sq = sq.borrow();
+                let obj = breakable_object_on_square(fences, &sq, sprites, north)?;
+                let o = obj.borrow();
+                let name = sprite_name_of(&o, sprites);
+                let is_nw = obj_has_flag(&o, sprites, "collideN")
+                    && obj_has_flag(&o, sprites, "collideW");
+                Some((
+                    ObjectRef {
+                        x: adj_pos.0,
+                        y: adj_pos.1,
+                        z: adj_pos.2,
+                        id: o.id,
+                    },
+                    name,
+                    is_nw,
+                ))
+            });
+        let Some((adj_ref, adj_name, is_nw)) = adj_hit else {
+            continue;
+        };
+        match fences.adjacent_damage(adj_name.as_deref(), is_nw, dir_adj) {
+            AdjacentDamage::None => {}
+            AdjacentDamage::Destroy => {
+                let _ = destroy_fence_in_cell(fences, cell, meta, sprites, adj_ref, dir, hooks);
+            }
+            AdjacentDamage::Damage { left, right } => {
+                update_fence_sprite_in_cell(fences, cell, meta, sprites, adj_ref, left, right, hooks);
+            }
+        }
+    }
+
+    cell.recalc_all_with_neighbours(r.x, r.y, r.z, meta, sprites);
+    hooks.geometry_changed(cell, meta, sprites, (r.x, r.y, r.z));
+    Ok(true)
+}
+
+struct EngineFenceHooks<'a>(&'a mut dyn StatesEngine);
+
+impl FenceRand for EngineFenceHooks<'_> {
+    fn next(&mut self, max: i32) -> i32 {
+        self.0.rand().next(max)
+    }
+    fn next_float(&mut self, min: f32, max: f32) -> f32 {
+        min + self.0.rand().next_float() * (max - min)
+    }
+}
+
+impl FenceWorldHooks for EngineFenceHooks<'_> {
+    fn play_break_sound(&mut self, sound: &str, obj: ObjectRef) {
+        self.0.play_world_sound(sound, (obj.x, obj.y, obj.z));
+    }
+
+    fn spawn_debris_item(
+        &mut self,
+        cell: &mut IsoCell,
+        meta: &IsoMetaGrid,
+        sprites: &mut IsoSpriteManager,
+        sq: (i32, i32, i32),
+        item_type: &str,
+        x: f32,
+        y: f32,
+    ) {
+        self.0
+            .spawn_broken_fence_item(cell, meta, sprites, sq, item_type, x, y);
+    }
+
+    fn geometry_changed(
+        &mut self,
+        cell: &IsoCell,
+        meta: &IsoMetaGrid,
+        sprites: &IsoSpriteManager,
+        pos: (i32, i32, i32),
+    ) {
+        self.0.geometry_changed(cell, meta, sprites, pos);
+    }
+}
+
+impl StatesWorldAdapter<'_> {
+    /// `BrokenFences.getInstance().destroyFence(obj, dir)`.
+    /// Uses [`StatesEngine::broken_fences`] when installed, falling back to
+    /// [`StatesEngine::destroy_fence`] for mock test engines.
+    pub fn destroy_fence(&mut self, r: ObjectRef, dir: IsoDirections) {
+        if let Some(bf) = self.engine.broken_fences() {
+            let fences = bf.borrow().clone();
+            let mut hooks = EngineFenceHooks(self.engine);
+            let _ = destroy_fence_in_cell(
+                &fences,
+                self.cell,
+                self.meta,
+                self.sprites,
+                r,
+                dir,
+                &mut hooks,
+            );
+            return;
+        }
+        self.engine.destroy_fence(self.cell, r, dir);
+    }
+
+    /// `BrokenFences.getInstance().addItems(obj, square)` for removed/collapsed
+    /// fence pieces, delegating to both [`StatesEngine::broken_fence_items`]
+    /// and [`StatesEngine::spawn_broken_fence_item`] when `BrokenFences` is live.
+    pub(crate) fn drop_broken_fence_items(&mut self, sq: (i32, i32, i32), obj: &IsoObjectRef) {
+        self.engine.broken_fence_items(sq, obj);
+        if self.engine.broken_fences().is_some() {
+            let materials = object_materials(&obj.borrow(), self.sprites);
+            let mut hooks = EngineFenceHooks(self.engine);
+            add_debris_items_in_cell(self.cell, self.meta, self.sprites, sq, materials, &mut hooks);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,5 +906,214 @@ mod tests {
         let it = BrokenFences::add_items([Some("Wood"), None, Some("MetalWire")], &mut r);
         let types: Vec<_> = it.iter().map(|i| i.item_type).collect();
         assert_eq!(types, ["Base.UnusableWood", "Base.UnusableWood"]);
+    }
+
+    #[test]
+    fn destroy_fence_in_cell_updates_sprite_places_debris_damages_adjacent_and_drops_items() {
+        use pz_world::chunk::{FloorBloodSplat, IsoChunk};
+        use pz_world::objects::IsoThumpable;
+        use pz_world::SquareSlot;
+
+        let mut sprites = IsoSpriteManager::new(crate::tests::tables());
+        let mut alias_map = pz_world::sprite::PropertyValueMap::default();
+        for k in [
+            "WindowN",
+            "WindowW",
+            "DoorWallN",
+            "DoorWallW",
+            "WallSE",
+            "tree",
+            "lightR",
+            "lightG",
+            "lightB",
+            "ItemHeight",
+            "Surface",
+            "Bush",
+            "forceLocked",
+        ] {
+            alias_map.entry(k);
+        }
+        alias_map.entry("Material").push("Wood".into());
+        alias_map.entry("ThumpSound").push("ZombieThumpWood".into());
+        sprites.generate_alias_map(alias_map, &[]).unwrap();
+        let floor_idx = sprite_named(&mut sprites, "floors_0");
+        let fence_idx = sprite_named(&mut sprites, "f_1");
+        let broken_left_idx = sprite_named(&mut sprites, "d_2");
+        let broken_right_idx = sprite_named(&mut sprites, "d_0");
+        let _broken_self_idx = sprite_named(&mut sprites, "d_1");
+        let _debris_s_idx = sprite_named(&mut sprites, "deb_s");
+
+        let solidfloor = sprites.tables.flag_from_string("solidfloor").unwrap();
+        let collide_n = sprites.tables.flag_from_string("collideN").unwrap();
+        sprites.sprites[floor_idx].properties.set_flag(solidfloor);
+        for idx in [fence_idx, broken_left_idx, broken_right_idx] {
+            let mut p = sprites.sprites[idx].properties.clone();
+            p.set_flag(collide_n);
+            p.set(&sprites.tables, &sprites.alias, "Material", "Wood", false);
+            p.set(
+                &sprites.tables,
+                &sprites.alias,
+                "ThumpSound",
+                "ZombieThumpWood",
+                false,
+            );
+            sprites.sprites[idx].properties = p;
+        }
+
+        let mut cell = IsoCell::default();
+        let mut ch = IsoChunk::new(0, 0);
+        ch.saved.floor_blood_splats.push(FloorBloodSplat {
+            x: 5.2,
+            y: 5.4,
+            z: 0.0,
+            kind: 1,
+            world_age: 1.0,
+            index: 0,
+        });
+
+        let mut make_sq = |x: i32, y: i32, fence_sprite: Option<usize>, thumpable: bool| -> ObjectRef {
+            let mut sq = IsoGridSquare::new(x, y, 0);
+            let fid = sq.new_object_id();
+            sq.objects
+                .push(ObjectSlot::new(IsoObject::new(fid, ObjectKind::Object, Some(floor_idx))));
+            let out_id = if let Some(s) = fence_sprite {
+                let id = sq.new_object_id();
+                let kind = if thumpable {
+                    ObjectKind::Thumpable(Box::new(IsoThumpable::default()))
+                } else {
+                    ObjectKind::Object
+                };
+                sq.objects.push(ObjectSlot::new(IsoObject::new(id, kind, Some(s))));
+                id
+            } else {
+                fid
+            };
+            sq.recalc_properties(&sprites);
+            ch.set_square(x, y, 0, Some(SquareSlot::new(sq)));
+            ObjectRef { x, y, z: 0, id: out_id }
+        };
+
+        // Row of 3 north-edge fences at x=4 (already broken-left -> losing east neighbor cascades to Destroy!),
+        // x=5 (target thumpable fence), x=6 (unbroken -> losing west neighbor becomes broken-left `d_2`).
+        let left_ref = make_sq(4, 5, Some(broken_left_idx), false);
+        let center_ref = make_sq(5, 5, Some(fence_idx), true);
+        let right_ref = make_sq(6, 5, Some(fence_idx), false);
+        cell.chunks.insert((0, 0), ch);
+
+        let mut bf = fences();
+        bf.add_debris_tiles(vec![(
+            "f_1".into(),
+            [v(&["deb_n"]), v(&["deb_s"]), v(&["deb_w"]), v(&["deb_e"])],
+        )])
+        .unwrap();
+
+        struct RecHooks {
+            sounds: Vec<String>,
+            items: Vec<((i32, i32, i32), String)>,
+            geo: Vec<(i32, i32, i32)>,
+        }
+        impl FenceRand for RecHooks {
+            fn next(&mut self, max: i32) -> i32 {
+                if max <= 1 { 0 } else { 1 }
+            }
+            fn next_float(&mut self, min: f32, _max: f32) -> f32 {
+                min
+            }
+        }
+        impl FenceWorldHooks for RecHooks {
+            fn play_break_sound(&mut self, sound: &str, _obj: ObjectRef) {
+                self.sounds.push(sound.to_string());
+            }
+            fn spawn_debris_item(
+                &mut self,
+                _cell: &mut IsoCell,
+                _meta: &IsoMetaGrid,
+                _sprites: &mut IsoSpriteManager,
+                sq: (i32, i32, i32),
+                item_type: &str,
+                _x: f32,
+                _y: f32,
+            ) {
+                self.items.push((sq, item_type.to_string()));
+            }
+            fn geometry_changed(
+                &mut self,
+                _cell: &IsoCell,
+                _meta: &IsoMetaGrid,
+                _sprites: &IsoSpriteManager,
+                pos: (i32, i32, i32),
+            ) {
+                self.geo.push(pos);
+            }
+        }
+
+        let meta = IsoMetaGrid::empty();
+        let mut hooks = RecHooks {
+            sounds: Vec::new(),
+            items: Vec::new(),
+            geo: Vec::new(),
+        };
+        let destroyed = destroy_fence_in_cell(
+            &bf,
+            &mut cell,
+            &meta,
+            &mut sprites,
+            center_ref,
+            IsoDirections::S,
+            &mut hooks,
+        )
+        .unwrap();
+        assert!(destroyed);
+
+        // Center square: thumpable replaced by plain IsoObject with sprite `d_1`, plus `deb_s` debris, blood cleared.
+        let center_names: Vec<Option<String>> = cell
+            .get_grid_square(5, 5, 0)
+            .unwrap()
+            .borrow()
+            .objects
+            .iter()
+            .map(|slot| sprite_name_of(&slot.borrow(), &sprites))
+            .collect();
+        assert!(center_names.contains(&Some("d_1".into())), "center names={center_names:?}");
+        assert!(center_names.contains(&Some("deb_s".into())), "center names={center_names:?}");
+        assert!(
+            cell.get_grid_square(5, 5, 0)
+                .unwrap()
+                .borrow()
+                .objects
+                .iter()
+                .all(|slot| !matches!(slot.borrow().kind, ObjectKind::Thumpable(_))),
+            "destroyed thumpable fence should become plain IsoObject"
+        );
+        assert!(
+            cell.chunks[&(0, 0)].saved.floor_blood_splats.is_empty(),
+            "setDestroyed should clear floor blood splats on the fence square"
+        );
+
+        // Left square (x=4): was broken-right (`d_0`), damaged on east -> cascaded to `d_1`!
+        let left_sprite = cell
+            .get_grid_square(4, 5, 0)
+            .unwrap()
+            .borrow()
+            .objects
+            .iter()
+            .find(|slot| slot.borrow().id == left_ref.id)
+            .and_then(|slot| sprite_name_of(&slot.borrow(), &sprites));
+        assert_eq!(left_sprite.as_deref(), Some("d_1"));
+
+        // Right square (x=6): was unbroken `f_1`, damaged on left -> became `d_2`!
+        let right_sprite = cell
+            .get_grid_square(6, 5, 0)
+            .unwrap()
+            .borrow()
+            .objects
+            .iter()
+            .find(|slot| slot.borrow().id == right_ref.id)
+            .and_then(|slot| sprite_name_of(&slot.borrow(), &sprites));
+        assert_eq!(right_sprite.as_deref(), Some("d_2"));
+
+        assert!(hooks.sounds.iter().any(|s| s == "ZombieThumpWoodCollapse"));
+        assert!(hooks.items.iter().any(|(sq, t)| *sq == (5, 5, 0) && t == "Base.UnusableWood"));
+        assert!(hooks.geo.contains(&(5, 5, 0)));
     }
 }

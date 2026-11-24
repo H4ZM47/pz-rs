@@ -1095,6 +1095,89 @@ fn entity_recipe_value(entity: &ScriptRef) -> Value {
     }
 }
 
+/// Collects all `CraftRecipe` scripts (standalone `craftRecipe` blocks and
+/// buildable entity `CraftRecipeComponentScript` recipes) and runs `f` on each.
+fn for_each_craft_recipe(sm: &ScriptManager, mut f: impl FnMut(&CraftRecipe)) {
+    for s in sm.collection(ScriptType::CraftRecipe).get_all_scripts() {
+        if let Some(r) = s.downcast::<CraftRecipe>() {
+            f(&r.borrow());
+        }
+    }
+    for e in sm.collection(ScriptType::Entity).get_all_scripts() {
+        if let Some(entity) = e.downcast::<GameEntityScript>() {
+            let entity = entity.borrow();
+            if let Some(r) = entity
+                .component::<CraftRecipeComponentScript>(ComponentType::CraftRecipe)
+                .and_then(CraftRecipeComponentScript::craft_recipe)
+            {
+                f(r);
+            }
+        }
+    }
+}
+
+fn learn_recipe_if_new(chr: &mut crate::bind_character_sim::LuaGameCharacter, name: &str) -> bool {
+    if name.is_empty() || chr.known_recipes.iter().any(|k| k == name) {
+        return false;
+    }
+    chr.known_recipes.push(name.to_string());
+    true
+}
+
+/// `ScriptManager.checkAutoLearn(chr)`: learns any craft recipe whose
+/// `AutoLearnAny` (any skill >= level) or `AutoLearnAll` (all skills >= level)
+/// requirements are satisfied by `chr`'s current perk levels.
+pub fn check_auto_learn(
+    sm: &ScriptManager,
+    chr: &mut crate::bind_character_sim::LuaGameCharacter,
+) -> usize {
+    let chars = crate::bind_characters::shared_characters();
+    let perks = &chars.borrow().perks;
+    let mut learned = 0;
+    for_each_craft_recipe(sm, |r| {
+        let Some(name) = r.name() else { return };
+        if chr.known_recipes.iter().any(|k| k == name) {
+            return;
+        }
+        let any_ok = r.auto_learn_any.as_ref().is_some_and(|skills| {
+            !skills.is_empty()
+                && skills.iter().any(|req| {
+                    let p = perks.constant(req.perk());
+                    chr.perk_level(p.as_ref()) >= req.level()
+                })
+        });
+        let all_ok = r.auto_learn_all.as_ref().is_some_and(|skills| {
+            !skills.is_empty()
+                && skills.iter().all(|req| {
+                    let p = perks.constant(req.perk());
+                    chr.perk_level(p.as_ref()) >= req.level()
+                })
+        });
+        if (any_ok || all_ok) && learn_recipe_if_new(chr, name) {
+            learned += 1;
+        }
+    });
+    learned
+}
+
+/// `ScriptManager.checkMetaRecipes(chr)`: learns any craft recipe whose
+/// `MetaRecipe` is already in `chr.known_recipes`.
+pub fn check_meta_recipes(
+    sm: &ScriptManager,
+    chr: &mut crate::bind_character_sim::LuaGameCharacter,
+) -> usize {
+    let mut learned = 0;
+    for_each_craft_recipe(sm, |r| {
+        let (Some(name), Some(meta)) = (r.name(), r.meta_recipe()) else {
+            return;
+        };
+        if chr.known_recipes.iter().any(|k| k == meta) && learn_recipe_if_new(chr, name) {
+            learned += 1;
+        }
+    });
+    learned
+}
+
 /// `getCraftRecipe`: the script, else the recipe of the entity so named.
 pub fn get_craft_recipe(sm: &ScriptManager, name: &str) -> Value {
     if let Some(r) = sm.get_script(ScriptType::CraftRecipe, name) {
@@ -1295,6 +1378,34 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     let s = sm.clone();
     b.method("Reset", move |_| {
         s.reset();
+        Ok(0)
+    });
+    let s = sm.clone();
+    b.method("checkAutoLearn", move |c| {
+        let chr = match c.arg(1) {
+            Value::Object(o) => o
+                .as_any()
+                .downcast_ref::<crate::bind_character_sim::CharacterObject>()
+                .map(|co| co.0.clone()),
+            _ => crate::bind_players::player_instance(),
+        };
+        if let Some(chr) = chr {
+            check_auto_learn(&s, &mut chr.borrow_mut());
+        }
+        Ok(0)
+    });
+    let s = sm.clone();
+    b.method("checkMetaRecipes", move |c| {
+        let chr = match c.arg(1) {
+            Value::Object(o) => o
+                .as_any()
+                .downcast_ref::<crate::bind_character_sim::CharacterObject>()
+                .map(|co| co.0.clone()),
+            _ => crate::bind_players::player_instance(),
+        };
+        if let Some(chr) = chr {
+            check_meta_recipes(&s, &mut chr.borrow_mut());
+        }
         Ok(0)
     });
     b.method("update", |_| Ok(0));
@@ -1814,5 +1925,68 @@ mod tests {
             "#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn check_auto_learn_and_check_meta_recipes_grant_matching_craft_recipes() {
+        let scripts = "module Base {
+            item Stone { Weight = 1, }
+            craftRecipe AnyWood {
+                time = 10,
+                AutoLearnAny = Woodwork:2;Cooking:3,
+                inputs { item 1 [Base.Stone], }
+                outputs { item 1 Base.Stone, }
+            }
+            craftRecipe AllBoth {
+                time = 10,
+                AutoLearnAll = Woodwork:2;Cooking:1,
+                inputs { item 1 [Base.Stone], }
+                outputs { item 1 Base.Stone, }
+            }
+            craftRecipe MetaChild {
+                time = 10,
+                MetaRecipe = ParentGuide,
+                inputs { item 1 [Base.Stone], }
+                outputs { item 1 Base.Stone, }
+            }
+        }";
+        let sm = load("autolearn", &[("media/scripts/test.txt", scripts)]);
+        {
+            use pz_scripts::registry::builtin::PerkDecl;
+            let decl = |f: &str| PerkDecl { field: f.into(), id: f.into(), parent: None };
+            sm.builtin_tables.borrow_mut().perks =
+                ["None", "Woodwork", "Cooking", "MAX"].map(decl).to_vec();
+        }
+        crate::bind_characters::shared_characters().borrow_mut().perks =
+            pz_characters::skills::PerkFactory::from_tables(&sm.builtin_tables.borrow()).unwrap();
+
+        let mut chr = crate::bind_character_sim::LuaGameCharacter::new(
+            &sm,
+            pz_characters::CharacterKind::Player,
+        );
+        let ctx = crate::bind_character_sim::current_sim_context();
+        let wood = crate::bind_characters::shared_characters()
+            .borrow()
+            .perks
+            .constant("Woodwork")
+            .unwrap();
+        let cook = crate::bind_characters::shared_characters()
+            .borrow()
+            .perks
+            .constant("Cooking")
+            .unwrap();
+        chr.set_perk_level_debug(&wood, 2, &*ctx);
+        assert_eq!(check_auto_learn(&sm, &mut chr), 1);
+        assert!(chr.known_recipes.iter().any(|r| r == "AnyWood"));
+        assert!(!chr.known_recipes.iter().any(|r| r == "AllBoth"));
+
+        chr.set_perk_level_debug(&cook, 1, &*ctx);
+        assert_eq!(check_auto_learn(&sm, &mut chr), 1);
+        assert!(chr.known_recipes.iter().any(|r| r == "AllBoth"));
+
+        assert_eq!(check_meta_recipes(&sm, &mut chr), 0);
+        chr.known_recipes.push("ParentGuide".into());
+        assert_eq!(check_meta_recipes(&sm, &mut chr), 1);
+        assert!(chr.known_recipes.iter().any(|r| r == "MetaChild"));
     }
 }

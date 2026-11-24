@@ -13,7 +13,7 @@ pub(crate) use script_registers::runtime_dictionary;
 use std::path::Path;
 
 use pz_inventory::component::{ComponentBlob, ComponentCodec, EntityCodec, FactoryRng};
-use pz_inventory::dictionary::{DictionaryInfo, Register, WorldDictionary};
+use pz_inventory::dictionary::{DictionaryInfo, WorldDictionary};
 use pz_inventory::factory::ScriptItems;
 use pz_inventory::io::{Reader, SaveResult, Writer};
 use pz_inventory::ItemTemplate;
@@ -176,14 +176,11 @@ fn save_data(save_dir: &Path, dictionary: &WorldDictionary) -> Result<(), String
 }
 
 /// `WorldDictionary.init()` for a local game: load saved ids, reconcile
-/// the current item/entity scripts, register erosion object names, then
-/// persist the dictionary before chunks and players load. `noSave` still
-/// creates usable in-memory ids but neither reads nor writes a file.
-///
-/// TODO(port): register the Generic strings from XUI/FluidFilter and
-/// other string registers
-/// when those script-loading hooks are implemented. Existing register
-/// records are preserved. Readable/log/error-backup files remain unported.
+/// the current item/entity scripts, register erosion object names,
+/// `StringDictionary.Generic` (`FluidFilter`) entries, and component script
+/// registers, then persist the dictionary before chunks and players load.
+/// `noSave` still creates usable in-memory ids but neither reads nor writes a
+/// file. Readable/log/error-backup files remain unported.
 pub fn init(
     save_dir: &Path,
     no_save: bool,
@@ -199,12 +196,7 @@ pub fn init(
         dictionary
             .register_object_names(object_names, sm.debug)
             .map_err(|e| e.to_string())?;
-        if dictionary.string_register("Generic").is_none() {
-            dictionary.string_registers.push(Register {
-                name: "Generic".into(),
-                ..Default::default()
-            });
-        }
+        script_registers::register_generic_strings(&mut dictionary, sm)?;
         script_registers::register(&mut dictionary, sm)?;
         if !no_save {
             save_data(save_dir, &dictionary)?;
@@ -329,16 +321,15 @@ pub struct RegistryInputs<'a> {
 /// The save's item registry: `dictionary`'s ids over the shared
 /// `ScriptManager`, with the game's `Rand`, the `ClothingItem` assets and
 /// entity registries the Lua item environment has, the moveable sprites,
-/// radio channels/recorded media and item textures (a client has every
-/// texture).
-///
-/// TODO(port): `MapDefinitions` (`map_definitions`).
+/// radio channels/recorded media, `MapDefinitions`, and item textures (a
+/// client has every texture).
 pub fn script_items(dictionary: WorldDictionary, inputs: RegistryInputs<'_>) -> ScriptItems {
     let sm = pz_lua_api::bind_registry::shared_script_manager();
     let names = item_names(&sm);
     let mut items = ScriptItems::new(&sm, dictionary, &names);
     items.world_age_hours = inputs.world_age_hours;
     items.blood_body_parts = inputs.save_tables.blood_body_parts;
+    items.map_definitions = pz_lua_api::worldmap::map_definitions::definitions();
     if let Some(s) = inputs.sprites {
         items.world_sprites = pz_world::save::items::moveable_sprites(s);
     }
@@ -459,7 +450,7 @@ mod tests {
         sm.parse_script(ScriptLoadMode::Init, &format!("module Base {{ {body} }}"))
             .unwrap();
         let module = sm.get_module("Base").unwrap();
-        for t in [ScriptType::Item, ScriptType::Entity] {
+        for t in [ScriptType::Item, ScriptType::Entity, ScriptType::FluidFilter] {
             module.bucket(t).load_scripts(&sm, ScriptLoadMode::Init);
         }
         sm
@@ -510,6 +501,42 @@ mod tests {
         assert_eq!(disk.items, loaded.items);
         assert_eq!(disk.entities, loaded.entities);
         assert!(!d.join("WorldDictionary.tmp").exists());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn fluid_filter_scripts_register_into_generic_string_register() {
+        let d = temp_dir();
+        let sm = fixture_scripts(
+            "fluidFilter WaterOnly { whitelist = true, fluids = Water, }",
+        );
+        let initial = init(&d, false, true, &sm, &[]).unwrap().unwrap();
+        let generic = initial.string_register("Generic").unwrap();
+        let water_id = generic
+            .entries
+            .iter()
+            .find(|e| e.name == "Base.WaterOnly")
+            .map(|e| e.registry_id)
+            .expect("Base.WaterOnly registered in Generic");
+
+        let reload_sm = fixture_scripts(
+            "fluidFilter WaterOnly { whitelist = true, fluids = Water, } \
+             fluidFilter FuelOnly { whitelist = true, fluids = Petrol, }",
+        );
+        let reloaded = init(&d, false, false, &reload_sm, &[]).unwrap().unwrap();
+        let generic = reloaded.string_register("Generic").unwrap();
+        let reloaded_water = generic
+            .entries
+            .iter()
+            .find(|e| e.name == "Base.WaterOnly")
+            .map(|e| e.registry_id);
+        let fuel_id = generic
+            .entries
+            .iter()
+            .find(|e| e.name == "Base.FuelOnly")
+            .map(|e| e.registry_id);
+        assert_eq!(reloaded_water, Some(water_id));
+        assert!(fuel_id.is_some() && fuel_id != Some(water_id));
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

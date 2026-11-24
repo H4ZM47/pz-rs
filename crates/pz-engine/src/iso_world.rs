@@ -178,6 +178,8 @@ pub struct IsoWorld {
     /// The save's item registry: `WorldDictionary.data` over the scripts
     /// (`None` until `WorldDictionary.init()` read a `WorldDictionary.bin`).
     pub items: Option<pz_inventory::factory::ScriptItems>,
+    /// `ItemConfigurator` selector ID tables populated after `OnLoadedMapZones`.
+    pub item_configurator: pz_inventory::item_configurator::ItemConfigurator,
     /// `WorldStreamer.instance` with the chunk maps.
     pub streamer: Option<ChunkStreamer>,
     /// A failed native activation stops subsequent handoffs and retains the
@@ -206,10 +208,17 @@ pub struct IsoWorld {
     pub(crate) house_alarms: crate::sound::house_alarms::HouseAlarms,
     pub meta_tracker: Rc<RefCell<MetaTracker>>,
     pub statistics: Statistics,
+    /// `ObjectIDManager.getInstance()` (`id_manager_data.bin`).
+    pub object_ids: pz_world::ObjectIDManager,
+    /// `ImportantAreaManager.getInstance()` (`important_area_data.bin`).
+    pub important_areas: pz_world::ImportantAreaManager,
     /// The sandbox preset `map_sand.bin` named.
     pub preset: String,
     /// `IsoCell.getZombieList()`: the real zombies.
     pub zombies: Vec<LuaGameCharacter>,
+    /// `ReanimatedPlayers.instance.zombies`: tracked reanimated former players
+    /// waiting for their chunk to load (or stored after chunk unload).
+    pub reanimated_players: Vec<LuaGameCharacter>,
     /// The stand-ins the local players' cells hold while their characters
     /// are lent to [`Self::zombies`] (`IsoWorld::lend_players`).
     pub player_stand_ins: Vec<LuaGameCharacter>,
@@ -217,16 +226,29 @@ pub struct IsoWorld {
     pub next_object_id: i32,
     /// Object state the character states keep outside the objects.
     pub states_runtime: pz_world_states::StatesRuntime,
+    /// Dynamic `ObjectRenderEffects` (`VegetationRustle`, `HitTreeShudder`) and
+    /// `TreeSoundManager` (`"Bushes"` 10-slot pool).
+    pub render_effects: Rc<RefCell<crate::world_render_effects::WorldRenderEffects>>,
     /// `ActionGroup.getActionGroup(name)`'s loaded groups.
     pub action_groups: pz_characters::character::state::ActionGroups,
     /// `IsoFireManager`.
     pub fire: pz_world::fire::IsoFireManager,
+    /// `IsoFireManager.fireSounds`: 20 pooled `FmodSoundEmitter` slots.
+    pub fire_sounds: crate::world_fire::FireSoundSlots,
+    /// The cell's live `IsoHeatSource` list (permanent fires and hearths).
+    pub heat_sources: crate::world_fire::HeatSourceRegistry,
     pub fire_flags: Option<pz_world::fire::manager::FireFlags>,
+    /// Per-world `IsoFireplace` and `IsoBarbecue` visual, light, heat, and sound state.
+    pub hearths: crate::world_hearths::WorldHearths,
     /// Each local player's `IsoPlayer.sqlId` (its `localPlayers` row; -1
     /// before its first save).
     pub player_sql_ids: [i32; 4],
     /// `IsoDoor`'s double-door offset tables, for the square mutations.
     pub door_tables: Option<Rc<pz_world::square_mutation::DoorTables>>,
+    /// Build 42.22 animal genome, breed, track, and migration definitions
+    /// (`AnimalDefinitions`, `AnimalGenomeDefinitions`, `AnimalTracksDefinitions`,
+    /// `MigrationGroupDefinitions`) loaded from `LuaManager.env`.
+    pub animal_defs: Option<Rc<pz_characters::pz_animals::AnimalDefinitionTables>>,
     /// `IsoWorld.frameNo`.
     pub frame_no: i64,
     /// The last `IsoChunk.loadID` handed out.
@@ -334,6 +356,7 @@ impl IsoWorld {
             player_db: None,
             dictionary_new_game: false,
             items: None,
+            item_configurator: pz_inventory::item_configurator::ItemConfigurator::new(),
             streamer: None,
             failed_chunk_activation: None,
             meta_world: MetaWorld::default(),
@@ -350,17 +373,31 @@ impl IsoWorld {
             house_alarms: Default::default(),
             meta_tracker: Default::default(),
             statistics: Statistics::default(),
+            object_ids: pz_world::ObjectIDManager::new(),
+            important_areas: pz_world::ImportantAreaManager::new(),
             preset: String::new(),
             zombies: Vec::new(),
+            reanimated_players: Vec::new(),
             player_stand_ins: Vec::new(),
             next_object_id: 0,
             states_runtime: Default::default(),
+            render_effects: {
+                let re = Rc::new(RefCell::new(
+                    crate::world_render_effects::WorldRenderEffects::default(),
+                ));
+                crate::world_render_effects::set_shared_render_effects(Some(re.clone()));
+                re
+            },
             action_groups: pz_characters::character::state::ActionGroups::from_media(
                 game_dir.join("media"),
             ),
             fire: pz_world::fire::IsoFireManager::new(),
+            fire_sounds: crate::world_fire::FireSoundSlots::new(),
+            heat_sources: crate::world_fire::HeatSourceRegistry::new(),
             fire_flags: None,
+            hearths: crate::world_hearths::WorldHearths::new(),
             door_tables: None,
+            animal_defs: None,
             player_sql_ids: [-1; 4],
             frame_no: 0,
             chunk_load_id: 0,
@@ -377,6 +414,13 @@ impl IsoWorld {
         }
     }
 
+    /// Clears active dynamic `ObjectRenderEffects`, stops/returns all
+    /// `TreeSoundManager` emitters, and detaches the shared handle.
+    pub fn reset_render_effects(&mut self) {
+        self.render_effects.borrow_mut().reset();
+        crate::world_render_effects::set_shared_render_effects(None);
+    }
+
     fn jar(&self) -> PathBuf {
         self.game_dir.join("projectzomboid.jar")
     }
@@ -385,6 +429,59 @@ impl IsoWorld {
         let e = e.into();
         eprintln!("ERROR: IsoWorld.init: {e}");
         self.errors.push(e);
+    }
+
+    /// `ItemConfigurator.Preprocess()` from the loaded `IsoMetaGrid`,
+    /// `IsoSpriteManager`, and `ScriptManager`.
+    pub fn preprocess_item_configurator(&mut self, sm: &pz_scripts::ScriptManager) {
+        let mut zones: Vec<(String, String)> = Vec::new();
+        let mut rooms: Vec<String> = Vec::new();
+        with_world(|w| {
+            if let Some(meta) = w.meta_grid.as_ref() {
+                for &zid in &meta.zones {
+                    let z = meta.zone(zid);
+                    zones.push((z.name.clone(), z.zone_type.clone()));
+                }
+                for &bid in &meta.buildings {
+                    if let Some(b) = meta.building_defs.get(bid.0 as usize) {
+                        for &rid in &b.rooms {
+                            if let Some(r) = meta.room_defs.get(rid.0 as usize) {
+                                rooms.push(r.name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let mut container_props: Vec<String> = Vec::new();
+        let mut tile_sprites: Vec<(String, i32)> = Vec::new();
+        if let Some(sprites_rc) = self.sprites.as_ref() {
+            let sprites = sprites_rc.borrow();
+            let flag = sprites.tables.flag.container;
+            for &idx in sprites.named_map.values() {
+                if let Some(sp) = sprites.sprites.get(idx) {
+                    if sp.properties.has(flag) {
+                        if let Some(val) = sp.properties.get(&sprites.alias, "container") {
+                            container_props.push(val.to_string());
+                        }
+                    }
+                }
+            }
+            for &idx in sprites.int_map.values() {
+                if let Some(sp) = sprites.sprites.get(idx) {
+                    if let Some(name) = sp.name.as_deref() {
+                        tile_sprites.push((name.to_string(), sp.id));
+                    }
+                }
+            }
+        }
+        self.item_configurator.preprocess(
+            sm,
+            zones.iter().map(|(n, t)| (n.as_str(), t.as_str())),
+            rooms.iter().map(String::as_str),
+            container_props.iter().map(String::as_str),
+            tile_sprites.iter().map(|(n, id)| (n.as_str(), *id)),
+        );
     }
 
     /// `ZomboidFileSystem.getFileInCurrentSave(name)`.
@@ -541,6 +638,39 @@ impl IsoWorld {
         let _ = params.load_file(&self.save_dir);
     }
 
+    /// Loads `AnimalGenomeDefinitions`, `AnimalDefinitions`, `AnimalTracksDefinitions`,
+    /// and `MigrationGroupDefinitions` from `env` (`LuaManager.env`).
+    pub fn load_animal_definitions(&mut self, env: &pz_kahlua::TableRef) {
+        match pz_characters::pz_animals::AnimalDefinitionTables::load(env) {
+            Ok(tables) => {
+                self.animal_defs = Some(Rc::new(tables));
+            }
+            Err(e) => {
+                self.errors
+                    .push(format!("AnimalDefinitions.getAnimalDefs: {e}"));
+            }
+        }
+    }
+
+    /// Reloads `AnimalTracksDefinitions` from `env` (`loadTracksDefinitions`).
+    pub fn reload_animal_tracks(&mut self, env: &pz_kahlua::TableRef) {
+        match pz_characters::pz_animals::AnimalTracksDefinitions::load_all(env) {
+            Ok(tracks) => {
+                let mut tables = self
+                    .animal_defs
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or_default();
+                tables.tracks = tracks;
+                self.animal_defs = Some(Rc::new(tables));
+            }
+            Err(e) => {
+                self.errors
+                    .push(format!("AnimalTracksDefinitions.loadTracksDefinitions: {e}"));
+            }
+        }
+    }
+
     /// `IsoWorld.init()` on the loader (`GameLoadingState`'s
     /// `runInner`, between `IsoWorld.instance = new IsoWorld()` and
     /// `OnGameTimeLoaded`). Returns `Err` where the original throws out of
@@ -564,8 +694,8 @@ impl IsoWorld {
             // stories and `RZS*` zone stories lists (`randomizedBuildingList`,
             // `randomizedVehicleStoryList`, `randomizedZoneList`).
         }
-        // TODO(port): `RBBasic.getUniqueRDSSpawned().clear()`;
-        // `BodyDamageSync` (network only).
+        pz_lua_api::bind_randomized_world::clear_unique_rds_spawned();
+        // TODO(port): `BodyDamageSync` (network only).
         self.saved_world_version = self.read_world_version();
         // `map_ver.bin`: the map the save was made on.
         if let Some(v) =
@@ -575,8 +705,18 @@ impl IsoWorld {
                 core_rc.borrow_mut().game_map = map;
             }
         }
-        // TODO(port): `ObjectIDManager.load` (`id_manager_data.bin`) and
+        // `ObjectIDManager.load` (`id_manager_data.bin`) and
         // `ImportantAreaManager.load` (`important_area_data.bin`).
+        self.object_ids.clear();
+        self.important_areas.clear();
+        if !no_save {
+            if let Err(e) = self.object_ids.load_file(&self.save_dir) {
+                self.log_error(format!("ObjectIDManager.load: {e}"));
+            }
+            if let Err(e) = self.important_areas.load_file(&self.save_dir) {
+                self.log_error(format!("ImportantAreaManager.load: {e}"));
+            }
+        }
         // `WorldGenParams.INSTANCE.load()`; a new single-player world keeps
         // the seed the menu set (`MapSpawnSelect.saveGenParams`).
         self.load_world_gen_params();
@@ -591,6 +731,16 @@ impl IsoWorld {
                 max_y: params.max_y_cell,
             }
         };
+        let voronois = {
+            let seed = self.world_gen_params.borrow().seed();
+            let noise_enabled =
+                sandbox(lua).is_some_and(|sb| opt_bool(&sb.borrow(), "ZombieVoronoiNoise"));
+            pz_worldgen::zombie_voronoi::from_lua_globals(
+                lua.thread.globals(),
+                seed,
+                noise_enabled,
+            )
+        };
         let meta = {
             let fs = lua.fs.borrow();
             IsoMetaGrid::create(
@@ -599,8 +749,7 @@ impl IsoWorld {
                     game_map: &game_map,
                     world_gen: wg,
                     rand: &mut self.rand,
-                    // TODO(port): the `ZombieVoronoi` instances.
-                    voronois: Vec::new(),
+                    voronois,
                 },
             )
             .map_err(|e| format!("IsoMetaGrid.Create: {e}"))?
@@ -667,7 +816,10 @@ impl IsoWorld {
             let days = gt.borrow().world_age_days_since_begin(options.time_since_apo()) as f32;
             pz_lua_api::bind_world::power::set_hydro_power_on(options.does_power_grid_exist(days, 0));
         }
-        // TODO(port): `ZomboidGlobals.toLua()`, `survivorDescriptors.clear()`.
+        // `ZomboidGlobals.Load()` (from `media/lua/shared/defines.lua`).
+        // TODO(port): `ZomboidGlobals.toLua()` sandbox loot overrides,
+        // `survivorDescriptors.clear()`.
+        pz_lua_api::bind_character_sim::load_zomboid_globals(lua.thread.globals());
         // `LoadTileDefinitions*` (property strings, custom values, lookup
         // tables, the definitions), `PostTileDefinitions`, then
         // `loadedTileDefinitions`.
@@ -701,9 +853,10 @@ impl IsoWorld {
         self.door_tables = Some(Rc::new(pz_world::square_mutation::DoorTables::from_jar(
             &pz_classfile::Jar::open(self.jar()).map_err(|e| e.to_string())?,
         )?));
-        // TODO(port): `AnimalDefinitions.getAnimalDefs()`
-        // (`pz_animals::AnimalDefinitionTables::load`), `WeatherFxMask.init`,
-        // `TemplateText.Initialize`.
+        // `AnimalDefinitions.getAnimalDefs()` (`pz_animals::AnimalDefinitionTables::load`).
+        self.load_animal_definitions(lua.thread.globals());
+        // TODO(port): `WeatherFxMask.init`.
+        pz_lua_api::bind_template_text::initialize(&mut lua.thread);
         // `IsoRegions.init()`.
         let chunk_grid_width = {
             let c = core_rc.borrow();
@@ -748,8 +901,17 @@ impl IsoWorld {
                 self.log_error(format!("GameTime.load: {e}"));
             }
         }
-        // TODO(port): `ImprovedFog.init`; `GlobalModData.init`.
+        // TODO(port): `ImprovedFog.init`.
         self.init_radio(lua, &sb, no_save);
+        // `GlobalModData.init()`, right after `ZomboidRadio.Init`: reset, load `global_mod_data.bin`, and fire
+        // `OnInitGlobalModData(WorldDictionary.isIsNewGame())`.
+        if let Err(e) = pz_lua_api::bind_global_moddata::load_file(&self.save_dir, no_save) {
+            self.log_error(format!("GlobalModData.init: {e}"));
+        }
+        lua.trigger_event(
+            "OnInitGlobalModData",
+            &[pz_kahlua::Value::Bool(self.dictionary_new_game)],
+        );
         if let Err(e) = self.instance_tracker.load_file(&self.save_dir, no_save) {
             self.log_error(format!("InstanceTracker.load: {e}"));
         }
@@ -772,6 +934,7 @@ impl IsoWorld {
         )?;
         sm.post_world_dictionary_init();
         println!("WorldDictionary.init() end");
+        pz_lua_api::worldmap::map_definitions::init_from_lua(&lua.thread);
         self.items = match (dictionary, self.save_tables.as_ref()) {
             (Some(d), Some(tables)) => {
                 let world_age_hours = pz_lua_api::bind_climate::shared_game_time()
@@ -832,7 +995,8 @@ impl IsoWorld {
         // headers; the port keeps the headers for `onNewChunkLoaded`.
         println!("triggerEvent OnLoadedMapZones");
         lua.trigger_event("OnLoadedMapZones", &[]);
-        // TODO(port): `ItemConfigurator.Preprocess()`.
+        // `ItemConfigurator.Preprocess()`.
+        self.preprocess_item_configurator(&sm);
         let save_dir = self.save_dir.to_string_lossy().into_owned();
         let is_player_alive = pz_lua_api::savefile::is_player_alive(no_save, &save_dir, 1);
         // `PlayerDB.setAllow(true)`.
@@ -882,7 +1046,9 @@ impl IsoWorld {
                 height: h,
             });
         }
-        // TODO(port): `SpawnPoints.initSinglePlayer`.
+        // `SpawnPoints.initSinglePlayer`: resolve starter spawn buildings on
+        // the meta grid before world generation and chunk streaming.
+        pz_lua_api::bind_spawn_points::init_single_player(&mut lua.thread);
         // `WorldStreamer.instance.create()` and
         // `CellLoader.LoadCellBinaryChunk`: the world generator for
         // brand-new chunks, then player 0's chunk map around (worldX, worldY).
@@ -909,6 +1075,24 @@ impl IsoWorld {
             w.geometry.pathfind = self.pathfind.as_ref().map(|path| path.service().square_changes());
         });
         self.install_floor_world()?;
+        let render_weak = Rc::downgrade(&self.render);
+        pz_lua_api::bind_tile_overlays::install_overlay_invalidator(Some(Rc::new(
+            move |x, y, z| {
+                if let Some(render) = render_weak.upgrade() {
+                    if let Ok(mut guard) = render.try_borrow_mut() {
+                        if let Some(r) = guard.as_mut() {
+                            let size = pz_world::chunk::CHUNK_WIDTH;
+                            r.invalidate_floor_chunk(
+                                x.div_euclid(size),
+                                y.div_euclid(size),
+                                z,
+                                pz_iso_render::chunk::dirty::OBJECT_MODIFY,
+                            );
+                        }
+                    }
+                }
+            },
+        )));
         let (wx, wy) = (self.world_x, self.world_y);
         self.init_vehicles(
             lua,
@@ -938,13 +1122,16 @@ impl IsoWorld {
         if let Some(db) = self.player_db.as_mut() {
             db.can_save_players = true;
         }
-        // TODO(port): `TutorialManager.activeControlZombies`;
-        // `ReanimatedPlayers.loadReanimatedPlayers`.
+        // TODO(port): `TutorialManager.activeControlZombies`.
+        // `ReanimatedPlayers.loadReanimatedPlayers()`.
+        self.load_reanimated_players(no_save);
         if let Some(p) = pz_lua_api::bind_players::player_instance() {
-            // TODO(port): `ScriptManager.checkAutoLearn`, `checkMetaRecipes`,
-            // `VerifyAllCraftRecipesAreLearnable`.
+            // `ScriptManager.checkAutoLearn` & `checkMetaRecipes`.
+            // TODO(port): `VerifyAllCraftRecipesAreLearnable`.
             // `IsoPlayer.setCurrentSquareFromPosition()`.
             let mut c = p.borrow_mut();
+            pz_lua_api::bind_scripts::check_auto_learn(&sm, &mut c);
+            pz_lua_api::bind_scripts::check_meta_recipes(&sm, &mut c);
             let (x, y, z) = (
                 pz_world::java::fastfloor(c.vars.x),
                 pz_world::java::fastfloor(c.vars.y),
@@ -1342,6 +1529,9 @@ end
                 pz_lua_api::bind_safehouse::install_safehouses(
                     self.meta_world.safehouses.iter().map(|s| [s.x, s.y, s.w, s.h]).collect(),
                 );
+                pz_lua_api::bind_randomized_world::install_unique_rds_spawned(
+                    &self.meta_world.unique_rds_spawned,
+                );
                 match result {
                     Ok(())=>{},
                     Err(DesignationIoError::Io(error))=>self.errors.push(format!("IsoMetaGrid.load: {error}")),
@@ -1618,6 +1808,90 @@ end
         Ok(())
     }
 
+    /// `ReanimatedPlayers.loadReanimatedPlayers()`: reads `reanimated.bin`
+    /// (skipped when `no_save` or missing) into [`Self::reanimated_players`],
+    /// enters each loaded zombie's default state, and moves any whose chunk is
+    /// already in the cell into [`Self::zombies`].
+    pub(crate) fn load_reanimated_players(&mut self, no_save: bool) {
+        self.reanimated_players.clear();
+        if no_save {
+            return;
+        }
+        let path = self.file_in_save("reanimated.bin");
+        if !path.is_file() {
+            return;
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.log_error(format!("ReanimatedPlayers.loadReanimatedPlayers: {e}"));
+                return;
+            }
+        };
+        let (Some(tables), Some(items)) = (self.save_tables.as_ref(), self.items.as_ref()) else {
+            self.log_error("ReanimatedPlayers.loadReanimatedPlayers: missing save_tables or items");
+            return;
+        };
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let chars_ref = pz_lua_api::bind_characters::shared_characters();
+        let ctx = DefaultSimContext;
+        let env = SaveEnv { items, tables };
+        let mut tracked: Vec<LuaGameCharacter> = Vec::new();
+        let mut next_id = self.next_object_id;
+        let mut err_msg: Option<String> = None;
+        {
+            let mut chars = chars_ref.borrow_mut();
+            let res = pz_characters::character::save::load_reanimated_players(
+                &sm,
+                &mut chars,
+                &ctx,
+                &env,
+                &bytes,
+                &mut |chars| {
+                    let mut create = || Ok(Rc::new(RefCell::new(chars.create_survivor(&sm)?)));
+                    let mut z = pz_characters::character::GameCharacter::new_zombie(
+                        &sm,
+                        &ctx,
+                        pz_characters::character::zombie::ZombieSpawn {
+                            descriptor: None,
+                            create_survivor: &mut create,
+                        },
+                    )?;
+                    next_id += 1;
+                    z.id = next_id;
+                    Ok(z)
+                },
+                &mut |z| {
+                    z.vars.on_fire = true;
+                },
+                &mut tracked,
+            );
+            if let Err(e) = res {
+                err_msg = Some(format!("ReanimatedPlayers.loadReanimatedPlayers: {e}"));
+            }
+            let mut world = pz_characters::character::state::NullWorld;
+            let mut cx = pz_characters::character::state::StateCx::new(&sm, &chars, &ctx, &mut world);
+            for z in &mut tracked {
+                z.set_default_state(&mut cx);
+            }
+        }
+        self.next_object_id = next_id;
+        self.reanimated_players = tracked;
+        if let Some(e) = err_msg {
+            self.log_error(e);
+        }
+        // Any reanimated player whose chunk is already resident enters the cell now.
+        let loaded_chunks: Vec<(i32, i32)> = with_world(|w| {
+            w.cell
+                .as_ref()
+                .map(|c| c.chunks.keys().copied().collect())
+                .unwrap_or_default()
+        });
+        for (wx, wy) in loaded_chunks {
+            self.add_reanimated_players_to_chunk(wx, wy);
+        }
+    }
+
     /// `new IsoPlayer(cell)` as far as the port models it: a player
     /// character with a `new SurvivorDesc()` and `initWornItems("Human")`.
     /// TODO(port): the rest of the constructor (sprite parts, the state
@@ -1721,7 +1995,8 @@ end
         };
         {
             let chars = pz_lua_api::bind_characters::shared_characters();
-            let r = p.borrow_mut().apply_traits(
+            let mut p_ref = p.borrow_mut();
+            let r = p_ref.apply_traits(
                 sm,
                 &chars.borrow(),
                 Some(&self.lua_traits),
@@ -1730,12 +2005,34 @@ end
             if let Err(e) = r {
                 self.log_error(format!("IsoPlayer.applyTraits: {e:?}"));
             }
-            // TODO(port): the profession's and traits' granted recipes.
+            if let Err(e) = p_ref.apply_profession_recipes(sm) {
+                self.log_error(format!("IsoPlayer.applyProfessionRecipes: {e:?}"));
+            }
+            p_ref.apply_character_traits_recipes(sm);
         }
-        // TODO(port): the spawn room explored (`setExplored`,
-        // `setAllExplored`, `setBasementAllExplored`) and
-        // `ZombiePopulationManager.playerSpawnedAt`; `initPoisonousBerry` /
-        // `initPoisonousMushroom`.
+        // `IsoWorld.init`: mark the spawn room/building (and any overlapping
+        // basement) explored and notify
+        // `ZombiePopulationManager.playerSpawnedAt`; pick poisonous flora.
+        if let Some((x, y, z)) = sq {
+            with_world(|w| {
+                if let Some(meta) = w.meta_grid.as_mut() {
+                    meta.mark_spawn_explored(x, y, z);
+                    if let Some(pop) = self.population.as_mut() {
+                        pop.manager.player_spawned_at(meta, x, y, z);
+                    }
+                }
+            });
+        }
+        {
+            let core = pz_lua_api::bind_core::shared_core();
+            let mut c = core.borrow_mut();
+            if c.get_poisonous_berry().is_none() {
+                c.init_poisonous_berry();
+            }
+            if c.get_poisonous_mushroom().is_none() {
+                c.init_poisonous_mushroom();
+            }
+        }
         let pv = player.as_ref().map(character_value).unwrap_or_default();
         let sv = sq
             .map(|(x, y, z)| pz_lua_api::bind_world::square_value(x, y, z))

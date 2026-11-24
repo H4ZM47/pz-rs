@@ -22,6 +22,7 @@ use pz_scripts::objects::items::find_item;
 use pz_scripts::ScriptManager;
 
 use super::context::{SimContext, SimEvent};
+use super::floor_drop::FloorCx;
 use super::items::CharacterItems;
 use super::{CharacterKind, GameCharacter};
 use crate::survivor::CharacterGender;
@@ -291,11 +292,22 @@ impl<I> GameCharacter<I> {
     /// item's hands for a drainable), `removeFromHands` and the removal
     /// from the inventory. Returns the new item's id.
     pub fn apply_use_outcome(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, id: i32, out: &mut UseOutcome) -> Option<i32> {
+        self.apply_use_outcome_with_floor(sm, ctx, id, out, None)
+    }
+
+    /// Like [`Self::apply_use_outcome`], passing `floor` to
+    /// `remove_worn_item` so `Clothing.Use`'s `Unwear()` can drop
+    /// too-heavy items to the character's square (`forceDropTooHeavy`).
+    pub fn apply_use_outcome_with_floor(
+        &mut self,
+        sm: &ScriptManager,
+        ctx: &dyn SimContext,
+        id: i32,
+        out: &mut UseOutcome,
+        floor: Option<FloorCx<'_>>,
+    ) -> Option<i32> {
         if out.unwear && self.items.is_worn(id) {
-            // `removeWornItem(this)` (no hair styles: see `set_worn_item`;
-            // no world, so no `forceDropTooHeavy` drop: TODO(world)), then
-            // `OnClothingUpdated` for a player.
-            if self.remove_worn_item(sm, None, Some(id), true, None).is_ok() && self.is_player() {
+            if self.remove_worn_item(sm, None, Some(id), true, floor).is_ok() && self.is_player() {
                 ctx.event(SimEvent::ClothingUpdated);
             }
         }
@@ -334,11 +346,27 @@ impl<I> GameCharacter<I> {
         in_container: bool,
         need_sync: bool,
     ) -> Option<UseOutcome> {
+        self.use_held_item_with_floor(sm, ctx, id, crafting, in_container, need_sync, None)
+    }
+
+    /// Like [`Self::use_held_item`], forwarding `floor` to
+    /// [`Self::apply_use_outcome_with_floor`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn use_held_item_with_floor(
+        &mut self,
+        sm: &ScriptManager,
+        ctx: &dyn SimContext,
+        id: i32,
+        crafting: bool,
+        in_container: bool,
+        need_sync: bool,
+        floor: Option<FloorCx<'_>>,
+    ) -> Option<UseOutcome> {
         let ictx = CharacterItemContext::new(sm, ctx);
         let mut out = self.with_held_item(id, |item, owner| {
             item.use_with(crafting, in_container, need_sync, owner, &ictx)
         })?;
-        self.apply_use_outcome(sm, ctx, id, &mut out);
+        self.apply_use_outcome_with_floor(sm, ctx, id, &mut out, floor);
         Some(out)
     }
 }

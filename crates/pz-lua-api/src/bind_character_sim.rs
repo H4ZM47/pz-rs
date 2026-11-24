@@ -201,12 +201,12 @@ fn floor_world() -> Option<FloorWorldRef> {
 
 /// Capture one service identity for the whole action. Borrow its body only at
 /// an actual native floor operation, after native no-op checks have run.
-pub(super) struct FloorAccess {
+pub(crate) struct FloorAccess {
     service: Option<FloorWorldRef>,
 }
 
 impl FloorAccess {
-    pub(super) fn capture() -> HostResult<Self> {
+    pub(crate) fn capture() -> HostResult<Self> {
         FLOOR
             .try_with(|slot| {
                 Ok(Self {
@@ -219,7 +219,7 @@ impl FloorAccess {
             .map_err(|_| Self::unavailable())?
     }
 
-    pub(super) fn has_service(&self) -> bool {
+    pub(crate) fn has_service(&self) -> bool {
         self.service.is_some()
     }
 
@@ -327,19 +327,114 @@ pub(crate) fn fire_event(thread: &mut Thread, name: &str, args: &[Value]) {
     }
 }
 
+thread_local! {
+    static ZOMBOID_GLOBALS: RefCell<Option<pz_characters::character::ZomboidGlobals>> =
+        const { RefCell::new(None) };
+}
+
+/// The loaded `ZomboidGlobals` statics (or `ZomboidGlobals::INITIAL` before
+/// [`load_zomboid_globals`] runs).
+pub fn zomboid_globals() -> pz_characters::character::ZomboidGlobals {
+    ZOMBOID_GLOBALS.with(|g| g.borrow().clone().unwrap_or_default())
+}
+
+/// `ZomboidGlobals.equippedOrWornEncumbranceMultiplier` once loaded from Lua.
+pub fn loaded_encumbrance_multiplier() -> Option<f64> {
+    ZOMBOID_GLOBALS.with(|g| {
+        g.borrow()
+            .as_ref()
+            .map(|zg| zg.equipped_or_worn_encumbrance_multiplier)
+    })
+}
+
+/// Replace (or clear with `None`) the loaded `ZomboidGlobals` state.
+pub fn set_zomboid_globals(g: Option<pz_characters::character::ZomboidGlobals>) {
+    ZOMBOID_GLOBALS.with(|slot| *slot.borrow_mut() = g);
+}
+
+/// `ZomboidGlobals.Load()`: read the Lua global `ZomboidGlobals` table (loaded
+/// from `media/lua/shared/defines.lua`) into the shared Rust `ZomboidGlobals`
+/// statics. Missing keys keep their `ZomboidGlobals::INITIAL` values.
+pub fn load_zomboid_globals(env: &pz_kahlua::TableRef) -> pz_characters::character::ZomboidGlobals {
+    let mut g = pz_characters::character::ZomboidGlobals::INITIAL;
+    if let Value::Table(t) = env.get_str("ZomboidGlobals") {
+        let num = |k: &str, dst: &mut f64| {
+            if let Some(v) = t.get_str(k).as_num() {
+                *dst = v;
+            }
+        };
+        num("RunningEnduranceReduce", &mut g.running_endurance_reduce);
+        num("SprintingEnduranceReduce", &mut g.sprinting_endurance_reduce);
+        num("ImobileEnduranceIncrease", &mut g.imobile_endurance_reduce);
+        num("ThirstIncrease", &mut g.thirst_increase);
+        num("ThirstSleepingIncrease", &mut g.thirst_sleeping_increase);
+        num("ThirstLevelToAutoDrink", &mut g.thirst_level_to_auto_drink);
+        num(
+            "ThirstLevelReductionOnAutoDrink",
+            &mut g.thirst_level_reduction_on_auto_drink,
+        );
+        num("HungerIncrease", &mut g.hunger_increase);
+        num("HungerIncreaseWhenWellFed", &mut g.hunger_increase_when_well_fed);
+        num("HungerIncreaseWhileAsleep", &mut g.hunger_increase_while_asleep);
+        num("HungerIncreaseWhenExercise", &mut g.hunger_increase_when_exercise);
+        num("FatigueIncrease", &mut g.fatigue_increase);
+        num("StressDecrease", &mut g.stress_reduction);
+        num("BoredomIncrease", &mut g.boredom_increase_rate);
+        num("BoredomDecrease", &mut g.boredom_decrease_rate);
+        num("UnhappinessIncrease", &mut g.unhappiness_increase);
+        num(
+            "StressFromSoundsMultiplier",
+            &mut g.stress_from_sounds_multiplier,
+        );
+        num("StressFromBiteOrScratch", &mut g.stress_from_bite_or_scratch);
+        num("StressFromHemophobic", &mut g.stress_from_hemophobic);
+        num("StressFromDiscomfort", &mut g.stress_from_discomfort);
+        num("AngerDecrease", &mut g.anger_decrease);
+        num("SleepFatigueReduction", &mut g.sleep_fatigue_reduction);
+        num("WetnessIncrease", &mut g.wetness_increase);
+        num("WetnessDecrease", &mut g.wetness_decrease);
+        num("CatchAColdIncreaseRate", &mut g.catch_a_cold_increase_rate);
+        num("CatchAColdDecreaseRate", &mut g.catch_a_cold_decrease_rate);
+        num("PoisonLevelDecrease", &mut g.poison_level_decrease);
+        num("PoisonHealthReduction", &mut g.poison_health_reduction);
+        num("FoodSicknessDecrease", &mut g.food_sickness_decrease);
+        num("IdleIncrease", &mut g.idle_increase_rate);
+        num("IdleDecrease", &mut g.idle_decrease_rate);
+        num(
+            "VehicleDiscomfortWhenOverEncumbered",
+            &mut g.vehicle_discomfort_when_over_encumbered,
+        );
+        num(
+            "EquippedOrWornEncumbranceMultiplier",
+            &mut g.equipped_or_worn_encumbrance_multiplier,
+        );
+        num(
+            "CorpseSicknessFilterDrainMultiplier",
+            &mut g.corpse_sickness_filter_drain_multiplier,
+        );
+        ZOMBOID_GLOBALS.with(|slot| *slot.borrow_mut() = Some(g.clone()));
+    }
+    g
+}
+
 /// The installed context, collecting events for one call.
 struct CallContext {
     base: Rc<dyn SimContext>,
     events: RefCell<Vec<SimEvent>>,
     /// `ClimateManager.getInstance()` (the shared `GameTime`'s).
     game_time: Rc<RefCell<pz_core::game_time::GameTime>>,
+    /// Loaded `ZomboidGlobals`, if [`load_zomboid_globals`] has run.
+    globals: Option<pz_characters::character::ZomboidGlobals>,
 }
 
 impl SimContext for CallContext {
     fn lore_hearing(&self) -> i32 { self.base.lore_hearing() }
     fn is_listener_in_range(&self, x: f32, y: f32, range: f32) -> bool { self.base.is_listener_in_range(x, y, range) }
     fn zomboid_globals(&self) -> &pz_characters::character::ZomboidGlobals {
-        self.base.zomboid_globals()
+        match &self.globals {
+            Some(g) => g,
+            None => self.base.zomboid_globals(),
+        }
     }
     fn is_server(&self) -> bool {
         self.base.is_server()
@@ -528,6 +623,7 @@ fn with_ctx_result<R, E>(
         base: CONTEXT.with(|c| c.borrow().clone()),
         events: RefCell::default(),
         game_time: crate::bind_climate::shared_game_time(),
+        globals: ZOMBOID_GLOBALS.with(|g| g.borrow().clone()),
     };
     let r = f(c.thread, &ctx);
     let events = ctx.events.into_inner();
@@ -593,6 +689,7 @@ pub(crate) fn with_sim_context<R>(f: impl FnOnce(&dyn SimContext) -> R) -> R {
         base: CONTEXT.with(|c| c.borrow().clone()),
         events: RefCell::default(),
         game_time: crate::bind_climate::shared_game_time(),
+        globals: ZOMBOID_GLOBALS.with(|g| g.borrow().clone()),
     };
     f(&ctx)
 }
@@ -1279,6 +1376,13 @@ fn character_gender(chr: &LuaGameCharacterRef) -> pz_characters::CharacterGender
 
 pub(crate) fn chr_of(c: &NativeCall<'_>) -> LuaResult<LuaGameCharacterRef> {
     with_this::<CharacterObject, _>(c, |o| o.0.clone())
+}
+
+pub(crate) fn chr_from_value(v: &Value) -> Option<LuaGameCharacterRef> {
+    match v {
+        Value::Object(o) => o.as_any().downcast_ref::<CharacterObject>().map(|c| c.0.clone()),
+        _ => None,
+    }
 }
 
 fn float_arg(c: &NativeCall<'_>, i: usize) -> f32 {

@@ -14,7 +14,7 @@ use pz_fs::GameFs;
 use pz_iso_render::cache::ChunkCache;
 use pz_iso_render::chunk::dirty;
 use pz_iso_render::cutaways::{CutawayPlayer, Cutaways};
-use pz_iso_render::frame::{plan_chunks, world_frame_for_player_with, FrameSize, PlayerView};
+use pz_iso_render::frame::{plan_chunks, world_frame_for_player_extras, FrameSize, PlayerView};
 use pz_iso_render::objects::FrameObjects;
 use pz_iso_render::outlines::OutlineHighlight;
 use pz_iso_render::weather::{SurfaceSettings, SurfaceTextures, Surfaces};
@@ -23,7 +23,10 @@ use pz_iso_render::weather_fx_mask::{
     render_weather_fx, FxMaskCharacters, FxMaskFrame, FxMaskPlayer, FxMaskSprites, WeatherFxMask,
 };
 use pz_iso_render::{Camera, ChunkRenderer, CutawayWorld, RenderInfos};
-use pz_lighting::jni::{IsoDirection, VisionConeInput};
+use pz_lighting::jni::{
+    detection_range, effective_fatigue, player_torch_id, IsoDirection, PlayerInput, TorchInfo,
+    VisionConeInput,
+};
 use pz_lua_api::bind_character_sim::LuaGameCharacter;
 use pz_render::tile_depth::{
     TileDepthTextureAssignmentManager, TileDepthTextureManager, TileGeometryManager,
@@ -103,11 +106,14 @@ pub struct WorldRender {
     /// `renderOneLevel_Blood`).
     surface_textures: GroundTextures,
     surface_checks: [pz_iso_render::weather::SurfaceChecks; MAX_PLAYERS],
+    pub splashes: crate::world_surfaces::WorldSplashes,
     winter: [bool; MAX_PLAYERS],
     puddle_geometry_settings: Option<(i32, bool)>,
     sprites: SpriteCache,
     pub world: RenderWorld,
     pub lighting: WorldLighting,
+    /// `IsoFire.lightSource` links kept in step with [`WorldLighting`].
+    pub fire_lights: pz_world_render::FireLightLinks,
     /// `FBORenderChunkManager`'s chunk textures, per player.
     caches: [ChunkCache; MAX_PLAYERS],
     /// What the chunk renderer recorded about each drawn object
@@ -119,6 +125,8 @@ pub struct WorldRender {
     lighting_error: bool,
     /// The last corpse render error, reported once.
     corpse_error: Option<String>,
+    /// The last mannequin render error, reported once.
+    mannequin_error: Option<String>,
     /// What the square mutations changed since the last frame.
     pub pending: PendingRender,
     /// The characters the last player frame drew (local players by
@@ -126,6 +134,8 @@ pub struct WorldRender {
     /// `renderlast`.
     pub drawn_players: [bool; MAX_PLAYERS],
     pub drawn_zombies: Vec<usize>,
+    /// Per-world state for `FrameExtras` (ImprovedFog, CorpseFlies, VisPolyChunks, WorldMarkers).
+    pub extras: crate::world_extras::WorldExtras,
     /// `WeatherFxMask.playerFxMasks`.
     fx_masks: [WeatherFxMask; MAX_PLAYERS],
     /// `WeatherFxMask.init`'s stand-in sprites, built on the first frame.
@@ -197,6 +207,7 @@ impl WorldRender {
             cutaway_stencils,
             drop_shadow: tm.shared_texture_flags(fs, "media/textures/NewShadow.png", 0),
             surface_checks: Default::default(),
+            splashes: crate::world_surfaces::WorldSplashes::new(),
             winter: Default::default(),
             puddle_geometry_settings: None,
             surface_textures: GroundTextures(
@@ -205,21 +216,25 @@ impl WorldRender {
                     .map(|&name| name.to_owned())
                     .chain(["media/textures/river_bottom.png", "media/textures/puddles_hm.png", "media/textures/CMVehicleReflection/ref_am.png"].map(str::to_owned))
                     .chain((0..48).map(|index| format!("e_newsnow_ground_1_{index}")))
+                    .chain(crate::world_surfaces::splash_texture_names())
                     .filter_map(|name| tm.shared_texture(fs, &name).map(|tex| (name, tex)))
                     .collect(),
             ),
             sprites: SpriteCache::new(),
             world: RenderWorld::new(),
             lighting: WorldLighting::new(),
+            fire_lights: pz_world_render::FireLightLinks::new(),
             caches: Default::default(),
             infos: RenderInfos::new(),
             cutaways: std::array::from_fn(|_| Cutaways::new()),
             start: Instant::now(),
             lighting_error: false,
             corpse_error: None,
+            mannequin_error: None,
             pending: PendingRender::new(),
             drawn_players: [false; MAX_PLAYERS],
             drawn_zombies: Vec::new(),
+            extras: crate::world_extras::WorldExtras::new(fs, tm),
             fx_masks: std::array::from_fn(|_| WeatherFxMask::default()),
             fx_sprites: None,
             fx_mask_to_draw: [false; MAX_PLAYERS],
@@ -360,11 +375,28 @@ impl WorldRender {
         }
     }
 
-    fn update_door_hits(&mut self, runtime: &pz_world_states::StatesRuntime, cell: &pz_world::IsoCell) -> HostResult<()> {
-        let active = runtime.visible_door_hits(cell)?;
+    fn update_door_hits(
+        &mut self,
+        runtime: &pz_world_states::StatesRuntime,
+        render_effects: &crate::world_render_effects::WorldRenderEffects,
+        cell: &pz_world::IsoCell,
+    ) -> HostResult<()> {
+        let mut active = runtime.visible_door_hits(cell)?;
+        for (pos, corners) in render_effects.visible_effects(cell) {
+            if let Some((_, existing)) = active.iter_mut().find(|(p, _)| *p == pos) {
+                for i in 0..4 {
+                    existing[i][0] += corners[i][0];
+                    existing[i][1] += corners[i][1];
+                }
+            } else {
+                active.push((pos, corners));
+            }
+        }
         let previous = std::mem::take(&mut self.drawn_door_hits);
         for &pos in &previous {
-            if !active.iter().any(|(p, _)| *p == pos) { self.set_door_offsets(pos, None); }
+            if !active.iter().any(|(p, _)| *p == pos) {
+                self.set_door_offsets(pos, None);
+            }
         }
         for (pos, corners) in active {
             self.set_door_offsets(pos, Some(corners));
@@ -483,6 +515,8 @@ impl WorldRender {
             self.world.remove_chunk(wx, wy);
             self.infos.forget_chunk(wx, wy);
             self.lighting.remove_chunk(wx, wy);
+            self.extras.on_chunk_removed(wx, wy);
+            self.splashes.on_chunk_removed(wx, wy);
         }
         let mut tex = GameTextures {
             fs,
@@ -512,6 +546,7 @@ impl WorldRender {
                 }
             }
             self.lighting.sync_chunk(view, wx, wy, &hooks)?;
+            self.extras.on_chunk_added();
             events.added.remove(0);
         }
         Ok(())
@@ -637,6 +672,130 @@ impl WorldRender {
         }
     }
 
+    /// `FBORenderCorpses.render(renderChunkIndex, IsoMannequin)` and
+    /// `renderMannequinShadows`: draws ready mannequin models straight into
+    /// dirty chunk textures (`objects.chunk_models`) and emits each
+    /// mannequin's drop shadow every frame (`objects.mannequins`).
+    #[allow(clippy::too_many_arguments)]
+    fn render_mannequins(
+        lighting: &WorldLighting,
+        cache: &mut ChunkCache,
+        mannequin_error: &mut Option<String>,
+        view: &WorldView<'_>,
+        v: &RenderView,
+        chunks: &[pz_iso_render::frame::ChunkLevels<'_>],
+        models: &mut WorldModels,
+        objects: &mut FrameObjects,
+    ) {
+        let p_i32 = v.player as i32;
+        let world_age_days = (pz_lua_api::bind_climate::shared_game_time()
+            .borrow()
+            .world_age_hours()
+            / 24.0) as f32;
+        let cam_xy = [v.x, v.y];
+        let (x0, y0, n) = v.chunk_map;
+        for wx in x0..x0 + n {
+            for wy in y0..y0 + n {
+                let Some(chunk) = view.cell.chunks.get(&(wx, wy)) else {
+                    continue;
+                };
+                for sq_owner in chunk.squares() {
+                    let sq = sq_owner.borrow();
+                    let has_mannequin = sq.objects.iter().any(|slot| {
+                        slot.ref_handle()
+                            .try_borrow()
+                            .is_ok_and(|o| matches!(o.kind, pz_world::objects::ObjectKind::Mannequin(_)))
+                    });
+                    if !has_mannequin {
+                        continue;
+                    }
+                    let (sx, sy, sz) = (sq.x, sq.y, sq.z);
+                    let outside = sq.is_exterior(view.sprites);
+                    let room = sq.room_id != -1;
+                    let rgb = lighting
+                        .square_light(p_i32, sx, sy, sz)
+                        .map(|l| {
+                            let c = pz_iso_render::models::interpolate_light(&l.vert_light, 0.5, 0.5);
+                            [c.r, c.g, c.b]
+                        })
+                        .unwrap_or([v.climate.climate.ambient; 3]);
+                    // Collect table surface offsets for every object on the square.
+                    let mut surfaces_all = Vec::new();
+                    for slot in &sq.objects {
+                        let handle = slot.ref_handle();
+                        let Ok(o) = handle.try_borrow() else { continue };
+                        if let Ok(Some(s)) = o.sprite.metadata_projection(view.sprites) {
+                            let info = s.properties.surface_info(&view.sprites.alias);
+                            if info.is_table {
+                                surfaces_all.push(info.surface as f32);
+                            }
+                        }
+                    }
+                    let dirty_texture = chunks
+                        .iter()
+                        .find(|c| {
+                            c.dirty
+                                && c.texture.wx == wx
+                                && c.texture.wy == wy
+                                && sz >= c.texture.min_level
+                                && sz <= c.texture.top_level
+                        })
+                        .map(|c| c.texture);
+                    let mut surfaces_below = Vec::new();
+                    for slot in &sq.objects {
+                        let handle = slot.ref_handle();
+                        let Ok(mut obj) = handle.try_borrow_mut() else {
+                            continue;
+                        };
+                        let obj_id = obj.id;
+                        if let pz_world::objects::ObjectKind::Mannequin(man) = &mut obj.kind {
+                            let input = crate::world_models::MannequinSquare {
+                                x: sx,
+                                y: sy,
+                                z: sz,
+                                object_id: obj_id,
+                                surfaces_below: surfaces_below.clone(),
+                                surfaces_all: surfaces_all.clone(),
+                                outside,
+                                room,
+                                light: [rgb[0], rgb[1], rgb[2], 1.0],
+                                tint: [1.0; 3],
+                                alpha: 1.0,
+                                world_age_days,
+                            };
+                            match models.render_mannequin(man, &input, dirty_texture, cam_xy) {
+                                Ok(d) => {
+                                    objects.mannequins.push(pz_iso_render::objects::ObjectRender {
+                                        shadow: Some(d.shadow),
+                                        ..Default::default()
+                                    });
+                                    if let Some(cm) = d.chunk_models {
+                                        objects.chunk_models.push(cm);
+                                    }
+                                    if d.pending_textures {
+                                        cache.invalidate(wx, wy, sz, dirty::REDRAW);
+                                    }
+                                }
+                                Err(e) => {
+                                    if mannequin_error.as_deref() != Some(e.as_str()) {
+                                        eprintln!("ERROR: IsoMannequin.render: {e}");
+                                        *mannequin_error = Some(e);
+                                    }
+                                }
+                            }
+                        }
+                        if let Ok(Some(s)) = obj.sprite.metadata_projection(view.sprites) {
+                            let info = s.properties.surface_info(&view.sprites.alias);
+                            if info.is_table {
+                                surfaces_below.push(info.surface as f32);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// One player's world frame (`FBORenderCell.renderInternal` and what
     /// `IsoWorld.render` draws around it), appended to `out`.
     #[cfg(test)]
@@ -649,9 +808,10 @@ impl WorldRender {
         zombies: &[LuaGameCharacter],
         regions: &IsoRegions,
         weather_fx: Option<&RefCell<IsoWeatherFx>>,
+        designation_registry: Option<&pz_world::designation::DesignationRegistryRef>,
         out: &mut Vec<DrawCmd>,
     ) {
-        self.render_player_inner(view, v, models, zombies, None, regions, weather_fx, out);
+        self.render_player_inner(view, v, models, zombies, None, regions, weather_fx, designation_registry, out);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -659,7 +819,7 @@ impl WorldRender {
         &mut self,
         view: &WorldView<'_>,
         v: &mut RenderView,
-        models: Option<&mut WorldModels>,
+        mut models: Option<&mut WorldModels>,
         zombies: &[LuaGameCharacter],
         vehicles: Option<(
             &crate::world_vehicles::WorldVehicles,
@@ -668,6 +828,7 @@ impl WorldRender {
         )>,
         regions: &IsoRegions,
         weather_fx: Option<&RefCell<IsoWeatherFx>>,
+        designation_registry: Option<&pz_world::designation::DesignationRegistryRef>,
         out: &mut Vec<DrawCmd>,
     ) {
         let p = v.player;
@@ -679,15 +840,11 @@ impl WorldRender {
         // `LightingJNI.update` for the player, then the decoded results
         // into the render squares.
         if !self.lighting_error {
+            let (player_input, cone_input) = player_lighting_inputs(p, view, v);
             let input = PlayerFrameInput {
                 index: p as i32,
-                // TODO(port): the player's fatigue, detection range and
-                // the worn items' vision multiplier.
-                player: default_player(v.x, v.y, v.z, IsoDirection::ALL[v.dir as usize]),
-                cone: VisionConeInput {
-                    worn_items_vision_multiplier: 1.0,
-                    ..Default::default()
-                },
+                player: player_input,
+                cone: cone_input,
                 chunk_x_min: v.chunk_map.0,
                 chunk_y_min: v.chunk_map.1,
                 chunk_grid_width: v.chunk_map.2,
@@ -757,7 +914,7 @@ impl WorldRender {
         let mut objects = FrameObjects::default();
         // `DeadBodyAtlas.render()`'s jobs, drawn before the world.
         let mut corpse_jobs = Vec::new();
-        if let Some(models) = models {
+        if let Some(models) = models.as_deref_mut() {
             let camera = match &cam3 {
                 Some(c3) => pz_iso_render::models::ModelCamera::perspective(
                     &cam,
@@ -800,10 +957,10 @@ impl WorldRender {
                     target_ambient: color,
                     outside: sq.room_id == -1,
                     in_room: sq.room_id != -1,
-                    // TODO(port): room-light ids and the player's equipped torch.
+                    // TODO(port): room-light ids.
                     room_light_ids: Vec::new(),
                     player_index: chr.is_player().then_some(chr.player.player_index),
-                    torch_strength: 0.0,
+                    torch_strength: player_torch_strength(chr),
                     forward: [chr.vars.forward_x, chr.vars.forward_y],
                     multiplier: v.multiplier,
                 };
@@ -961,9 +1118,14 @@ impl WorldRender {
             let state = shared.borrow();
             (state.water, state.state, state.sky.reflection(now_ms, settings.use_shaders, perf_skybox, night, &self.surface_textures))
         };
+        let paused = pz_lua_api::bind_climate::is_game_paused();
+        let realworld_seconds = pz_lua_api::bind_climate::shared_game_time()
+            .try_borrow()
+            .map_or(0.0, |t| t.realworld_seconds_since_last_update());
+        self.splashes.advance_frame(v.tick, paused, realworld_seconds);
         let surfaces = Surfaces {
             settings,
-            climate: pz_iso_render::weather::ClimateInputs { snow_target: target, winter, ..Default::default() },
+            climate: crate::world_surfaces::surface_climate_inputs(target, winter),
             water,
             puddles,
             sky,
@@ -971,9 +1133,9 @@ impl WorldRender {
             meta_grid_min_x: view.meta.min_x,
             world: &self.world,
             textures: &self.surface_textures,
-            frame: Default::default(),
-            rain: None,
-            fish: None,
+            frame: self.splashes.frame,
+            rain: Some(&self.splashes.rain),
+            fish: Some(&self.splashes.fish),
         };
         let enable_snow = pz_lua_api::bind_sandbox::current_bool("EnableSnowOnGround").unwrap_or(true);
         let changed = self.surface_checks[p].run(&surfaces, enable_snow, now_ms);
@@ -984,6 +1146,18 @@ impl WorldRender {
         }
         self.winter[p] = winter;
         let chunks = plan_chunks(&mut self.caches[p], &cam, size, &inputs, &mut cmds);
+        if let Some(models) = models {
+            Self::render_mannequins(
+                &self.lighting,
+                &mut self.caches[p],
+                &mut self.mannequin_error,
+                view,
+                v,
+                &chunks,
+                models,
+                &mut objects,
+            );
+        }
         let r = ChunkRenderer::new(cam, &maps, (v.width, v.height))
             .with_cutaways(Some(cv))
             .with_render_infos(&self.infos, p)
@@ -1042,13 +1216,23 @@ impl WorldRender {
             let Ok(mut fx) = fx.try_borrow_mut() else { return };
             render_weather_fx(&mut fx, mask, &fx_chars, &fx_sprites, &fx_view, &fx_frame, out);
         };
-        let cmds = world_frame_for_player_with(
+        self.extras.drain_vispoly(&mut self.pending);
+        let mut extras = self.extras.build_frame(
+            view,
+            &cam,
+            v,
+            &self.lighting,
+            &order,
+            designation_registry,
+        );
+        let cmds = world_frame_for_player_extras(
             &r,
             size,
             v.split_view,
             &chunks,
             &objects,
             self.drop_shadow.clone(),
+            &mut extras,
             v.screen,
             cmds,
             &mut late,
@@ -1089,14 +1273,226 @@ fn surface_values() -> (SurfaceSettings, f32) {
     (settings, age)
 }
 
-/// `WorldHooks` forwarding active vehicle headlights into `LightingJNI.checkLights`.
+/// `IsoPlayer.getTorchStrength()` from primary/secondary hand active light items.
+fn player_torch_strength(chr: &LuaGameCharacter) -> f32 {
+    if !chr.is_player() {
+        return 0.0;
+    }
+    [chr.items.primary_hand_item(), chr.items.secondary_hand_item()]
+        .into_iter()
+        .flatten()
+        .find(|i| i.borrow().is_emitting_light())
+        .map_or(0.0, |i| i.borrow().get_light_strength())
+}
+
+/// Build `LightingJNI.updatePlayer` inputs (`PlayerInput` + `VisionConeInput`)
+/// from the live `IsoPlayer` at `player_index`, falling back to `default_player`
+/// when no player is bound or borrowed.
+fn player_lighting_inputs(
+    player_index: usize,
+    view: &WorldView<'_>,
+    v: &RenderView,
+) -> (PlayerInput, VisionConeInput) {
+    let dir = IsoDirection::ALL[v.dir as usize];
+    let mut player = default_player(v.x, v.y, v.z, dir);
+    let in_room = view
+        .cell
+        .get_grid_square(v.x.floor() as i32, v.y.floor() as i32, v.z.floor() as i32)
+        .is_some_and(|sq| sq.borrow().room_id != -1);
+    let mut cone = VisionConeInput {
+        in_room,
+        worn_items_vision_multiplier: 1.0,
+        ..Default::default()
+    };
+    let Some(p_ref) = pz_lua_api::bind_players::player(player_index) else {
+        return (player, cone);
+    };
+    let Ok(chr) = p_ref.try_borrow() else {
+        return (player, cone);
+    };
+
+    let sm = pz_lua_api::bind_registry::shared_script_manager();
+    let chars = pz_lua_api::bind_characters::shared_characters();
+    let chars = chars.borrow();
+
+    let (fatigue, fatigue_at_max) = chars
+        .sim
+        .character_stats
+        .field("FATIGUE")
+        .map(|s| (chr.stats.get(&s), chr.stats.is_at_maximum(&s)))
+        .unwrap_or((0.0, false));
+    let intoxication = chars
+        .sim
+        .character_stats
+        .field("INTOXICATION")
+        .map(|s| chr.stats.get(&s))
+        .unwrap_or(0.0);
+    let drunk_level = chr.moodles.moodle_level_of(&sm, "DRUNK").unwrap_or(0);
+    let panic_level = chr.moodles.moodle_level_of(&sm, "PANIC").unwrap_or(0);
+
+    let short_sighted = chr.has_trait(&sm, "SHORT_SIGHTED").unwrap_or(false);
+    let eagle_eyed = chr.has_trait(&sm, "EAGLE_EYED").unwrap_or(false);
+    let night_vision = chr.has_trait(&sm, "NIGHT_VISION").unwrap_or(false);
+    let deaf = chr.has_trait(&sm, "DEAF").unwrap_or(false);
+    let keen_hearing = chr.has_trait(&sm, "KEEN_HEARING").unwrap_or(false);
+    let hard_of_hearing = chr.has_trait(&sm, "HARD_OF_HEARING").unwrap_or(false);
+
+    let hearing_mult = chr.worn_items_hearing_multiplier();
+    let vision_mult = chr.worn_items_vision_multiplier();
+    let (fx, fy) = (chr.vars.forward_x, chr.vars.forward_y);
+    let flen = fx.hypot(fy);
+    if flen > 1e-4 {
+        player.look_x = fx / flen;
+        player.look_y = fy / flen;
+    }
+    player.short_sighted = short_sighted;
+    player.effective_fatigue = effective_fatigue(fatigue);
+    player.detection_range = detection_range(
+        deaf,
+        keen_hearing,
+        hard_of_hearing,
+        hearing_mult,
+        fatigue,
+        intoxication,
+    );
+
+    cone.fatigue = fatigue;
+    cone.fatigue_at_max = fatigue_at_max;
+    cone.drunk_level = drunk_level;
+    cone.intoxication = intoxication;
+    cone.panic_level = panic_level;
+    cone.eagle_eyed = eagle_eyed;
+    cone.night_vision = night_vision;
+    cone.worn_items_vision_multiplier = vision_mult;
+
+    // Check if the player is currently seated in a vehicle with headlights on.
+    if let Some(vid) = chr.path.vehicle {
+        cone.in_vehicle = true;
+        if let Some(veh) = pz_vehicles::manager::cell_vehicles()
+            .into_iter()
+            .find(|v| v.id() == vid)
+        {
+            cone.headlights = veh.headlights_on();
+        }
+    }
+
+    (player, cone)
+}
+
+/// Active emitting hand flashlights/torches for all local players.
+fn player_hand_torches() -> Vec<TorchInfo> {
+    let mut out = Vec::new();
+    let num = pz_lua_api::bind_players::num_players().max(0) as usize;
+    for pi in 0..num.min(MAX_PLAYERS) {
+        let Some(p_ref) = pz_lua_api::bind_players::player(pi) else {
+            continue;
+        };
+        let Ok(chr) = p_ref.try_borrow() else {
+            continue;
+        };
+        let (fx, fy) = (chr.vars.forward_x, chr.vars.forward_y);
+        let flen = fx.hypot(fy);
+        let (ax, ay) = if flen > 1e-4 {
+            (fx / flen, fy / flen)
+        } else {
+            (0.0, 1.0)
+        };
+        let mut slot = 0i32;
+        for hand in [chr.items.primary_hand_item(), chr.items.secondary_hand_item()]
+            .into_iter()
+            .flatten()
+        {
+            let Ok(item) = hand.try_borrow() else {
+                continue;
+            };
+            if !item.is_emitting_light() {
+                continue;
+            }
+            let dist = item.get_light_distance() as f32;
+            let strength = item.get_light_strength();
+            if dist <= 0.0 || strength <= 0.0 {
+                continue;
+            }
+            out.push(TorchInfo {
+                id: player_torch_id(pi as i32, slot),
+                x: chr.vars.x,
+                y: chr.vars.y,
+                z: chr.vars.z,
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                angle_x: ax,
+                angle_y: ay,
+                dist,
+                strength,
+                cone: item.is_torch_cone(),
+                dot: item.get_torch_dot(),
+                focusing: 0,
+            });
+            slot += 1;
+        }
+    }
+    out
+}
+
+/// `WorldHooks` forwarding active vehicle headlights and local players'
+/// equipped flashlights/torches into `LightingJNI.checkLights`.
 struct VehicleTorchesHooks;
 
 impl pz_world::SquareHooks for VehicleTorchesHooks {}
 
 impl pz_world_render::WorldHooks for VehicleTorchesHooks {
-    fn torches(&self) -> Vec<pz_lighting::jni::TorchInfo> {
-        crate::world_vehicles::cell_torches()
+    fn torches(&self) -> Vec<TorchInfo> {
+        let mut torches = crate::world_vehicles::cell_torches();
+        torches.extend(player_hand_torches());
+        torches
+    }
+}
+
+#[cfg(test)]
+mod player_lighting_tests {
+    use super::*;
+    use pz_characters::CharacterKind;
+    use pz_inventory::item::InventoryItem;
+    use pz_inventory::template::{ItemClass, ItemTemplate};
+    use pz_lua_api::bind_character_sim::LuaGameCharacter;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[test]
+    fn active_hand_torch_emits_torch_info_and_strength() {
+        pz_lua_api::bind_players::reset();
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let mut chr = LuaGameCharacter::new(&sm, CharacterKind::Player);
+        chr.set_x(12.5);
+        chr.set_y(34.5);
+        chr.set_z(0.0);
+        chr.vars.forward_x = 1.0;
+        chr.vars.forward_y = 0.0;
+
+        let mut tpl = ItemTemplate::new(ItemClass::Normal, "Base", "Torch");
+        tpl.light_distance = 12;
+        tpl.light_strength = 0.85;
+        tpl.torch_cone = true;
+        tpl.torch_dot = 0.7;
+        let mut item = InventoryItem::create(Rc::new(tpl), 1);
+        item.activated = true;
+        let item_ref = Rc::new(RefCell::new(item));
+        chr.items.inventory.borrow_mut().items.push(item_ref.clone());
+        chr.items.primary_hand_item = Some(item_ref.borrow().id);
+
+        assert!((player_torch_strength(&chr) - 0.85).abs() < 1e-5);
+
+        let chr_ref = Rc::new(RefCell::new(chr));
+        pz_lua_api::bind_players::set_player(0, Some(chr_ref));
+        let torches = player_hand_torches();
+        assert_eq!(torches.len(), 1);
+        assert_eq!(torches[0].id, player_torch_id(0, 0));
+        assert!((torches[0].dist - 12.0).abs() < 1e-5);
+        assert!((torches[0].strength - 0.85).abs() < 1e-5);
+        assert!(torches[0].cone);
+        assert!((torches[0].angle_x - 1.0).abs() < 1e-5);
+        pz_lua_api::bind_players::reset();
     }
 }
 
@@ -1125,14 +1521,17 @@ impl IsoWorld {
             render,
             render_chunks,
             states_runtime,
+            render_effects,
             sprites,
             game_dir,
             regions,
             models,
             zombies,
             vehicles_runtime,
+            meta_world,
             ..
         } = self;
+        let designation_registry = meta_world.designation_zones.live_slot().cloned();
         let regions_owner = regions.as_ref().ok_or(RuntimeHostError::Unsupported {
             operation: "actual render regions owner",
             kind: None,
@@ -1196,8 +1595,21 @@ impl IsoWorld {
                 for pos in w.geometry.take_render_changes() {
                     invalidation.object_geometry_changed(pos);
                 }
+                drop(invalidation);
+                for (wx, wy, z, flags) in
+                    pz_lua_api::bind_fbo_anim_debug::take_render_chunk_invalidations()
+                {
+                    for cache in r.caches.iter_mut().take(num_players.clamp(0, 4) as usize) {
+                        cache.invalidate(wx, wy, z, flags);
+                    }
+                }
                 r.apply_pending(&wv, regions, fs, &mut textures)?;
-                r.update_door_hits(states_runtime, cell)?;
+                {
+                    let re = render_effects
+                        .try_borrow()
+                        .map_err(|_| RuntimeHostError::Borrowed("actual render effects"))?;
+                    r.update_door_hits(states_runtime, &re, cell)?;
+                }
                 r.init_fx_sprites(&wv, fs, &mut textures);
             }
             // Character resources may lazily load hair or equipped-item
@@ -1218,23 +1630,46 @@ impl IsoWorld {
                 vehicles_runtime.as_ref().map(|v| (v, &*fs, tm)),
                 regions,
                 weather_fx.as_deref(),
+                designation_registry.as_ref(),
                 out,
             );
             check_changed_buildings(&mut r.lighting, &mut r.caches, &mut r.pending, num_players);
             Ok(())
         })?;
         // `renderlast()` of each character the frame drew: an outline
-        // highlight not set during this UI frame ends with the frame.
+        // highlight not set during this UI frame ends with the frame, and
+        // each drawn player's chat element queues its world-anchored lines.
         {
             if let Some(r) = render.as_ref() {
                 use pz_lua_api::bind_character_sim::outline::{ui_frame_times, RENDER_CONTAINER_HIGHLIGHT};
                 let now = ui_frame_times();
                 let p = view.player;
+                let cam = Camera::player(
+                    view.x,
+                    view.y,
+                    view.z,
+                    view.width as i32,
+                    view.height as i32,
+                    view.zoom,
+                );
                 for (n, drawn) in r.drawn_players.iter().enumerate() {
                     let player = pz_lua_api::bind_players::player(n).filter(|_| *drawn);
                     if let Some(player) = player {
-                        if let Ok(mut c) = player.try_borrow_mut() {
+                        let coords = if let Ok(mut c) = player.try_borrow_mut() {
                             c.outline.render_last(p, RENDER_CONTAINER_HIGHLIGHT, now);
+                            let sx = (pz_render::iso::x_to_screen(c.vars.x, c.vars.y)
+                                - cam.off_x as f32)
+                                / cam.zoom;
+                            let sy = (pz_render::iso::y_to_screen(c.vars.x, c.vars.y, c.vars.z, 0)
+                                - cam.off_y as f32
+                                - 140.0)
+                                / cam.zoom;
+                            Some((sx as i32, sy as i32))
+                        } else {
+                            None
+                        };
+                        if let Some((sx, sy)) = coords {
+                            pz_lua_api::chat::characters::render_last(&player, sx, sy, false, n == p);
                         }
                     }
                 }
@@ -1246,8 +1681,19 @@ impl IsoWorld {
             }
         }
         // TODO(port): `Gizmos.render`, `DrawIsoCursorHelper`, the
-        // pathfinding/sound/vocals debug renders, `FBORenderAreaHighlights`,
-        // `LineDrawer.render`.
+        // pathfinding/sound/vocals debug renders, `LineDrawer.render`.
         Ok(())
+    }
+
+    /// Consumes the valid `(x, y, z)` tile selected for
+    /// `RenderOpaqueObjectsInWorld` during the last [`Self::render`] call.
+    pub fn take_opaque_event_square(&self) -> Option<(i32, i32, i32)> {
+        self.render
+            .try_borrow_mut()
+            .ok()?
+            .as_mut()?
+            .extras
+            .pending_opaque_square
+            .take()
     }
 }

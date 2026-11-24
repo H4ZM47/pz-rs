@@ -40,7 +40,7 @@ fn with_cx(f: impl FnOnce(&mut StateCx<'_>)) {
     let mut world = None;
     let mut retired_models = Vec::new();
     let mut error = None;
-    f(&mut StateCx { lua: &mut lua, launch: &launch, screen_w: 1, screen_h: 1, multiplier: 1.0, time_delta: 1.0 / 30.0, world: &mut world, shutdown: false, error: &mut error, retired_models: &mut retired_models });
+    f(&mut StateCx { lua: &mut lua, launch: &launch, screen_w: 1, screen_h: 1, multiplier: 1.0, time_delta: 1.0 / 30.0, world: &mut world, shutdown: false, error: &mut error, retired_models: &mut retired_models, gpu: None });
     drop(error);
     drop(deferral);
     for _ in 0..16 { if pz_kahlua::native_list::drain_retired() == 0 { break; } }

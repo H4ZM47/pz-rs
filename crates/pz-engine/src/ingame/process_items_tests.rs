@@ -89,6 +89,7 @@ fn paused_ingame_frames_preserve_real_cell_and_item_sound_queues() {
         shutdown: false,
         error: &mut error,
         retired_models: &mut retired_models,
+        gpu: None,
     };
     let mut state = IngameState {
         paused: true,
