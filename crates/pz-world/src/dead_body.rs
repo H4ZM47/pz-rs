@@ -13,6 +13,7 @@
 pub mod corpse_count;
 pub mod inventory;
 pub mod flies_sound;
+pub mod update;
 
 #[cfg(test)]
 mod count_flies_tests;
