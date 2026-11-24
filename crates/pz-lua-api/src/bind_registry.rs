@@ -63,12 +63,14 @@ pub fn key_class(registry: &str) -> Option<&'static str> {
 thread_local! {
     static SHARED: RefCell<Option<Rc<ScriptManager>>> = const { RefCell::new(None) };
     static KEYS: RefCell<HashMap<*const RegistryKey, Weak<KeyObject>>> = RefCell::new(HashMap::new());
+    static ITEM_KEYS_BY_NAME: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
 }
 
 /// Prune expired weak metadata. A retained actual key userdata remains the
 /// canonical object across Lua environment reset, like its Java singleton.
 pub(crate) fn reset_session_handles() {
     KEYS.with(|k| k.borrow_mut().retain(|_, object| object.strong_count() != 0));
+    ITEM_KEYS_BY_NAME.with(|m| m.borrow_mut().clear());
 }
 
 /// Make `sm` the instance `register_all` binds.
@@ -274,9 +276,36 @@ fn register_item_keys(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         };
         Ok(c.push(eq))
     });
+    b.static_fn("getByName", |c| {
+        let Some(name) = str_arg(c, 0) else {
+            return Ok(c.push(Value::Nil));
+        };
+        let found = ITEM_KEYS_BY_NAME.with(|m| {
+            let m = m.borrow();
+            m.get(name.as_ref())
+                .or_else(|| m.get(&name.to_ascii_lowercase()))
+                .cloned()
+                .unwrap_or(Value::Nil)
+        });
+        Ok(c.push(found))
+    });
+    b.static_fn("getByItemKeyValue", |c| {
+        let Some(name) = str_arg(c, 0) else {
+            return Ok(c.push(Value::Nil));
+        };
+        let found = ITEM_KEYS_BY_NAME.with(|m| {
+            let m = m.borrow();
+            m.get(name.as_ref())
+                .or_else(|| m.get(&name.to_ascii_lowercase()))
+                .cloned()
+                .unwrap_or(Value::Nil)
+        });
+        Ok(c.push(found))
+    });
     let decls = sm.builtin_tables.borrow().item_keys.clone();
     let types = sm.registries.get("item_type").expect("known registry");
     let mut holder: Option<(String, crate::expose::ClassBuilder)> = None;
+    ITEM_KEYS_BY_NAME.with(|m| m.borrow_mut().clear());
     for d in decls {
         if holder.as_ref().is_none_or(|(h, _)| *h != d.holder) {
             let class: &'static str = Box::leak(format!("{ITEM_KEY_CLASS}${}", d.holder).into_boxed_str());
@@ -290,7 +319,17 @@ fn register_item_keys(thread: &mut Thread, sm: &Rc<ScriptManager>) {
             .id("item_type", &d.item_type)
             .and_then(|id| ResourceLocation::of(id).ok())
             .and_then(|l| types.borrow().get(&l));
-        let v = Value::Object(Rc::new(ItemKeyObject { id: d.id, item_type }));
+        let full = format!("Base.{}", d.id);
+        let id_lower = d.id.to_ascii_lowercase();
+        let full_lower = full.to_ascii_lowercase();
+        let v = Value::Object(Rc::new(ItemKeyObject { id: d.id.clone(), item_type }));
+        ITEM_KEYS_BY_NAME.with(|m| {
+            let mut m = m.borrow_mut();
+            m.insert(d.id, v.clone());
+            m.insert(full, v.clone());
+            m.insert(id_lower, v.clone());
+            m.insert(full_lower, v.clone());
+        });
         holder.as_ref().unwrap().1.field(&d.field, v);
     }
 }
@@ -513,6 +552,9 @@ mod tests {
             assert(k:id() == "SmallCrate" and tostring(k) == "Base.SmallCrate" and k:toString() == "Base.SmallCrate")
             assert(k:itemType() == ItemType.BOXY and ItemKey.Odd.THING:itemType() == ItemType.BOXY)
             assert(k:equals(ItemKey.Crate.SMALL_CRATE) and not k:equals(ItemKey.Odd.THING))
+            assert(ItemKey.getByName("SmallCrate") == k)
+            assert(ItemKey.getByName("Base.SmallCrate") == k)
+            assert(ItemKey.getByItemKeyValue("Base.BigCrate") == ItemKey.Crate.BIG_CRATE)
             "#,
         )
         .unwrap();
