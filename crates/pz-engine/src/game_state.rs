@@ -47,6 +47,8 @@ pub struct StateCx<'a> {
     /// Models retired at the actual state-exit boundary. The window
     /// releases their GPU resources after returning from the state call.
     pub retired_models: &'a mut Vec<crate::world_models::WorldModels>,
+    /// Active GPU handle for save-time thumbnail capture (`SavefileThumbnail.create`).
+    pub gpu: Option<&'a mut pz_gpu::Gpu>,
 }
 
 impl StateCx<'_> {
@@ -285,7 +287,7 @@ mod tests {
         let mut world = None;
         let mut retired_models = Vec::new();
         let mut error = None;
-        let mut cx = StateCx { lua: &mut lua, launch: &launch, screen_w: 1, screen_h: 1, multiplier: 1.0, time_delta: 1.0 / 30.0, world: &mut world, shutdown: false, error: &mut error, retired_models: &mut retired_models };
+        let mut cx = StateCx { lua: &mut lua, launch: &launch, screen_w: 1, screen_h: 1, multiplier: 1.0, time_delta: 1.0 / 30.0, world: &mut world, shutdown: false, error: &mut error, retired_models: &mut retired_models, gpu: None };
         f(&mut cx);
     }
 
