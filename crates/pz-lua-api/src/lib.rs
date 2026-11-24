@@ -45,6 +45,7 @@ pub mod bind_item_name;
 pub mod bind_item_visual;
 pub mod bind_items;
 pub mod bind_fluid_container;
+pub mod bind_fluid_barricade_regions;
 pub mod component_gc;
 pub mod attribute_templates;
 pub mod item_picker;
@@ -286,6 +287,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_broken_fences::register(&mut mgr.thread);
     bind_object_picker::register(&mut mgr.thread);
     bind_safehouse::register(&mut mgr.thread);
+    bind_fluid_barricade_regions::register(&mut mgr.thread);
     world_menu_logic::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
     bind_item_picker::register(&mut mgr.thread);
