@@ -83,6 +83,7 @@ pub mod bind_zombie_outfits;
 pub mod chat;
 pub mod bind_text;
 pub mod bind_ui;
+pub mod bind_tutorial_manager;
 pub mod gizmo;
 pub mod hud;
 pub mod bind_ui3d;
@@ -334,6 +335,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_monitors::set_recipe_monitor_save_dir(mgr.fs.borrow().cache_dir().join("RecipeMonitor"));
     bind_monitors::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
+    bind_tutorial_manager::register(&mut mgr.thread);
     hud::register(&mut mgr.thread);
     worldmap::register(&mut mgr.thread);
     worldmap::install_fs(mgr.fs.clone());

@@ -2169,6 +2169,12 @@ fn register_rain_manager(thread: &mut Thread) {
         reset_rain_manager();
         Ok(0)
     });
+    b.static_fn("Update", |_c| Ok(0));
+    b.static_fn("UpdateServer", |_c| Ok(0));
+    b.static_fn("SetPlayerLocation", |_c| Ok(0));
+    b.static_fn("AddSplashes", |_c| Ok(0));
+    b.static_fn("RemoveAllOn", |_c| Ok(0));
+    b.static_fn("inBounds", |c| Ok(c.push(!c.arg(0).is_nil())));
 }
 
 fn register_misc(thread: &mut Thread) {
