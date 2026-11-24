@@ -150,6 +150,9 @@ impl SimContext for PlayerSim<'_> {
     fn num_players(&self) -> i32 {
         pz_lua_api::bind_players::num_players()
     }
+    fn all_players_asleep(&self) -> bool {
+        pz_lua_api::bind_players::all_players_asleep()
+    }
     fn climate(&self) -> Option<Ref<'_, ClimateManager>> {
         self.0.climate()
     }
@@ -227,6 +230,9 @@ impl SimContext for FrameSim {
     }
     fn true_multiplier(&self) -> f32 {
         self.true_multiplier
+    }
+    fn all_players_asleep(&self) -> bool {
+        pz_lua_api::bind_players::all_players_asleep()
     }
     fn event(&self, e: SimEvent) {
         self.events.borrow_mut().push(e);

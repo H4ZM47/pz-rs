@@ -220,6 +220,14 @@ pub struct IsoWorld {
     /// `IsoFireManager`.
     pub fire: pz_world::fire::IsoFireManager,
     pub fire_flags: Option<pz_world::fire::manager::FireFlags>,
+    /// `FliesSound.instance`: corpse-flies emitters and per-player chunk refs.
+    pub flies_sound: pz_world::dead_body::flies_sound::FliesSound,
+    /// Live `BaseSoundEmitter`s owned by [`Self::flies_sound`].
+    pub(crate) flies_emitters: std::collections::HashMap<
+        pz_world::dead_body::flies_sound::EmitterId,
+        pz_sound::world_emitters::EmitterRef,
+    >,
+    pub(crate) next_flies_emitter: pz_world::dead_body::flies_sound::EmitterId,
     /// Each local player's `IsoPlayer.sqlId` (its `localPlayers` row; -1
     /// before its first save).
     pub player_sql_ids: [i32; 4],
@@ -353,6 +361,9 @@ impl IsoWorld {
             ),
             fire: pz_world::fire::IsoFireManager::new(),
             fire_flags: None,
+            flies_sound: pz_world::dead_body::flies_sound::FliesSound::new(),
+            flies_emitters: std::collections::HashMap::new(),
+            next_flies_emitter: 0,
             door_tables: None,
             player_sql_ids: [-1; 4],
             frame_no: 0,

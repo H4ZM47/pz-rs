@@ -89,38 +89,41 @@ impl IngameState {
             g.last_time_of_day = g.time_of_day;
         }
         // `GameTime.getInstance().update(IsoPlayer.allPlayersAsleep() &&
-        // UIManager.getFadeAlpha() == 1)`, then (`IsoWorld.update`'s
-        // "Update Climate" in the original, one step earlier)
-        // `ClimateManager.update`. TODO(port): `allPlayersAsleep` (the
-        // climate settings' `all_players_asleep`).
+        // UIManager.getFadeAlpha() == 1)`, then `ClimateManager.update`.
+        let sleep_ff = pz_lua_api::bind_players::all_players_asleep()
+            && pz_ui::with_ui(|ui| ui.fade_alpha >= 1.0);
+        pz_lua_api::bind_climate::set_all_players_asleep(sleep_ff);
         pz_lua_api::bind_climate::update_game_time(&mut cx.lua.thread);
         let snow = pz_lua_api::bind_climate::take_snow_effects();
         if let Some(w) = &cx.world { w.apply_snow_effects(snow); }
         let sim = FrameSim::capture();
-        let (hearing, fire_spread) = match sandbox(cx.lua) {
-            Some(sb) => {
-                let sb = sb.borrow();
-                (
-                    opt_int(&sb, "ZombieLore.Hearing"),
-                    opt_bool(&sb, "FireSpread"),
-                )
-            }
-            None => (2, true),
-        };
+        let (hearing, fire_spread, decaying_corpse_health_impact, zombie_health_impact) =
+            match sandbox(cx.lua) {
+                Some(sb) => {
+                    let sb = sb.borrow();
+                    (
+                        opt_int(&sb, "ZombieLore.Hearing"),
+                        opt_bool(&sb, "FireSpread"),
+                        opt_int(&sb, "DecayingCorpseHealthImpact"),
+                        opt_bool(&sb, "ZombieHealthImpact"),
+                    )
+                }
+                None => (2, true, 3, false),
+            };
+        let raining = gt.borrow().climate.is_raining();
         let tutorial = pz_lua_api::bind_core::shared_core().borrow().tutorial;
         if !self.paused {
             // TODO(port): `ScriptManager.instance.update()`.
             if let Some(w) = cx.world.as_mut() {
                 w.update_world_sounds(hearing);
-                // TODO(port): `RainManager.isRaining()`. `UpdateStuff`
-                // wraps `IsoFireManager.Update` in its own
+                // `UpdateStuff` wraps `IsoFireManager.Update` in its own
                 // `catch (Exception)`: an `Err` is logged (`update_fire`
                 // does) and the frame goes on.
                 let _ = w.update_fire(
                     &sim,
                     pz_world::fire::FireSettings {
                         fire_spread,
-                        raining: false,
+                        raining,
                         tutorial,
                     },
                 );
@@ -135,11 +138,16 @@ impl IngameState {
                 if w.update_population(&sim).is_ok() {
                     w.update_pathfinding();
                 }
+                w.update_flies_sound(
+                    &sim,
+                    decaying_corpse_health_impact,
+                    zombie_health_impact,
+                );
             }
             // TODO(port): `LootRespawn.update`, the vehicle sound
             // `Manager`, `AnimEventEmulator`, `BodyDamageSync`,
             // `VirtualVehicleManager.update`,
-            // `LoopedRangedWeaponSounds`, `FliesSound`, `CorpseFlies`.
+            // `LoopedRangedWeaponSounds`, `CorpseFlies`.
             pz_lua_api::item_sound::update();
             // `WorldMapVisited.update()`: its getInstance NPE (no meta grid)
             // propagates out of the update like the original's.
@@ -212,8 +220,18 @@ impl IngameState {
         let (climate, screen) = self.render_settings(cx.lua, n);
         pz_lua_api::hud::update_progress_bar(n);
         let Some(w) = cx.world.as_mut() else { return };
-        // TODO(port): skip the world while the player is asleep and the
-        // fade is complete (`isAsleep`, `UIManager.getFadeAlpha`).
+        // Skip the world draw while the player is asleep and fully faded out.
+        let asleep_blackout = p.borrow().is_asleep()
+            && pz_ui::with_ui(|ui| {
+                ui.fade_alpha >= 1.0
+                    || ui
+                        .player_fade_info
+                        .get(n)
+                        .is_some_and(|f| f.fade_alpha >= 1.0)
+            });
+        if asleep_blackout {
+            return;
+        }
         let (x, y, z, dir) = {
             let c = p.borrow();
             (c.vars.x, c.vars.y, c.vars.z, c.vars.dir)
