@@ -58,6 +58,7 @@ pub mod bind_nutrition;
 pub mod bind_performance;
 pub mod bind_object_picker;
 pub mod bind_safehouse;
+pub mod bind_fixing;
 mod world_menu_logic;
 pub mod bind_players;
 pub mod bind_popman;
@@ -251,6 +252,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_body_damage::register_shared(&mut mgr.thread);
     bind_states::register_shared(&mut mgr.thread);
     bind_scripts::register(&mut mgr.thread, bind_registry::shared_script_manager());
+    bind_fixing::register(&mut mgr.thread, &bind_registry::shared_script_manager());
     bind_xui::register(&mut mgr.thread);
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
