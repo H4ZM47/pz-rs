@@ -591,6 +591,16 @@ impl IsoWorld {
                 max_y: params.max_y_cell,
             }
         };
+        let voronois = {
+            let seed = self.world_gen_params.borrow().seed();
+            let noise_enabled =
+                sandbox(lua).is_some_and(|sb| opt_bool(&sb.borrow(), "ZombieVoronoiNoise"));
+            pz_worldgen::zombie_voronoi::from_lua_globals(
+                lua.thread.globals(),
+                seed,
+                noise_enabled,
+            )
+        };
         let meta = {
             let fs = lua.fs.borrow();
             IsoMetaGrid::create(
@@ -599,8 +609,7 @@ impl IsoWorld {
                     game_map: &game_map,
                     world_gen: wg,
                     rand: &mut self.rand,
-                    // TODO(port): the `ZombieVoronoi` instances.
-                    voronois: Vec::new(),
+                    voronois,
                 },
             )
             .map_err(|e| format!("IsoMetaGrid.Create: {e}"))?
