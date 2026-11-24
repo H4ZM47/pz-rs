@@ -2171,6 +2171,7 @@ impl IsoWorld {
                 pz_lua_api::bind_render::textures(),
             )
         });
+        models.ensure_animal_definitions(lua.thread.globals());
         let dt = sim
             .game_time
             .borrow()

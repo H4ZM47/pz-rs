@@ -338,6 +338,9 @@ pub fn register_all(mgr: &mut LuaManager) {
     hud::characters::install_character_hud_hosts();
     hud::alarm_clocks::install_alarm_clock_host();
     hud::host::install_debug_options_host();
+    hud::host::install_console_methods_host(Some(
+        mgr.fs.borrow().base.join("projectzomboid.jar"),
+    ));
     bind_ui3d::register(&mut mgr.thread);
     bind_uitextbox2::register(&mut mgr.thread);
     bind_voice::register(&mut mgr.thread);

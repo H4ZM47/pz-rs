@@ -804,7 +804,7 @@ impl WorldRender {
         &mut self,
         view: &WorldView<'_>,
         v: &mut RenderView,
-        mut models: Option<&mut WorldModels>,
+        models: Option<&mut WorldModels>,
         zombies: &[LuaGameCharacter],
         regions: &IsoRegions,
         weather_fx: Option<&RefCell<IsoWeatherFx>>,
@@ -819,7 +819,7 @@ impl WorldRender {
         &mut self,
         view: &WorldView<'_>,
         v: &mut RenderView,
-        models: Option<&mut WorldModels>,
+        mut models: Option<&mut WorldModels>,
         zombies: &[LuaGameCharacter],
         vehicles: Option<(
             &crate::world_vehicles::WorldVehicles,

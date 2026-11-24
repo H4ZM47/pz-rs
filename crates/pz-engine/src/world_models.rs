@@ -91,6 +91,8 @@ pub struct WorldModels {
     characters: HashMap<i32, CharacterModel>,
     corpses: corpses::Corpses,
     mannequins: mannequins::Mannequins,
+    animal_defs: HashMap<String, pz_animals::AnimalDefinitions>,
+    animal_defs_loaded: bool,
     retired_textures: Vec<Texture>,
 }
 
@@ -104,8 +106,41 @@ impl WorldModels {
             characters: HashMap::new(),
             corpses: corpses::Corpses::default(),
             mannequins: mannequins::Mannequins::default(),
+            animal_defs: HashMap::new(),
+            animal_defs_loaded: false,
             retired_textures: Vec::new(),
         }
+    }
+
+    /// Load `AnimalDefinitions.animals` from the Lua environment once so animal
+    /// corpses (and future live animal renderers) can resolve model scripts,
+    /// skin textures and animation sets.
+    pub fn ensure_animal_definitions(&mut self, env: &pz_kahlua::TableRef) {
+        if self.animal_defs_loaded {
+            return;
+        }
+        if let Ok(defs) = pz_animals::AnimalDefinitions::load_all(env) {
+            if !defs.is_empty() {
+                self.animal_defs = defs
+                    .iter()
+                    .map(|(k, v)| (k.to_lowercase(), v.clone()))
+                    .collect();
+                self.animal_defs_loaded = true;
+            }
+        }
+    }
+
+    /// Replace the cached `AnimalDefinitions` map (used by tests and callers
+    /// that have already loaded `AnimalDefinitionTables`).
+    pub fn set_animal_definitions(
+        &mut self,
+        defs: HashMap<String, pz_animals::AnimalDefinitions>,
+    ) {
+        self.animal_defs = defs
+            .into_iter()
+            .map(|(k, v)| (k.to_lowercase(), v))
+            .collect();
+        self.animal_defs_loaded = true;
     }
 
     /// Load or rebuild the slot and advance the actual character's

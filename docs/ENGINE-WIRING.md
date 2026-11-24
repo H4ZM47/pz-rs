@@ -1130,15 +1130,17 @@ all installed assets, render paths or foreign platforms.
       TODO(network). The part names in the wound list are
       `BodyPartType.getDisplayName`, translated through
       `bind_text::translate` (`Translator.getText`).
-- [ ] Debug console (built in `hud::init_ui`): with `Core.debug`, the
+- [x] Debug console (built in `hud::init_ui`): with `Core.debug`, the
       `TOGGLE_LUA_CONSOLE` key toggles `UIManager.debug_console`'s visibility
       in `GameWindow.logic`; `DebugLog`'s stream calls
       `hud::debug_console::debug_log_write(bytes)`; `HudDebug`'s
-      `ui_debug_console_start_visible/echo_command/debug_log` options;
-      `HudNetwork::may_process_console_commands` (role capability or coop
-      host; network thread); `HudConsoleMethods` (GlobalObject's declared
-      methods and each return type's public methods, for suggestions;
-      ours, from the exposure tables) (#160).
+      `ui_debug_console_start_visible/echo_command/debug_log` options
+      (`DebugOptionsHud`); `HudNetwork::may_process_console_commands`
+      (`CoreNetwork` for SP; role capability / coop host TODO(network));
+      `HudConsoleMethods` (`ExposedConsoleMethods`, installed by
+      `install_console_methods_host` from `expose.rs` exposure tables and
+      lazily enriched from `projectzomboid.jar` via `pz-classfile` when
+      present) (#160).
 - [x] TextDrawObject: `IngameState.renderframeui` calls
       `hud::text_draw::render_batch(player)` after `WorldMarkers`/`IsoMarkers`
       (`DebugChunkState` calls `no_render`); `ChatElement`'s constructor calls
@@ -2074,6 +2076,23 @@ registered):
       offscreen buffer with per-player `ScreenParams`, and fills empty slots up
       to the highest active player index with black `renderi(None, sx, sy, sw,
       sh)` (`MultiTextureFBO2.render`) (#125, #181).
+      `ObjectRender` with `Mannequin::shadow(lightInfo)` (#125).
+- [x] Animal corpses: `WorldModels::render_corpse` handles
+      `CorpseVisual::Animal` (`DeadBody { animal: true, animal_anim_set,
+      animal_size }`), resolves `AnimalDefinitions`, `ModelScript` and
+      `AnimationsMesh` into `Assets::skeleton_for_mesh` +
+      `ModelSlot::single_body(model script mesh, Body/<skin texture>,
+      animalEffect)`, poses the anim set's `deadbody` state and caches in
+      `DeadBodyAtlas` keyed with `animal_body_key` (#125).
+- [ ] Split screen: one `world_frame_for_player(.., Some(PlayerView {
+      player, num_players, screen }), ..)` per player into the shared
+      offscreen buffer (each draws in its `glViewport` quarter, outline
+      passes in `IsoCamera.getScreenLeft/Top/Width/Height`), the camera
+      sized to the player's view; each call's screen pass draws that
+      player's screen rectangle with its own `ScreenParams` (#125, #181).
+      `MultiTextureFBO2.render` also covers slots up to the highest player
+      index without a player with a black `renderi(null, sx, sy, sw, sh)`;
+      draw that rectangle black for such slots (#181).
 - [ ] Screen shader (`WeatherShader`) inputs (#181): per player and frame
       `IngameState::render_settings` builds `ScreenParams` via
       `ClimateSettings::screen_params`, `bind_search_mode::apply_screen_inputs`,

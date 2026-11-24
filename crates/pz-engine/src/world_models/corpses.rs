@@ -13,8 +13,8 @@ use pz_anim::bone_transform::BoneTransform;
 use pz_anim::math::{Quaternion, Vector3f};
 use pz_anim::AnimationPlayer;
 use pz_character_model::corpse::{
-    body_key, corpse_shadow, corpse_world_draw, pose, BodyVisualKey, ClothingKey, DeadBody,
-    DeadBodyAtlas, PointLight,
+    animal_body_key, body_key, corpse_shadow, corpse_world_draw, pose, BodyVisualKey, ClothingKey,
+    DeadBody, DeadBodyAtlas, PointLight,
 };
 use pz_character_model::data::{ClothingItemExt, HumanModel, ResolvedItemVisual, WHITE};
 use pz_character_model::items::EquippedModels;
@@ -25,7 +25,9 @@ use pz_iso_render::objects::ShadowRequest;
 use pz_iso_render::Camera;
 use pz_render::DrawCmd;
 use pz_scripts::objects::items::ItemBodyLocation;
+use pz_scripts::objects::models::{AnimationsMesh, ModelScript};
 use pz_scripts::registry::ResourceLocation;
+use pz_scripts::{ScriptManager, ScriptType};
 use pz_world::save::visual::{CorpseVisual, HumanVisual, IsoDeadBody};
 
 use super::{retire_slot, WorldModels};
@@ -160,6 +162,158 @@ fn died_bone_transforms(body: &IsoDeadBody) -> Vec<BoneTransform> {
         .collect()
 }
 
+/// Resolved animal corpse rendering inputs derived from `IsoDeadBody`,
+/// `AnimalDefinitions`, `ModelScript` and `AnimationsMesh`.
+#[derive(Clone, Debug)]
+struct AnimalCorpseSpec {
+    dead: DeadBody,
+    model_name: String,
+    mesh_name: String,
+    skeleton_mesh: String,
+    skin_texture: String,
+    skin_path: String,
+    shader_name: String,
+    anim_set: String,
+    anim_dirs: Vec<String>,
+}
+
+fn resolve_animal_corpse(
+    body: &IsoDeadBody,
+    skin_texture_name: &str,
+    rot_stage: i8,
+    sq: &CorpseSquare,
+    defs: &HashMap<String, pz_animals::AnimalDefinitions>,
+    sm: &ScriptManager,
+) -> Result<AnimalCorpseSpec, String> {
+    let animal = body
+        .animal
+        .as_ref()
+        .ok_or_else(|| "animal corpse is missing AnimalCorpse metadata".to_string())?;
+    let animal_type = animal.animal_type.trim();
+    let def = defs
+        .get(&animal_type.to_lowercase())
+        .ok_or_else(|| format!("animal definition for '{animal_type}' is unavailable"))?;
+    let skeleton = body.is_skeleton();
+    let model_name = if skeleton {
+        def.body_model_skel_str
+            .as_deref()
+            .or(def.body_model_str.as_deref())
+    } else {
+        def.body_model_str.as_deref()
+    }
+    .map(str::trim)
+    .filter(|s| !s.is_empty())
+    .ok_or_else(|| format!("animal definition '{animal_type}' has no body model script"))?;
+
+    let ms = sm
+        .get::<ModelScript>(ScriptType::Model, model_name)
+        .ok_or_else(|| format!("animal model script '{model_name}' is unavailable"))?;
+    let ms = ms.borrow();
+    let mesh_name = ms
+        .mesh_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("animal model script '{model_name}' has no mesh"))?
+        .to_string();
+    let shader_name = ms
+        .shader_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("animalEffect")
+        .to_string();
+
+    let (skeleton_mesh, anim_dirs) = ms
+        .animations_mesh
+        .as_deref()
+        .and_then(|name| sm.get::<AnimationsMesh>(ScriptType::AnimationMesh, name))
+        .map(|am| {
+            let am = am.borrow();
+            let skel = am
+                .mesh_file
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(mesh_name.as_str())
+                .to_string();
+            (skel, am.animation_directories.clone())
+        })
+        .unwrap_or_else(|| (mesh_name.clone(), Vec::new()));
+
+    let raw_skin = if skeleton {
+        def.texture_skeleton
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(skin_texture_name.trim())
+    } else if rot_stage > 0 && !body.rotten_texture.trim().is_empty() {
+        body.rotten_texture.trim()
+    } else if rot_stage > 0
+        && def
+            .texture_rotten
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+    {
+        def.texture_rotten.as_deref().unwrap().trim()
+    } else if !skin_texture_name.trim().is_empty() {
+        skin_texture_name.trim()
+    } else {
+        ms.texture_name.as_deref().map(str::trim).unwrap_or("")
+    };
+    let skin_path = if raw_skin.is_empty() || raw_skin.contains('/') {
+        raw_skin.to_string()
+    } else {
+        format!("Body/{raw_skin}")
+    };
+
+    let anim_set = def
+        .animset
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(animal_type)
+        .to_string();
+
+    let dead = DeadBody {
+        x: body.base.x,
+        y: body.base.y,
+        z: body.base.z,
+        angle: body.angle,
+        dir: body.base.dir as u8,
+        female: body.female,
+        zombie: false,
+        skeleton,
+        animal: true,
+        fall_on_front: body.fall_on_front,
+        killed_by_fall: body.killed_by_fall,
+        being_grappled: false,
+        primary_hand: None,
+        secondary_hand: None,
+        has_hand_item: false,
+        outside: sq.outside,
+        room: sq.room,
+        lights: sq.lights.clone(),
+        alpha: 1.0,
+        animal_size: if animal.size > 0.0 { animal.size } else { 1.0 },
+        animal_anim_set: Some(anim_set.clone()),
+        ragdoll_fall: body.ragdoll.is_some(),
+        died_bone_transforms: died_bone_transforms(body),
+    };
+
+    Ok(AnimalCorpseSpec {
+        dead,
+        model_name: model_name.to_string(),
+        mesh_name,
+        skeleton_mesh,
+        skin_texture: raw_skin.to_string(),
+        skin_path,
+        shader_name,
+        anim_set,
+        anim_dirs,
+    })
+}
+
 impl WorldModels {
     /// `IsoDeadBody.render` and `renderShadow` for `body`: `None` while
     /// its model's textures are being made. The visual's unset values
@@ -183,6 +337,54 @@ impl WorldModels {
             );
         }
         let a = self.assets.as_mut().expect("assets installed above");
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        if let CorpseVisual::Animal {
+            skin_texture_name,
+            rot_stage,
+        } = &body.visual
+        {
+            let spec = resolve_animal_corpse(
+                body,
+                skin_texture_name,
+                *rot_stage,
+                sq,
+                &self.animal_defs,
+                &sm,
+            )?;
+            let key = animal_body_key(
+                &spec.dead,
+                Some(&spec.model_name),
+                (!spec.skin_texture.is_empty()).then_some(spec.skin_texture.as_str()),
+                &[],
+            );
+            if !self.corpses.atlas.bodies.contains_key(&key) {
+                let (set_name, _, _) = spec.dead.anim_state();
+                let set = a.anim_set(set_name);
+                let sd = a
+                    .skeleton_for_mesh(&spec.skeleton_mesh, &spec.anim_dirs, &set)
+                    .ok_or_else(|| {
+                        format!(
+                            "animal corpse skeleton is unavailable (mesh={}, anim_set={set_name})",
+                            spec.skeleton_mesh
+                        )
+                    })?;
+                let mut player = AnimationPlayer::new(sd);
+                pose(&mut player, set, &spec.dead);
+                let slot = ModelSlot::single_body(
+                    &spec.mesh_name,
+                    &spec.skin_path,
+                    Some(&spec.shader_name),
+                );
+                self.corpses
+                    .atlas
+                    .body_texture(&key, &spec.dead, &slot, &player, &a.res, pre);
+                retire_slot(slot, &mut self.retired_textures);
+            }
+            let t = &self.corpses.atlas.bodies[&key];
+            let draws = corpse_world_draw(t, cam, &spec.dead, sq.light);
+            let shadow = corpse_shadow(&spec.dead, Some(t), [sq.light[0], sq.light[1], sq.light[2]]);
+            return Ok(Some(CorpseDraw { draws, shadow }));
+        }
         let female = body.female;
         let zombie = body.was_zombie;
         let skeleton = body.is_skeleton();
@@ -212,7 +414,6 @@ impl WorldModels {
             died_bone_transforms: died_bone_transforms(body),
         };
         // `getItemVisuals`: the worn items' visuals, in worn order.
-        let sm = pz_lua_api::bind_registry::shared_script_manager();
         let env = pz_lua_api::bind_items::item_env();
         let item_assets = env.context().assets();
         let mut visuals = Vec::new();
@@ -397,5 +598,108 @@ mod tests {
         assert_eq!(rot, Quaternion { x: 0.0, y: 0.6, z: 0.0, w: 0.8 });
         assert_eq!(scale, Vector3f { x: 1.0, y: 2.0, z: 0.5 });
         assert_eq!(t[0].prs().0, Vector3f::ZERO);
+    }
+
+    #[test]
+    fn resolves_animal_corpse_model_skin_rotten_and_skeleton() {
+        use pz_scripts::ScriptObject;
+        use pz_world::save::lua_table::{LuaKey, LuaTable, LuaValue};
+        use pz_world::save::visual::AnimalCorpse;
+
+        let sm = ScriptManager::new();
+        sm.parse_script(pz_scripts::ScriptLoadMode::Init, "module Base {} ")
+            .unwrap();
+        let module = sm.get_module("Base").unwrap();
+
+        let mut anim = AnimationsMesh::new();
+        anim.base.set_module(&module);
+        anim.init_load_pp(&sm, "TestAnimalAnim");
+        anim.mesh_file = Some("Skinned/TestAnimalBody".into());
+        anim.animation_directories = vec!["TestAnimalDir".into()];
+        sm.add_runtime_script(pz_scripts::ScriptRef::new(anim)).unwrap();
+
+        let mut body_ms = ModelScript::new();
+        body_ms.base.set_module(&module);
+        body_ms.init_load_pp(&sm, "TestAnimalBody");
+        body_ms.name = Some("TestAnimalBody".into());
+        body_ms.mesh_name = Some("Skinned/TestAnimalBody".into());
+        body_ms.shader_name = Some("animalEffect".into());
+        body_ms.is_static = false;
+        body_ms.animations_mesh = Some("TestAnimalAnim".into());
+        sm.add_runtime_script(pz_scripts::ScriptRef::new(body_ms))
+            .unwrap();
+
+        let mut skel_ms = ModelScript::new();
+        skel_ms.base.set_module(&module);
+        skel_ms.init_load_pp(&sm, "TestAnimalSkel");
+        skel_ms.name = Some("TestAnimalSkel".into());
+        skel_ms.mesh_name = Some("Skinned/TestAnimalSkel".into());
+        skel_ms.is_static = false;
+        skel_ms.animations_mesh = Some("TestAnimalAnim".into());
+        sm.add_runtime_script(pz_scripts::ScriptRef::new(skel_ms))
+            .unwrap();
+
+        let mut def = pz_animals::AnimalDefinitions::default();
+        def.animal_type_str = Some("testanimal".into());
+        def.body_model_str = Some("TestAnimalBody".into());
+        def.body_model_skel_str = Some("TestAnimalSkel".into());
+        def.texture_skeleton = Some("TestAnimalSkeletonTex".into());
+        def.texture_rotten = Some("TestAnimalRottenDef".into());
+        def.animset = Some("testanimset".into());
+        let defs: HashMap<String, pz_animals::AnimalDefinitions> =
+            [("testanimal".to_string(), def)].into();
+
+        let mut b = IsoDeadBody::for_tests(4.0, 5.0, 0.0);
+        b.animal = Some(AnimalCorpse {
+            animal_type: "testanimal".into(),
+            size: 0.75,
+            genome: Vec::new(),
+            disorders: Vec::new(),
+            custom_name: String::new(),
+            corpse_item: String::new(),
+            weight: 10.0,
+            inv_icon: String::new(),
+            shadow: [1.0, 1.0, 1.0],
+        });
+        b.visual = CorpseVisual::Animal {
+            skin_texture_name: "TestAnimalCoat".into(),
+            rot_stage: 0,
+        };
+        let sq = CorpseSquare {
+            outside: true,
+            room: false,
+            lights: Vec::new(),
+            light: [1.0; 4],
+            world_age_days: 0.0,
+        };
+
+        let fresh = resolve_animal_corpse(&b, "TestAnimalCoat", 0, &sq, &defs, &sm).unwrap();
+        assert!(fresh.dead.animal);
+        assert_eq!(fresh.dead.animal_size, 0.75);
+        assert_eq!(fresh.dead.anim_state(), ("testanimset", "deadbody", 0.0));
+        assert_eq!(fresh.mesh_name, "Skinned/TestAnimalBody");
+        assert_eq!(fresh.skeleton_mesh, "Skinned/TestAnimalBody");
+        assert_eq!(fresh.anim_dirs, vec!["TestAnimalDir"]);
+        assert_eq!(fresh.skin_path, "Body/TestAnimalCoat");
+        assert_eq!(fresh.shader_name, "animalEffect");
+
+        b.rotten_texture = "TestAnimalRottenSaved".into();
+        let rotten = resolve_animal_corpse(&b, "TestAnimalCoat", 1, &sq, &defs, &sm).unwrap();
+        assert_eq!(rotten.skin_path, "Body/TestAnimalRottenSaved");
+
+        let mut md = LuaTable::default();
+        md.entries.push((LuaKey::Str("skeleton".into()), LuaValue::Str("true".into())));
+        b.base.mod_data = Some(md);
+        let skel = resolve_animal_corpse(&b, "TestAnimalCoat", 2, &sq, &defs, &sm).unwrap();
+        assert!(skel.dead.skeleton);
+        assert_eq!(skel.model_name, "TestAnimalSkel");
+        assert_eq!(skel.mesh_name, "Skinned/TestAnimalSkel");
+        assert_eq!(skel.skeleton_mesh, "Skinned/TestAnimalBody");
+        assert_eq!(skel.skin_path, "Body/TestAnimalSkeletonTex");
+        assert_eq!(skel.shader_name, "animalEffect");
+        assert_ne!(
+            animal_body_key(&fresh.dead, Some(&fresh.model_name), Some(&fresh.skin_texture), &[]),
+            animal_body_key(&skel.dead, Some(&skel.model_name), Some(&skel.skin_texture), &[]),
+        );
     }
 }
