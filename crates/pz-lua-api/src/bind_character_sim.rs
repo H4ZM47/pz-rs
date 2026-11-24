@@ -1281,6 +1281,13 @@ pub(crate) fn chr_of(c: &NativeCall<'_>) -> LuaResult<LuaGameCharacterRef> {
     with_this::<CharacterObject, _>(c, |o| o.0.clone())
 }
 
+pub(crate) fn chr_from_value(v: &Value) -> Option<LuaGameCharacterRef> {
+    match v {
+        Value::Object(o) => o.as_any().downcast_ref::<CharacterObject>().map(|c| c.0.clone()),
+        _ => None,
+    }
+}
+
 fn float_arg(c: &NativeCall<'_>, i: usize) -> f32 {
     num_arg(c, i) as f32
 }

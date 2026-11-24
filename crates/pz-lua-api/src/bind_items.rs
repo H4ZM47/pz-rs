@@ -1892,13 +1892,36 @@ fn register_vehicle_part_methods(thread: &mut Thread) {
 
 pub fn register(thread: &mut Thread) {
     register_inventory_item(thread);
-    // `instanceItem(String)` / `instanceItem(String, float useDelta)`:
+    // `instanceItem(String)` / `instanceItem(String, float useDelta)` /
+    // `instanceItem(ItemKey)` / `instanceItem(Item)`:
     // `InventoryItemFactory.CreateItem` (useDelta 1 by default).
-    // TODO(port): the `Item` / `ItemKey` overloads.
     crate::expose::global(thread, "instanceItem", |c| {
-        let Some(t) = str_arg(c, 0) else {
+        let full_type: Option<String> = match c.arg(0) {
+            Value::Str(s) => Some(s.to_string()),
+            Value::Object(ref o) => {
+                if let Some(k) = o.as_any().downcast_ref::<crate::bind_registry::ItemKeyObject>() {
+                    Some(k.to_lua_string())
+                } else if o.class_name() == crate::bind_scripts::ITEM_CLASS {
+                    let arg = c.arg(0);
+                    let f = c.thread.table_get(&arg, &Value::str("getFullName"))?;
+                    if f.is_nil() {
+                        None
+                    } else {
+                        let res = c.thread.call1(&f, &[arg])?;
+                        match res {
+                            Value::Str(s) => Some(s.to_string()),
+                            _ => None,
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let Some(t) = full_type else {
             return Err(LuaError::runtime(format!(
-                "TODO(port): instanceItem({})",
+                "instanceItem: unsupported argument type {}",
                 pz_kahlua::stdlib::java_class_name(&c.arg(0))
             )));
         };
