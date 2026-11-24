@@ -1465,33 +1465,32 @@ registered):
 - [ ] World sound: `WorldSoundAdapter::from_state`; engine `SoundEffects`
       (OnWorldSound, fish noise, popman) (#71).
 - [x] Lighting: `WorldLighting::set_chunk_map` for every local player (#76).
-- [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
-      frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
+- [x] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
+      frame; `EngineFireHooks` (`FireHooks` + `FireSoundHooks`: world sounds,
+      `BurnedObjectExploded` audio, `OnNewFire`/`OnGridBurnt` Lua events,
+      `WorldDictionary` object-name lookup, closest-listener distance);
+      `fire_updated`/`fire_removed` replayed onto `WorldRender::fire_lights`
+      (`FireLightLinks`) (#89).
       (#FIRE-REST) `update` returns `Err(java exception text)` when a
       burn threw (`IsoWindow.removeSheet` on a window outside rooms whose
-      inside square does not exist): like the population `Err` above,
-      nothing up to `IngameState.update` catches it, so the rest of that
-      frame's `IngameState.update` is skipped and the text is logged via
-      `ExceptionLogger`. (Engine, #225: the decompiled `UpdateStuff` wraps
-      `IsoFireManager.Update` in its own `catch (Exception)`, and
-      `MapCollisionData.updateMain` through `PolygonalMap2.updateMain` in
-      one `catch (Throwable)`; so a fire `Err` is logged and the frame goes
-      on, a population `Err` is logged and skips the pathfinder's pass.)
+      inside square does not exist): logged via `ExceptionLogger` in
+      `IsoWorld::update_fire` while the frame goes on, matching `UpdateStuff`.
 - [ ] Fire world parts (#FIRE-REST): `FireWorld.mutation` (`FireMutation`:
       the regions, door tables and the `SquareMutationHooks` /
       `PathfindSquareHooks` / `RenderSquareHooks` the square mutations
       use), also in `StatesFire.mutation`. `WorldCall::FireManager` /
       `FireStopSound` from a fire removed by other code (Lua, mutations)
       go to `IsoFireManager::remove` / `sounds.remove_fire`.
-- [ ] Fire sound slots (#FIRE-REST): `FireSoundHooks::fire_slot_play` /
-      `fire_slot_stop` drive 20 emitters (`FMODSoundEmitter` +
-      `ParameterFireSize`); `FireHooks::listener_distance_sq` is
-      `FMODParameterUtils.getClosestListenerDistanceSquared`.
-- [ ] Heat sources (#FIRE-REST): add/resize/remove the cell's
-      `IsoHeatSource`s from `IsoFire::heat_source` (permanent fires, in
-      `fire_updated` / `fire_removed`), `IsoFireplace::heat_source()` and
-      `IsoBarbecue::heat_source()` after each hearth update; their
-      `running_sound()` loops on the object's emitter.
+- [x] Fire sound slots (#FIRE-REST): `FireSoundSlots` drives 20 pooled
+      `FmodSoundEmitter` instances with `FireSize` parameter, sustain-point
+      `trigger_cue` / `stop_all`, and `EngineFireHooks::listener_distance_sq`
+      over non-deaf local players; stopped on `IsoWorld::stop`.
+- [ ] Heat sources (#FIRE-REST): `HeatSourceRegistry` tracks permanent fires
+      (`IsoFire::heat_source` via `fire_updated`/`fire_removed`, cleared on
+      `IsoWorld::stop`) and feeds `CharacterEnvironment::heat_sources` in
+      `fill_square_environment` with `LosUtil::line_clear`. Remaining:
+      `IsoFireplace::heat_source()` and `IsoBarbecue::heat_source()` updates
+      and their `running_sound()` loops once hearth tick updates are wired.
 - [ ] Hutch burning (#FIRE-REST): `FireHooks::hutch_release_contents`
       runs `releaseAllAnimals` + `dropAllEggs` of the hutch object.
 - [x] Fire fighting (#FIRE-REST): `world_menu_logic/fetch.rs` resolves
