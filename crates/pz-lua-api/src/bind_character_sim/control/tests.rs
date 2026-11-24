@@ -192,3 +192,36 @@ fn a_new_character_at_a_reused_address_has_no_object_fields() {
     assert!(super::object_field(&fresh, super::ObjectField::Bed).is_nil());
     assert!(super::object_field(&fresh, super::ObjectField::SitOnFurniture).is_nil());
 }
+
+#[test]
+fn player_mechanics_fishing_ghost_and_tag_methods() {
+    let (mut t, player, _) = setup();
+    crate::bind_java_util::register(&mut t);
+    // An id already recorded only updates its time (no XP is awarded).
+    player.borrow_mut().player_fields.mechanics_item.push((42, 5));
+    run(
+        &mut t,
+        r#"
+        player:addMechanicsItem("42", {}, 1000)
+        assert(player:getMechanicsItem("42") == 1000)
+        assert(player:getSteamID() == 0)
+        player:setFishingStage("cast")
+        assert(player:getTagColor() ~= nil)
+        assert(player:getAttachedAnimals():size() == 0)
+        player:playerVoiceSound("Pain")
+        player:setGhostMode(false)
+        assert(player:isGhostMode() == false)
+        "#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn mechanics_xp_tiers_follow_the_uninstall_requirement() {
+    assert_eq!(super::mechanics_xp_range(None), (1, 1));
+    assert_eq!(super::mechanics_xp_range(Some("Mechanics:7")), (6, 14));
+    assert_eq!(super::mechanics_xp_range(Some("Electricity:2;Mechanics:4")), (6, 10));
+    assert_eq!(super::mechanics_xp_range(Some("Mechanics:3")), (4, 8));
+    let low = super::mechanics_xp_range(Some("Mechanics:1"));
+    assert!(low == (4, 4) || low == (2, 2), "{low:?}");
+}

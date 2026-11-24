@@ -5,7 +5,7 @@
 //! component setters.
 
 use super::{chr_of, float_arg, float_value, CharacterKind, CharacterObject, LuaGameCharacterRef, CONTEXT};
-use crate::expose::{bool_arg, int_arg, ClassBuilder, JavaEnum};
+use crate::expose::{bool_arg, int_arg, num_arg, ClassBuilder, JavaEnum};
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_world::IsoDirections;
 
@@ -467,6 +467,157 @@ pub(super) fn register_player(b: &ClassBuilder) {
         let v = crate::bind_misc::zomb_rand((1.0 / chance) as f64) == 0.0;
         Ok(c.push(v))
     });
+    // `isGhostMode()` / `setGhostMode(bool)`: `INVISIBLE` cheat flag.
+    b.method("isGhostMode", |c| {
+        let ctx = CONTEXT.with(|cx| cx.borrow().clone());
+        let v = chr_of(c)?.borrow().is_ghost_mode(&*ctx);
+        Ok(c.push(v))
+    });
+    b.method("setGhostMode", |c| {
+        let on = bool_arg(c, 1);
+        let ctx = CONTEXT.with(|cx| cx.borrow().clone());
+        chr_of(c)?.borrow_mut().cheats.set(&*ctx, "INVISIBLE", on);
+        Ok(0)
+    });
+    // `addMechanicsItem(itemID, vehicle, time)` / `getMechanicsItem(itemID)`:
+    // per-player cooldown map persisted in `player_fields.mechanics_item`.
+    // `addMechanicsItem(itemID, part, time)`: the first time an item id is
+    // recorded (single player is never a client), the player earns Mechanics
+    // XP sized by the part's uninstall Mechanics requirement; every call then
+    // records the time.
+    b.method("addMechanicsItem", |c| {
+        let id = match c.arg(1) {
+            Value::Str(s) => s.parse::<i64>().map_err(|_| {
+                LuaError::Runtime { message: format!("For input string: \"{s}\""), class: "java.lang.NumberFormatException" }
+            })?,
+            Value::Num(n) => n as i64,
+            _ => return Err(crate::bind_scripts::npe()),
+        };
+        let time = num_arg(c, 3) as i64;
+        let chr = chr_of(c)?;
+        let first = !chr.borrow().player_fields.mechanics_item.iter().any(|(k, _)| *k == id);
+        if first {
+            let part = c.arg(2);
+            let skills = mechanics_uninstall_skills(c.thread, &part)?;
+            let (lo, hi) = mechanics_xp_range(skills.as_deref());
+            let amount = pz_core::random::next_range(lo, hi) as f64;
+            let player = super::character_value(&chr);
+            let xp = crate::item_tooltip::chr::call_or(c.thread, &player, "getXp", &[], Value::Nil)?;
+            let perks = c.thread.globals().get_str("Perks");
+            let mechanics = c.thread.table_get(&perks, &Value::str("Mechanics"))?;
+            crate::item_tooltip::chr::call_or(c.thread, &xp, "AddXP", &[mechanics, Value::Num(amount)], Value::Nil)?;
+        }
+        let mut chr = chr.borrow_mut();
+        let list = &mut chr.player_fields.mechanics_item;
+        if let Some(entry) = list.iter_mut().find(|(k, _)| *k == id) {
+            entry.1 = time;
+        } else {
+            list.push((id, time));
+        }
+        Ok(0)
+    });
+    b.method("getMechanicsItem", |c| {
+        let id = match c.arg(1) {
+            Value::Str(s) => s.parse::<i64>().unwrap_or(0),
+            Value::Num(n) => n as i64,
+            _ => 0,
+        };
+        let chr = chr_of(c)?;
+        let chr = chr.borrow();
+        let found = chr
+            .player_fields
+            .mechanics_item
+            .iter()
+            .find(|(k, _)| *k == id)
+            .map(|(_, t)| Value::Num(*t as f64))
+            .unwrap_or(Value::Nil);
+        Ok(c.push(found))
+    });
+    b.method("getTagColor", |c| {
+        let [r, g, b_col] = chr_of(c)?.borrow().player_fields.tag_color;
+        Ok(c.push(Value::Object(std::rc::Rc::new(
+            pz_ui::ColorObject::new(r, g, b_col, 1.0),
+        ))))
+    });
+    // A long in the original; no Steam account in this port.
+    b.method("getSteamID", |c| Ok(c.push(Value::Num(0.0))));
+    b.method("getDisguisedDisplayName", |c| {
+        let chr = chr_of(c)?;
+        let chr = chr.borrow();
+        let name = chr
+            .chat
+            .username
+            .clone()
+            .or_else(|| {
+                chr.descriptor.as_ref().map(|d| {
+                    let d = d.borrow();
+                    format!(
+                        "{} {}",
+                        d.forename.as_deref().unwrap_or(""),
+                        d.surname.as_deref().unwrap_or("")
+                    )
+                    .trim()
+                    .to_string()
+                })
+            })
+            .unwrap_or_default();
+        Ok(c.push(Value::str(&name)))
+    });
+    b.method("getAttachedAnimals", |c| {
+        Ok(c.push(Value::Object(std::rc::Rc::new(
+            crate::bind_java_util::JavaList::new(Vec::new()),
+        ))))
+    });
+    b.method("playerVoiceSound", |_c| Ok(0));
+    // `setFishingStage(stage)`: the `FishingStage` animation variable, set
+    // only when it changes (the client-only fishing state is not entered).
+    b.method("setFishingStage", |c| {
+        let stage = c.arg(1);
+        let player = super::character_value(&chr_of(c)?);
+        let name = Value::str("FishingStage");
+        let same = crate::item_tooltip::chr::call_or(c.thread, &player, "isVariable", &[name.clone(), stage.clone()], Value::Bool(false))?;
+        if !same.truthy() {
+            crate::item_tooltip::chr::call_or(c.thread, &player, "setVariable", &[name, stage], Value::Nil)?;
+        }
+        Ok(0)
+    });
+}
+
+/// The `skills` string of `part:getTable("uninstall")`, if any.
+fn mechanics_uninstall_skills(t: &mut Thread, part: &Value) -> LuaResult<Option<String>> {
+    if part.is_nil() {
+        return Err(crate::bind_scripts::npe());
+    }
+    let table = crate::item_tooltip::chr::call_or(t, part, "getTable", &[Value::str("uninstall")], Value::Nil)?;
+    let Value::Table(table) = table else { return Ok(None) };
+    Ok(match table.get_str("skills") {
+        Value::Nil => None,
+        Value::Str(s) => Some(s.to_string()),
+        v => return Err(crate::bind_java_util::class_cast(&v, "java.lang.String")),
+    })
+}
+
+/// The Mechanics XP range for a part's uninstall skills (`Perk:level;...`):
+/// higher Mechanics requirements earn more, a part needing little or none
+/// earns 2, with a one-in-three chance of 4 for each low Mechanics entry.
+fn mechanics_xp_range(skills: Option<&str>) -> (i32, i32) {
+    let (mut lo, mut hi) = (1, 1);
+    for entry in skills.into_iter().flat_map(|s| s.split(';')) {
+        if !entry.contains("Mechanics") {
+            continue;
+        }
+        let level: i32 = entry.split(':').nth(1).and_then(|n| n.trim().parse().ok()).unwrap_or(0);
+        (lo, hi) = match level {
+            6.. => (3, 7),
+            4..=5 => (3, 5),
+            2..=3 => (2, 4),
+            _ if pz_core::random::next(3) == 0 => (2, 2),
+            _ => (lo, hi),
+        };
+        lo *= 2;
+        hi *= 2;
+    }
+    (lo, hi)
 }
 
 #[cfg(test)]
