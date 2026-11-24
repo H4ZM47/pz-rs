@@ -748,7 +748,14 @@ impl IsoWorld {
                 self.log_error(format!("GameTime.load: {e}"));
             }
         }
-        // TODO(port): `ImprovedFog.init`; `GlobalModData.init`.
+        // `ImprovedFog.init`. TODO(port): `GlobalModData.init`.
+        {
+            let fog_intensity = pz_lua_api::bind_climate::shared_game_time()
+                .borrow()
+                .climate
+                .get_fog_intensity();
+            pz_lua_api::bind_fog_flares_fish::init_improved_fog(fog_intensity);
+        }
         self.init_radio(lua, &sb, no_save);
         if let Err(e) = self.instance_tracker.load_file(&self.save_dir, no_save) {
             self.log_error(format!("InstanceTracker.load: {e}"));
@@ -790,7 +797,8 @@ impl IsoWorld {
             }
             _ => None,
         };
-        // TODO(port): `FishSchoolManager.init`; `WorldMarkers.instance.init`;
+        // `FishSchoolManager.init`. TODO(port): `WorldMarkers.instance.init`;
+        pz_lua_api::bind_fog_flares_fish::init_fish_school_manager();
         // `GameEntityManager.Init`.
         // `PersistentOutfits.instance.init()`.
         self.outfit_names = pz_lua_api::bind_zombie_outfits::init_persistent_outfits(
