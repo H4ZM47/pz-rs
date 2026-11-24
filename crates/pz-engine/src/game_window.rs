@@ -387,10 +387,13 @@ impl App {
         // Lua's `forceChangeState` sets `states.forceNext` at once; the
         // machine reads it in its next update.
         if let Some(forced) = pz_lua_api::bind_game_window::take_forced_state() {
-            self.states.force_next = forced.map(|s| match s {
+            self.states.force_next = forced.and_then(|s| match s {
                 pz_lua_api::bind_game_window::ForcedState::LoadingQueue => {
-                    state(LoadingQueueState::default())
+                    Some(state(LoadingQueueState::default()))
                 }
+                // Debug/editor states are headless-noop transitions until
+                // full editor UI states are ported.
+                pz_lua_api::bind_game_window::ForcedState::Editor(_) => None,
             });
         }
         // MapCollisionData.instance.updateGameState().
