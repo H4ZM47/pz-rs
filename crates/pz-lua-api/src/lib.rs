@@ -88,6 +88,7 @@ pub mod bind_server_list;
 pub mod bind_map_groups;
 pub mod bind_world;
 pub mod bind_basements;
+pub mod bind_blood_enums;
 pub mod bind_bent_fences;
 pub mod bind_map_objects;
 pub mod farm_definitions;
@@ -306,6 +307,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_server_list::register(&mut mgr.thread, mgr.fs.clone());
     bind_audio::register(&mut mgr.thread);
     bind_iso_enums::register(mgr);
+    bind_blood_enums::register(&mut mgr.thread);
     bind_global_objects::register(mgr);
     bind_popman::register(&mut mgr.thread);
     bind_zombie::register_shared(&mut mgr.thread);
