@@ -511,6 +511,7 @@ impl GameState for IngameState {
         }
         // TODO(port): `IsoMarkers.instance.reset()`.
         pz_lua_api::bind_search_mode::reset();
+        pz_lua_api::bind_ambient_audio::reset_object_emitters();
         // `ZomboidRadio.getInstance().Reset()` and `IsoWaveSignal.Reset()`.
         if let Some(w) = cx.world.as_mut() {
             w.reset_radio();
@@ -634,14 +635,13 @@ impl GameState for IngameState {
                 // `ZomboidRadio.getInstance().update()`.
                 w.update_radio(cx.lua);
             }
-            // TODO(port): `ObjectAmbientEmitters` (threaded),
-            // `GameEntityManager.Update`, `AnimalController.update`.
+            // TODO(port): `GameEntityManager.Update`, `AnimalController.update`.
             self.update_stuff(cx);
             self.on_tick(cx.lua);
-            // TODO(port): `FMODAmbientWalls.update`.
+            pz_lua_api::bind_ambient_audio::update_ambient_walls();
             // `TickMusicDirector`.
             call_global(cx.lua, "SadisticMusicDirectorTick");
-            // TODO(port): `ObjectAmbientEmitters.update`.
+            pz_lua_api::bind_ambient_audio::update_object_emitters();
             self.number_ticks += 1;
             pz_lua_api::bind_misc::set_ingame_tick(self.number_ticks);
         }

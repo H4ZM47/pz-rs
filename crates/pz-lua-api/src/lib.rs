@@ -17,6 +17,7 @@ pub mod bind_eat;
 pub mod bind_cheat_type;
 pub mod bind_characters;
 pub mod bind_audio;
+pub mod bind_ambient_audio;
 pub mod bind_erosion;
 pub mod bind_colors;
 pub mod bind_core;
@@ -305,6 +306,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_server::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
     bind_server_list::register(&mut mgr.thread, mgr.fs.clone());
     bind_audio::register(&mut mgr.thread);
+    bind_ambient_audio::register(&mut mgr.thread);
     bind_iso_enums::register(mgr);
     bind_global_objects::register(mgr);
     bind_popman::register(&mut mgr.thread);
