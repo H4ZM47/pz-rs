@@ -2,7 +2,7 @@
 //! ported subsystem yet. Subsystem-specific globals live in their bind_*
 //! modules.
 
-use crate::bind_java_util::{list_value, JavaList};
+use crate::bind_java_util::list_value;
 use crate::bind_registry::shared_script_manager;
 use crate::expose::{bool_arg, global, int_arg, num_arg, str_arg};
 use pz_kahlua::{TableRef, Thread, Value};
@@ -190,7 +190,7 @@ pub fn register(thread: &mut Thread) {
         }
         Ok(c.push(out))
     });
-    // Build 42.22: `return !pattern.contains("[");`
+    // True unless the pattern holds an opening square bracket.
     global(thread, "checkStringPattern", |c| {
         let ok = str_arg(c, 0).map_or(true, |s| !s.contains('['));
         Ok(c.push(ok))
@@ -230,16 +230,13 @@ pub fn register(thread: &mut Thread) {
         if f.is_nil() {
             return Ok(c.push(list_value(Vec::new())));
         }
-        let args: Vec<Value> = match c.arg(1) {
-            Value::Object(o) => o
-                .as_any()
-                .downcast_ref::<JavaList>()
-                .map(|l| l.items.borrow().clone())
-                .unwrap_or_default(),
-            Value::Nil => Vec::new(),
-            other => vec![other],
+        // The list is handed to the callee as its one argument (a nil list
+        // becomes an empty one); it is not spread into separate arguments.
+        let arg = match c.arg(1) {
+            Value::Nil => list_value(Vec::new()),
+            other => other,
         };
-        let out = c.thread.pcall(&f, &args).unwrap_or_default();
+        let out = c.thread.pcall(&f, &[arg]).unwrap_or_default();
         Ok(c.push(list_value(out)))
     });
     // Item & recipe script lookup helpers.
@@ -392,12 +389,14 @@ mod tests {
             assert(callLuaBool("TestLuaBool", 5) == false)
             assert(callLuaBool("MissingFunc", 5) == false)
 
-            function TestLuaRet(a, b) return a + b, a * b end
+            function TestLuaRet(list) return list:get(0) + list:get(1), list:size() end
             local args = ArrayList.new()
             args:add(3)
             args:add(4)
             local out = callLuaReturn("TestLuaRet", args)
-            assert(out:size() == 2 and out:get(0) == 7 and out:get(1) == 12)
+            assert(out:size() == 2 and out:get(0) == 7 and out:get(1) == 2)
+            function TestLuaRetNil(list) return list:size() end
+            assert(callLuaReturn("TestLuaRetNil", nil):get(0) == 0)
 
             assert(getItemDisplayName("Base.MissingItem") == "Base.MissingItem")
             assert(getItemFoodType("Base.MissingItem") == nil)
