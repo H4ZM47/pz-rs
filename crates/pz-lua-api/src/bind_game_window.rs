@@ -51,7 +51,41 @@ thread_local! {
     static FORCE_NEXT: Cell<Option<Option<ForcedState>>> = const { Cell::new(None) };
     static DO_RENDER_EVENT: Cell<bool> = const { Cell::new(false) };
     static UPDATE_TIME: Cell<i64> = const { Cell::new(0) };
+    static OK_TO_SAVE_ON_EXIT: Cell<bool> = const { Cell::new(false) };
+    static LOADED_AS_CLIENT: Cell<bool> = const { Cell::new(false) };
     static MAIN_SCREEN: std::cell::RefCell<Option<std::rc::Rc<MainScreenStateObject>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `GameWindow.okToSaveOnExit`.
+pub fn ok_to_save_on_exit() -> bool {
+    OK_TO_SAVE_ON_EXIT.with(Cell::get)
+}
+
+/// Set `GameWindow.okToSaveOnExit`, keeping the Lua `GameWindow` table field
+/// in sync when a thread is provided.
+pub fn set_ok_to_save_on_exit(thread: Option<&mut Thread>, on: bool) {
+    OK_TO_SAVE_ON_EXIT.with(|f| f.set(on));
+    if let Some(t) = thread {
+        if let pz_kahlua::value::Value::Table(tbl) = t.globals().get_str("GameWindow") {
+            tbl.set_str("okToSaveOnExit", pz_kahlua::value::Value::Bool(on));
+        }
+    }
+}
+
+/// `GameWindow.loadedAsClient`.
+pub fn loaded_as_client() -> bool {
+    LOADED_AS_CLIENT.with(Cell::get)
+}
+
+/// Set `GameWindow.loadedAsClient`, keeping the Lua `GameWindow` table field
+/// in sync when a thread is provided.
+pub fn set_loaded_as_client(thread: Option<&mut Thread>, on: bool) {
+    LOADED_AS_CLIENT.with(|f| f.set(on));
+    if let Some(t) = thread {
+        if let pz_kahlua::value::Value::Table(tbl) = t.globals().get_str("GameWindow") {
+            tbl.set_str("loadedAsClient", pz_kahlua::value::Value::Bool(on));
+        }
+    }
 }
 
 /// `MainScreenState.instance = this` (the end of `enter`, after
@@ -135,6 +169,8 @@ pub fn register(thread: &mut Thread, jar: Option<&pz_classfile::Jar>, cache_dir:
     if let Some(v) = jar.and_then(version_from_jar) {
         b.field("version", pz_kahlua::value::Value::str(&v));
     }
+    OK_TO_SAVE_ON_EXIT.with(|f| f.set(false));
+    LOADED_AS_CLIENT.with(|f| f.set(false));
     for name in [
         "DEBUG_SAVE",
         "okToSaveOnExit",
@@ -224,5 +260,36 @@ mod tests {
         assert_eq!(take_forced_state(), Some(None));
         assert!(run(&mut t, "forceChangeState({})").is_err());
         assert_eq!(take_forced_state(), None);
+    }
+
+    #[test]
+    fn ok_to_save_on_exit_and_loaded_as_client_sync_lua_fields() {
+        let mut t = Thread::new(pz_kahlua::TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        register(&mut t, None, std::path::Path::new("/tmp/x/Zomboid"));
+        assert!(!ok_to_save_on_exit());
+        assert!(!loaded_as_client());
+        set_ok_to_save_on_exit(Some(&mut t), true);
+        set_loaded_as_client(Some(&mut t), true);
+        assert!(ok_to_save_on_exit());
+        assert!(loaded_as_client());
+        let f = pz_kahlua::stdlib::load_string(
+            "return GameWindow.okToSaveOnExit, GameWindow.loadedAsClient",
+            Some("t"),
+            t.globals().clone(),
+        )
+        .unwrap();
+        let r = t.pcall(&f, &[]).unwrap();
+        assert_eq!(
+            format!("{r:?}"),
+            format!(
+                "{:?}",
+                [pz_kahlua::value::Value::Bool(true), pz_kahlua::value::Value::Bool(true)]
+            )
+        );
+        set_ok_to_save_on_exit(Some(&mut t), false);
+        set_loaded_as_client(Some(&mut t), false);
+        assert!(!ok_to_save_on_exit());
+        assert!(!loaded_as_client());
     }
 }
