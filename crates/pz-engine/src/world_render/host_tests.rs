@@ -82,6 +82,7 @@ fn view3d_frame_makes_no_corpse_atlas_entry() {
         chunk_map: (0, 0, 1),
         width: 64,
         height: 64,
+        split_view: None,
         zoom: 1.0,
         climate: ClimateSettings {
             climate: ClimateInput {
@@ -117,6 +118,88 @@ fn view3d_frame_makes_no_corpse_atlas_entry() {
     renderer.view3d.mode = pz_world3d::ViewMode::Iso;
     renderer.render_player(&view, &mut v, Some(&mut models), &[], &regions, None, &mut out);
     assert!(renderer.corpse_error.is_some());
+}
+
+#[test]
+fn split_screen_player_view_emits_shared_offscreen_and_quarter_viewport() {
+    use pz_world::{IsoCell, IsoChunk, IsoGridSquare, IsoMetaGrid, IsoSpriteManager};
+    use pz_world_render::{ClimateInput, PlayerRenderInput};
+    let path = std::path::Path::new("unused-splitscreen-fixture");
+    let mut fs = GameFs::new(path);
+    let mut textures = TextureManager::new();
+    let mut renderer = WorldRender::new(path, &mut fs, &mut textures);
+    let mut chunk = IsoChunk::new(0, 0);
+    chunk.set_square(1, 1, 0, Some(IsoGridSquare::new(1, 1, 0).into()));
+    let mut cell = IsoCell::default();
+    cell.chunks.insert((0, 0), chunk);
+    let meta = IsoMetaGrid::with_bounds(0, 0, 1, 1);
+    let sprites = IsoSpriteManager::new(pz_world::sprite::test_tables());
+    let view = WorldView {
+        cell: &cell,
+        meta: &meta,
+        sprites: &sprites,
+    };
+    let pv = PlayerView {
+        player: 1,
+        num_players: 2,
+        screen: (1280, 720),
+    };
+    let [left, top, w, h] = pv.screen_rect();
+    assert_eq!([left, top, w, h], [640, 0, 640, 720]);
+    let mut v = RenderView {
+        player: 1,
+        x: 1.5,
+        y: 1.5,
+        z: 0.0,
+        dir: IsoDirections::S,
+        chunk_map: (0, 0, 1),
+        width: w,
+        height: h,
+        split_view: Some(pv),
+        zoom: 1.0,
+        climate: ClimateSettings {
+            climate: ClimateInput {
+                global_light_exterior: [1.0; 4],
+                global_light_interior: [1.0; 4],
+                ambient: 1.0,
+                day_light_strength: 1.0,
+                night_strength: 0.0,
+                desaturation: 0.0,
+                view_distance: 30.0,
+                fog_intensity: 0.0,
+                moon_float: 0.0,
+                game_night: 0.0,
+                night_darkness: 3,
+                weather_shader: false,
+                last_stand: false,
+            },
+            players: [PlayerRenderInput::default(); MAX_PLAYERS],
+        },
+        screen: ScreenParams {
+            offscreen_left: left as f32,
+            offscreen_top: top as f32,
+            offscreen_width: w as f32,
+            offscreen_height: h as f32,
+            zoom: 1.0,
+            tile_width: 64.0,
+            ..Default::default()
+        },
+        tick: 0,
+        multiplier: 1.0,
+    };
+    let regions = pz_world::isoregion::IsoRegions::new(0);
+    let mut out = Vec::new();
+    renderer.render_player(&view, &mut v, None, &[], &regions, None, &mut out);
+    let (ow, oh) = FrameSize { width: 1280, height: 720 }.offscreen();
+    let [vx, vy, vw, vh] = pv.viewport();
+    assert!(
+        out.iter().any(|c| matches!(c, DrawCmd::OffscreenBegin { width, height } if (*width, *height) == (ow, oh))),
+        "expected full-screen shared offscreen buffer ({ow}x{oh}) for split-screen player"
+    );
+    assert!(
+        out.iter().any(|c| matches!(c, DrawCmd::Viewport { x, y, width, height } if [*x, *y, *width, *height] == [vx, vy, vw, vh])),
+        "expected player 1 viewport ({vx},{vy},{vw}x{vh}) inside shared offscreen buffer"
+    );
 }
 
 #[test]

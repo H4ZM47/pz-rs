@@ -2017,47 +2017,20 @@ registered):
       `ModelSlot::single_body(model script mesh, Body/<skin texture>,
       animalEffect)` for the breed's `AnimalVisual`, the anim set's
       `deadbody` state, keyed with `animal_body_key` (#125).
-- [ ] Split screen: one `world_frame_for_player(.., Some(PlayerView {
-      player, num_players, screen }), ..)` per player into the shared
-      offscreen buffer (each draws in its `glViewport` quarter, outline
-      passes in `IsoCamera.getScreenLeft/Top/Width/Height`), the camera
-      sized to the player's view; each call's screen pass draws that
-      player's screen rectangle with its own `ScreenParams` (#125, #181).
-      `MultiTextureFBO2.render` also covers slots up to the highest player
-      index without a player with a black `renderi(null, sx, sy, sw, sh)`;
-      draw that rectangle black for such slots (#181).
+- [x] Split screen: `IngameState::render` / `renderframe` computes each
+      player's `PlayerView { player, num_players, screen }` quarter/half
+      (`SplitLayout`), sizes `RenderView` and `Camera` to its `screen_rect()`,
+      calls `world_frame_for_player_with(.., v.split_view, ..)` into the shared
+      offscreen buffer with per-player `ScreenParams`, and fills empty slots up
+      to the highest active player index with black `renderi(None, sx, sy, sw,
+      sh)` (`MultiTextureFBO2.render`) (#125, #181).
 - [ ] Screen shader (`WeatherShader`) inputs (#181): per player and frame
-      build `pz_render::ScreenParams` and run it through one
-      `ScreenTimer` kept for the session (`timer.apply(params,
-      PerformanceSettings.lockFps)`, once per player screen pass and once
-      per save thumbnail, in that order):
-      `light`, `light_intensity`, `desaturation`, `night_value`,
-      `exterior` and `night_vision_goggles` from
-      `ClimateSettings::screen_params(player, params)` (pz-world-render,
-      `updateRenderSettings`' screen half over the same `ClimateInput` and
-      `PlayerRenderInput.night_vision_goggles` =
-      `isWearingNightVisionGoggles()`) (#183); `drunk_factor` = intoxication / 100,
-      `blur_factor` = `IsoPlayer.getBlurFactor()` (not updated for a dead
-      player); `search` from the `SearchMode` port (characters/gameplay,
-      not ported yet: `isShaderEnabled`, `getShaderBlur/Radius/
-      GradientWidth/Desat/Darkness` by the player's square being outside a
-      room); `offscreen_left/top` = `IsoCamera.getOffscreenLeft/Top`,
-      `light`/`light_intensity` (`getBlendColor`/`getBlendIntensity`),
-      `desaturation` (after `*= 1 - darkness`), `night_value`
-      (`getDarkness` = 1 - day light strength; 0.25 in Last Stand),
-      `exterior` from `RenderSettings.PlayerRenderSettings`
-      (`updateRenderSettings`; pz-world-render's `ClimateSettings`
-      computes the lighting half of it); `night_vision_goggles` =
-      `isWearingNightVisionGoggles()`, `drunk_factor` = intoxication / 100,
-      player); `search` from the `SearchMode` port (see the next item:
-      `isShaderEnabled`, `getShaderBlur/Radius/GradientWidth/Desat/
-      Darkness` by the player's square being outside a room); `offscreen_left/top` = `IsoCamera.getOffscreenLeft/Top`,
-      `offscreen_width/height` = pz-core `Core` offscreen width/height,
-      `right_click` = the player camera's `rightClickX/Y`, `zoom` =
-      `Core.getZoom(player)`, `tile_width` = 64 at `Core.tileScale` 2 else
-      32. Save thumbnail (#173, not in integration yet): pass
-      `params.thumbnail(256, 256, 1.0)` (`startThumbnail`) to
-      `capture_thumbnail`.
+      `IngameState::render_settings` builds `ScreenParams` via
+      `ClimateSettings::screen_params`, `bind_search_mode::apply_screen_inputs`,
+      and `ScreenTimer::apply`, populating `offscreen_left/top/width/height`,
+      `zoom`, and `tile_width` (64 at `tile_scale == 2` else 32). Still open:
+      `right_click` camera pan (`PlayerCamera`) and save thumbnail
+      `params.thumbnail(256, 256, 1.0)` -> `capture_thumbnail` (#173, #181).
 - [x] Screen shader player inputs and `SearchMode` (#188): in
       `IngameState.UpdateStuff` (after `WorldMapVisited.update`) call
       `pz_lua_api::bind_search_mode::update(GameTime.getTimeDelta())`; in
