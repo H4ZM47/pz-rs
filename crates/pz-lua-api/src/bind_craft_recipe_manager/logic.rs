@@ -22,7 +22,7 @@ use crate::bind_items::ItemRef;
 use crate::bind_java_util::JavaList;
 use crate::bind_scripts::{script_list, script_value, ScriptHandle};
 use crate::bind_world_object::unsupported;
-use crate::expose::{enum_value, expose_class, expose_enum, this};
+use crate::expose::{enum_value, expose_class, expose_enum, str_arg, this};
 use pz_characters::Characters;
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, TableRef, Thread, Value};
@@ -35,6 +35,7 @@ use std::rc::{Rc, Weak};
 
 pub const BASE_CRAFTING_LOGIC_CLASS: &str = "zombie.entity.components.crafting.BaseCraftingLogic";
 pub const HANDCRAFT_LOGIC_CLASS: &str = "zombie.entity.components.crafting.recipe.HandcraftLogic";
+pub const BUILD_LOGIC_CLASS: &str = "zombie.entity.components.build.BuildLogic";
 pub const CRAFT_RECIPE_DATA_CLASS: &str = "zombie.entity.components.crafting.recipe.CraftRecipeData";
 pub const CACHED_RECIPE_INFO_CLASS: &str = "zombie.entity.components.crafting.BaseCraftingLogic$CachedRecipeInfo";
 pub const NODE_COLLECTION_CLASS: &str = "zombie.entity.components.crafting.recipe.CraftRecipeListNodeCollection";
@@ -213,6 +214,7 @@ struct State {
 }
 
 pub struct HandcraftLogicObject {
+    class: &'static str,
     state: RefCell<State>,
     sm: Rc<ScriptManager>,
     chars: Rc<RefCell<Characters>>,
@@ -220,7 +222,7 @@ pub struct HandcraftLogicObject {
 
 impl LuaObject for HandcraftLogicObject {
     fn class_name(&self) -> &str {
-        HANDCRAFT_LOGIC_CLASS
+        self.class
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -705,7 +707,12 @@ fn set_initial_expanded_states(st: &State, cheat: bool, parent: Option<&Rc<Node>
 }
 
 /// `new HandcraftLogic(player, craftBench, isoObject)`.
-fn construct(c: &mut NativeCall<'_>, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) -> LuaResult<usize> {
+fn construct(
+    c: &mut NativeCall<'_>,
+    sm: &Rc<ScriptManager>,
+    chars: &Rc<RefCell<Characters>>,
+    class: &'static str,
+) -> LuaResult<usize> {
     let player = c.arg(0);
     if !c.arg(1).is_nil() {
         // `sourceResources.addAll(craftBench.getResources())` and the bench's
@@ -753,8 +760,12 @@ fn construct(c: &mut NativeCall<'_>, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<
     let mode = st.recipe_sort_mode()?;
     st.set_sort_mode_internal(&mode);
     let manual = st.last_manual_input_mode();
-    let o: Rc<dyn LuaObject> =
-        Rc::new(HandcraftLogicObject { state: RefCell::new(st), sm: sm.clone(), chars: chars.clone() });
+    let o: Rc<dyn LuaObject> = Rc::new(HandcraftLogicObject {
+        class,
+        state: RefCell::new(st),
+        sm: sm.clone(),
+        chars: chars.clone(),
+    });
     // No listener can exist yet, so the event reaches nobody.
     set_manual_select_inputs(c.thread, &o, manual);
     Ok(c.push(Value::Object(o)))
@@ -817,8 +828,89 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
         };
         Ok(c.push(Value::str(&format!("recipeFavourite:{s}"))))
     });
-    let b = expose_class(thread, HANDCRAFT_LOGIC_CLASS, Some(BASE_CRAFTING_LOGIC_CLASS));
-    b.ctor(move |c| construct(c, &sm, &chars));
+    // `BaseCraftingLogic.callLuaBool(funcName, params)` and
+    // `BaseCraftingLogic.callLuaObject(funcName, params)` (used by
+    // `ISBuildIsoEntity.lua` and `ISBuildAction.lua`).
+    let resolve_lua_fn = |thread: &mut Thread, name: &str| -> LuaResult<Value> {
+        let mut cur = Value::Table(thread.globals().clone());
+        for part in name.split('.') {
+            if cur.is_nil() {
+                return Ok(Value::Nil);
+            }
+            cur = thread.table_get(&cur, &Value::str(part))?;
+        }
+        Ok(cur)
+    };
+    base.static_fn("callLuaBool", move |c| {
+        let Some(name) = str_arg(c, 0) else {
+            return Ok(c.push(false));
+        };
+        let params = c.arg(1);
+        let func = resolve_lua_fn(c.thread, &name)?;
+        if func.is_nil() {
+            return Ok(c.push(false));
+        }
+        let res = c.thread.call1(&func, &[params])?;
+        Ok(c.push(res.truthy()))
+    });
+    base.static_fn("callLuaObject", move |c| {
+        let Some(name) = str_arg(c, 0) else {
+            return Ok(c.push(Value::Nil));
+        };
+        let params = c.arg(1);
+        let func = resolve_lua_fn(c.thread, &name)?;
+        if func.is_nil() {
+            return Ok(c.push(Value::Nil));
+        }
+        let res = c.thread.call1(&func, &[params])?;
+        Ok(c.push(res))
+    });
+    let sm_build = sm.clone();
+    let chars_build = chars.clone();
+    let handcraft = expose_class(thread, HANDCRAFT_LOGIC_CLASS, Some(BASE_CRAFTING_LOGIC_CLASS));
+    handcraft.ctor(move |c| construct(c, &sm, &chars, HANDCRAFT_LOGIC_CLASS));
+
+    let build = expose_class(thread, BUILD_LOGIC_CLASS, Some(BASE_CRAFTING_LOGIC_CLASS));
+    build.ctor(move |c| construct(c, &sm_build, &chars_build, BUILD_LOGIC_CLASS));
+    build.method("getAllBuildableRecipes", |c| {
+        let o = logic(c)?;
+        let st = state(&o).borrow();
+        let recipes: Vec<Value> = st
+            .filtered
+            .all_recipes()
+            .into_iter()
+            .map(|r| script_value(Some(&r)))
+            .collect();
+        Ok(c.push(Value::Object(Rc::new(JavaList::new(recipes)))))
+    });
+    build.method("getSelectedBuildObject", |c| {
+        logic(c)?;
+        Ok(c.push(Value::Nil))
+    });
+    build.method("getWallCoveringParams", |c| {
+        logic(c)?;
+        Ok(c.push(Value::Table(pz_kahlua::TableRef::new())))
+    });
+    build.method("updateFloorContainer", |c| {
+        logic(c)?;
+        Ok(0)
+    });
+    build.method("getRecipeDataInProgress", |c| {
+        let o = logic(c)?;
+        let in_prog = state(&o).borrow().craft_action_in_progress;
+        if in_prog {
+            let f = c.thread.table_get(&c.arg(0), &Value::str("getRecipeData"))?;
+            if !f.is_nil() {
+                let v = c.thread.call1(&f, &[c.arg(0)])?;
+                return Ok(c.push(v));
+            }
+        }
+        Ok(c.push(Value::Nil))
+    });
+
+    // Register shared BaseCraftingLogic methods on `base` so both
+    // `HandcraftLogic` and `BuildLogic` inherit them via `super_classes`.
+    let b = base;
 
     for name in NOT_PORTED {
         b.method(name, move |_| Err(unsupported(format!("HandcraftLogic.{name}"))));

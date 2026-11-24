@@ -4,6 +4,7 @@ use pz_scripts::ScriptManager;
 fn thread_with_player() -> Thread {
     let mut t = Thread::new(TableRef::new());
     pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
     crate::bind_character_sim::register(&mut t, Rc::new(ScriptManager::new()), Default::default());
     register(&mut t, Rc::new(ScriptManager::new()), Default::default());
     let player = Rc::new(RefCell::new(crate::bind_character_sim::LuaGameCharacter::new(
@@ -100,4 +101,34 @@ fn an_empty_recipe_list_keeps_no_recipe_without_events() {
     )
     .unwrap();
     assert_eq!(out, ["list", "nil", "true"]);
+}
+
+#[test]
+fn build_logic_inherits_base_crafting_logic_and_call_lua_helpers() {
+    let _collection = pz_kahlua::gc::defer_collection();
+    let mut t = thread_with_player();
+    t.globals().set_str("empty", Value::Object(Rc::new(JavaList::new(Vec::new()))));
+    let out = run(
+        &mut t,
+        r#"
+        BuildTestHooks = {
+            check = function(params) return params.ok == true end,
+            make = function(params) return { doubled = params.n * 2 } end,
+        }
+        local b1 = BaseCraftingLogic.callLuaBool("BuildTestHooks.check", { ok = true })
+        local b2 = BaseCraftingLogic.callLuaBool("BuildTestHooks.check", { ok = false })
+        local obj = BaseCraftingLogic.callLuaObject("BuildTestHooks.make", { n = 21 })
+
+        local logic = BuildLogic.new(player, nil, nil)
+        logic:setRecipes(empty)
+        logic:updateFloorContainer()
+        local wall = logic:getWallCoveringParams()
+        return tostring(b1), tostring(b2), tostring(obj.doubled),
+            tostring(logic:getPlayer() == player),
+            tostring(logic:getAllBuildableRecipes():size()),
+            tostring(type(wall))
+        "#,
+    )
+    .unwrap();
+    assert_eq!(out, ["true", "false", "42", "true", "0", "table"]);
 }
