@@ -98,6 +98,7 @@ pub mod bind_key_namer;
 pub mod bind_world_gen_utils;
 pub mod bind_world_gen_params;
 pub mod bind_randomized_world;
+pub mod bind_sprite_models;
 pub mod bind_sprites;
 pub mod bind_vehicles;
 pub mod bind_radio;
@@ -300,6 +301,7 @@ pub fn register_all(mgr: &mut LuaManager) {
         bind_cheat_type::register_from_jar(&mut mgr.thread, jar.as_ref());
     }
     bind_sprites::register(&mut mgr.thread);
+    bind_sprite_models::register(&mut mgr.thread, mgr.fs.clone());
     bind_map_groups::install_host(Rc::new(bind_map_groups::GameFsHost::new(mgr.fs.clone())));
     bind_map_groups::register(&mut mgr.thread, move || fs.borrow().media_file("maps"));
     bind_server::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
