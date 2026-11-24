@@ -390,3 +390,103 @@ fn installed_build42_vehicle_scripts_define_in_bullet() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn chunk_unload_removes_runtime_vehicle_scrolls_bullet_and_flushes_db_removes() {
+    let root = temp_dir("review_fixes");
+    let game_dir = root.join("game");
+    let cache_dir = root.join("cache");
+    let save_dir = root.join("save");
+    std::fs::create_dir_all(&game_dir).unwrap();
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    std::fs::create_dir_all(&save_dir).unwrap();
+    let mut lua = fresh_lua(&game_dir, &cache_dir);
+
+    let mut store = pz_lua_api::player_db::VehicleStore::default();
+    store.create(&save_dir.to_string_lossy()).unwrap();
+    let conn = store.conn.as_mut().unwrap();
+
+    // Seed a vehicle row (sql_id = 42) so we can verify pending DB removal on quit.
+    let row = pz_world::save::vehicle::VehicleRow {
+        id: 42,
+        wx: 10,
+        wy: 10,
+        x: 84.0,
+        y: 84.0,
+        world_version: pz_core::game_time_save::WORLD_VERSION,
+        in_meta: false,
+        data: vec![1, 2, 3, 4],
+    };
+    pz_world::save::vehicles_db::update_vehicle(conn, &row).unwrap();
+    assert!(pz_world::save::vehicles_db::is_in_db(conn, 42).unwrap());
+
+    let sm = minimal_vehicle_script_manager();
+    pz_lua_api::bind_registry::install_script_manager(sm.clone());
+    let sb = Rc::new(RefCell::new(pz_sandbox::SandboxOptions::default()));
+    let render = Rc::new(RefCell::new(None));
+    let mut wv = WorldVehicles::init(
+        &game_dir,
+        &lua,
+        &sb,
+        Some(conn),
+        None,
+        render,
+        (0, 0, 50, 50),
+        (4, 4, 13),
+    );
+
+    // 1. Add a parked vehicle in chunk (10, 10), then unload chunk (10, 10):
+    //    `chunk_removed` must call `BaseVehicle::remove_from_world()` so the
+    //    vehicle leaves `manager::cell_vehicles()` and Bullet.
+    let v = BaseVehicle::new();
+    v.set_script_name("Base.TestSedan");
+    v.set_position(84.0, 84.0, 0.0);
+    {
+        let mut st = v.st_mut();
+        st.sql_id = 42;
+        st.square = Some((84, 84, 0));
+        st.current = Some((84, 84, 0));
+        st.chunk = Some((10, 10));
+    }
+    pz_vehicles::lua::with_thread(&mut lua.thread, || {
+        manager::add_to_world(&v);
+    });
+    assert_eq!(manager::cell_vehicles().len(), 1);
+    assert_eq!(Bullet::call(|b| b.get_vehicle_count()), 1);
+
+    wv.chunk_removed(10, 10);
+    assert!(
+        manager::cell_vehicles().is_empty(),
+        "unloading chunk (10, 10) must remove parked vehicle from cell_vehicles"
+    );
+    assert_eq!(
+        Bullet::call(|b| b.get_vehicle_count()),
+        0,
+        "unloading chunk (10, 10) must remove parked vehicle from Bullet"
+    );
+
+    // 2. Scroll Bullet's chunk map incrementally (+1 x, -1 y) and across a
+    //    whole-grid jump (+20 x, +20 y), verifying zero Bullet exceptions and
+    //    updated tracked bounds.
+    let _ = pz_vehicles::physics::take_exceptions();
+    wv.sync_bullet_chunk_map(0, Some((5, 3, 13)));
+    assert_eq!(wv.bullet_chunk_maps[0], Some((5, 3, 13)));
+    wv.sync_bullet_chunk_map(0, Some((25, 23, 13)));
+    assert_eq!(wv.bullet_chunk_maps[0], Some((25, 23, 13)));
+    assert!(
+        pz_vehicles::physics::take_exceptions().is_empty(),
+        "scrolling and reactivating Bullet chunk map must not raise physics exceptions"
+    );
+
+    // 3. Queue a pending DB removal right before quit and flush before reset:
+    //    row 42 must be deleted from `vehicles.db`.
+    wv.events_state.borrow_mut().pending_db_removes.push(42);
+    wv.flush_pending_db_removes(Some(conn));
+    assert!(
+        !pz_world::save::vehicles_db::is_in_db(conn, 42).unwrap(),
+        "flush_pending_db_removes must delete queued sql_id from vehicles.db before reset"
+    );
+
+    wv.reset();
+    let _ = std::fs::remove_dir_all(&root);
+}
+

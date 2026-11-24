@@ -2103,6 +2103,11 @@ impl IsoWorld {
                     }
                 }
                 StreamEvent::HandedOff { wx, wy } => self.chunk_added(wx, wy),
+                StreamEvent::VehiclesToMeta { ids, .. } => {
+                    if let Some(wv) = self.vehicles_runtime.as_mut() {
+                        wv.vehicles_to_meta(&ids);
+                    }
+                }
                 StreamEvent::Unloaded { wx, wy } | StreamEvent::Removed { wx, wy } => {
                     self.chunk_removed(wx, wy)
                 }

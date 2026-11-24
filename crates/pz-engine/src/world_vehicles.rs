@@ -451,6 +451,9 @@ pub struct WorldVehicles {
     spawn_options: SpawnOptions,
     sandbox_cfg: SandboxVehicle,
     chunk_grid_width: i32,
+    /// Active Bullet chunk maps `(wx_min, wy_min, width)` per player slot, kept
+    /// synchronized with `ChunkStreamer`'s scrolling/teleporting chunk maps.
+    bullet_chunk_maps: [Option<(i32, i32, i32)>; 4],
 }
 
 impl WorldVehicles {
@@ -528,6 +531,7 @@ impl WorldVehicles {
             spawn_options,
             sandbox_cfg,
             chunk_grid_width: chunk_map.2,
+            bullet_chunk_maps: [Some(chunk_map), None, None, None],
         }
     }
 
@@ -664,6 +668,9 @@ impl WorldVehicles {
         vehicles_conn: Option<&mut pz_sqlite::Connection>,
         save_ctx: Option<&SaveCtx<'_>>,
     ) {
+        if let Some(s) = streamer.as_deref() {
+            self.sync_chunk_maps(s);
+        }
         self.process_pending_chunks(lua, sprites);
 
         let (gt_state, unmodded_mult) = {
@@ -717,11 +724,91 @@ impl WorldVehicles {
             }
         }
 
-        let removes = std::mem::take(&mut self.events_state.borrow_mut().pending_db_removes);
-        if let Some(conn) = vehicles_conn {
-            for sql_id in removes {
-                vehicles_db::remove_vehicle(conn, sql_id);
+        self.flush_pending_db_removes(vehicles_conn);
+    }
+
+    /// Synchronizes Bullet's per-player static collision chunk maps with the
+    /// streamer's current `IsoChunkMap` origins (scrolling incrementally when
+    /// adjacent, or reactivating after a whole-grid jump).
+    pub fn sync_chunk_maps(&mut self, streamer: &ChunkStreamer) {
+        let w = self.chunk_grid_width;
+        let count = streamer.num_players().min(self.bullet_chunk_maps.len());
+        for i in 0..count {
+            let cm = streamer.chunk_map(i);
+            let target = (!cm.ignore).then_some((cm.world_x - w / 2, cm.world_y - w / 2, w));
+            self.sync_bullet_chunk_map(i as i32, target);
+        }
+        for i in count..self.bullet_chunk_maps.len() {
+            self.sync_bullet_chunk_map(i as i32, None);
+        }
+    }
+
+    /// Updates a single player's Bullet chunk map from its last tracked bounds
+    /// to `target` using `scroll_chunk_map` for small shifts and
+    /// `deactivate_chunk_map` + `activate_chunk_map` for jumps or resizes.
+    pub(crate) fn sync_bullet_chunk_map(
+        &mut self,
+        player_index: i32,
+        target: Option<(i32, i32, i32)>,
+    ) {
+        let idx = player_index as usize;
+        if idx >= self.bullet_chunk_maps.len() {
+            return;
+        }
+        let current = self.bullet_chunk_maps[idx];
+        if current == target {
+            return;
+        }
+        match (current, target) {
+            (None, Some((wx, wy, w))) => {
+                let _ = Bullet::call(|b| b.activate_chunk_map(player_index, wx, wy, w));
             }
+            (Some(_), None) => {
+                let _ = Bullet::call(|b| b.deactivate_chunk_map(player_index));
+            }
+            (Some((old_x, old_y, old_w)), Some((wx, wy, w))) => {
+                let dx = wx - old_x;
+                let dy = wy - old_y;
+                if old_w == w && dx.abs() + dy.abs() <= 4 {
+                    let mut cx = old_x;
+                    let mut cy = old_y;
+                    while cx > wx {
+                        let _ = Bullet::call(|b| b.scroll_chunk_map(player_index, 0));
+                        cx -= 1;
+                    }
+                    while cx < wx {
+                        let _ = Bullet::call(|b| b.scroll_chunk_map(player_index, 1));
+                        cx += 1;
+                    }
+                    while cy > wy {
+                        let _ = Bullet::call(|b| b.scroll_chunk_map(player_index, 2));
+                        cy -= 1;
+                    }
+                    while cy < wy {
+                        let _ = Bullet::call(|b| b.scroll_chunk_map(player_index, 3));
+                        cy += 1;
+                    }
+                } else {
+                    let _ = Bullet::call(|b| {
+                        b.deactivate_chunk_map(player_index)?;
+                        b.activate_chunk_map(player_index, wx, wy, w)
+                    });
+                }
+            }
+            (None, None) => {}
+        }
+        self.bullet_chunk_maps[idx] = target;
+    }
+
+    /// Flushes queued `permanently_remove` SQL deletions into `vehicles.db` so
+    /// removals made right before saving or quitting are never lost.
+    pub fn flush_pending_db_removes(&mut self, vehicles_conn: Option<&mut pz_sqlite::Connection>) {
+        let Some(conn) = vehicles_conn else {
+            return;
+        };
+        let removes = std::mem::take(&mut self.events_state.borrow_mut().pending_db_removes);
+        for sql_id in removes {
+            vehicles_db::remove_vehicle(conn, sql_id);
         }
     }
 
@@ -730,8 +817,10 @@ impl WorldVehicles {
     pub fn save_virtual_vehicles(
         &mut self,
         streamer: Option<&mut ChunkStreamer>,
+        vehicles_conn: Option<&mut pz_sqlite::Connection>,
         ctx: &SaveCtx<'_>,
     ) {
+        self.flush_pending_db_removes(vehicles_conn);
         let queued = {
             let mut ids = self.ids.borrow_mut();
             virtual_vehicle::with_manager(|m| {
@@ -745,11 +834,41 @@ impl WorldVehicles {
         }
     }
 
-    /// Cleans up render models and lightbar lampposts for vehicles that left
-    /// the cell when a chunk unloaded.
+    /// Removes runtime vehicles transferred to virtual meta when their chunk
+    /// unloaded (`IsoChunk.removeFromWorld` -> `BaseVehicle.removeFromWorld`),
+    /// then prunes render models and lightbars.
+    pub fn vehicles_to_meta(&mut self, sql_ids: &[i32]) {
+        if sql_ids.is_empty() {
+            return;
+        }
+        let vehicles = manager::cell_vehicles();
+        for v in vehicles {
+            let id = v.st().sql_id;
+            if id > 0 && sql_ids.contains(&id) {
+                v.remove_from_world();
+            }
+        }
+        self.prune_render_and_lights();
+    }
+
+    /// Removes runtime vehicles residing in unloaded chunk `(wx, wy)` from the
+    /// cell and Bullet (`BaseVehicle.removeFromWorld`), then cleans up render
+    /// models and lightbar lampposts.
     pub fn chunk_removed(&mut self, wx: i32, wy: i32) {
         self.brand_new_chunks.remove(&(wx, wy));
         self.pending_chunks.retain(|&(x, y, _)| (x, y) != (wx, wy));
+        let vehicles = manager::cell_vehicles();
+        for v in vehicles {
+            let vwx = pz_world::java::fastfloor(v.x()).div_euclid(pz_world::chunk::CHUNK_WIDTH);
+            let vwy = pz_world::java::fastfloor(v.y()).div_euclid(pz_world::chunk::CHUNK_WIDTH);
+            if (vwx, vwy) == (wx, wy) {
+                v.remove_from_world();
+            }
+        }
+        self.prune_render_and_lights();
+    }
+
+    fn prune_render_and_lights(&self) {
         let live: HashSet<usize> = manager::cell_vehicles()
             .iter()
             .map(|v| Rc::as_ptr(v) as usize)
@@ -874,6 +993,7 @@ impl WorldVehicles {
         self.render_store.borrow_mut().clear();
         self.brand_new_chunks.clear();
         self.pending_chunks.clear();
+        self.bullet_chunk_maps = [None; 4];
         world_sim::destroy();
         world_sim::reset();
         manager::reset();
@@ -1051,7 +1171,13 @@ impl IsoWorld {
                 hooks: &pz_world::save::NoSaveHooks,
                 meta: None,
             };
-            wv.save_virtual_vehicles(self.streamer.as_mut(), &ctx);
+            wv.save_virtual_vehicles(
+                self.streamer.as_mut(),
+                self.vehicles.conn.as_mut(),
+                &ctx,
+            );
+        } else {
+            wv.flush_pending_db_removes(self.vehicles.conn.as_mut());
         }
         self.vehicles_runtime = Some(wv);
     }
@@ -1059,6 +1185,7 @@ impl IsoWorld {
     /// Tears down Bullet physics and vehicle runtime on `IngameState.exit`.
     pub fn reset_vehicles(&mut self) {
         if let Some(mut wv) = self.vehicles_runtime.take() {
+            wv.flush_pending_db_removes(self.vehicles.conn.as_mut());
             wv.reset();
         }
     }
