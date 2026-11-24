@@ -43,6 +43,14 @@ fn sandbox() -> LuaResult<SandboxRef> {
         .ok_or_else(|| LuaError::runtime("IsoGenerator sandbox owner is not installed"))
 }
 
+/// An integer option of the installed sandbox (`None` before the world
+/// installs it, or for a missing or non-integer option).
+pub fn sandbox_integer(name: &str) -> Option<i32> {
+    let options = SANDBOX.with(|current| current.borrow().clone())?;
+    let options = options.try_borrow().ok()?;
+    integer(&options, name).ok()
+}
+
 fn integer(options: &SandboxOptions, name: &str) -> Result<i32, String> {
     match options
         .option_by_name(name)

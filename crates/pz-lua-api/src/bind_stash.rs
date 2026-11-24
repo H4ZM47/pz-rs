@@ -221,7 +221,6 @@ struct StashRegistry {
     possible_stashes: Vec<StashBuilding>,
     buildings_to_do: Vec<StashBuilding>,
     already_read_map: Vec<String>,
-    rand: pz_core::random::Rand,
 }
 
 impl Default for StashRegistry {
@@ -231,7 +230,6 @@ impl Default for StashRegistry {
             possible_stashes: Vec::new(),
             buildings_to_do: Vec::new(),
             already_read_map: Vec::new(),
-            rand: pz_core::random::Rand::new(0x5A57_A540),
         }
     }
 }
@@ -260,20 +258,23 @@ pub fn init_all_stashes(thread: &mut Thread) {
     });
 }
 
-/// `StashSystem.init()`: load `StashDescriptions` and populate `possibleStashes`.
+/// `StashSystem.init()`: on the first call of a session, load
+/// `StashDescriptions`; every described stash starts as possible (its
+/// constructor registers it), whatever its building coordinates. Later calls
+/// keep the current lists.
 pub fn init(thread: &mut Thread) {
+    if STASH_STATE.with(|s| s.borrow().all_stashes.is_some()) {
+        return;
+    }
     init_all_stashes(thread);
     STASH_STATE.with(|s| {
         let mut reg = s.borrow_mut();
-        reg.possible_stashes.clear();
-        if let Some(all) = reg.all_stashes.as_ref() {
-            let possible: Vec<StashBuilding> = all
-                .iter()
-                .filter(|st| st.building_x != 0 || st.building_y != 0)
-                .map(|st| st.as_building())
-                .collect();
-            reg.possible_stashes = possible;
-        }
+        let possible = reg
+            .all_stashes
+            .as_ref()
+            .map(|all| all.iter().map(|st| st.as_building()).collect())
+            .unwrap_or_default();
+        reg.possible_stashes = possible;
     });
 }
 
@@ -328,99 +329,208 @@ pub fn get_stash(name: &str) -> Option<Rc<Stash>> {
     })
 }
 
-/// `StashSystem.doStashItem(stash, item)`: turn `item` into an annotated map
-/// for `stash`, removing it from `possibleStashes` and queuing its building.
+/// `StashSystem.doStashItem(stash, item)`: the item takes the stash's
+/// custom name; a `Map` stash also becomes the item's stash map and leaves
+/// the possible list (every entry at its building coordinates). The building
+/// is not queued here: that happens when the map is read
+/// ([`prepare_building_stash`]).
 pub fn do_stash_item(stash: &Stash, item: &ItemRef) {
-    {
-        let mut it = item.borrow_mut();
-        it.stash_map = Some(stash.name.clone());
-        if let Some(custom) = stash.custom_name.as_deref() {
-            let translated = crate::bind_text::translate(custom);
-            it.set_name(&translated);
-            it.custom_name = true;
-        }
+    if let Some(custom) = stash.custom_name.as_deref() {
+        item.borrow_mut().set_name(custom);
     }
+    if stash.kind != "Map" {
+        return;
+    }
+    remove_possible_at(stash.building_x, stash.building_y);
+    item.borrow_mut().stash_map = Some(stash.name.clone());
+}
+
+/// Drops every possible stash whose building is at `(x, y)`.
+fn remove_possible_at(x: i32, y: i32) {
     STASH_STATE.with(|s| {
-        let mut reg = s.borrow_mut();
-        reg.possible_stashes.retain(|b| b.stash_name != stash.name);
-        if (stash.building_x != 0 || stash.building_y != 0)
-            && !reg.buildings_to_do.iter().any(|b| b.stash_name == stash.name)
-        {
-            reg.buildings_to_do.push(stash.as_building());
-        }
+        s.borrow_mut()
+            .possible_stashes
+            .retain(|b| b.building_x != x || b.building_y != y)
     });
 }
 
-/// `StashSystem.prepareBuildingStash(stashName)` / `MapItem.doBuildingStash()`:
-/// record the stash map as read and ensure its building is queued in `buildingsToDo`.
+/// `StashSystem.prepareBuildingStash(stashName)` (`MapItem.doBuildingStash`
+/// when a stash map is read): the first read of a known stash records the
+/// name and queues its building. Unknown names and repeated reads change
+/// nothing; the possible list is left alone.
+///
+/// TODO(port): `doBuildingStash` for a building that is already fully
+/// streamed in (loot, zombies, barricades, traps).
 pub fn prepare_building_stash(stash_name: &str) {
+    let Some(stash) = get_stash(stash_name) else {
+        return;
+    };
     STASH_STATE.with(|s| {
         let mut reg = s.borrow_mut();
-        if !reg.already_read_map.iter().any(|n| n == stash_name) {
-            reg.already_read_map.push(stash_name.to_owned());
+        if reg.already_read_map.iter().any(|n| n == stash_name) {
+            return;
         }
-        reg.possible_stashes.retain(|b| b.stash_name != stash_name);
-        if !reg.buildings_to_do.iter().any(|b| b.stash_name == stash_name) {
-            if let Some(stash) = reg
-                .all_stashes
-                .as_ref()
-                .and_then(|all| all.iter().find(|st| st.name == stash_name))
-                .cloned()
-            {
-                if stash.building_x != 0 || stash.building_y != 0 {
-                    reg.buildings_to_do.push(stash.as_building());
-                }
-            }
-        }
+        reg.already_read_map.push(stash_name.to_owned());
+        reg.buildings_to_do.push(stash.as_building());
     });
 }
 
-/// `StashSystem.visitedBuilding(def)`: retire any unspawned possible stashes
-/// whose building coordinates fall inside the visited building bounds.
+/// Whether `(x, y)` lies strictly inside the building rectangle.
+fn strictly_inside(b: &StashBuilding, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
+    b.building_x > x1 && b.building_x < x2 && b.building_y > y1 && b.building_y < y2
+}
+
+/// `StashSystem.visitedBuilding(def)`: a visited building (bounds
+/// `x1..x2`, `y1..y2`) can no longer receive a stash; possible stashes
+/// strictly inside it are dropped.
 pub fn visited_building(x1: i32, y1: i32, x2: i32, y2: i32) {
     STASH_STATE.with(|s| {
-        let mut reg = s.borrow_mut();
-        reg.possible_stashes.retain(|b| {
-            !(b.building_x >= x1 && b.building_x <= x2 && b.building_y >= y1 && b.building_y <= y2)
-        });
+        s.borrow_mut()
+            .possible_stashes
+            .retain(|b| !strictly_inside(b, x1, y1, x2, y2))
     });
 }
 
-/// `StashSystem.checkStashItem(item)`: opportunistically convert a spawned map
-/// item into an annotated stash map when an eligible stash exists.
-pub fn check_stash_item(item: &ItemRef, is_zed_container: bool) -> bool {
-    let full_type = item.borrow().get_full_type();
-    let nights = crate::bind_climate::shared_game_time()
-        .borrow()
-        .nights_survived;
-
-    let chosen = STASH_STATE.with(|s| {
-        let reg = s.borrow_mut();
-        let all = reg.all_stashes.as_ref()?;
-        let eligible: Vec<Rc<Stash>> = reg
-            .possible_stashes
+/// `StashSystem.isStashBuilding(def)`: a possible or queued stash lies
+/// strictly inside the building bounds.
+pub fn is_stash_building(x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
+    STASH_STATE.with(|s| {
+        let reg = s.borrow();
+        reg.possible_stashes
             .iter()
-            .filter_map(|pb| all.iter().find(|st| st.name == pb.stash_name).cloned())
+            .chain(reg.buildings_to_do.iter())
+            .any(|b| strictly_inside(b, x1, y1, x2, y2))
+    })
+}
+
+/// What [`check_stash_item`] needs from the world.
+pub struct StashCheck<'a> {
+    /// The item's stash chance (`InventoryItem.stashChance`: 80 unless the
+    /// container distribution set it); 0 or less uses 60.
+    pub stash_chance: i32,
+    /// Sandbox `AnnotatedMapChance` (1 never, 2 extremely rare ... 6).
+    pub annotated_map_chance: i32,
+    /// `GameTime.getDaysSurvived()`.
+    pub days_survived: i32,
+    /// The item's container belongs to a corpse.
+    pub in_corpse: bool,
+    /// For the square `(x, y, 0)`: `None` without a room in a building,
+    /// else whether that building has been visited.
+    pub building_visited: &'a dyn Fn(i32, i32) -> Option<bool>,
+    /// `Rand.Next(n)`.
+    pub rand: &'a mut dyn FnMut(i32) -> i32,
+}
+
+/// The percentage chance a map item has to become annotated, or `None`
+/// when the sandbox turns annotated maps off.
+fn annotated_chance(stash_chance: i32, sandbox: i32) -> Option<i32> {
+    let base = if stash_chance > 0 { stash_chance } else { 60 };
+    let adjust = match sandbox {
+        1 => return None,
+        2 => 15,
+        3 => 10,
+        5 => -10,
+        6 => -20,
+        _ => 0,
+    };
+    Some(base + adjust)
+}
+
+/// `StashSystem.checkStashItem(item)` (spawned loot): after a chance roll,
+/// picks one stash for this item type that is still possible, whose spawn
+/// rules (corpse-only, day range) allow it and whose building exists and
+/// has not been visited, and applies it with [`do_stash_item`]. Returns
+/// whether the item became a stash item.
+pub fn check_stash_item(item: &ItemRef, env: &mut StashCheck<'_>) -> bool {
+    let empty = STASH_STATE.with(|s| s.borrow().possible_stashes.is_empty());
+    if empty {
+        return false;
+    }
+    let Some(chance) = annotated_chance(env.stash_chance, env.annotated_map_chance) else {
+        return false;
+    };
+    if (env.rand)(100) > 100 - chance {
+        return false;
+    }
+    let full_type = item.borrow().get_full_type();
+    let days = env.days_survived;
+    let candidates: Vec<Rc<Stash>> = STASH_STATE.with(|s| {
+        let reg = s.borrow();
+        let Some(all) = reg.all_stashes.as_ref() else {
+            return Vec::new();
+        };
+        all.iter()
             .filter(|st| {
                 st.item == full_type
-                    && (!st.spawn_only_on_zed || is_zed_container)
-                    && (st.min_day_to_spawn < 0 || nights >= st.min_day_to_spawn)
-                    && (st.max_day_to_spawn < 0 || nights <= st.max_day_to_spawn)
+                    && (!st.spawn_only_on_zed || env.in_corpse)
+                    && (st.min_day_to_spawn <= -1 || days >= st.min_day_to_spawn)
+                    && (st.max_day_to_spawn <= -1 || days <= st.max_day_to_spawn)
+                    && reg.possible_stashes.iter().any(|b| b.stash_name == st.name)
             })
-            .collect();
-        if eligible.is_empty() {
-            return None;
-        }
-        let idx = (reg.rand.next(eligible.len() as i32).max(0) as usize) % eligible.len();
-        Some(eligible[idx].clone())
+            .cloned()
+            .collect()
     });
-
-    if let Some(stash) = chosen {
-        do_stash_item(&stash, item);
-        true
-    } else {
-        false
+    let usable: Vec<Rc<Stash>> = candidates
+        .into_iter()
+        .filter(|st| (env.building_visited)(st.building_x, st.building_y) == Some(false))
+        .collect();
+    if usable.is_empty() {
+        return false;
     }
+    let pick = (env.rand)(usable.len() as i32).clamp(0, usable.len() as i32 - 1) as usize;
+    do_stash_item(&usable[pick], item);
+    true
+}
+
+/// `GameTime.getDaysSurvived()`: the longest survival of the local players
+/// in whole days, wrapped at 30 as the original does.
+pub fn days_survived() -> i32 {
+    let ctx = crate::bind_character_sim::current_sim_context();
+    let hours = (0..crate::bind_players::num_players().max(0) as usize)
+        .filter_map(crate::bind_players::player)
+        .map(|p| p.borrow().hours_survived(&*ctx) as f32)
+        .fold(0.0f32, f32::max);
+    (hours as i32 / 24) % 30
+}
+
+/// The world side of [`StashCheck`] for a Lua call: the live meta grid,
+/// sandbox, players and `Rand`. The corpse rule needs the item's container
+/// owner, which the caller passes.
+pub fn check_stash_item_in_world(item: &ItemRef, stash_chance: i32, in_corpse: bool) -> bool {
+    let annotated_map_chance = crate::bind_world::power::sandbox_integer("AnnotatedMapChance").unwrap_or(4);
+    let building_visited = |x: i32, y: i32| {
+        crate::bind_world::with_world(|w| {
+            let meta = w.meta_grid.as_ref()?;
+            let room = meta.get_room_at(x, y, 0)?;
+            let b = room.building?;
+            meta.building_defs.get(b.0 as usize).map(|d| d.has_been_visited)
+        })
+    };
+    let mut rand = |n: i32| pz_core::random::next(n);
+    check_stash_item(
+        item,
+        &mut StashCheck {
+            stash_chance,
+            annotated_map_chance,
+            days_survived: days_survived(),
+            in_corpse,
+            building_visited: &building_visited,
+            rand: &mut rand,
+        },
+    )
+}
+
+/// The item's direct container belongs to a corpse
+/// (`item.getContainer().getParent() instanceof IsoDeadBody`).
+pub fn item_in_corpse(item: &ItemRef) -> bool {
+    let Ok(Some(container)) = pz_inventory::shared::try_container_of(item) else {
+        return false;
+    };
+    let Ok(body) = container.try_borrow() else {
+        return false;
+    };
+    let parent = crate::bind_item_container::parent_of(&body);
+    crate::bind_globals::instance_of(&parent, crate::bind_dead_body::ISO_DEAD_BODY)
 }
 
 fn item_arg(c: &NativeCall<'_>, idx: usize) -> LuaResult<ItemRef> {
@@ -597,7 +707,8 @@ pub fn register(thread: &mut Thread) {
     });
     sys.static_fn("checkStashItem", |c| {
         let item = item_arg(c, 0)?;
-        let _ = check_stash_item(&item, false);
+        let in_corpse = item_in_corpse(&item);
+        let _ = check_stash_item_in_world(&item, 80, in_corpse);
         Ok(0)
     });
 }
@@ -722,6 +833,109 @@ mod tests {
         install_state(snap.clone());
         assert_eq!(snapshot_state(), Some(snap));
 
+        reset();
+    }
+
+    fn two_stashes() -> Vec<Rc<Stash>> {
+        let stash = |name: &str, x: i32, zed: bool| {
+            Rc::new(Stash {
+                name: name.into(),
+                kind: "Map".into(),
+                item: "Base.MuldraughMap".into(),
+                custom_name: None,
+                building_x: x,
+                building_y: 100,
+                spawn_table: None,
+                annotations: Vec::new(),
+                containers: Vec::new(),
+                barricades: 0,
+                zombies: 0,
+                spawn_only_on_zed: zed,
+                min_day_to_spawn: -1,
+                max_day_to_spawn: -1,
+                min_trap_to_spawn: -1,
+                max_trap_to_spawn: -1,
+            })
+        };
+        vec![stash("A", 100, false), stash("B", 200, true)]
+    }
+
+    fn install(all: Vec<Rc<Stash>>) {
+        reset();
+        STASH_STATE.with(|s| {
+            let mut reg = s.borrow_mut();
+            reg.possible_stashes = all.iter().map(|st| st.as_building()).collect();
+            reg.all_stashes = Some(all);
+        });
+    }
+
+    #[test]
+    fn stash_item_queues_its_building_only_when_read() {
+        install(two_stashes());
+        let item = map_item();
+        do_stash_item(&get_stash("A").unwrap(), &item);
+        let snap = snapshot_state().unwrap();
+        assert!(snap.buildings_to_do.is_empty());
+        assert_eq!(snap.possible_stashes.len(), 1);
+        assert_eq!(item.borrow().stash_map.as_deref(), Some("A"));
+
+        prepare_building_stash("A");
+        prepare_building_stash("A");
+        prepare_building_stash("nope");
+        let snap = snapshot_state().unwrap();
+        assert_eq!(snap.buildings_to_do.len(), 1);
+        assert_eq!(snap.already_read_map, vec!["A".to_owned()]);
+        // Reading never touches the possible list.
+        assert_eq!(snap.possible_stashes.len(), 1);
+        reset();
+    }
+
+    #[test]
+    fn check_stash_item_rolls_and_respects_world_rules() {
+        let check = |sandbox: i32, roll: i32, visited: Option<bool>, corpse: bool| {
+            install(two_stashes());
+            let item = map_item();
+            let building = move |_: i32, _: i32| visited;
+            let mut draws = vec![roll, 0];
+            let mut rand = move |_: i32| draws.remove(0);
+            let hit = check_stash_item(
+                &item,
+                &mut StashCheck {
+                    stash_chance: 80,
+                    annotated_map_chance: sandbox,
+                    days_survived: 0,
+                    in_corpse: corpse,
+                    building_visited: &building,
+                    rand: &mut rand,
+                },
+            );
+            let name = item.borrow().stash_map.clone();
+            reset();
+            (hit, name)
+        };
+        // Annotated maps off.
+        assert_eq!(check(1, 0, Some(false), false), (false, None));
+        // Default chance 80: a roll above 20 fails, 20 or below passes.
+        assert_eq!(check(4, 21, Some(false), false), (false, None));
+        assert_eq!(check(4, 20, Some(false), false), (true, Some("A".into())));
+        // "Extremely rare" (-20) needs a roll of 40 or less.
+        assert_eq!(check(6, 41, Some(false), false), (false, None));
+        // A visited building or a square without a building rules it out.
+        assert_eq!(check(4, 0, Some(true), false), (false, None));
+        assert_eq!(check(4, 0, None, false), (false, None));
+        // On a corpse both stashes qualify; the second draw picks the first.
+        assert_eq!(check(4, 0, Some(false), true), (true, Some("A".into())));
+    }
+
+    #[test]
+    fn visited_and_stash_building_bounds_are_strict() {
+        install(two_stashes());
+        assert!(!is_stash_building(100, 100, 110, 110));
+        assert!(is_stash_building(99, 99, 101, 101));
+        visited_building(100, 100, 110, 110);
+        assert_eq!(snapshot_state().unwrap().possible_stashes.len(), 2);
+        visited_building(99, 99, 101, 101);
+        assert_eq!(snapshot_state().unwrap().possible_stashes.len(), 1);
         reset();
     }
 }

@@ -2010,11 +2010,8 @@ pub fn register(thread: &mut Thread) {
     }
     expose_class(thread, "zombie.inventory.types.Key", Some(INVENTORY_ITEM_CLASS))
         .static_fn("setHighlightDoors", set_highlight_doors);
-    let map = expose_class(
-        thread,
-        "zombie.inventory.types.MapItem",
-        Some(INVENTORY_ITEM_CLASS),
-    );
+    // Declared on `InventoryItem`, so every item answers them.
+    let map = expose_class(thread, INVENTORY_ITEM_CLASS, Some(GAME_ENTITY_CLASS));
     map.method("doBuildingStash", |c| {
         let item = this(c)?;
         let stash_name = item.borrow().stash_map.clone();
