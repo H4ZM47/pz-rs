@@ -2723,6 +2723,10 @@ impl IsoWorld {
         // Queue active virtual vehicles onto the streamer before saving chunks.
         self.save_virtual_vehicles();
         // `saveLocalPlayersForce` above already queued them.
+        let no_save = pz_lua_api::bind_core::shared_core().borrow().is_no_save();
+        if let Err(e) = pz_lua_api::bind_global_moddata::save_world(&self.save_dir, no_save) {
+            self.log_update_error(format!("GlobalModData.save: {e}"));
+        }
         let mut report = self.game_window_save(lua, &sandbox, false)?;
         // Ordinary quitting keeps its callback even when saving is disabled
         // or the prelude threw. Window close rereads currentCell at this
@@ -2925,6 +2929,7 @@ impl IsoWorld {
             pz_lua_api::global_objects::reset(side);
         }
         pz_lua_api::global_objects_save::set_save_dir(None);
+        pz_lua_api::bind_global_moddata::reset();
     }
 
     /// `MapCollisionData.instance.updateGameState()` (`GameWindow.logic`).

@@ -33,6 +33,7 @@ pub mod bind_combat;
 pub mod bind_input;
 pub mod bind_joypad;
 pub mod bind_fs;
+pub mod bind_global_moddata;
 pub mod bind_global_objects;
 pub mod bind_globals;
 pub mod bind_item_container;
@@ -307,6 +308,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_audio::register(&mut mgr.thread);
     bind_iso_enums::register(mgr);
     bind_global_objects::register(mgr);
+    bind_global_moddata::register(&mut mgr.thread, Some(mgr.events.clone()));
     bind_popman::register(&mut mgr.thread);
     bind_zombie::register_shared(&mut mgr.thread);
     bind_vehicles::register(&mut mgr.thread);

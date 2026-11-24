@@ -17,6 +17,7 @@ pub fn reset_session_bindings() {
         crate::global_objects::reset(side);
     }
     crate::global_objects_save::set_save_dir(None);
+    crate::bind_global_moddata::reset();
     // A save asked for in the old world must not save the next one.
     crate::bind_game_window::take_save_request();
 

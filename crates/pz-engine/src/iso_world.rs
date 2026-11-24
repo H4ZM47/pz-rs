@@ -667,7 +667,11 @@ impl IsoWorld {
             let days = gt.borrow().world_age_days_since_begin(options.time_since_apo()) as f32;
             pz_lua_api::bind_world::power::set_hydro_power_on(options.does_power_grid_exist(days, 0));
         }
-        // TODO(port): `ZomboidGlobals.toLua()`, `survivorDescriptors.clear()`.
+        // `ZomboidGlobals.Load()` / `ZomboidGlobals.toLua()`.
+        // TODO(port): `survivorDescriptors.clear()`.
+        if !pz_lua_api::bind_global_moddata::load_zomboid_globals(&lua.thread) {
+            pz_lua_api::bind_global_moddata::zomboid_globals_to_lua(&lua.thread);
+        }
         // `LoadTileDefinitions*` (property strings, custom values, lookup
         // tables, the definitions), `PostTileDefinitions`, then
         // `loadedTileDefinitions`.
@@ -748,7 +752,12 @@ impl IsoWorld {
                 self.log_error(format!("GameTime.load: {e}"));
             }
         }
-        // TODO(port): `ImprovedFog.init`; `GlobalModData.init`.
+        // TODO(port): `ImprovedFog.init`.
+        if let Err(e) =
+            pz_lua_api::bind_global_moddata::init_world(&mut lua.thread, &self.save_dir, no_save)
+        {
+            self.log_error(format!("GlobalModData.init: {e}"));
+        }
         self.init_radio(lua, &sb, no_save);
         if let Err(e) = self.instance_tracker.load_file(&self.save_dir, no_save) {
             self.log_error(format!("InstanceTracker.load: {e}"));
