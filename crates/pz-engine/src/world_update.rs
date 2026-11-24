@@ -252,6 +252,55 @@ impl StatesEngine for EngineStates<'_> {
 
     fn closing_windows(&self) -> &[pz_world_states::ClosingWindow] { &self.closing_windows }
 
+    fn broken_fences(&self) -> Option<Rc<RefCell<pz_world_states::BrokenFences>>> {
+        Some(pz_lua_api::bind_broken_fences::shared_broken_fences())
+    }
+
+    fn is_breakable_fence(&self, sprite_name: &str) -> bool {
+        pz_lua_api::bind_broken_fences::shared_broken_fences()
+            .borrow()
+            .is_breakable_sprite(Some(sprite_name))
+    }
+
+    fn spawn_broken_fence_item(
+        &mut self,
+        cell: &mut IsoCell,
+        meta: &pz_world::IsoMetaGrid,
+        sprites: &mut IsoSpriteManager,
+        sq: (i32, i32, i32),
+        item_type: &str,
+        x: f32,
+        y: f32,
+    ) {
+        if let Some(item) = pz_lua_api::bind_items::create_item(item_type, 1.0) {
+            let _ = self.add_world_inventory_item(cell, meta, sprites, sq, &item, x, y, 0.0);
+        }
+    }
+
+    fn bent_fences_enabled(&self) -> bool {
+        pz_lua_api::bind_bent_fences::shared_bent_fences()
+            .borrow()
+            .is_enabled()
+    }
+
+    fn bent_fences(&self) -> Option<Rc<pz_world_states::BentFences>> {
+        Some(Rc::new(
+            pz_lua_api::bind_bent_fences::shared_bent_fences()
+                .borrow()
+                .clone(),
+        ))
+    }
+
+    fn is_unbent_fence(
+        &self,
+        sprite_name: &str,
+        facing: pz_world::square::EdgeFacing,
+    ) -> bool {
+        pz_lua_api::bind_bent_fences::shared_bent_fences()
+            .borrow()
+            .is_unbent_sprite(sprite_name, facing)
+    }
+
     fn on_container_update(&mut self) {
         if let Some(sim) = self.sim {
             pz_characters::character::SimContext::event(sim, SimEvent::ContainerUpdate);

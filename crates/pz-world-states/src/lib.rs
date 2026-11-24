@@ -43,7 +43,10 @@ mod windows;
 
 pub use bent_fences::{BentFenceEntry, BentFences, FenceTileDef, ThumpData};
 pub use broken_fences::{
-    AdjacentDamage, BrokenFences, BrokenTile, DebrisItem, FenceRand, UnknownTile,
+    add_debris_items_in_cell, breakable_object_on_square, destroy_fence_in_cell, fence_break_sound,
+    object_materials, set_fence_damaged_left_in_cell, set_fence_damaged_right_in_cell,
+    set_fence_destroyed_in_cell, update_fence_sprite_in_cell, AdjacentDamage, BrokenFences,
+    BrokenTile, DebrisItem, FenceRand, FenceWorldHooks, UnknownTile,
 };
 pub use collide::{CollideMoverInfo, NewRenderEffect, RenderEffectType, StatesFire, WorldView};
 pub use population::{population_host, population_view, real_zombie_on_square};
@@ -460,13 +463,32 @@ pub trait StatesEngine {
     fn player_input(&self) -> Option<&dyn pz_characters::character::player::PlayerInput> {
         None
     }
+    /// `BrokenFences.getInstance()` with the Lua-registered tiles; `None`
+    /// keeps the fallback `destroy_fence` hook.
+    fn broken_fences(&self) -> Option<std::rc::Rc<std::cell::RefCell<BrokenFences>>> {
+        None
+    }
     /// `BrokenFences.getInstance().isBreakableObject(obj)` (the sprite
     /// lists Lua registers).
     fn is_breakable_fence(&self, _sprite_name: &str) -> bool {
         false
     }
     /// `BrokenFences.getInstance().destroyFence(obj, dir)` on the cell.
+    /// Fallback used when [`Self::broken_fences`] returns `None`.
     fn destroy_fence(&mut self, _cell: &mut IsoCell, _obj: ObjectRef, _dir: IsoDirections) {}
+    /// Drops one debris item chosen by [`BrokenFences::add_items`] onto `sq`.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_broken_fence_item(
+        &mut self,
+        _cell: &mut IsoCell,
+        _meta: &IsoMetaGrid,
+        _sprites: &mut IsoSpriteManager,
+        _sq: (i32, i32, i32),
+        _item_type: &str,
+        _x: f32,
+        _y: f32,
+    ) {
+    }
     /// `GameClient.connection.thumpHits.put(zombie, thumpable)`.
     fn client_thump_hit(&mut self, _zombie: i32, _target: ThumpTarget) {}
 

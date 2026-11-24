@@ -130,6 +130,20 @@ impl BentFences {
         self.thumpers_required >= 1
     }
 
+    /// `isUnbentObject(obj, facing)` by sprite name.
+    pub fn is_unbent_sprite(&self, sprite_name: &str, facing: EdgeFacing) -> bool {
+        let Some(indices) = self.fence_map.get(sprite_name) else {
+            return false;
+        };
+        indices.iter().any(|&idx| {
+            let e = &self.entries[idx];
+            e.facing() == facing
+                && e.stages.iter().any(|(&stage, tiles)| {
+                    stage < e.stage_count() - 1 && tiles.iter().any(|t| t == sprite_name)
+                })
+        })
+    }
+
     /// `addFenceTiles(version, tiles)`.
     pub fn add_fence_tiles(&mut self, _version: i32, tiles: &[FenceTileDef]) {
         for d in tiles {
@@ -854,7 +868,7 @@ impl StatesWorldAdapter<'_> {
                     .unwrap_or_default();
                 for s in signs {
                     if let Some(o) = self.remove_object(s, false) {
-                        self.engine.broken_fence_items((x, y, oz), &o.ref_handle());
+                        self.drop_broken_fence_items((x, y, oz), &o.ref_handle());
                     }
                 }
             }
@@ -945,7 +959,7 @@ impl StatesWorldAdapter<'_> {
         };
         drop(sq);
         self.add_tile_object(p, &name, index);
-        self.engine.broken_fence_items(p, &o);
+        self.drop_broken_fence_items(p, &o);
     }
 
     /// `smashFence(obj, dir, index)`.
@@ -989,11 +1003,11 @@ impl StatesWorldAdapter<'_> {
             let name = tiles[i as usize].clone();
             self.set_object_sprite(fr, &name);
             if self.engine.is_breakable_fence(&name) {
-                self.engine.destroy_fence(self.cell, fr, dir);
+                self.destroy_fence(fr, dir);
                 continue;
             }
             if let Some(o) = self.object_ref(fr) {
-                self.engine.broken_fence_items((x, y, oz), &o);
+                self.drop_broken_fence_items((x, y, oz), &o);
             }
             self.remove_object(fr, false);
             self.square_update_tasks((x, y, oz));
@@ -1193,7 +1207,7 @@ impl StatesWorldAdapter<'_> {
                     {
                         drop(o);
                         drop(s);
-                        self.engine.destroy_fence(self.cell, or, dir);
+                        self.destroy_fence(or, dir);
                         continue;
                     }
                     let Some(name) = name else { continue };
@@ -1217,7 +1231,7 @@ impl StatesWorldAdapter<'_> {
                         self.engine.dump_contents(p, &o);
                     }
                     self.remove_object(or, false);
-                    self.engine.broken_fence_items(p, &o);
+                    self.drop_broken_fence_items(p, &o);
                 }
                 let Some(name) = collapsed.next() else {
                     continue;

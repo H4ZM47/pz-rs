@@ -870,12 +870,14 @@ all installed assets, render paths or foreign platforms.
       after a transfer (still a no-op), `invalidateRenderChunkLevel` for a
       change after load, `fixTableTopOverlays(square)` after moving objects;
       both `Reset()` on world unload.
-- [ ] `BrokenFences.destroyFence(obj, dir)` (thumping, vehicles): the engine's
-      `StatesEngine::destroy_fence` / `is_breakable_fence` /
-      `broken_fence_items` read `bind_broken_fences::shared_broken_fences()`
-      (`update_sprite_name`, `debris_sprite`, `adjacent_damage`,
-      `destroy_adjacent_dirs`, `add_items` drawing `Rand`), then do the
-      square changes, sound and recalculation; `Reset()` on unload.
+- [x] `BrokenFences.destroyFence(obj, dir)` (thumping, vehicles): `EngineStates`
+      wires `broken_fences` / `is_breakable_fence` / `spawn_broken_fence_item`
+      from `bind_broken_fences::shared_broken_fences()`, `StatesWorldAdapter::destroy_fence`
+      executes sprite replacement, debris object placement, debris item drops,
+      adjacent damage/cascade, sound and square recalc/geometry invalidation,
+      and `bind_broken_fences` exposes `isBreakableObject` / `getBreakableObject` /
+      `destroyFence` / `setDestroyed` / `setDamagedLeft` / `setDamagedRight` /
+      `updateSprite` / `addItems` to Lua; `Reset()` on unload.
 - [ ] `ItemPickerJava.KeyNamer.nameKey(item, square)` when keys spawn:
       `bind_key_namer::key_namer().key_name_translation(&square)` with a
       `pz_inventory::key_namer::KeySquare` over the square.
@@ -885,8 +887,9 @@ all installed assets, render paths or foreign platforms.
       squares: call `bind_map_objects::on_new_callbacks(sprite)` /
       `on_load_callbacks(sprite)` with each object (needs an `IsoObject`
       Lua binding); `MapObjects.Reset` on world unload (#224).
-- [ ] Fence bending (`pz-world-states`) reads its `BentFences` from
-      `bind_bent_fences::shared_bent_fences()` (#224).
+- [x] Fence bending (`pz-world-states`) reads its `BentFences` from
+      `bind_bent_fences::shared_bent_fences()` via `EngineStates` (`bent_fences`,
+      `bent_fences_enabled`, `is_unbent_fence`) (#224).
 - [ ] Water rendering reads `IsoWaterFlow` from
       `lua_world::shared_water_flow()`; `IsoWaterFlow.Reset` on world
       unload (#224).
