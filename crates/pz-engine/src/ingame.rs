@@ -113,6 +113,31 @@ impl SplitLayout {
     }
 }
 
+/// Populate `WeatherShader` (`screen.wgsl`) viewport parameters from the
+/// effective split-screen layout rectangle.
+///
+/// `screen_rect` is top-down (`[left, top, view_w, view_h]`), whereas
+/// `screen.wgsl` evaluates `frag.y` bottom-up (`g.flip - in.pos.y`), so
+/// `offscreen_top` must be the bottom-up GL origin `screen_h - top - view_h`.
+/// Dimensions are derived directly from `view_w * zoom` / `view_h * zoom`
+/// so split views stay scaled to their actual viewport regardless of
+/// `Core.num_players` timing.
+pub(crate) fn apply_split_screen_params(
+    params: &mut ScreenParams,
+    screen_rect: [u32; 4],
+    screen_h: u32,
+    zoom: f32,
+    tile_scale: i32,
+) {
+    let [left, top, view_w, view_h] = screen_rect;
+    params.offscreen_left = left as f32;
+    params.offscreen_top = screen_h.saturating_sub(top.saturating_add(view_h)) as f32;
+    params.offscreen_width = view_w as f32 * zoom;
+    params.offscreen_height = view_h as f32 * zoom;
+    params.zoom = zoom;
+    params.tile_width = if tile_scale == 2 { 64.0 } else { 32.0 };
+}
+
 /// `IsoPlayer.players[n]`.
 fn player(n: usize) -> Option<pz_lua_api::bind_character_sim::LuaGameCharacterRef> {
     pz_lua_api::bind_players::player(n)
@@ -220,18 +245,14 @@ impl IngameState {
         lua: &mut LuaManager,
         n: usize,
         screen_rect: [u32; 4],
+        screen_h: u32,
         zoom: f32,
     ) -> (ClimateSettings, ScreenParams) {
         let night_darkness = sandbox(lua).map_or(3, |sb| opt_int(&sb.borrow(), "NightDarkness"));
-        let (last_stand, tile_scale, core_off_w, core_off_h) = {
+        let (last_stand, tile_scale) = {
             let c = pz_lua_api::bind_core::shared_core();
             let c = c.borrow();
-            (
-                c.is_last_stand(),
-                c.tile_scale,
-                c.get_offscreen_width(n as i32),
-                c.get_offscreen_height(n as i32),
-            )
+            (c.is_last_stand(), c.tile_scale)
         };
         let gt = pz_lua_api::bind_climate::shared_game_time();
         let g = gt.borrow();
@@ -266,21 +287,7 @@ impl IngameState {
         let params = settings.screen_params(n, ScreenParams::default());
         let mut params =
             pz_lua_api::bind_search_mode::apply_screen_inputs(params, n, &self.render_inputs[n]);
-        let [left, top, view_w, view_h] = screen_rect;
-        params.offscreen_left = left as f32;
-        params.offscreen_top = top as f32;
-        params.offscreen_width = if core_off_w > 0 {
-            core_off_w as f32
-        } else {
-            view_w as f32 * zoom
-        };
-        params.offscreen_height = if core_off_h > 0 {
-            core_off_h as f32
-        } else {
-            view_h as f32 * zoom
-        };
-        params.zoom = zoom;
-        params.tile_width = if tile_scale == 2 { 64.0 } else { 32.0 };
+        apply_split_screen_params(&mut params, screen_rect, screen_h, zoom, tile_scale);
         let lock_fps = pz_lua_api::bind_climate::climate_settings().lock_fps;
         (settings, self.screen_timer.apply(params, lock_fps))
     }
@@ -299,7 +306,7 @@ impl IngameState {
         let zoom = pz_lua_api::bind_core::shared_core()
             .borrow()
             .get_zoom(n as i32);
-        let (climate, screen) = self.render_settings(cx.lua, n, screen_rect, zoom);
+        let (climate, screen) = self.render_settings(cx.lua, n, screen_rect, layout.screen.1, zoom);
         pz_lua_api::hud::update_progress_bar(n);
         let Some(w) = cx.world.as_mut() else { return };
         // TODO(port): skip the world while the player is asleep and the
@@ -664,6 +671,12 @@ impl GameState for IngameState {
             cx.screen_w.max(1) as u32,
             cx.screen_h.max(1) as u32,
         );
+        // Keep `Core.num_players` aligned with the active split layout so
+        // `Core:getOffscreenWidth/Height(n)` and Lua queries match the rendered
+        // viewport divisions.
+        if let Ok(mut core) = pz_lua_api::bind_core::shared_core().try_borrow_mut() {
+            core.num_players = layout.num_players as i32;
+        }
         for n in 0..MAX_PLAYERS {
             let Some(p) = player(n) else {
                 // `MultiTextureFBO2.render`: fill empty slots up to the highest
@@ -740,5 +753,37 @@ mod split_screen_tests {
         assert!(sparse.is_empty_slot_to_fill(1, false));
         assert!(!sparse.is_empty_slot_to_fill(0, true));
         assert!(!sparse.is_empty_slot_to_fill(3, false));
+    }
+
+    #[test]
+    fn split_screen_params_use_viewport_dimensions_and_bottom_up_origin() {
+        // Two-player split (1920x1080) at zoom 1.5: each half is 960x1080.
+        let dual = SplitLayout::compute([true, true, false, false], 1, 1920, 1080);
+        let mut p1 = ScreenParams::default();
+        apply_split_screen_params(&mut p1, dual.screen_rect(1), dual.screen.1, 1.5, 2);
+        assert_eq!(p1.offscreen_left, 960.0);
+        assert_eq!(p1.offscreen_top, 0.0);
+        assert_eq!(p1.offscreen_width, 960.0 * 1.5);
+        assert_eq!(p1.offscreen_height, 1080.0 * 1.5);
+        assert_eq!(p1.zoom, 1.5);
+        assert_eq!(p1.tile_width, 64.0);
+
+        // Four-player split (1920x1080): top row occupies bottom-up y=[540, 1080],
+        // bottom row occupies bottom-up y=[0, 540].
+        let quad = SplitLayout::compute([true, true, true, true], 1, 1920, 1080);
+        let mut top_right = ScreenParams::default();
+        apply_split_screen_params(&mut top_right, quad.screen_rect(1), quad.screen.1, 2.0, 2);
+        assert_eq!(top_right.offscreen_left, 960.0);
+        assert_eq!(top_right.offscreen_top, 540.0);
+        assert_eq!(top_right.offscreen_width, 960.0 * 2.0);
+        assert_eq!(top_right.offscreen_height, 540.0 * 2.0);
+
+        let mut bottom_left = ScreenParams::default();
+        apply_split_screen_params(&mut bottom_left, quad.screen_rect(2), quad.screen.1, 1.0, 1);
+        assert_eq!(bottom_left.offscreen_left, 0.0);
+        assert_eq!(bottom_left.offscreen_top, 0.0);
+        assert_eq!(bottom_left.offscreen_width, 960.0);
+        assert_eq!(bottom_left.offscreen_height, 540.0);
+        assert_eq!(bottom_left.tile_width, 32.0);
     }
 }

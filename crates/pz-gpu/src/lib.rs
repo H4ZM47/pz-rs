@@ -1475,11 +1475,18 @@ impl Gpu {
                 // TextureFBO.startDrawing remembers the bound buffer.
                 if !matches!(f.target, PassTarget::WeatherFx(_)) {
                     f.fx_return = f.target;
+                    f.fx_origin = f.origin;
                 }
+                // Weather-mask FBOs are player-sized; reset any split-screen
+                // shared-buffer viewport origin while drawing into them.
+                f.origin = (0, 0);
                 f.target = PassTarget::WeatherFx(i);
                 f.passes.push(PassDesc { target: f.target, clear: true, mipmaps: false, scene: None, batches: f.batches.len()..f.batches.len() });
             }
-            DrawCmd::WeatherFxEnd => f.target = f.fx_return,
+            DrawCmd::WeatherFxEnd => {
+                f.target = f.fx_return;
+                f.origin = f.fx_origin;
+            }
             DrawCmd::FogCircle { sprite, width, height } => {
                 // The shader's own u_mvp, flipped like any texture target's.
                 let mut m = gl::ortho2d(0.0, *width, *height, 0.0);
@@ -2369,6 +2376,8 @@ struct FrameBuilder {
     origin: (u32, u32),
     /// The origin `ChunkEnd` brings back.
     chunk_origin: (u32, u32),
+    /// The origin `WeatherFxEnd` brings back.
+    fx_origin: (u32, u32),
     /// What `AtlasBegin` saved: target, projection, viewport, GL state.
     atlas_stack: Vec<AtlasSave>,
     /// The target `OutlineEnd` returns to.
@@ -2403,6 +2412,7 @@ impl Default for FrameBuilder {
             viewport: (1, 1),
             origin: (0, 0),
             chunk_origin: (0, 0),
+            fx_origin: (0, 0),
             atlas_stack: Vec::new(),
             outline_return: PassTarget::Main,
             outline_uniforms: Vec::new(),

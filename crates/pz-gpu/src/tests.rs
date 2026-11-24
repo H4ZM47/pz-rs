@@ -625,3 +625,29 @@ fn vbo_torus_fades_its_far_half() {
     assert!(near_rgb(px(&p, 32, 23, 16), [0, 0, 56]), "{:?}", px(&p, 32, 23, 16));
     assert_eq!(px(&p, 32, 16, 16)[..3], [0, 0, 0]);
 }
+
+/// Entering `WeatherFxBegin` from a non-zero split-screen viewport must reset
+/// the viewport origin to `(0, 0)` for the player-sized weather target, and
+/// `WeatherFxEnd` must restore the split-screen origin for subsequent draws.
+#[test]
+fn weather_fx_resets_and_restores_split_viewport_origin() {
+    let Some(mut g) = gpu(16, 8) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    // Player 1 occupies the right half (x=8..16, y=0..8) of the 16x8 target.
+    dl.cmds.push(DrawCmd::Viewport { x: 8, y: 0, width: 8, height: 8 });
+    dl.cmds.push(DrawCmd::Ortho { left: 0.0, right: 8.0, bottom: 8.0, top: 0.0, width: 8, height: 8 });
+    // Weather mask target is player-sized (8x8); must draw at origin (0, 0)
+    // without exceeding the attachment bounds.
+    dl.cmds.push(DrawCmd::WeatherFxBegin { index: 0, width: 8, height: 8 });
+    dl.cmds.push(DrawCmd::Ortho { left: 0.0, right: 8.0, bottom: 8.0, top: 0.0, width: 8, height: 8 });
+    dl.render_rect(0, 0, 8, 8, Rgba(1.0, 0.0, 0.0, 1.0));
+    dl.cmds.push(DrawCmd::WeatherFxEnd);
+    dl.cmds.push(DrawCmd::Ortho { left: 0.0, right: 8.0, bottom: 8.0, top: 0.0, width: 8, height: 8 });
+    // Subsequent draw must return to player 1's right-half viewport (x=8..16).
+    dl.render_rect(0, 0, 8, 8, Rgba(0.0, 1.0, 0.0, 1.0));
+    g.render_frame(&[(opaque_black(16, 8), &dl)], &mut tm);
+    let p = g.read_pixels();
+    assert_eq!(px(&p, 16, 4, 4)[..3], [0, 0, 0], "left half stays untouched");
+    assert_eq!(px(&p, 16, 12, 4)[..3], [0, 255, 0], "right half restored after WeatherFxEnd");
+}
