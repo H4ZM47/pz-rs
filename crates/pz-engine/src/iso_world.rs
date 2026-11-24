@@ -694,8 +694,8 @@ impl IsoWorld {
             // stories and `RZS*` zone stories lists (`randomizedBuildingList`,
             // `randomizedVehicleStoryList`, `randomizedZoneList`).
         }
-        // TODO(port): `RBBasic.getUniqueRDSSpawned().clear()`;
-        // `BodyDamageSync` (network only).
+        pz_lua_api::bind_randomized_world::clear_unique_rds_spawned();
+        // TODO(port): `BodyDamageSync` (network only).
         self.saved_world_version = self.read_world_version();
         // `map_ver.bin`: the map the save was made on.
         if let Some(v) =
@@ -1516,6 +1516,9 @@ end
                     .map_err(|error|format!("metadata StringUTF diagnostics host failure: {error:?}"))?;
                 pz_lua_api::bind_safehouse::install_safehouses(
                     self.meta_world.safehouses.iter().map(|s| [s.x, s.y, s.w, s.h]).collect(),
+                );
+                pz_lua_api::bind_randomized_world::install_unique_rds_spawned(
+                    &self.meta_world.unique_rds_spawned,
                 );
                 match result {
                     Ok(())=>{},
