@@ -1528,23 +1528,6 @@ impl IsoWorld {
                     pz_lua_api::bind_audio::sound_system().borrow_mut().play_world_clip(&name,
                         [x as f32 + 0.5, y as f32 + 0.5, z as f32], true);
                 }
-                SimEvent::BulletHitSound { chr: target_id, sound, .. } => {
-                    let pos = self
-                        .zombies
-                        .iter()
-                        .find(|z| z.id == target_id)
-                        .map(|z| [z.vars.x, z.vars.y, z.vars.z])
-                        .or_else(|| {
-                            local_players().iter().flatten().find_map(|p| {
-                                let c = p.try_borrow().ok()?;
-                                (c.id == target_id).then_some([c.vars.x, c.vars.y, c.vars.z])
-                            })
-                        })
-                        .unwrap_or([0.0; 3]);
-                    pz_lua_api::bind_audio::sound_system()
-                        .borrow_mut()
-                        .play_world_clip(&sound, pos, true);
-                }
                 SimEvent::RoomAlarm(room) => {
                     if let Err(error) = pz_lua_api::bind_world::power::trigger_room_alarm(room) {
                         self.log_update_error(format!("AmbientStreamManager.doAlarm: {error}"));
