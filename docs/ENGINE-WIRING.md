@@ -1466,10 +1466,11 @@ registered):
       `fire::fighting::{get_square_to_extinguish, get_extinguisher}` with
       an `ExtinguisherItem` view of the inventory items.
 - [x] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
-- [ ] Zombie vehicle checks (`isVehicleBetween`, `DistToSquared(vehicle)`)
-      read `IsoChunk.vehicles.loaded()` (#88/#91); once the vehicle runtime
-      replaces those entries with its own objects, route these through
-      the cell's vehicle list instead.
+- [x] Zombie vehicle checks (`isVehicleBetween`, `DistToSquared(vehicle)`):
+      `pz-world-states/src/vehicles.rs` queries live `pz_vehicles::manager`
+      runtime vehicles (falling back to `IsoChunk.vehicles.loaded()` for
+      unpromoted chunk vehicles) and `EngineStates::vehicle_box` resolves
+      `VehicleScript` extents/center-of-mass from `ScriptManager` (#88/#91).
 - [x] Erosion: `ErosionMain::new(tables from jar, ErosionSettings from
       sandbox/GameTime, sprites, None = host time zone, OnInitSeasons hook)` at
       world load; pass `ErosionChunkHook { main, hooks: &ObjectHooks,
