@@ -216,6 +216,9 @@ pub struct IsoWorld {
     pub preset: String,
     /// `IsoCell.getZombieList()`: the real zombies.
     pub zombies: Vec<LuaGameCharacter>,
+    /// `ReanimatedPlayers.instance.zombies`: tracked reanimated former players
+    /// waiting for their chunk to load (or stored after chunk unload).
+    pub reanimated_players: Vec<LuaGameCharacter>,
     /// The stand-ins the local players' cells hold while their characters
     /// are lent to [`Self::zombies`] (`IsoWorld::lend_players`).
     pub player_stand_ins: Vec<LuaGameCharacter>,
@@ -365,6 +368,7 @@ impl IsoWorld {
             important_areas: pz_world::ImportantAreaManager::new(),
             preset: String::new(),
             zombies: Vec::new(),
+            reanimated_players: Vec::new(),
             player_stand_ins: Vec::new(),
             next_object_id: 0,
             states_runtime: Default::default(),
@@ -1062,8 +1066,9 @@ impl IsoWorld {
         if let Some(db) = self.player_db.as_mut() {
             db.can_save_players = true;
         }
-        // TODO(port): `TutorialManager.activeControlZombies`;
-        // `ReanimatedPlayers.loadReanimatedPlayers`.
+        // TODO(port): `TutorialManager.activeControlZombies`.
+        // `ReanimatedPlayers.loadReanimatedPlayers()`.
+        self.load_reanimated_players(no_save);
         if let Some(p) = pz_lua_api::bind_players::player_instance() {
             // `ScriptManager.checkAutoLearn` & `checkMetaRecipes`.
             // TODO(port): `VerifyAllCraftRecipesAreLearnable`.
@@ -1742,6 +1747,90 @@ end
             m.world_y = wy;
         }
         Ok(())
+    }
+
+    /// `ReanimatedPlayers.loadReanimatedPlayers()`: reads `reanimated.bin`
+    /// (skipped when `no_save` or missing) into [`Self::reanimated_players`],
+    /// enters each loaded zombie's default state, and moves any whose chunk is
+    /// already in the cell into [`Self::zombies`].
+    pub(crate) fn load_reanimated_players(&mut self, no_save: bool) {
+        self.reanimated_players.clear();
+        if no_save {
+            return;
+        }
+        let path = self.file_in_save("reanimated.bin");
+        if !path.is_file() {
+            return;
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.log_error(format!("ReanimatedPlayers.loadReanimatedPlayers: {e}"));
+                return;
+            }
+        };
+        let (Some(tables), Some(items)) = (self.save_tables.as_ref(), self.items.as_ref()) else {
+            self.log_error("ReanimatedPlayers.loadReanimatedPlayers: missing save_tables or items");
+            return;
+        };
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let chars_ref = pz_lua_api::bind_characters::shared_characters();
+        let ctx = DefaultSimContext;
+        let env = SaveEnv { items, tables };
+        let mut tracked: Vec<LuaGameCharacter> = Vec::new();
+        let mut next_id = self.next_object_id;
+        let mut err_msg: Option<String> = None;
+        {
+            let mut chars = chars_ref.borrow_mut();
+            let res = pz_characters::character::save::load_reanimated_players(
+                &sm,
+                &mut chars,
+                &ctx,
+                &env,
+                &bytes,
+                &mut |chars| {
+                    let mut create = || Ok(Rc::new(RefCell::new(chars.create_survivor(&sm)?)));
+                    let mut z = pz_characters::character::GameCharacter::new_zombie(
+                        &sm,
+                        &ctx,
+                        pz_characters::character::zombie::ZombieSpawn {
+                            descriptor: None,
+                            create_survivor: &mut create,
+                        },
+                    )?;
+                    next_id += 1;
+                    z.id = next_id;
+                    Ok(z)
+                },
+                &mut |z| {
+                    z.vars.on_fire = true;
+                },
+                &mut tracked,
+            );
+            if let Err(e) = res {
+                err_msg = Some(format!("ReanimatedPlayers.loadReanimatedPlayers: {e}"));
+            }
+            let mut world = pz_characters::character::state::NullWorld;
+            let mut cx = pz_characters::character::state::StateCx::new(&sm, &chars, &ctx, &mut world);
+            for z in &mut tracked {
+                z.set_default_state(&mut cx);
+            }
+        }
+        self.next_object_id = next_id;
+        self.reanimated_players = tracked;
+        if let Some(e) = err_msg {
+            self.log_error(e);
+        }
+        // Any reanimated player whose chunk is already resident enters the cell now.
+        let loaded_chunks: Vec<(i32, i32)> = with_world(|w| {
+            w.cell
+                .as_ref()
+                .map(|c| c.chunks.keys().copied().collect())
+                .unwrap_or_default()
+        });
+        for (wx, wy) in loaded_chunks {
+            self.add_reanimated_players_to_chunk(wx, wy);
+        }
     }
 
     /// `new IsoPlayer(cell)` as far as the port models it: a player
