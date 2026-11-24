@@ -27,6 +27,15 @@ pub fn install_safehouses(list: Vec<SafeHouseRect>) {
     SAFEHOUSES.with(|s| *s.borrow_mut() = list);
 }
 
+/// Whether world tile `(x, y)` lies inside any registered safehouse.
+pub fn is_in_safehouse(x: i32, y: i32) -> bool {
+    SAFEHOUSES.with(|list| {
+        list.borrow()
+            .iter()
+            .any(|&[sx, sy, w, h]| x >= sx && x < sx + w && y >= sy && y < sy + h)
+    })
+}
+
 pub(crate) fn register(thread: &mut Thread) {
     let class = expose_class(thread, CLASS, Some("java.lang.Object"));
     // getSafeHouse(IsoGridSquare): isSafeHouse(square, null, false), which

@@ -136,9 +136,9 @@ impl IngameState {
                     w.update_pathfinding();
                 }
             }
-            // TODO(port): `LootRespawn.update`, the vehicle sound
-            // `Manager`, `AnimEventEmulator`, `BodyDamageSync`,
-            // `VirtualVehicleManager.update`,
+            pz_lua_api::loot_respawn::update_from_sandbox(&mut cx.lua.thread);
+            // TODO(port): the vehicle sound `Manager`, `AnimEventEmulator`,
+            // `BodyDamageSync`, `VirtualVehicleManager.update`,
             // `LoopedRangedWeaponSounds`, `FliesSound`, `CorpseFlies`.
             pz_lua_api::item_sound::update();
             // `WorldMapVisited.update()`: its getInstance NPE (no meta grid)
@@ -412,10 +412,11 @@ impl GameState for IngameState {
         }
         // TODO(port): `IsoMarkers.instance.reset()`.
         pz_lua_api::bind_search_mode::reset();
+        pz_lua_api::loot_respawn::reset();
         // TODO(port): `ZomboidRadio.Reset`, `IsoWaveSignal.Reset`,
         // `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,
-        // `IsoGenerator`, `StashSystem`, `LootRespawn`, `VehicleCache`,
+        // `IsoGenerator`, `StashSystem`, `VehicleCache`,
         // `VehicleIDMap`, `IsoChunk`, `ChunkChecksum`,
         // the atlases and `FBORenderChunkManager.Reset`.
         // `IsoWorld.instance.KillCell()`: the cell and the world's state go.
