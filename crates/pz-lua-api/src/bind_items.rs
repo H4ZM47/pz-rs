@@ -1049,6 +1049,28 @@ fn register_inventory_item(thread: &mut Thread) {
     get!(b, "getMaxUses", |i| Value::from(i.get_max_uses()));
     get!(b, "isAlcoholic", |i| Value::from(i.is_alcoholic()));
     get!(b, "getAge", |i| f(i.get_age()));
+    b.method("setAge", |c| {
+        let age = num_arg(c, 1) as f32;
+        let item = this(c)?;
+        let mut item = item.borrow_mut();
+        if let pz_inventory::item::ItemKind::Food(food) = &mut item.kind {
+            food.age = age;
+        }
+        Ok(0)
+    });
+    get!(b, "getWorldZRotation", |i| f(i.world_z_rotation));
+    b.method("setWorldZRotation", |c| {
+        this(c)?.borrow_mut().world_z_rotation = num_arg(c, 1) as f32;
+        Ok(0)
+    });
+    get!(b, "isHumanCorpse", |i| Value::from(i.is_human_corpse()));
+    get!(b, "getLightStrength", |i| f(i.get_light_strength()));
+    get!(b, "canEmitLight", |i| Value::from(i.can_emit_light()));
+    get!(b, "getLightDistance", |i| Value::from(i.get_light_distance()));
+    get!(b, "isTorchCone", |i| Value::from(i.is_torch_cone()));
+    get!(b, "getTorchDot", |i| f(i.get_torch_dot()));
+    b.method("playActivateDeactivateSound", |_c| Ok(0));
+    b.method("syncItemFields", |_c| Ok(0));
     get!(b, "getOffAge", |i| Value::from(i.get_off_age()));
     get!(b, "getOffAgeMax", |i| Value::from(i.get_off_age_max()));
     get!(b, "getStressChange", |i| f(i.get_stress_change()));
@@ -1079,6 +1101,26 @@ fn register_inventory_item(thread: &mut Thread) {
     get!(b, "getColorGreen", |i| f(i.color_green));
     get!(b, "getColorBlue", |i| f(i.color_blue));
     get!(b, "getAttachedSlot", |i| Value::from(i.attached_slot));
+    b.method("setAttachedSlot", |c| {
+        this(c)?.borrow_mut().attached_slot = int_arg(c, 1);
+        Ok(0)
+    });
+    get!(b, "getAttachedSlotType", |i| opt_str(
+        i.attached_slot_type.as_deref()
+    ));
+    b.method("setAttachedSlotType", |c| {
+        let s = str_arg(c, 1).map(|s| s.to_string());
+        this(c)?.borrow_mut().attached_slot_type = s;
+        Ok(0)
+    });
+    get!(b, "getAttachedToModel", |i| opt_str(
+        i.attached_to_model.as_deref()
+    ));
+    b.method("setAttachedToModel", |c| {
+        let s = str_arg(c, 1).map(|s| s.to_string());
+        this(c)?.borrow_mut().attached_to_model = s;
+        Ok(0)
+    });
     get!(b, "getKeyId", |i| Value::from(match &i.kind {
         ItemKind::Key { key_id, .. } => *key_id,
         _ => i.key_id,
@@ -2542,5 +2584,48 @@ mod tests {
         assert_eq!(fish.borrow().world_scale, 0.5);
         let cut: Vec<bool> = r[6..].iter().map(|v| matches!(v, Value::Bool(true))).collect();
         assert_eq!(cut, [true, false, true, true]);
+    }
+
+    #[test]
+    fn item_rotation_attachment_age_and_light_methods() {
+        let mut t = Thread::new(pz_kahlua::TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        crate::bind_java_util::register(&mut t);
+        crate::bind_globals::register(&mut t);
+        register(&mut t);
+        let torch = make(ItemClass::Normal, "Torch", |tpl| {
+            tpl.light_distance = 10;
+            tpl.light_strength = 0.9;
+            tpl.torch_cone = true;
+            tpl.torch_dot = 0.65;
+        });
+        let food = make(ItemClass::Food, "Apple", |_| {});
+        t.globals().set_str("it", item_value(&torch));
+        t.globals().set_str("food", item_value(&food));
+        let r = run(
+            &mut t,
+            "food:setAge(4.5)
+             it:setWorldZRotation(90.0)
+             it:setAttachedSlot(2)
+             it:setAttachedSlotType('Belt')
+             it:setAttachedToModel('BeltLeft')
+             it:playActivateDeactivateSound()
+             it:syncItemFields()
+             return food:getAge(), it:getWorldZRotation(), it:getAttachedSlot(),
+                 it:getAttachedSlotType(), it:getAttachedToModel(),
+                 it:isHumanCorpse(), it:canEmitLight(), it:getLightStrength(),
+                 it:getLightDistance(), it:isTorchCone(), it:getTorchDot()",
+        );
+        assert_eq!(num(&r[0]), 4.5);
+        assert_eq!(num(&r[1]), 90.0);
+        assert_eq!(num(&r[2]), 2.0);
+        assert_eq!(r[3].as_str(), Some("Belt"));
+        assert_eq!(r[4].as_str(), Some("BeltLeft"));
+        assert!(!r[5].truthy());
+        assert!(r[6].truthy());
+        assert!((num(&r[7]) - 0.9).abs() < 1e-5);
+        assert_eq!(num(&r[8]), 10.0);
+        assert!(r[9].truthy());
+        assert!((num(&r[10]) - 0.65).abs() < 1e-5);
     }
 }
