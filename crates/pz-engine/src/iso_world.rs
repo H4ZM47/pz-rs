@@ -564,7 +564,8 @@ impl IsoWorld {
             // stories and `RZS*` zone stories lists (`randomizedBuildingList`,
             // `randomizedVehicleStoryList`, `randomizedZoneList`).
         }
-        // TODO(port): `RBBasic.getUniqueRDSSpawned().clear()`;
+        pz_lua_api::bind_fixing_rbbasic_markers::clear_unique_rds_spawned();
+        // TODO(port): rest of randomized building / vehicle story reset.
         // `BodyDamageSync` (network only).
         self.saved_world_version = self.read_world_version();
         // `map_ver.bin`: the map the save was made on.

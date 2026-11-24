@@ -18,6 +18,7 @@ pub mod bind_cheat_type;
 pub mod bind_characters;
 pub mod bind_audio;
 pub mod bind_erosion;
+pub mod bind_fixing_rbbasic_markers;
 pub mod bind_colors;
 pub mod bind_core;
 pub mod bind_craft_recipe_manager;
@@ -289,6 +290,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     world_menu_logic::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
     bind_item_picker::register(&mut mgr.thread);
+    bind_fixing_rbbasic_markers::register(&mut mgr.thread);
     bind_item_picker::install_event_sink(mgr.events.clone());
     bind_world_gen_utils::register(&mut mgr.thread, mgr.fs.clone());
     bind_world_gen_params::register(&mut mgr.thread);
