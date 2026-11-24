@@ -1498,9 +1498,9 @@ registered):
       `SpawnWorld` impl fed by the meta cell vehicle zones;
       `bind_vehicles::register` (#86; wired in `world_vehicles.rs` with
       `VehiclesDB2` SQLite `VehicleIds`, `RuntimeVehicleSaver`, and
-      `VirtualVehicleManager`; remaining: `VehicleDevices` radio bridge once
-      world radio lands, `saved_vehicle` seating, and `VehicleSounds` meta
-      repeats).
+      `VirtualVehicleManager`, and `VehicleDevices` radio bridge +
+      `EngineVehicleItems::channel_lists` in `world_radio.rs`/`world_vehicles.rs`;
+      remaining: `saved_vehicle` seating and `VehicleSounds` meta repeats).
 - [ ] `StateWorld` impl owners: characters by id, squares, PathHost
       (`path_*`, `path_cancel_request` → `PathfindService::cancel_request`,
       `resolve_collision`, `resolve_collision_radius`,
@@ -1578,9 +1578,9 @@ registered):
       `SpawnWorld` impl fed by the meta cell vehicle zones;
       `bind_vehicles::register` (#86; wired in `world_vehicles.rs` with
       `VehiclesDB2` SQLite `VehicleIds`, `RuntimeVehicleSaver`, and
-      `VirtualVehicleManager`; remaining: `VehicleDevices` radio bridge once
-      world radio lands, `saved_vehicle` seating, and `VehicleSounds` meta
-      repeats).
+      `VirtualVehicleManager`, and `VehicleDevices` radio bridge +
+      `EngineVehicleItems::channel_lists` in `world_radio.rs`/`world_vehicles.rs`;
+      remaining: `saved_vehicle` seating and `VehicleSounds` meta repeats).
 - [x] Player load (`PlayerDB.loadLocalPlayer`/`loadPlayer`): the bytes of
       `PlayerDb::load_local_player(sql_id)` (#100) go to
       `GameCharacter::load_player(sm, chars, ctx, SaveEnv { items:
@@ -1879,10 +1879,12 @@ registered):
       are `DeviceData::save_state/load_state`; generator draw is
       `generator_power_consumption` (#205). Single-player world
       radios/TVs (including TV screen overlays, lampposts, emitters,
-      `OnDeviceText` and `ObjectLoadHooks`) and equipped handheld radios
-      are wired in `pz-engine/src/world_radio.rs`; still open: vehicle
-      radio `pz_vehicles::env::set_devices`, `IsoGenerator.updateGenerator`
-      recalc, and multiplayer `RadioDeviceDataState` packets.
+      `OnDeviceText` and `ObjectLoadHooks`), equipped handheld radios, and
+      vehicle radios (`pz_vehicles::env::set_devices`, `EngineVehicleItems::channel_lists`,
+      broadcast delivery + `ChatElement` + cleanup) are wired in
+      `pz-engine/src/world_radio.rs` and `world_vehicles.rs`; still open:
+      `IsoGenerator.updateGenerator` recalc and multiplayer
+      `RadioDeviceDataState` packets.
 - [x] Radio Lua: `bind_radio::install_radio(Some(radio))` when the world
       radio exists (and `None` on reset), `radio_api_created()` after
       `ZomboidRadio.init`, `install_text` (Translator `getText` /

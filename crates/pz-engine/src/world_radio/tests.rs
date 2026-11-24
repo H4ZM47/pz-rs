@@ -664,3 +664,166 @@ fn installed_build42_radio_init_loads_vanilla_channels_and_media() {
     reset_louisville_obfuscation_for_test();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn vehicle_radio_bridge_updates_delivers_broadcasts_and_cleans_up() {
+    reset_louisville_obfuscation_for_test();
+    pz_vehicles::manager::reset();
+    let root = temp_dir("vehicle_radio");
+    let game_dir = root.join("game");
+    let cache_dir = root.join("cache");
+    let save_dir = root.join("save");
+    std::fs::create_dir_all(game_dir.join("media/radio")).unwrap();
+    std::fs::write(game_dir.join("media/radio/RadioData.xml"), minimal_radio_xml()).unwrap();
+    std::fs::create_dir_all(&save_dir).unwrap();
+
+    let mut lua = fresh_lua(&game_dir, &cache_dir);
+    eval_lua(
+        &mut lua,
+        r#"
+        _G.veh_texts = {}
+        Events.OnDeviceText.Add(function(guid, codes, x, y, z, line, device)
+            table.insert(_G.veh_texts, {
+                guid = guid,
+                codes = codes,
+                x = x,
+                y = y,
+                z = z,
+                line = line,
+                is_part = device ~= nil and device.getDeviceData ~= nil,
+            })
+        end)
+        "#,
+    );
+
+    let sm = pz_lua_api::bind_registry::shared_script_manager();
+    let player = Rc::new(RefCell::new(
+        pz_lua_api::bind_character_sim::LuaGameCharacter::new(
+            &sm,
+            pz_characters::CharacterKind::Player,
+        ),
+    ));
+    {
+        let mut c = player.borrow_mut();
+        c.vars.x = 20.5;
+        c.vars.y = 30.5;
+        c.vars.z = 0.0;
+    }
+    pz_lua_api::bind_players::set_player(0, Some(player.clone()));
+    pz_lua_api::bind_players::set_player_instance(Some(player));
+
+    let sb = Rc::new(RefCell::new(pz_sandbox::SandboxOptions::default()));
+    let render = Rc::new(RefCell::new(None));
+    let wr = WorldRadio::init(
+        &game_dir,
+        save_dir.clone(),
+        -1,
+        true,
+        &mut lua,
+        &sb,
+        None,
+        render.clone(),
+    )
+    .unwrap();
+
+    // `env::devices()` is now installed and sees the live local player.
+    let devices_bridge = pz_vehicles::env::devices();
+    assert_eq!(devices_bridge.local_players(), vec![Some((20.5, 30.5))]);
+
+    // `LiveRadioChannels` (used by `EngineVehicleItems::channel_lists`) sees `Knox FM`.
+    let chs = bind_radio::with_radio(|r| r.channel_list("Radio")).flatten();
+    assert!(
+        chs.as_ref()
+            .is_some_and(|list| list.iter().any(|(f, n)| *f == 91200 && n == "Knox FM")),
+        "expected Knox FM on 91200, got {chs:?}"
+    );
+
+    // Build a live vehicle near the player with a charged battery and a tuned Radio part.
+    let v = pz_vehicles::BaseVehicle::new();
+    {
+        let mut vst = v.st_mut();
+        vst.vehicle_id = 42;
+        vst.x = 21.0;
+        vst.y = 30.0;
+        vst.z = 0.0;
+    }
+    let radio_part = pz_vehicles::VehiclePart::new(&v);
+    radio_part.st_mut().device_data = Some(DeviceData {
+        is_turned_on: true,
+        is_battery_powered: true,
+        has_battery: true,
+        power_delta: 1.0,
+        channel: 91200,
+        device_volume: 1.0,
+        ..Default::default()
+    });
+    v.add_part(radio_part.clone());
+    pz_vehicles::manager::cell_add(&v);
+    pz_vehicles::manager::process_add_vehicles();
+
+    // Drive the vehicle signal device through `env::devices()` (same path as `BaseVehicle.update`).
+    {
+        let mut inner = devices_bridge
+            .device_env(&v, &radio_part)
+            .expect("WorldRadio must supply a DeviceEnv for vehicle parts");
+        let mut dd = radio_part.st_mut().device_data.take().unwrap();
+        let mut penv = pz_vehicles::devices::PartDeviceEnv {
+            inner: &mut *inner,
+            uninstalled: false,
+            has_power: true,
+            pos: [21.0, 30.0, 0.0],
+        };
+        let in_range = pz_inventory::device_sim::update_vehicle_part_device(
+            &mut dd,
+            &mut penv,
+            false,
+            false,
+            &devices_bridge.local_players(),
+        );
+        let mut pst = radio_part.st_mut();
+        pst.has_player_in_range = in_range;
+        pst.device_data = Some(dd);
+    }
+    assert!(radio_part.st().has_player_in_range);
+    assert!(radio_part.st().device_data.as_ref().unwrap().is_turned_on);
+    assert_eq!(wr.radio.borrow().devices().len(), 1);
+
+    // Activate Knox FM's broadcast window and deliver via `WorldRadio::update_radio`.
+    {
+        let mut r = wr.radio.borrow_mut();
+        let mut w = EngineRadioWorld::new(wr.state.clone(), wr.emitters.clone(), None, None);
+        let mut rng = |b: i32| pz_core::random::next(b);
+        r.update_scripts(9, 0, &mut w, &mut rng);
+        r.player_listens_channel(91200, true, false, &mut w);
+    }
+    wr.update_radio(&mut lua, None, &render);
+
+    assert_eq!(eval_str(&mut lua, "return #_G.veh_texts"), "1.0");
+    assert_eq!(eval_str(&mut lua, "return _G.veh_texts[1].line"), "RD_ln-1");
+    assert_eq!(eval_str(&mut lua, "return _G.veh_texts[1].codes"), "BOR-5");
+    assert_eq!(eval_str(&mut lua, "return _G.veh_texts[1].is_part"), "true");
+
+    // The vehicle part's own ChatElement received the broadcast line.
+    let has_chat = wr
+        .state
+        .borrow()
+        .vehicle_devices
+        .values()
+        .any(|e| e.chat.borrow().get_has_chat_to_display());
+    assert!(has_chat, "expected vehicle radio ChatElement to hold broadcast line");
+
+    // Removing the vehicle from the cell unregisters its signal device on sync.
+    pz_vehicles::manager::cell_remove(&v);
+    wr.sync_vehicle_devices();
+    assert!(wr.radio.borrow().devices().is_empty());
+    assert!(wr.state.borrow().vehicle_devices.is_empty());
+
+    // Resetting WorldRadio detaches `env::devices()`.
+    wr.reset(&render);
+    assert!(pz_vehicles::env::devices().local_players().is_empty());
+    pz_lua_api::bind_players::set_player(0, None);
+    pz_lua_api::bind_players::set_player_instance(None);
+    pz_vehicles::manager::reset();
+    reset_louisville_obfuscation_for_test();
+    let _ = std::fs::remove_dir_all(&root);
+}

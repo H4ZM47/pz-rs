@@ -668,6 +668,15 @@ impl VehicleEvents for EngineVehicleEvents {
     }
 }
 
+/// Dynamic [`ChannelLists`] forwarding to the active world's `ZomboidRadio`.
+struct LiveRadioChannels;
+
+impl pz_inventory::device::ChannelLists for LiveRadioChannels {
+    fn channel_list(&self, category: &str) -> Option<Vec<(i32, String)>> {
+        pz_lua_api::bind_radio::with_radio(|r| r.channel_list(category)).flatten()
+    }
+}
+
 /// [`ItemFactory`] creating script items for vehicle part creation and keys.
 struct EngineVehicleItems {
     sm: Rc<ScriptManager>,
@@ -680,6 +689,10 @@ impl ItemFactory for EngineVehicleItems {
         let mut item = InventoryItem::create(template, 0);
         item.id = pz_vehicles::rand::next(i32::MAX);
         Some(item)
+    }
+
+    fn channel_lists(&self) -> &dyn pz_inventory::device::ChannelLists {
+        &LiveRadioChannels
     }
 }
 
