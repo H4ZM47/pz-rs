@@ -701,9 +701,9 @@ impl IsoWorld {
         self.process_remove_items();
         self.process_iso_objects(lua);
         self.update_characters(lua, sim)?;
+        self.update_dead_bodies(lua, sim);
         // TODO(port): `ProcessStaticUpdaters`, `ObjectDeletionAddition`,
-        // `IsoDeadBody.updateBodies`, `FishSchoolManager.update` and the
-        // rain scroll.
+        // `FishSchoolManager.update` and the rain scroll.
         self.update_weather_fx();
         Ok(())
     }
@@ -785,6 +785,57 @@ impl IsoWorld {
                 .map(|cell| cell.process_items.drain_remove())
         });
         drop(removed);
+    }
+
+    /// `IsoDeadBody.updateBodies()`: advances corpse decay/skeleton stage,
+    /// removes decomposed/burnt corpses (`HoursForCorpseRemoval`), and
+    /// reanimates corpses whose `reanimate_time` has elapsed into live zombies.
+    pub(crate) fn update_dead_bodies(&mut self, lua: &mut LuaManager, sim: &FrameSim) {
+        let hours_for_corpse_removal = crate::iso_world::sandbox(lua)
+            .and_then(|sb| {
+                let sb = sb.borrow();
+                sb.option_by_name("HoursForCorpseRemoval")
+                    .and_then(|o| o.config.get_value_as_string().parse::<f32>().ok())
+            })
+            .unwrap_or(216.0);
+        let cfg = pz_world::dead_body::update::DeadBodyUpdateConfig {
+            world_age_hours: sim.world_age_hours as f32,
+            hours_for_corpse_removal,
+        };
+        let Some(report) = with_world(|w| {
+            w.cell
+                .as_mut()
+                .map(|cell| pz_world::dead_body::update::update_bodies(cell, cfg))
+        }) else {
+            return;
+        };
+        if !report.reanimated.is_empty() {
+            let sm = pz_lua_api::bind_registry::shared_script_manager();
+            for body_ref in report.reanimated {
+                let Ok(body) = body_ref.try_borrow() else {
+                    continue;
+                };
+                let mut z = LuaGameCharacter::new(&sm, pz_characters::character::CharacterKind::Zombie);
+                self.next_object_id = self.next_object_id.wrapping_add(1);
+                z.id = self.next_object_id;
+                z.vars.x = body.base.x;
+                z.vars.y = body.base.y;
+                z.vars.z = body.base.z;
+                z.vars.last_x = body.base.x;
+                z.vars.last_y = body.base.y;
+                z.vars.last_z = body.base.z;
+                z.vars.dir = pz_world::IsoDirections::ALL
+                    .get(body.base.dir as usize)
+                    .copied()
+                    .unwrap_or(pz_world::IsoDirections::S);
+                z.vars.crawling = body.crawling;
+                z.zombie.female = body.female;
+                z.zombie.persistent_outfit_id = body.persistent_outfit_id;
+                z.zombie.fake_dead = body.fake_dead;
+                z.zombie.reanimated_player = !body.was_zombie;
+                self.zombies.push(z);
+            }
+        }
     }
 
     /// `ProcessObjects` through `MovingObjectUpdateScheduler.update`: each
@@ -2983,5 +3034,46 @@ mod quit_save_tests {
                 fail_prefix
             );
         }
+    }
+
+    #[test]
+    fn update_dead_bodies_reanimates_due_corpse_into_live_zombie() {
+        let (fixture, mut world, mut lua) = Fixture::new(true, "Sandbox", true);
+        let mut body = pz_world::save::visual::IsoDeadBody::for_tests(5.5, 6.5, 0.0);
+        body.death_time = 1.0;
+        body.reanimate_time = 2.5;
+        body.was_zombie = false;
+        body.female = true;
+        body.crawling = true;
+        body.persistent_outfit_id = 77;
+        with_world(|w| {
+            let cell = w.cell.as_mut().unwrap();
+            let mut chunk = pz_world::IsoChunk::new(0, 0);
+            let mut sq = pz_world::IsoGridSquare::new(5, 6, 0);
+            sq.static_moving.push(Rc::new(RefCell::new(body)));
+            chunk.set_square(5, 6, 0, Some(sq.into()));
+            cell.chunks.insert((0, 0), chunk);
+        });
+        let mut sim = FrameSim::capture();
+        sim.world_age_hours = 3.0;
+        assert!(world.zombies.is_empty());
+        world.update_dead_bodies(&mut lua, &sim);
+        assert_eq!(world.zombies.len(), 1);
+        let z = &world.zombies[0];
+        assert!((z.vars.x - 5.5).abs() < 1e-4 && (z.vars.y - 6.5).abs() < 1e-4);
+        assert!(z.zombie.reanimated_player);
+        assert!(z.zombie.female);
+        assert!(z.vars.crawling);
+        assert_eq!(z.zombie.persistent_outfit_id, 77);
+        assert!(with_world(|w| w
+            .cell
+            .as_ref()
+            .unwrap()
+            .get_grid_square(5, 6, 0)
+            .unwrap()
+            .borrow()
+            .static_moving
+            .is_empty()));
+        drop(fixture);
     }
 }
