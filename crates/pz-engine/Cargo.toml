@@ -40,6 +40,10 @@ pz-player-input.workspace = true
 pz-lighting.workspace = true
 pz-text.workspace = true
 pz-clipper.workspace = true
+pz-bullet.workspace = true
+pz-sqlite.workspace = true
+pz-vehicles.workspace = true
+pz-vehicle-render = { path = "../pz-vehicle-render" }
 winit = "0.30"
 sha2 = "0.10.9"
 

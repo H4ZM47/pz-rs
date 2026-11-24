@@ -639,12 +639,33 @@ impl WorldRender {
 
     /// One player's world frame (`FBORenderCell.renderInternal` and what
     /// `IsoWorld.render` draws around it), appended to `out`.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     fn render_player(
         &mut self,
         view: &WorldView<'_>,
         v: &mut RenderView,
         models: Option<&mut WorldModels>,
         zombies: &[LuaGameCharacter],
+        regions: &IsoRegions,
+        weather_fx: Option<&RefCell<IsoWeatherFx>>,
+        out: &mut Vec<DrawCmd>,
+    ) {
+        self.render_player_inner(view, v, models, zombies, None, regions, weather_fx, out);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_player_inner(
+        &mut self,
+        view: &WorldView<'_>,
+        v: &mut RenderView,
+        models: Option<&mut WorldModels>,
+        zombies: &[LuaGameCharacter],
+        vehicles: Option<(
+            &crate::world_vehicles::WorldVehicles,
+            &GameFs,
+            &std::rc::Rc<std::cell::RefCell<TextureManager>>,
+        )>,
         regions: &IsoRegions,
         weather_fx: Option<&RefCell<IsoWeatherFx>>,
         out: &mut Vec<DrawCmd>,
@@ -680,7 +701,7 @@ impl WorldRender {
                 view,
                 &input,
                 &mut v.climate,
-                &NoWorldHooks,
+                &VehicleTorchesHooks,
                 nanos,
                 &on_screen,
             ) {
@@ -842,6 +863,32 @@ impl WorldRender {
             // entries ready.
             if cam3.is_none() {
                 self.render_corpses(view, v, &cam, models, &mut objects, &mut corpse_jobs);
+            }
+        }
+        if let Some((wv, fs, tm)) = vehicles {
+            let vcam = match &cam3 {
+                Some(c3) => pz_iso_render::models::ModelCamera::perspective(
+                    &cam,
+                    c3.view(),
+                    c3.projection(aspect),
+                ),
+                None => pz_iso_render::models::ModelCamera::new(
+                    &cam,
+                    v.width as f32 * v.zoom,
+                    v.height as f32 * v.zoom,
+                ),
+            };
+            if let Ok(mut textures) = tm.try_borrow_mut() {
+                wv.render_vehicles(
+                    view,
+                    p,
+                    v.climate.climate.ambient,
+                    &vcam,
+                    &self.lighting,
+                    fs,
+                    &mut textures,
+                    &mut objects,
+                );
             }
         }
         // Port extension: the 3D view (pz-world3d) replaces the isometric
@@ -1042,6 +1089,17 @@ fn surface_values() -> (SurfaceSettings, f32) {
     (settings, age)
 }
 
+/// `WorldHooks` forwarding active vehicle headlights into `LightingJNI.checkLights`.
+struct VehicleTorchesHooks;
+
+impl pz_world::SquareHooks for VehicleTorchesHooks {}
+
+impl pz_world_render::WorldHooks for VehicleTorchesHooks {
+    fn torches(&self) -> Vec<pz_lighting::jni::TorchInfo> {
+        crate::world_vehicles::cell_torches()
+    }
+}
+
 impl IsoWorld {
     /// `IsoWorld.render()` for `view.player` (the camera character is
     /// `IsoPlayer.players[view.player]`), appended to `out`.
@@ -1072,6 +1130,7 @@ impl IsoWorld {
             regions,
             models,
             zombies,
+            vehicles_runtime,
             ..
         } = self;
         let regions_owner = regions.as_ref().ok_or(RuntimeHostError::Unsupported {
@@ -1151,7 +1210,16 @@ impl IsoWorld {
                 r.update_view3d(view.dir.delta());
             }
             let weather_fx = w.weather_fx.clone();
-            r.render_player(&wv, view, models.as_mut(), zombies, regions, weather_fx.as_deref(), out);
+            r.render_player_inner(
+                &wv,
+                view,
+                models.as_mut(),
+                zombies,
+                vehicles_runtime.as_ref().map(|v| (v, &*fs, tm)),
+                regions,
+                weather_fx.as_deref(),
+                out,
+            );
             check_changed_buildings(&mut r.lighting, &mut r.caches, &mut r.pending, num_players);
             Ok(())
         })?;

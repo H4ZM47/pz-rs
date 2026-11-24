@@ -1491,12 +1491,16 @@ registered):
       then `update_main(vehicles, seating, movers)`; `remove(id)` when a
       character leaves; postupdate calls `PathHost::resolve_collision(_radius)`
       on the same host (#60).
-- [ ] Vehicles: `world_sim::set_world_bounds` + `create()` at world load
-      (`destroy()` on exit) with a `VehiclePhysics` impl (pz-bullet once it
-      lands; `NoPhysics` until then); `manager::process_add_vehicles()` and
-      `update_frame()` per frame; `spawn` (`IsoChunk.AddVehicles`) from the
-      chunk loader through a `SpawnWorld` impl fed by the meta cell vehicle
-      zones; `bind_vehicles::register` (#86).
+- [x] Vehicles: `world_sim::set_world_bounds` + `create()` at world load
+      (`destroy()` on exit) with a `VehiclePhysics` impl (`PzBullet`);
+      `manager::process_add_vehicles()` and `update_frame()` per frame;
+      `spawn` (`IsoChunk.AddVehicles`) from the chunk loader through a
+      `SpawnWorld` impl fed by the meta cell vehicle zones;
+      `bind_vehicles::register` (#86; wired in `world_vehicles.rs` with
+      `VehiclesDB2` SQLite `VehicleIds`, `RuntimeVehicleSaver`, and
+      `VirtualVehicleManager`; remaining: `VehicleDevices` radio bridge once
+      world radio lands, `saved_vehicle` seating, and `VehicleSounds` meta
+      repeats).
 - [ ] `StateWorld` impl owners: characters by id, squares, PathHost
       (`path_*`, `path_cancel_request` → `PathfindService::cancel_request`,
       `resolve_collision`, `resolve_collision_radius`,
@@ -1543,35 +1547,40 @@ registered):
       host.service_mut(), sprites, meta, bits_hooks: &ObjectHooks })` as
       `MutationEnv`'s `PathfindSquareHooks`; compile-checked against #97
       d844ab0 (#60, #97).
-- [ ] Chunk physics after square edits: once per frame, drain the world
-      renderer's `PendingRender::physics` into
-      `pz_vehicles::chunk_physics::ChunkPhysics::mark_physics_dirty(cell, ..)`
-      (`IsoChunk.checkPhysicsLater`); `ChunkPhysics::update_if_needed` then
-      rebuilds them from Bullet's step callback (#86, #99).
-- [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
-      (#86).
-- [ ] Vehicle models: `VehicleModelSet::create` when a vehicle is added to
+- [x] Chunk physics after square edits: chunk handoff and dirty `IsoChunk`
+      levels route through `pz_vehicles::chunk_physics::ChunkPhysics`
+      (`check_physics_later` / `mark_physics_dirty`) and rebuild into
+      `PzBullet` from the physics step callback (`update_if_needed`) (#86,
+      #99; wired in `world_vehicles.rs`).
+- [x] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
+      (#86; `PathfindVehicles` wired into `world_update::update_pathfinding`).
+- [x] Vehicle models: `VehicleModelSet::create` when a vehicle is added to
       the world (`ModelManager.addVehicle`), `sync` after part model
       visibility changes, `update_animations(unmoddedMultiplier)` in
-      `postupdate` (#90).
-- [ ] Vehicle lights → lighting: `WorldHooks::torches` returns the
-      players' light-item torches, then
+      `postupdate` (#90; wired in `world_vehicles.rs`, loaded with
+      `reflections: false` until sky-box vehicle reflections are wired).
+- [x] Vehicle lights → lighting: `WorldHooks::torches` returns
       `pz_vehicle_render::lights::cell_torches(cell vehicles)`
       (`LightingJNI.checkLights`; pz-lighting's `check_lights` sends
-      z + 32 and removes stale torches). Per vehicle a
-      `lights::LightbarWorldLights::new` (`createParts`); the engine's
-      `pz_vehicles::env::VehicleEvents` impl forwards
+      z + 32 and removes stale torches; player light-item torches remain open).
+      Per vehicle a `lights::LightbarWorldLights::new` (`createParts`); the
+      engine's `pz_vehicles::env::VehicleEvents` impl forwards
       `lightbar_world_lights(vehicle, state)` (`updateWorldLights`, from
       `BaseVehicle.update`) to that vehicle's `LightbarWorldLights::apply(
       vehicle, state, &mut cell's WorldLighting)`, and calls `remove` on
       `removeFromWorld`; it adds/removes lampposts through
-      `WorldLighting::add_lamppost`/`remove_lamppost` (#90).
-- [ ] Vehicles: `world_sim::set_world_bounds` + `create()` at world load
-      (`destroy()` on exit) with a `VehiclePhysics` impl (pz-bullet once it
-      lands; `NoPhysics` until then); `manager::process_add_vehicles()` and
-      `update_frame()` per frame; `spawn` (`IsoChunk.AddVehicles`) from the
-      chunk loader through a `SpawnWorld` impl fed by the meta cell vehicle
-      zones; `bind_vehicles::register` (#86).
+      `WorldLighting::add_lamppost`/`remove_lamppost` (#90; wired in
+      `world_vehicles.rs` and `world_render.rs`).
+- [x] Vehicles: `world_sim::set_world_bounds` + `create()` at world load
+      (`destroy()` on exit) with a `VehiclePhysics` impl (`PzBullet`);
+      `manager::process_add_vehicles()` and `update_frame()` per frame;
+      `spawn` (`IsoChunk.AddVehicles`) from the chunk loader through a
+      `SpawnWorld` impl fed by the meta cell vehicle zones;
+      `bind_vehicles::register` (#86; wired in `world_vehicles.rs` with
+      `VehiclesDB2` SQLite `VehicleIds`, `RuntimeVehicleSaver`, and
+      `VirtualVehicleManager`; remaining: `VehicleDevices` radio bridge once
+      world radio lands, `saved_vehicle` seating, and `VehicleSounds` meta
+      repeats).
 - [x] Player load (`PlayerDB.loadLocalPlayer`/`loadPlayer`): the bytes of
       `PlayerDb::load_local_player(sql_id)` (#100) go to
       `GameCharacter::load_player(sm, chars, ctx, SaveEnv { items:
@@ -1921,14 +1930,16 @@ registered):
 - [ ] Feed corpses, world items and fireplace state from pz-world (#87, #76).
 - [x] Lighting pass reads `ClimateManager::render_values` (#49): `IngameState.render_settings` builds
       the `ClimateSettings` the lighting frame takes from them.
-- [ ] Vehicles in `FrameObjects.moving` (cell object-list order): per
+- [x] Vehicles in `FrameObjects.moving` (cell object-list order): per
       vehicle `update_transform`, `instance.update_lights`,
       `instance.do_damage_overlay` (when `doDamageOverlay` is flagged or the
       blood-decal option changes), then `render_vehicle_object` with a
       `VehicleFrame` (alpha, `interpolateLight` ambient, the square's
       result lights as `SquareLight::from_result_lights(
       WorldLighting::result_lights(player, x, y, z))`, square light/seen,
-      sky box textures + shift, `media/vehicleShadow.png`) (#90).
+      `media/vehicleShadow.png`; reflective sky-box textures remain open on
+      the reflections row below) (#90; wired in `world_vehicles.rs` +
+      `world_render.rs`).
 - [ ] Character model lights: per character and player
       `PlayerLightData::update(&LightContext { result_lights:
       WorldLighting::result_lights(player, square).to_vec(), .. })`
