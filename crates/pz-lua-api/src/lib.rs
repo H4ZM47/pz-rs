@@ -58,6 +58,7 @@ pub mod bind_nutrition;
 pub mod bind_performance;
 pub mod bind_object_picker;
 pub mod bind_safehouse;
+pub mod bind_seating;
 mod world_menu_logic;
 pub mod bind_players;
 pub mod bind_popman;
@@ -278,6 +279,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_map_symbols::register(mgr);
     bind_designation::register(&mut mgr.thread);
     bind_world::register_with_events(&mut mgr.thread, mgr.events.clone());
+    bind_seating::register(&mut mgr.thread, Some(&mgr.fs));
     bind_world::lua_world::register(&mut mgr.thread, mgr.fs.clone());
     bind_basements::register(&mut mgr.thread);
     bind_bent_fences::register(&mut mgr.thread);
