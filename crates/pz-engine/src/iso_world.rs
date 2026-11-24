@@ -702,8 +702,8 @@ impl IsoWorld {
             &pz_classfile::Jar::open(self.jar()).map_err(|e| e.to_string())?,
         )?));
         // TODO(port): `AnimalDefinitions.getAnimalDefs()`
-        // (`pz_animals::AnimalDefinitionTables::load`), `WeatherFxMask.init`,
-        // `TemplateText.Initialize`.
+        // (`pz_animals::AnimalDefinitionTables::load`), `WeatherFxMask.init`.
+        pz_lua_api::bind_template_text::initialize(&mut lua.thread);
         // `IsoRegions.init()`.
         let chunk_grid_width = {
             let c = core_rc.borrow();
