@@ -53,4 +53,5 @@ pub fn reset_session_bindings() {
     crate::bind_erosion::set_instance(None);
     crate::bind_world::set_cell(None);
     crate::bind_world::set_meta_grid(None);
+    crate::worldmap::map_definitions::reset();
 }

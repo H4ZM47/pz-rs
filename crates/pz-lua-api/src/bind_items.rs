@@ -304,6 +304,9 @@ impl ItemEnv for CreateEnv<'_> {
     fn get_text(&self, key: &str) -> String {
         crate::bind_text::translate(key)
     }
+    fn map_definitions(&self) -> Vec<String> {
+        crate::worldmap::map_definitions::definitions()
+    }
     fn script_actual_weight(&self, name: &str) -> Option<f32> {
         let s = self
             .sm
