@@ -412,10 +412,11 @@ impl GameState for IngameState {
         }
         // TODO(port): `IsoMarkers.instance.reset()`.
         pz_lua_api::bind_search_mode::reset();
+        pz_lua_api::bind_stash::reset();
         // TODO(port): `ZomboidRadio.Reset`, `IsoWaveSignal.Reset`,
         // `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,
-        // `IsoGenerator`, `StashSystem`, `LootRespawn`, `VehicleCache`,
+        // `IsoGenerator`, `LootRespawn`, `VehicleCache`,
         // `VehicleIDMap`, `IsoChunk`, `ChunkChecksum`,
         // the atlases and `FBORenderChunkManager.Reset`.
         // `IsoWorld.instance.KillCell()`: the cell and the world's state go.
