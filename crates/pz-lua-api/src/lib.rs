@@ -31,6 +31,7 @@ pub mod bind_process_items;
 pub mod item_sound;
 pub mod bind_combat;
 pub mod bind_input;
+pub mod bind_iso_animal;
 pub mod bind_joypad;
 pub mod bind_fs;
 pub mod bind_global_objects;
@@ -255,6 +256,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
     bind_character_sim::register_shared(&mut mgr.thread);
+    bind_iso_animal::register(&mut mgr.thread);
     bind_recipe_manager::register(
         &mut mgr.thread,
         bind_registry::shared_script_manager(),
