@@ -178,6 +178,8 @@ pub struct IsoWorld {
     /// The save's item registry: `WorldDictionary.data` over the scripts
     /// (`None` until `WorldDictionary.init()` read a `WorldDictionary.bin`).
     pub items: Option<pz_inventory::factory::ScriptItems>,
+    /// `ItemConfigurator` selector ID tables populated after `OnLoadedMapZones`.
+    pub item_configurator: pz_inventory::item_configurator::ItemConfigurator,
     /// `WorldStreamer.instance` with the chunk maps.
     pub streamer: Option<ChunkStreamer>,
     /// A failed native activation stops subsequent handoffs and retains the
@@ -334,6 +336,7 @@ impl IsoWorld {
             player_db: None,
             dictionary_new_game: false,
             items: None,
+            item_configurator: pz_inventory::item_configurator::ItemConfigurator::new(),
             streamer: None,
             failed_chunk_activation: None,
             meta_world: MetaWorld::default(),
@@ -385,6 +388,59 @@ impl IsoWorld {
         let e = e.into();
         eprintln!("ERROR: IsoWorld.init: {e}");
         self.errors.push(e);
+    }
+
+    /// `ItemConfigurator.Preprocess()` from the loaded `IsoMetaGrid`,
+    /// `IsoSpriteManager`, and `ScriptManager`.
+    pub fn preprocess_item_configurator(&mut self, sm: &pz_scripts::ScriptManager) {
+        let mut zones: Vec<(String, String)> = Vec::new();
+        let mut rooms: Vec<String> = Vec::new();
+        with_world(|w| {
+            if let Some(meta) = w.meta_grid.as_ref() {
+                for &zid in &meta.zones {
+                    let z = meta.zone(zid);
+                    zones.push((z.name.clone(), z.zone_type.clone()));
+                }
+                for &bid in &meta.buildings {
+                    if let Some(b) = meta.building_defs.get(bid.0 as usize) {
+                        for &rid in &b.rooms {
+                            if let Some(r) = meta.room_defs.get(rid.0 as usize) {
+                                rooms.push(r.name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let mut container_props: Vec<String> = Vec::new();
+        let mut tile_sprites: Vec<(String, i32)> = Vec::new();
+        if let Some(sprites_rc) = self.sprites.as_ref() {
+            let sprites = sprites_rc.borrow();
+            let flag = sprites.tables.flag.container;
+            for &idx in sprites.named_map.values() {
+                if let Some(sp) = sprites.sprites.get(idx) {
+                    if sp.properties.has(flag) {
+                        if let Some(val) = sp.properties.get(&sprites.alias, "container") {
+                            container_props.push(val.to_string());
+                        }
+                    }
+                }
+            }
+            for &idx in sprites.int_map.values() {
+                if let Some(sp) = sprites.sprites.get(idx) {
+                    if let Some(name) = sp.name.as_deref() {
+                        tile_sprites.push((name.to_string(), sp.id));
+                    }
+                }
+            }
+        }
+        self.item_configurator.preprocess(
+            sm,
+            zones.iter().map(|(n, t)| (n.as_str(), t.as_str())),
+            rooms.iter().map(String::as_str),
+            container_props.iter().map(String::as_str),
+            tile_sprites.iter().map(|(n, id)| (n.as_str(), *id)),
+        );
     }
 
     /// `ZomboidFileSystem.getFileInCurrentSave(name)`.
@@ -844,7 +900,8 @@ impl IsoWorld {
         // headers; the port keeps the headers for `onNewChunkLoaded`.
         println!("triggerEvent OnLoadedMapZones");
         lua.trigger_event("OnLoadedMapZones", &[]);
-        // TODO(port): `ItemConfigurator.Preprocess()`.
+        // `ItemConfigurator.Preprocess()`.
+        self.preprocess_item_configurator(&sm);
         let save_dir = self.save_dir.to_string_lossy().into_owned();
         let is_player_alive = pz_lua_api::savefile::is_player_alive(no_save, &save_dir, 1);
         // `PlayerDB.setAllow(true)`.
