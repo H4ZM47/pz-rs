@@ -558,6 +558,76 @@ impl IsoMetaGrid {
         Some(&self.room_defs[idx.0 as usize])
     }
 
+    /// Build 42.22 new-game spawn exploration (`setExplored`, `setAllExplored`,
+    /// `setBasementAllExplored`): marks the spawn room, every room in its
+    /// building (and `seen`/`has_been_visited`), plus any overlapping basement
+    /// building rooms as explored. Returns the number of rooms marked explored.
+    pub fn mark_spawn_explored(&mut self, x: i32, y: i32, z: i32) -> usize {
+        let mut explored_count = 0usize;
+        let room_idx = self
+            .get_chunk_data_from_tile(x, y)
+            .and_then(|c| c.get_room_at(&self.room_defs, x, y, z));
+        let mut building_idx = room_idx.and_then(|ri| self.room_defs[ri.0 as usize].building);
+        if let Some(ri) = room_idx {
+            let room = &mut self.room_defs[ri.0 as usize];
+            if !room.explored {
+                room.explored = true;
+                explored_count += 1;
+            }
+        }
+        if building_idx.is_none() {
+            building_idx = self.get_associated_building_at(x, y).ok().flatten();
+        }
+        let Some(bi) = building_idx else {
+            return explored_count;
+        };
+        let (bx, by, bx2, by2, room_indices) = {
+            let b = &mut self.building_defs[bi.0 as usize];
+            b.seen = true;
+            b.has_been_visited = true;
+            let mut indices = b.rooms.clone();
+            indices.extend(b.emptyoutside.iter().copied());
+            (b.x, b.y, b.x2, b.y2, indices)
+        };
+        for ri in room_indices {
+            let room = &mut self.room_defs[ri.0 as usize];
+            if !room.explored {
+                room.explored = true;
+                explored_count += 1;
+            }
+        }
+        // `setBasementAllExplored`: any overlapping building containing a
+        // below-ground room (`level < 0`) is also marked explored.
+        let basement_rooms: Vec<RoomIdx> = {
+            let mut out = Vec::new();
+            for (idx, b) in self.building_defs.iter().enumerate() {
+                if idx == bi.0 as usize {
+                    continue;
+                }
+                let overlaps = !(b.x2 <= bx || b.x >= bx2 || b.y2 <= by || b.y >= by2);
+                if !overlaps {
+                    continue;
+                }
+                let is_basement = b
+                    .rooms
+                    .iter()
+                    .any(|ri| self.room_defs[ri.0 as usize].level < 0);
+                if is_basement {
+                    out.extend(b.rooms.iter().copied());
+                }
+            }
+            out
+        };
+        for ri in basement_rooms {
+            let room = &mut self.room_defs[ri.0 as usize];
+            if !room.explored {
+                room.explored = true;
+                explored_count += 1;
+            }
+        }
+        explored_count
+    }
+
     pub fn get_empty_outside_at(&self, x: i32, y: i32, z: i32) -> Option<&RoomDef> {
         let idx =
             self.get_chunk_data_from_tile(x, y)?
@@ -2020,6 +2090,55 @@ mod building_api_tests {
         );
         // Chunks still list b's rooms (the original leaves them).
         assert_eq!(chunk_rooms(&g, 1, 0).len(), 2);
+    }
+
+    #[test]
+    fn mark_spawn_explored_marks_building_and_overlapping_basement() {
+        let mut g = grid();
+        let house_b = g
+            .add_building(
+                0,
+                0,
+                BuildingDef::new(&mut Zero),
+                vec![
+                    room("livingroom", 0, &[(10, 10, 6, 6)]),
+                    room("kitchen", 0, &[(16, 10, 4, 6)]),
+                ],
+                vec![],
+            )
+            .unwrap();
+        let bsmt_b = g
+            .add_building(
+                0,
+                0,
+                BuildingDef::new(&mut Zero),
+                vec![room("basement", -1, &[(12, 12, 4, 4)])],
+                vec![],
+            )
+            .unwrap();
+        let far_b = g
+            .add_building(
+                0,
+                0,
+                BuildingDef::new(&mut Zero),
+                vec![room("garage", 0, &[(80, 80, 6, 6)])],
+                vec![],
+            )
+            .unwrap();
+
+        let marked = g.mark_spawn_explored(12, 12, 0);
+        assert_eq!(marked, 3);
+        for ri in &g.building_defs[house_b.0 as usize].rooms {
+            assert!(g.room_defs[ri.0 as usize].explored);
+        }
+        for ri in &g.building_defs[bsmt_b.0 as usize].rooms {
+            assert!(g.room_defs[ri.0 as usize].explored);
+        }
+        assert!(g.building_defs[house_b.0 as usize].seen);
+        assert!(g.building_defs[house_b.0 as usize].has_been_visited);
+        for ri in &g.building_defs[far_b.0 as usize].rooms {
+            assert!(!g.room_defs[ri.0 as usize].explored);
+        }
     }
 }
 

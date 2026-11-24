@@ -1732,10 +1732,29 @@ end
             }
             // TODO(port): the profession's and traits' granted recipes.
         }
-        // TODO(port): the spawn room explored (`setExplored`,
-        // `setAllExplored`, `setBasementAllExplored`) and
-        // `ZombiePopulationManager.playerSpawnedAt`; `initPoisonousBerry` /
-        // `initPoisonousMushroom`.
+        // Mark the spawn room/building (and any overlapping basement) explored,
+        // notify `ZombiePopulationManager.playerSpawnedAt`, and initialize
+        // per-world poisonous berry/mushroom selection if not yet set.
+        {
+            let core_rc = pz_lua_api::bind_core::shared_core();
+            let mut core = core_rc.borrow_mut();
+            if core.get_poisonous_berry().is_none() {
+                core.init_poisonous_berry();
+            }
+            if core.get_poisonous_mushroom().is_none() {
+                core.init_poisonous_mushroom();
+            }
+        }
+        if let Some((sx, sy, sz)) = sq {
+            with_world(|w| {
+                if let Some(meta) = w.meta_grid.as_mut() {
+                    meta.mark_spawn_explored(sx, sy, sz);
+                    if let Some(pop) = self.population.as_mut() {
+                        pop.manager.player_spawned_at(meta, sx, sy, sz);
+                    }
+                }
+            });
+        }
         let pv = player.as_ref().map(character_value).unwrap_or_default();
         let sv = sq
             .map(|(x, y, z)| pz_lua_api::bind_world::square_value(x, y, z))
