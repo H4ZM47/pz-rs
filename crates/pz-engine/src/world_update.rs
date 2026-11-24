@@ -569,6 +569,32 @@ impl StatesEngine for EngineStates<'_> {
             .as_deref()
             .and_then(|m| m.ragdoll_pelvis(chr))
     }
+
+    fn do_tree_noises(&mut self, _chr: i32, sq: (i32, i32, i32)) {
+        if let Some(re) = crate::world_render_effects::shared_render_effects() {
+            if let Ok(mut store) = re.try_borrow_mut() {
+                store.add_tree_noise_square(sq);
+            }
+        }
+    }
+
+    fn has_render_effect(&self, obj: pz_pathfind::mover::ObjectRef) -> bool {
+        crate::world_render_effects::shared_render_effects()
+            .and_then(|re| re.try_borrow().ok().map(|s| s.has_effect(obj)))
+            .unwrap_or(false)
+    }
+
+    fn set_render_effect(
+        &mut self,
+        obj: pz_pathfind::mover::ObjectRef,
+        effect: pz_world_states::NewRenderEffect,
+    ) {
+        if let Some(re) = crate::world_render_effects::shared_render_effects() {
+            if let Ok(mut store) = re.try_borrow_mut() {
+                store.set_effect(obj, effect);
+            }
+        }
+    }
 }
 
 /// The local players' current squares, for [`EngineStates::movers`].
@@ -1390,8 +1416,18 @@ impl IsoWorld {
         // TODO(port): `updateBuildings` (`IsoBuilding.update`),
         // `AddCoopPlayer`,
         // `IsoPlayer.UpdateRemovedEmitters`.
-        let multiplier = sim.game_time.borrow().get_multiplier(&pz_lua_api::bind_climate::LuaClimateContext::new());
+        let (multiplier, wind_tick_final) = {
+            let gt = sim.game_time.borrow();
+            let mult = gt.get_multiplier(&pz_lua_api::bind_climate::LuaClimateContext::new());
+            (mult, gt.climate.wind_tick_final)
+        };
         self.states_runtime.update_door_hits(multiplier, &mut self.rand);
+        self.render_effects.borrow_mut().update(
+            multiplier,
+            wind_tick_final,
+            sim.calendar_millis,
+            &mut self.rand,
+        );
         self.update_dbs(sim)?;
         // TODO(port): `AnimalZones.updateVirtualAnimals`,
         // `AnimalTracksDefinitions.loadTracksDefinitions`.

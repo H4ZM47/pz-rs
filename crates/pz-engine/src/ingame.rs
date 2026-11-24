@@ -522,6 +522,7 @@ impl GameState for IngameState {
         // `ZomboidRadio.getInstance().Reset()` and `IsoWaveSignal.Reset()`.
         if let Some(w) = cx.world.as_mut() {
             w.reset_radio();
+            w.reset_render_effects();
         }
         // TODO(port): `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,

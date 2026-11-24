@@ -226,6 +226,9 @@ pub struct IsoWorld {
     pub next_object_id: i32,
     /// Object state the character states keep outside the objects.
     pub states_runtime: pz_world_states::StatesRuntime,
+    /// Dynamic `ObjectRenderEffects` (`VegetationRustle`, `HitTreeShudder`) and
+    /// `TreeSoundManager` (`"Bushes"` 10-slot pool).
+    pub render_effects: Rc<RefCell<crate::world_render_effects::WorldRenderEffects>>,
     /// `ActionGroup.getActionGroup(name)`'s loaded groups.
     pub action_groups: pz_characters::character::state::ActionGroups,
     /// `IsoFireManager`.
@@ -378,6 +381,13 @@ impl IsoWorld {
             player_stand_ins: Vec::new(),
             next_object_id: 0,
             states_runtime: Default::default(),
+            render_effects: {
+                let re = Rc::new(RefCell::new(
+                    crate::world_render_effects::WorldRenderEffects::default(),
+                ));
+                crate::world_render_effects::set_shared_render_effects(Some(re.clone()));
+                re
+            },
             action_groups: pz_characters::character::state::ActionGroups::from_media(
                 game_dir.join("media"),
             ),
@@ -402,6 +412,13 @@ impl IsoWorld {
             ragdolls: None,
             errors: Vec::new(),
         }
+    }
+
+    /// Clears active dynamic `ObjectRenderEffects`, stops/returns all
+    /// `TreeSoundManager` emitters, and detaches the shared handle.
+    pub fn reset_render_effects(&mut self) {
+        self.render_effects.borrow_mut().reset();
+        crate::world_render_effects::set_shared_render_effects(None);
     }
 
     fn jar(&self) -> PathBuf {
