@@ -1498,6 +1498,7 @@ impl IsoWorld {
             regions,
             render,
             zombies,
+            flies_sound,
             ..
         } = self;
         let (Some(sprites), Some(doors)) = (sprites.as_ref(), door_tables.as_ref()) else {
@@ -1557,6 +1558,9 @@ impl IsoWorld {
                     );
                     match env.place_new_corpse(pos, body) {
                         Ok(body) => {
+                            if body.is_some() {
+                                flies_sound.corpse_added(pos.0, pos.1, pos.2);
+                            }
                             corpse = body;
                             corpse.is_some()
                         }
@@ -2118,15 +2122,40 @@ impl IsoWorld {
             sprites,
             pathfind,
             chunk_load_id,
+            flies_sound,
             ..
         } = self;
         let Some(sp) = sprites.as_ref() else { return };
         *chunk_load_id = chunk_load_id.wrapping_add(1);
         let load_id = *chunk_load_id;
         with_world(|w| {
-            let (Some(cell), Some(meta)) = (w.cell.as_ref(), w.meta_grid.as_ref()) else {
+            let (Some(cell), Some(meta)) = (w.cell.as_mut(), w.meta_grid.as_ref()) else {
                 return;
             };
+            if let Some(chunk) = cell.chunks.get_mut(&(wx, wy)) {
+                pz_world::dead_body::corpse_count::chunk_loaded(chunk);
+                let mut corpse_positions = Vec::new();
+                for z in chunk.min_level..=chunk.max_level {
+                    for y in 0..8 {
+                        for x in 0..8 {
+                            let Some(sq) = chunk.get_grid_square(x, y, z) else {
+                                continue;
+                            };
+                            let n = sq.try_borrow().map(|s| s.static_moving.len()).unwrap_or(0);
+                            if n > 0 {
+                                corpse_positions.push((wx * 8 + x, wy * 8 + y, z, n));
+                            }
+                        }
+                    }
+                }
+                for (x, y, z, n) in corpse_positions {
+                    for _ in 0..n {
+                        let _ = pz_world::dead_body::corpse_count::corpse_added(
+                            cell, meta, x, y, z,
+                        );
+                    }
+                }
+            }
             if let Some(p) = population.as_mut() {
                 p.add_chunk_to_world(cell, meta, &sp.borrow(), wx, wy);
             }
@@ -2134,6 +2163,7 @@ impl IsoWorld {
                 add_chunk_to_pathfinder(h, cell, meta, &sp.borrow(), wx, wy, load_id);
             }
         });
+        flies_sound.chunk_loaded(wx, wy);
         // TODO(port): the chunk's vehicles (`AddVehicles`), reanimated
         // players, erosion and the lighting thread's chunk add.
         self.render_chunks.added.push((wx, wy));
@@ -2159,6 +2189,15 @@ impl IsoWorld {
             h.service_mut().remove_chunk_from_world(wx, wy);
         }
         let sim = FrameSim::capture();
+        {
+            let mut hooks = EngineFliesHooks {
+                sim: &sim,
+                emitters: &mut self.flies_emitters,
+                next_id: &mut self.next_flies_emitter,
+                zombie_counts: None,
+            };
+            self.flies_sound.chunk_removed_from_world(wx, wy, &mut hooks);
+        }
         // TODO(port): `in_room` needs the chunk's rooms, which are gone
         // once the streamer reports the unload: every zombie counts as
         // outside.
@@ -2167,6 +2206,293 @@ impl IsoWorld {
             pop.remove_chunk_from_world(host, wx, wy, &cz);
         });
         self.render_chunks.removed.push((wx, wy));
+    }
+
+    /// `FliesSound.instance.update()` for the current frame.
+    pub fn update_flies_sound(
+        &mut self,
+        sim: &dyn pz_characters::character::context::SimContext,
+        decaying_corpse_health_impact: i32,
+        zombie_health_impact: bool,
+    ) {
+        use pz_world::dead_body::flies_sound::{FliesEnv, FliesPlayer};
+        let scripts = pz_lua_api::bind_registry::shared_script_manager();
+        let players: [Option<FliesPlayer>; MAX_PLAYERS] = std::array::from_fn(|i| {
+            let p = pz_lua_api::bind_players::player(i)?;
+            let chr = p.try_borrow().ok()?;
+            let xi = chr.vars.x.floor() as i32;
+            let yi = chr.vars.y.floor() as i32;
+            let zi = chr.vars.z.floor() as i32;
+            let deaf = chr.has_trait(&scripts, "DEAF").unwrap_or(false);
+            let sq_pos = chr.path.current_square.unwrap_or((xi, yi, zi));
+            drop(chr);
+            let square = with_world(|w| {
+                w.cell
+                    .as_ref()
+                    .and_then(|cell| cell.get_grid_square(sq_pos.0, sq_pos.1, sq_pos.2))
+            });
+            Some(FliesPlayer {
+                index: i,
+                xi,
+                yi,
+                zi,
+                square,
+                deaf,
+            })
+        });
+        drop(scripts);
+
+        let zombie_counts = zombie_health_impact.then(|| {
+            let mut counts = std::collections::HashMap::<(i32, i32, i32), i32>::new();
+            for z in &self.zombies {
+                if !z.is_dead() {
+                    let key = (
+                        z.vars.x.floor() as i32,
+                        z.vars.y.floor() as i32,
+                        z.vars.z.floor() as i32,
+                    );
+                    *counts.entry(key).or_insert(0) += 1;
+                }
+            }
+            counts
+        });
+
+        let num_players = pz_lua_api::bind_players::num_players().max(0) as usize;
+        let env = FliesEnv {
+            decaying_corpse_health_impact,
+            zombie_health_impact,
+            food_sickness_decrease: sim.zomboid_globals().food_sickness_decrease,
+            thirty_fps_multiplier: sim.thirty_fps_multiplier(),
+            num_players,
+        };
+        let water_flag = self
+            .sprites
+            .as_ref()
+            .map(|s| s.borrow().tables.flag.water);
+        let mut world = EngineFliesWorld {
+            render: &self.render,
+            water_flag,
+            num_players: num_players as i32,
+            hooks: EngineFliesHooks {
+                sim,
+                emitters: &mut self.flies_emitters,
+                next_id: &mut self.next_flies_emitter,
+                zombie_counts,
+            },
+        };
+        if let Err(e) = self.flies_sound.update(&mut world, &players, &env) {
+            self.log_update_error(format!("FliesSound.update: {e:?}"));
+        }
+    }
+}
+
+struct EngineFliesHooks<'a> {
+    sim: &'a dyn pz_characters::character::context::SimContext,
+    emitters: &'a mut std::collections::HashMap<
+        pz_world::dead_body::flies_sound::EmitterId,
+        pz_sound::world_emitters::EmitterRef,
+    >,
+    next_id: &'a mut pz_world::dead_body::flies_sound::EmitterId,
+    zombie_counts: Option<std::collections::HashMap<(i32, i32, i32), i32>>,
+}
+
+impl pz_world::dead_body::flies_sound::FliesSoundHooks for EngineFliesHooks<'_> {
+    fn sickness_from_corpses_rate(&self, corpse_count: i32) -> f32 {
+        pz_characters::character::GameCharacter::<LuaItem>::sickness_from_corpses_rate(
+            self.sim,
+            corpse_count,
+        )
+    }
+
+    fn zombie_count(&self, x: i32, y: i32, z: i32) -> i32 {
+        self.zombie_counts
+            .as_ref()
+            .and_then(|m| m.get(&(x, y, z)).copied())
+            .unwrap_or(0)
+    }
+
+    fn get_free_emitter(
+        &mut self,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> pz_world::dead_body::flies_sound::EmitterId {
+        *self.next_id = self.next_id.wrapping_add(1);
+        let id = *self.next_id;
+        let emitter = pz_lua_api::bind_audio::sound_system()
+            .borrow_mut()
+            .with_world_emitters(|we, _| {
+                let e = we.get_free();
+                e.borrow_mut().set_pos(x, y, z);
+                e
+            });
+        self.emitters.insert(id, emitter);
+        id
+    }
+
+    fn play_sound_looped_impl(
+        &mut self,
+        emitter: pz_world::dead_body::flies_sound::EmitterId,
+        name: &str,
+    ) {
+        let Some(e) = self.emitters.get(&emitter).cloned() else {
+            return;
+        };
+        pz_lua_api::bind_audio::sound_system()
+            .borrow_mut()
+            .with_world_emitters(|_, ctx| {
+                e.borrow_mut().play_sound_looped_impl(name, ctx);
+            });
+    }
+
+    fn set_volume_all(
+        &mut self,
+        emitter: pz_world::dead_body::flies_sound::EmitterId,
+        volume: f32,
+    ) {
+        if let Some(e) = self.emitters.get(&emitter) {
+            e.borrow_mut().set_volume_all(volume);
+        }
+    }
+
+    fn set_pos(
+        &mut self,
+        emitter: pz_world::dead_body::flies_sound::EmitterId,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) {
+        if let Some(e) = self.emitters.get(&emitter) {
+            e.borrow_mut().set_pos(x, y, z);
+        }
+    }
+
+    fn stop_all(&mut self, emitter: pz_world::dead_body::flies_sound::EmitterId) {
+        let Some(e) = self.emitters.remove(&emitter) else {
+            return;
+        };
+        pz_lua_api::bind_audio::sound_system()
+            .borrow_mut()
+            .with_world_emitters(|_, ctx| {
+                e.borrow_mut().stop_all(ctx);
+            });
+    }
+}
+
+struct EngineFliesWorld<'a> {
+    render: &'a Rc<RefCell<Option<crate::world_render::WorldRender>>>,
+    water_flag: Option<pz_world::sprite::IsoFlagType>,
+    num_players: i32,
+    hooks: EngineFliesHooks<'a>,
+}
+
+impl pz_world::dead_body::flies_sound::FliesWorld for EngineFliesWorld<'_> {
+    fn building(
+        &self,
+        square: &pz_world::SquareRef,
+    ) -> HostResult<Option<pz_world::defs::BuildingIdx>> {
+        let sq = square
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("FliesSound building square"))?;
+        Ok(with_world(|w| {
+            w.meta_grid
+                .as_ref()
+                .and_then(|meta| sq.room_def(meta))
+                .and_then(|room| room.building)
+        }))
+    }
+
+    fn has_chunk(&self, wx: i32, wy: i32) -> HostResult<bool> {
+        Ok(with_world(|w| {
+            w.cell
+                .as_ref()
+                .is_some_and(|cell| cell.chunks.contains_key(&(wx, wy)))
+        }))
+    }
+
+    fn corpse_count(
+        &self,
+        wx: i32,
+        wy: i32,
+        z: i32,
+        building: Option<pz_world::defs::BuildingIdx>,
+        zombie_health_impact: bool,
+    ) -> HostResult<i32> {
+        let zombie_lookup = |x: i32, y: i32, z: i32| {
+            pz_world::dead_body::flies_sound::FliesSoundHooks::zombie_count(&self.hooks, x, y, z)
+        };
+        with_world(|w| {
+            let (Some(cell), Some(meta)) = (w.cell.as_ref(), w.meta_grid.as_ref()) else {
+                return Ok(0);
+            };
+            pz_world::dead_body::corpse_count::get_corpse_count(
+                cell,
+                meta,
+                wx,
+                wy,
+                z,
+                building,
+                &|| Ok(pz_world::dead_body::corpse_count::INITIAL_MAX_CORPSE_COUNT),
+                zombie_health_impact.then_some(&zombie_lookup as &dyn Fn(i32, i32, i32) -> i32),
+            )
+        })
+    }
+
+    fn corpse_squares(
+        &self,
+        wx: i32,
+        wy: i32,
+        z: i32,
+        building: Option<pz_world::defs::BuildingIdx>,
+    ) -> HostResult<Vec<pz_world::SquareRef>> {
+        with_world(|w| {
+            let (Some(cell), Some(meta)) = (w.cell.as_ref(), w.meta_grid.as_ref()) else {
+                return Ok(Vec::new());
+            };
+            let Some(chunk) = cell.chunks.get(&(wx, wy)) else {
+                return Ok(Vec::new());
+            };
+            let mut squares = Vec::new();
+            for y in 0..8 {
+                for x in 0..8 {
+                    let Some(square) = chunk.get_grid_square(x, y, z) else {
+                        continue;
+                    };
+                    let selected = {
+                        let sq = square
+                            .try_borrow()
+                            .map_err(|_| RuntimeHostError::Borrowed("FliesSound corpse square"))?;
+                        !sq.static_moving.is_empty()
+                            && sq.room_def(meta).and_then(|r| r.building) == building
+                    };
+                    if selected {
+                        squares.push(square);
+                    }
+                }
+            }
+            Ok(squares)
+        })
+    }
+
+    fn set_has_flies(&mut self, square: &pz_world::SquareRef, flies: bool) -> HostResult<()> {
+        let mut no_render = pz_world::square_mutation::NoMutationHooks;
+        let mut render = self
+            .render
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("FliesSound renderer"))?;
+        let mut inv = match (render.as_mut(), self.water_flag) {
+            (Some(r), Some(water)) => Some(r.invalidation(water, self.num_players)),
+            _ => None,
+        };
+        let hooks: &mut dyn pz_world::square_mutation::RenderSquareHooks = match inv.as_mut() {
+            Some(i) => i,
+            None => &mut no_render,
+        };
+        pz_world::dead_body::flies_sound::set_has_flies(square, hooks, flies)
+    }
+
+    fn hooks(&mut self) -> &mut dyn pz_world::dead_body::flies_sound::FliesSoundHooks {
+        &mut self.hooks
     }
 }
 
@@ -2604,6 +2930,17 @@ impl IsoWorld {
     /// `PlayerDB.close` and `VehiclesDB2.Reset` (`world_save::close_stores`).
     pub fn stop(&mut self) {
         self.house_alarms.stop();
+        if !self.flies_emitters.is_empty() {
+            let emitters: Vec<_> = self.flies_emitters.drain().map(|(_, e)| e).collect();
+            pz_lua_api::bind_audio::sound_system()
+                .borrow_mut()
+                .with_world_emitters(|_, ctx| {
+                    for e in emitters {
+                        e.borrow_mut().stop_all(ctx);
+                    }
+                });
+        }
+        self.flies_sound.reset();
         pz_lua_api::bind_audio::sound_system().borrow_mut()
             .with(|_, ctx| self.ambient_parameters.stop(ctx));
         // Invalidate the installed provider before teardown can run actions;
@@ -2983,5 +3320,156 @@ mod quit_save_tests {
                 fail_prefix
             );
         }
+    }
+
+    #[test]
+    fn all_players_asleep_and_flies_sound_update_and_unload() {
+        use pz_characters::character::context::SimContext;
+        use pz_world::save::visual::{CorpseVisual, HumanVisual, IsoDeadBody, MovingBase};
+        use pz_world::{IsoChunk, IsoGridSquare};
+
+        struct Cleanup;
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                pz_lua_api::bind_players::reset();
+                pz_lua_api::bind_climate::set_all_players_asleep(false);
+                with_world(|w| {
+                    w.cell = None;
+                    w.meta_grid = None;
+                });
+                pz_inventory::component_host::drain_retired_components();
+            }
+        }
+        let _cleanup = Cleanup;
+
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let p0 = Rc::new(RefCell::new(LuaGameCharacter::new(
+            &sm,
+            pz_characters::character::CharacterKind::Player,
+        )));
+        let p1 = Rc::new(RefCell::new(LuaGameCharacter::new(
+            &sm,
+            pz_characters::character::CharacterKind::Player,
+        )));
+        assert!(!pz_lua_api::bind_players::all_players_asleep());
+        pz_lua_api::bind_players::set_num_players(2);
+        pz_lua_api::bind_players::set_player(0, Some(p0.clone()));
+        pz_lua_api::bind_players::set_player(1, Some(p1.clone()));
+        p0.borrow_mut().asleep = true;
+        assert!(!pz_lua_api::bind_players::all_players_asleep());
+        assert!(!FrameSim::capture().all_players_asleep());
+        p1.borrow_mut().asleep = true;
+        assert!(pz_lua_api::bind_players::all_players_asleep());
+        assert!(FrameSim::capture().all_players_asleep());
+        pz_lua_api::bind_climate::set_all_players_asleep(true);
+        assert!(pz_lua_api::bind_climate::climate_settings().all_players_asleep);
+
+        // Set up a 1-chunk world with 21 corpses (rows y=0..3, x=0..7) so
+        // sickness_from_corpses_rate(21) = 16 * 0.07 * d > d = food_sickness_decrease.
+        let mut cell = IsoCell::default();
+        let mut chunk = IsoChunk::new(0, 0);
+        for y in 0..8 {
+            for x in 0..8 {
+                chunk.set_square(x, y, 0, Some(IsoGridSquare::new(x, y, 0).into()));
+            }
+        }
+        for y in 0..3 {
+            for x in 0..7 {
+                let sq = chunk.get_grid_square(x, y, 0).unwrap();
+                sq.borrow_mut().static_moving.push(Rc::new(RefCell::new(IsoDeadBody {
+                    base: MovingBase {
+                        offset_x: 0.0,
+                        offset_y: 0.0,
+                        x: x as f32,
+                        y: y as f32,
+                        z: 0.0,
+                        dir: 0,
+                        mod_data: None,
+                    },
+                    female: false,
+                    was_zombie: true,
+                    animal: None,
+                    object_id: (-1, 4),
+                    persistent_outfit_id: 0,
+                    desc: None,
+                    visual: CorpseVisual::Human(Box::new(HumanVisual::new(4))),
+                    container: None,
+                    worn_items: Vec::new(),
+                    attached_items: Vec::new(),
+                    death_time: 0.0,
+                    reanimate_time: -1.0,
+                    fall_on_front: false,
+                    killed_by_fall: false,
+                    was_skeleton: false,
+                    angle: 0.0,
+                    zombie_rot_stage_at_death: 1,
+                    animal_rot_stage_at_death: 0,
+                    rotten_texture: String::new(),
+                    skel_inv_icon: String::new(),
+                    crawling: false,
+                    fake_dead: false,
+                    ragdoll: None,
+                    burn_timer: 0.0,
+                    runtime: None,
+                })));
+            }
+        }
+        cell.chunks.insert((0, 0), chunk);
+        let mut meta = IsoMetaGrid::blank(0, 0, 0, 0);
+        meta.create_cell(0, 0);
+        with_world(|w| {
+            w.cell = Some(cell);
+            w.meta_grid = Some(meta);
+        });
+
+        pz_lua_api::bind_players::set_num_players(1);
+        pz_lua_api::bind_players::set_player(1, None);
+        {
+            let mut chr = p0.borrow_mut();
+            chr.vars.x = 2.5;
+            chr.vars.y = 2.5;
+            chr.vars.z = 0.0;
+            chr.path.current_square = Some((2, 2, 0));
+        }
+
+        let temp = std::env::temp_dir().join(format!(
+            "pz-flies-sound-{}",
+            std::process::id(),
+        ));
+        let mut world = IsoWorld::new(&temp, &temp, temp.clone());
+        world.sprites = Some(Rc::new(RefCell::new(IsoSpriteManager::new(
+            pz_world::sprite::test_tables(),
+        ))));
+        world.chunk_added(0, 0);
+
+        struct FliesSim {
+            inner: FrameSim,
+            globals: pz_characters::character::ZomboidGlobals,
+        }
+        impl SimContext for FliesSim {
+            fn zomboid_globals(&self) -> &pz_characters::character::ZomboidGlobals {
+                &self.globals
+            }
+            fn thirty_fps_multiplier(&self) -> f32 {
+                self.inner.thirty_fps_multiplier()
+            }
+        }
+        let inner = FrameSim::capture();
+        let mut globals = inner.zomboid_globals().clone();
+        globals.food_sickness_decrease = 0.0015;
+        let sim = FliesSim { inner, globals };
+        world.update_flies_sound(&sim, 3, false);
+        assert!(world.errors.is_empty(), "errors: {:?}", world.errors);
+        assert_eq!(world.flies_emitters.len(), 1);
+        let middle_has_flies = with_world(|w| {
+            w.cell
+                .as_ref()
+                .and_then(|c| c.get_grid_square(3, 1, 0))
+                .is_some_and(|sq| sq.borrow().has_flies)
+        });
+        assert!(middle_has_flies, "expected middle corpse square (3,1,0) to have flies");
+
+        world.chunk_removed(0, 0);
+        assert!(world.flies_emitters.is_empty());
     }
 }

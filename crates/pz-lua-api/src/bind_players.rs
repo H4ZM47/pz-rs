@@ -140,6 +140,24 @@ pub fn all_players_dead() -> bool {
     !(0..n).any(|i| player(i).is_some_and(|p| !p.borrow().is_dead()))
 }
 
+/// `IsoPlayer.allPlayersAsleep()`: at least one player slot is populated and
+/// every existing player among the first `numPlayers` slots is asleep (or
+/// dead).
+pub fn all_players_asleep() -> bool {
+    let n = num_players().clamp(0, MAX_PLAYERS as i32) as usize;
+    let mut any = false;
+    for i in 0..n {
+        if let Some(p) = player(i) {
+            any = true;
+            let p = p.borrow();
+            if !p.is_dead() && !p.is_asleep() {
+                return false;
+            }
+        }
+    }
+    any
+}
+
 /// Clears every slot, the instance and `numPlayers` (back to 1), e.g. when
 /// leaving a game.
 pub fn reset() {

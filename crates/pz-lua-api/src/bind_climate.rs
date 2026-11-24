@@ -151,6 +151,11 @@ pub(crate) fn set_lock_fps(fps: i32) {
     SETTINGS.with(|c| c.borrow_mut().lock_fps = fps);
 }
 
+/// Update `ClimateSettings::all_players_asleep` for `GameTime.update(...)`.
+pub fn set_all_players_asleep(asleep: bool) {
+    SETTINGS.with(|c| c.borrow_mut().all_players_asleep = asleep);
+}
+
 pub fn climate_settings() -> ClimateSettings {
     SETTINGS.with(|c| c.borrow().clone())
 }
