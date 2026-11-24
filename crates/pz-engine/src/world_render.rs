@@ -360,11 +360,28 @@ impl WorldRender {
         }
     }
 
-    fn update_door_hits(&mut self, runtime: &pz_world_states::StatesRuntime, cell: &pz_world::IsoCell) -> HostResult<()> {
-        let active = runtime.visible_door_hits(cell)?;
+    fn update_door_hits(
+        &mut self,
+        runtime: &pz_world_states::StatesRuntime,
+        render_effects: &crate::world_render_effects::WorldRenderEffects,
+        cell: &pz_world::IsoCell,
+    ) -> HostResult<()> {
+        let mut active = runtime.visible_door_hits(cell)?;
+        for (pos, corners) in render_effects.visible_effects(cell) {
+            if let Some((_, existing)) = active.iter_mut().find(|(p, _)| *p == pos) {
+                for i in 0..4 {
+                    existing[i][0] += corners[i][0];
+                    existing[i][1] += corners[i][1];
+                }
+            } else {
+                active.push((pos, corners));
+            }
+        }
         let previous = std::mem::take(&mut self.drawn_door_hits);
         for &pos in &previous {
-            if !active.iter().any(|(p, _)| *p == pos) { self.set_door_offsets(pos, None); }
+            if !active.iter().any(|(p, _)| *p == pos) {
+                self.set_door_offsets(pos, None);
+            }
         }
         for (pos, corners) in active {
             self.set_door_offsets(pos, Some(corners));
@@ -1125,6 +1142,7 @@ impl IsoWorld {
             render,
             render_chunks,
             states_runtime,
+            render_effects,
             sprites,
             game_dir,
             regions,
@@ -1197,7 +1215,12 @@ impl IsoWorld {
                     invalidation.object_geometry_changed(pos);
                 }
                 r.apply_pending(&wv, regions, fs, &mut textures)?;
-                r.update_door_hits(states_runtime, cell)?;
+                {
+                    let re = render_effects
+                        .try_borrow()
+                        .map_err(|_| RuntimeHostError::Borrowed("actual render effects"))?;
+                    r.update_door_hits(states_runtime, &re, cell)?;
+                }
                 r.init_fx_sprites(&wv, fs, &mut textures);
             }
             // Character resources may lazily load hair or equipped-item

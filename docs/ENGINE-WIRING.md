@@ -1538,9 +1538,12 @@ registered):
       `resolve_collision_radius` (PathHost over the `WorldView`) and
       `path_cancel_request` (`PathfindService::cancel_request`).
 - [ ] States fire and render effects (#95): `StatesEngine::fire()` (the
-      world's `IsoFireManager`, FireHooks, flags, settings);
-      `has_render_effect` / `set_render_effect` (ObjectRenderEffects) and
-      `do_tree_noises` (tree sound manager); `ThumpSettings::server`.
+      world's `IsoFireManager`, FireHooks, flags, settings) and
+      `ThumpSettings::server` remain open; `has_render_effect` /
+      `set_render_effect` (`ObjectRenderEffects`: `VegetationRustle`,
+      `HitTreeShudder`, `HitDoor`) and `do_tree_noises` (`TreeSoundManager`
+      10-slot `"Bushes"` pool) are wired in `pz-engine/src/world_render_effects.rs`,
+      `world_update.rs`, and `world_render.rs`.
 - [ ] `SimContext` climate values from `ClimateManager` (#49).
 - [ ] Square edits → pathfinding: `pz_pathfind::pathfind_square_hooks!(pz_world)`
       in the engine crate, and pass `PathfindSquareHooksImpl(PathfindMutationHooks { service:
