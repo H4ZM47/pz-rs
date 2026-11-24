@@ -81,6 +81,8 @@ pub struct RenderView {
     pub climate: ClimateSettings,
     /// The player's `WeatherShader` inputs.
     pub screen: ScreenParams,
+    /// `PlayerCamera.rightClickX/Y`: aiming / right-click look-ahead pan.
+    pub right_click_pan: (f32, f32),
     pub tick: i64,
     pub multiplier: f32,
 }
@@ -647,7 +649,16 @@ impl WorldRender {
         out: &mut Vec<DrawCmd>,
     ) {
         let p = v.player;
-        let cam = Camera::player(v.x, v.y, v.z, v.width as i32, v.height as i32, v.zoom);
+        let cam = Camera::player_with_pan(
+            v.x,
+            v.y,
+            v.z,
+            v.width as i32,
+            v.height as i32,
+            v.zoom,
+            v.right_click_pan.0,
+            v.right_click_pan.1,
+        );
         let size = FrameSize {
             width: v.width,
             height: v.height,
@@ -981,6 +992,8 @@ impl WorldRender {
         let fx_view = WeatherFxView {
             render_precipitation,
             fog_quality,
+            right_click_off_x: v.right_click_pan.0,
+            right_click_off_y: v.right_click_pan.1,
             ..WeatherFxView::new(cam.off_x as f32, cam.off_y as f32, v.width as i32, v.height as i32, v.zoom)
         };
         let fx_frame = FxMaskFrame {

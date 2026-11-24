@@ -37,6 +37,8 @@ pub struct IngameState {
     screen_timer: ScreenTimer,
     /// `IsoCamera.cameras` as the HUD reads them.
     cameras: SharedCameraFrame,
+    /// `PlayerCamera.rightClickX/Y`: per-player aiming / right-click pan.
+    right_click_pan: [(f32, f32); MAX_PLAYERS],
 }
 
 /// `SoundManager.instance.setMusicState(name)`.
@@ -75,6 +77,46 @@ pub(crate) fn rebuild_main_menu_with(
 }
 
 impl IngameState {
+    /// `PlayerCamera.update` right-click / aiming look-ahead pan for slot `n`:
+    /// pans toward the mouse cursor when player 0 is aiming (or holding RMB)
+    /// with `panCameraWhileAiming` enabled and eases back to `(0, 0)` otherwise.
+    fn update_right_click_pan(
+        &mut self,
+        n: usize,
+        aiming: bool,
+        pan_while_aiming: bool,
+        width: u32,
+        height: u32,
+        zoom: f32,
+    ) -> (f32, f32) {
+        let (target_x, target_y) = if n == 0 && pan_while_aiming {
+            let (mx, my, rmb) =
+                pz_input::with_input(|i| (i.cursor_x as f32, i.cursor_y as f32, i.buttons_down[1]));
+            if aiming || rmb {
+                let hw = (width as f32 * 0.5).max(1.0);
+                let hh = (height as f32 * 0.5).max(1.0);
+                let dx = ((mx - hw) / hw).clamp(-1.0, 1.0);
+                let dy = ((my - hh) / hh).clamp(-1.0, 1.0);
+                (dx * hw * 0.5 * zoom, dy * hh * 0.5 * zoom)
+            } else {
+                (0.0, 0.0)
+            }
+        } else {
+            (0.0, 0.0)
+        };
+        let (cur_x, cur_y) = &mut self.right_click_pan[n];
+        let alpha = 0.15f32;
+        *cur_x += (target_x - *cur_x) * alpha;
+        *cur_y += (target_y - *cur_y) * alpha;
+        if cur_x.abs() < 0.05 && target_x == 0.0 {
+            *cur_x = 0.0;
+        }
+        if cur_y.abs() < 0.05 && target_y == 0.0 {
+            *cur_y = 0.0;
+        }
+        (*cur_x, *cur_y)
+    }
+
     /// `UpdateStuff()`.
     fn update_stuff(&mut self, cx: &mut StateCx<'_>) {
         let gt = pz_lua_api::bind_climate::shared_game_time();
@@ -214,9 +256,9 @@ impl IngameState {
         let Some(w) = cx.world.as_mut() else { return };
         // TODO(port): skip the world while the player is asleep and the
         // fade is complete (`isAsleep`, `UIManager.getFadeAlpha`).
-        let (x, y, z, dir) = {
+        let (x, y, z, dir, aiming) = {
             let c = p.borrow();
-            (c.vars.x, c.vars.y, c.vars.z, c.vars.dir)
+            (c.vars.x, c.vars.y, c.vars.z, c.vars.dir, c.vars.is_aiming)
         };
         let Some(chunk_map) = w
             .streamer
@@ -229,9 +271,14 @@ impl IngameState {
         else {
             return;
         };
-        let zoom = pz_lua_api::bind_core::shared_core()
-            .borrow()
-            .get_zoom(n as i32);
+        let (zoom, pan_while_aiming) = {
+            let core = pz_lua_api::bind_core::shared_core();
+            let c = core.borrow();
+            (c.get_zoom(n as i32), c.get_option_pan_camera_while_aiming())
+        };
+        let width = cx.screen_w.max(1) as u32;
+        let height = cx.screen_h.max(1) as u32;
+        let (rx, ry) = self.update_right_click_pan(n, aiming, pan_while_aiming, width, height, zoom);
         // TODO(port): split screen (`IsoCamera.getScreenWidth/Height`).
         let mut view = RenderView {
             player: n,
@@ -240,22 +287,31 @@ impl IngameState {
             z,
             dir,
             chunk_map,
-            width: cx.screen_w.max(1) as u32,
-            height: cx.screen_h.max(1) as u32,
+            width,
+            height,
             zoom,
             climate,
             screen,
+            right_click_pan: (rx, ry),
             tick: self.tick_count as i64,
             multiplier: FrameSim::capture().multiplier,
         };
         // `IsoCamera`: the player's camera, for the HUD and the player's
-        // input. TODO(port): `PlayerCamera` (deferred movement, the
-        // right-click pan).
-        let cam =
-            pz_iso_render::Camera::player(x, y, z, view.width as i32, view.height as i32, zoom);
+        // input (with `PlayerCamera`'s aiming / right-click pan offset).
+        let cam = pz_iso_render::Camera::player_with_pan(
+            x,
+            y,
+            z,
+            view.width as i32,
+            view.height as i32,
+            zoom,
+            rx,
+            ry,
+        );
         {
             let mut f = self.cameras.borrow_mut();
             f.cameras[n] = Some(cam);
+            f.offsets[n].right_click = (rx, ry);
             f.player_index = pz_lua_api::bind_players::player_index().max(0) as usize;
             f.frame_player_index = n;
         }
@@ -264,8 +320,8 @@ impl IngameState {
             pz_player_input::CameraInfo {
                 off_x: cam.off_x as f32,
                 off_y: cam.off_y as f32,
-                right_click_x: 0.0,
-                right_click_y: 0.0,
+                right_click_x: rx,
+                right_click_y: ry,
             },
         );
         // TODO(port): `ModelOutlines.startFrameMain`/`endFrameMain`,
@@ -572,7 +628,8 @@ impl GameState for IngameState {
             };
             // `IsoPlayer.setInstance`, `IsoCamera.setCameraCharacter`,
             // `Core.StartFrame(n, clear)`, `IsoCamera.frameState.set(n)`.
-            pz_lua_api::bind_players::set_player_instance(Some(p));
+            pz_lua_api::bind_players::set_player_instance(Some(p.clone()));
+            pz_lua_api::bind_players::set_camera_character(Some(p));
             self.renderframe(cx, n, out);
             if cx.error.is_some() {
                 return;
@@ -593,3 +650,26 @@ impl GameState for IngameState {
 
 #[cfg(test)]
 mod process_items_tests;
+
+#[cfg(test)]
+mod camera_pan_tests {
+    use super::*;
+
+    #[test]
+    fn aiming_pans_camera_toward_cursor_and_recovers_to_zero() {
+        let mut state = IngameState::default();
+        pz_input::with_input(|i| {
+            i.cursor_x = 1280.0;
+            i.cursor_y = 0.0;
+            i.buttons_down[1] = false;
+        });
+        let (rx, ry) = state.update_right_click_pan(0, true, true, 1280, 720, 1.0);
+        assert!(rx > 0.0, "expected positive right-pan, got {rx}");
+        assert!(ry < 0.0, "expected negative up-pan, got {ry}");
+        // Non-aiming with RMB released eases back to (0, 0).
+        for _ in 0..80 {
+            state.update_right_click_pan(0, false, true, 1280, 720, 1.0);
+        }
+        assert_eq!(state.right_click_pan[0], (0.0, 0.0));
+    }
+}
