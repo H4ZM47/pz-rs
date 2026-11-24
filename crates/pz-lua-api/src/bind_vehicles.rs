@@ -160,7 +160,14 @@ fn register_vehicle(thread: &mut Thread) {
     b.method("DistToSquared", |c| {
         let v = this_vehicle(c)?;
         let d = match c.arg(1) {
-            Value::Num(_) => v.closest_point_on_poly(num_arg(c, 1) as f32, num_arg(c, 2) as f32).0,
+            // `IsoMovingObject.DistToSquared(float, float)`: the plain squared
+            // distance to the object's position; only the object overload
+            // measures to the vehicle's polygon.
+            Value::Num(_) => {
+                let dx = v.x() - num_arg(c, 1) as f32;
+                let dy = v.y() - num_arg(c, 2) as f32;
+                dx * dx + dy * dy
+            }
             Value::Nil => {
                 return Err(pz_kahlua::LuaError::Runtime {
                     class: "java.lang.NullPointerException",
@@ -1036,6 +1043,9 @@ mod item_binding_tests {
             assert(math.abs(d_b - d_poly) < 1e-4)
             assert(math.abs(p:DistToProper(v) - math.sqrt(d_poly)) < 1e-4)
             assert(v:DistTo(13, 24) == 7)
+            -- The coordinate overload is the plain squared distance to the
+            -- vehicle position (3^2 + 4^2), not the distance to its polygon.
+            assert(v:DistToSquared(13, 24) == 25)
             "#,
             Some("vehicle_poly_dist"),
             t.globals().clone(),
