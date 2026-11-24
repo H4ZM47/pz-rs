@@ -850,6 +850,131 @@ pub enum FloorVisualTail {
     LoadedTextureAndSprite,
 }
 
+/// `IsoObject`'s per-player outline highlight state (`outlineHighlight`,
+/// `outlineHlAttached`, `outlineHlBlink`, `outlineHighlightCol`, and UI frame
+/// timestamps for `FBORenderObjectOutline`). Runtime-only (not saved).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObjectOutlineState {
+    pub highlight: u8,
+    pub attached: u8,
+    pub blink: u8,
+    pub col: [u32; 4],
+    /// `(uiRenderTimeMS, uiUpdateTimeMS)` when set during UI render/update.
+    pub ui_times: [(i64, i64); 4],
+}
+
+impl Default for ObjectOutlineState {
+    fn default() -> Self {
+        Self {
+            highlight: 0,
+            attached: 0,
+            blink: 0,
+            col: [u32::MAX; 4],
+            ui_times: [(0, 0); 4],
+        }
+    }
+}
+
+impl ObjectOutlineState {
+    fn bit(player: usize) -> u8 {
+        (1u32 << (player & 31)) as u8
+    }
+
+    fn set_bit(bits: &mut u8, player: usize, on: bool) {
+        if on {
+            *bits |= Self::bit(player);
+        } else {
+            *bits &= !Self::bit(player);
+        }
+    }
+
+    pub fn color_to_abgr(r: f32, g: f32, b: f32, a: f32) -> u32 {
+        let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0) as i32 as u32 & 0xFF;
+        byte(a) << 24 | byte(b) << 16 | byte(g) << 8 | byte(r)
+    }
+
+    pub fn is_any(&self) -> bool {
+        self.highlight != 0
+    }
+
+    pub fn is_on(&self, player: usize, render_container_highlight: bool) -> bool {
+        render_container_highlight && self.highlight & Self::bit(player) != 0
+    }
+
+    pub fn set_all(&mut self, on: bool, ui: (i64, i64)) {
+        self.highlight = if on { 0xFF } else { 0 };
+        self.ui_times = [if on { ui } else { (0, 0) }; 4];
+    }
+
+    pub fn set(&mut self, player: usize, on: bool, ui: (i64, i64)) {
+        Self::set_bit(&mut self.highlight, player, on);
+        if let Some(t) = self.ui_times.get_mut(player) {
+            *t = if on { ui } else { (0, 0) };
+        }
+    }
+
+    pub fn render_last(&mut self, player: usize, render_container_highlight: bool, now: (i64, i64)) {
+        if !self.is_on(player, render_container_highlight) {
+            return;
+        }
+        let t = self.ui_times.get(player).copied().unwrap_or((0, 0));
+        if (t.0 != 0 && t.0 == now.0) || (t.1 != 0 && t.1 == now.1) {
+            return;
+        }
+        self.set(player, false, (0, 0));
+    }
+
+    pub fn is_attached_any(&self) -> bool {
+        self.attached != 0
+    }
+
+    pub fn is_attached(&self, player: usize) -> bool {
+        self.attached & Self::bit(player) != 0
+    }
+
+    pub fn set_attached_all(&mut self, on: bool) {
+        self.attached = if on { 0xFF } else { 0 };
+    }
+
+    pub fn set_attached(&mut self, player: usize, on: bool) {
+        Self::set_bit(&mut self.attached, player, on);
+    }
+
+    pub fn is_blink_any(&self) -> bool {
+        self.blink != 0
+    }
+
+    pub fn is_blink(&self, player: usize) -> bool {
+        self.blink & Self::bit(player) != 0
+    }
+
+    pub fn set_blink_all(&mut self, on: bool) {
+        self.blink = if on { 0xFF } else { 0 };
+    }
+
+    pub fn set_blink(&mut self, player: usize, on: bool) {
+        Self::set_bit(&mut self.blink, player, on);
+    }
+
+    pub fn set_col_all(&mut self, r: f32, g: f32, b: f32, a: f32) {
+        self.col = [Self::color_to_abgr(r, g, b, a); 4];
+    }
+
+    pub fn set_col(&mut self, player: usize, r: f32, g: f32, b: f32, a: f32) {
+        self.col[player] = Self::color_to_abgr(r, g, b, a);
+    }
+
+    pub fn col(&self, player: usize) -> i32 {
+        self.col[player] as i32
+    }
+
+    pub fn unset(&mut self) {
+        self.highlight = 0;
+        self.blink = 0;
+        self.attached = 0;
+    }
+}
+
 /// `IsoObject` plus its class.
 #[derive(Debug, PartialEq)]
 pub struct IsoObject {
@@ -909,6 +1034,8 @@ pub struct IsoObject {
     /// `rerouteCollide`: the window an `IsoWindow` made from the map set
     /// on its square's wall (runtime only, not saved).
     pub reroute_collide: Option<ObjectId>,
+    /// Per-player outline highlight state (`FBORenderObjectOutline`, runtime only).
+    pub outline: ObjectOutlineState,
 }
 
 // Rust archive copy: runtime square and entity registration flags are not
@@ -960,6 +1087,7 @@ impl Clone for IsoObject {
             moved_thumpable: self.moved_thumpable.clone(),
             sprite_model_name: self.sprite_model_name.clone(),
             reroute_collide: self.reroute_collide.clone(),
+            outline: self.outline,
         }
     }
 }
@@ -1043,6 +1171,7 @@ impl IsoObject {
             moved_thumpable: false,
             sprite_model_name: None,
             reroute_collide: None,
+            outline: ObjectOutlineState::default(),
         }
     }
 

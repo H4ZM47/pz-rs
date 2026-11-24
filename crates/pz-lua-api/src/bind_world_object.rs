@@ -543,6 +543,7 @@ pub(crate) fn register_classes(thread: &mut Thread) {
         Ok(c.push(Value::from(f64::from(index))))
     });
     register_special_tooltip(&object);
+    outline::register(&object);
     crate::expose::expose_class(thread, WORLD_INVENTORY_OBJECT, Some(ISO_OBJECT));
     position::register(thread);
     master_object::register(thread);
@@ -840,6 +841,7 @@ mod master_object;
 mod tests;
 
 mod sprite_edit;
+mod outline;
 mod thumpable;
 mod construction;
 pub mod map_entity;
