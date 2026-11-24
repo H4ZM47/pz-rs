@@ -362,6 +362,31 @@ fn players_time_passed(thread: &mut Thread, time: f32) {
     }
 }
 
+/// `ClimateManager.getInstance().update()` on its own (used by
+/// `IngameState.enter` so climate lighting, fog, and temperature are live
+/// before the first frame without advancing `GameTime`).
+pub fn update_climate_only(thread: &mut Thread) {
+    let gt = shared_game_time();
+    let mut ctx = LuaClimateContext::new();
+    let go_on = {
+        let mut g = gt.borrow_mut();
+        let clock = g.clock(&ctx);
+        g.climate.update_begin(&clock, &mut ctx)
+    };
+    fire_events(thread, std::mem::take(&mut ctx));
+    let mut ctx = LuaClimateContext::new();
+    if go_on {
+        let mut g = gt.borrow_mut();
+        let clock = g.clock(&ctx);
+        g.climate.update_end(&clock, &mut ctx);
+        g.apply_climate_view_dist();
+    }
+    fire_events(thread, ctx);
+    if go_on {
+        crate::bind_puddles::update_climate_fx(thread);
+    }
+}
+
 /// One engine frame of the clock and climate: `GameTime.update` then
 /// `ClimateManager.update` (firing `OnClimateTick` mid-update), with the
 /// events sent to Lua.
