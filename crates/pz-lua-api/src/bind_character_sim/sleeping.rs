@@ -134,6 +134,7 @@ fn try_update_asleep_player(t: &mut Thread, chr: &LuaGameCharacterRef) -> LuaRes
         base: CONTEXT.with(|c| c.borrow().clone()),
         events: RefCell::default(),
         game_time: crate::bind_climate::shared_game_time(),
+        globals: Some(super::zomboid_globals()),
     };
     let r = chr
         .borrow_mut()

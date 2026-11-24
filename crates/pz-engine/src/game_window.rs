@@ -250,6 +250,7 @@ impl App {
             .map_err(|e| format!("text init: {e}"))?;
         pz_lua_api::hud::init_ui(&mut lua.thread);
         lua.load_all_client();
+        pz_lua_api::bind_character_sim::load_zomboid_globals(lua.thread.globals());
         lua.trigger_event("OnGameBoot", &[]);
         self.lua = Some(lua);
         self.init_states()

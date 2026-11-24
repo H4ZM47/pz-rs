@@ -652,7 +652,10 @@ impl IsoWorld {
             let days = gt.borrow().world_age_days_since_begin(options.time_since_apo()) as f32;
             pz_lua_api::bind_world::power::set_hydro_power_on(options.does_power_grid_exist(days, 0));
         }
-        // TODO(port): `ZomboidGlobals.toLua()`, `survivorDescriptors.clear()`.
+        // `ZomboidGlobals.Load()` (from `media/lua/shared/defines.lua`).
+        // TODO(port): `ZomboidGlobals.toLua()` sandbox loot overrides,
+        // `survivorDescriptors.clear()`.
+        pz_lua_api::bind_character_sim::load_zomboid_globals(lua.thread.globals());
         // `LoadTileDefinitions*` (property strings, custom values, lookup
         // tables, the definitions), `PostTileDefinitions`, then
         // `loadedTileDefinitions`.

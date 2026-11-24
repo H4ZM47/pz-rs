@@ -169,6 +169,7 @@ impl ItemContext for GameItemEnv {
     }
     fn equipped_or_worn_encumbrance_multiplier(&self) -> f64 {
         self.encumbrance_multiplier
+            .or_else(crate::bind_character_sim::loaded_encumbrance_multiplier)
             .unwrap_or_else(|| Offline.equipped_or_worn_encumbrance_multiplier())
     }
     fn basic_mask_defense(&self) -> f32 {
