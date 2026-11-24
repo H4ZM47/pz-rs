@@ -26,6 +26,7 @@ pub mod survivor;
 pub mod traits;
 pub mod worn_items;
 
+pub use pz_animals;
 pub use attached_items::{
     AttachedItem, AttachedItems, AttachedLocation, AttachedLocationGroup, AttachedLocationGroupRef, AttachedLocationRef,
     AttachedLocations,
