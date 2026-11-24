@@ -475,6 +475,49 @@ pub fn register(thread: &mut Thread) {
         add_sound(c, 0, false)?;
         Ok(0)
     });
+    // `LuaManager.GlobalObject.AddWorldSound(player, radius, volume)`:
+    // `WorldSoundManager.instance.addSound(player, fastfloor(x), fastfloor(y), fastfloor(z), radius, volume, false)`.
+    global(thread, "AddWorldSound", |c| {
+        let receiver = c.arg(0);
+        let radius = int_arg(c, 1);
+        let volume = int_arg(c, 2);
+        if radius <= 0 {
+            return Ok(0);
+        }
+        let Value::Object(obj) = &receiver else {
+            return Ok(0);
+        };
+        let Some(chr) = obj.as_any().downcast_ref::<CharacterObject>() else {
+            return Ok(0);
+        };
+        let (x, y, z) = {
+            let borrowed = chr
+                .0
+                .try_borrow()
+                .map_err(|_| crate::bind_world_object::borrowed("AddWorldSound source"))?;
+            (
+                borrowed.vars.x.floor() as i32,
+                borrowed.vars.y.floor() as i32,
+                borrowed.vars.z.floor() as i32,
+            )
+        };
+        let source = source_of(&receiver)?;
+        let request = WorldSoundRequest {
+            source,
+            x,
+            y,
+            z,
+            radius,
+            volume,
+            stress_humans: false,
+            zombie_ignore_dist: 0.0,
+            stress_mod: 1.0,
+        };
+        let _ = emit_world_sound(c.thread, request, receiver, NoiseKind::Once)?;
+        Ok(0)
+    });
+    // Build 42.22 `LuaManager.GlobalObject.AddNoiseToken(IsoGridSquare, int)` is an empty method.
+    global(thread, "AddNoiseToken", |_| Ok(0));
 }
 
 /// Registers the bindings.
