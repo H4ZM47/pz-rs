@@ -49,6 +49,7 @@ pub mod component_gc;
 pub mod attribute_templates;
 pub mod item_picker;
 pub mod item_tooltip;
+pub mod loot_respawn;
 pub mod bind_iso_enums;
 pub mod bind_java_util;
 pub mod bind_misc;
@@ -289,6 +290,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     world_menu_logic::register(&mut mgr.thread);
     bind_key_namer::register(&mut mgr.thread);
     bind_item_picker::register(&mut mgr.thread);
+    loot_respawn::register(&mut mgr.thread);
     bind_item_picker::install_event_sink(mgr.events.clone());
     bind_world_gen_utils::register(&mut mgr.thread, mgr.fs.clone());
     bind_world_gen_params::register(&mut mgr.thread);
