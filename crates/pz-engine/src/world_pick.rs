@@ -10,7 +10,9 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use pz_entity::runtime::RuntimeBody;
 use pz_entity::runtime_load::{HostResult, RuntimeHostError};
+use pz_entity::{Component, ComponentType};
 use pz_kahlua::{LuaResult, Thread, Value};
 use pz_lua_api::bind_object_picker::{self, ObjectPicker, Pick};
 use pz_lua_api::hud::host::{with_host, HudPicking, NoHud};
@@ -18,11 +20,49 @@ use pz_lua_api::hud::picking::{self, ClickObject, PickObject, PickPlayer, PickWo
 use pz_lua_api::hud::speed_controls::SpeedControls;
 use pz_ui::tooltip::TooltipObject;
 use pz_ui::{with_ui, PickedObject, WorldMouse};
-use pz_world::IsoSpriteManager;
+use pz_world::objects::ObjectKind;
+use pz_world::{IsoGridSquare, IsoObject, IsoSpriteManager};
 use pz_world_render::{SharedCameraFrame, WorldPick, WorldView};
 
 use crate::world_hud::{EnginePick, PickHooks};
 use crate::world_render::WorldRender;
+
+/// `IsoDoor.isAdjacentToSquare(other)` / door `IsoThumpable.isAdjacentToSquare(other)`:
+/// the square holding the door or its opposite edge square on the same level.
+fn door_is_adjacent_to_square(
+    door_sq: (i32, i32, i32),
+    obj: &IsoObject,
+    other_sq: (i32, i32, i32),
+) -> bool {
+    let north = match &obj.kind {
+        ObjectKind::Door(d) => d.north,
+        ObjectKind::Thumpable(t) if t.is_door => t.north,
+        _ => return false,
+    };
+    if door_sq.2 != other_sq.2 {
+        return false;
+    }
+    if other_sq.0 == door_sq.0 && other_sq.1 == door_sq.1 {
+        return true;
+    }
+    if north {
+        other_sq.0 == door_sq.0 && other_sq.1 == door_sq.1 - 1
+    } else {
+        other_sq.0 == door_sq.0 - 1 && other_sq.1 == door_sq.1
+    }
+}
+
+/// `ClickObject.isInteractiveEntity`: whether the object has an enabled
+/// `UiConfig` entity component.
+fn object_is_interactive_entity(obj: &IsoObject) -> bool {
+    match obj.components.get_ref(ComponentType::UiConfig) {
+        Ok(Some(c)) => c
+            .try_borrow()
+            .ok()
+            .is_some_and(|c| matches!(c.body(), RuntimeBody::Data(Component::UiConfig(u)) if u.ui_enabled)),
+        _ => false,
+    }
+}
 
 /// Player 0 as the picker reads it (`IsoPlayer.players[0]`).
 struct Player0(PickPlayer);
@@ -31,8 +71,45 @@ impl PickHooks for Player0 {
     fn player0(&self) -> Option<PickPlayer> {
         Some(self.0)
     }
-    // TODO(port): the squares' Lua objects for the tooltip, door
-    // adjacency to the player, entity UIs and corpses (`PickHooks`).
+
+    fn square_value(&self, sq: &IsoGridSquare) -> Value {
+        pz_lua_api::bind_world::square_value(sq.x, sq.y, sq.z)
+    }
+
+    fn adjacent_to_player(&self, sq: &IsoGridSquare, index: usize) -> bool {
+        if !self.0.has_square {
+            return false;
+        }
+        let Some(slot) = sq.objects.get(index) else {
+            return false;
+        };
+        let handle = slot.ref_handle();
+        let Ok(obj) = handle.try_borrow() else {
+            return false;
+        };
+        let px = pz_render::iso::fastfloor(self.0.x);
+        let py = pz_render::iso::fastfloor(self.0.y);
+        door_is_adjacent_to_square((sq.x, sq.y, sq.z), &obj, (px, py, self.0.zi))
+    }
+
+    fn interactive_entity(&self, sq: &IsoGridSquare, index: usize) -> bool {
+        let Some(slot) = sq.objects.get(index) else {
+            return false;
+        };
+        let handle = slot.ref_handle();
+        let Ok(obj) = handle.try_borrow() else {
+            return false;
+        };
+        object_is_interactive_entity(&obj)
+    }
+
+    fn combined_fbo(&self) -> bool {
+        pz_core::debug::debug_options()
+            .try_borrow()
+            .is_ok_and(|o| o.get_boolean("FBORenderChunk.CombinedFbo"))
+    }
+    // TODO(port): `corpses` (`IsoDeadBody` is not exposed to Lua yet) and
+    // multi-square `SpriteConfig.getMultiSquareMaster()` lookup.
 }
 
 /// `UIManager`'s and `IsoObjectPicker.Instance`'s world.
@@ -263,4 +340,71 @@ pub fn uninstall() {
     with_ui(|m| m.world_mouse = None);
     with_host(|h| h.picking = Box::new(NoHud));
     bind_object_picker::set_object_picker(None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pz_entity::components::UiConfig;
+    use pz_entity::Components;
+    use pz_inventory::item_components::ItemComponents;
+    use pz_world::objects::{IsoDoor, IsoThumpable};
+
+    #[test]
+    fn door_adjacency_matches_door_and_opposite_square() {
+        let north_door = IsoObject::new(
+            1,
+            ObjectKind::Door(IsoDoor {
+                north: true,
+                ..Default::default()
+            }),
+            None,
+        );
+        assert!(door_is_adjacent_to_square((10, 20, 0), &north_door, (10, 20, 0)));
+        assert!(door_is_adjacent_to_square((10, 20, 0), &north_door, (10, 19, 0)));
+        assert!(!door_is_adjacent_to_square((10, 20, 0), &north_door, (10, 21, 0)));
+        assert!(!door_is_adjacent_to_square((10, 20, 0), &north_door, (9, 20, 0)));
+        assert!(!door_is_adjacent_to_square((10, 20, 0), &north_door, (10, 20, 1)));
+
+        let west_thump_door = IsoObject::new(
+            2,
+            ObjectKind::Thumpable(Box::new(IsoThumpable {
+                north: false,
+                is_door: true,
+                ..Default::default()
+            })),
+            None,
+        );
+        assert!(door_is_adjacent_to_square((10, 20, 0), &west_thump_door, (10, 20, 0)));
+        assert!(door_is_adjacent_to_square((10, 20, 0), &west_thump_door, (9, 20, 0)));
+        assert!(!door_is_adjacent_to_square((10, 20, 0), &west_thump_door, (10, 19, 0)));
+    }
+
+    #[test]
+    fn interactive_entity_reflects_ui_config_enabled() {
+        let mut enabled = IsoObject::new(1, ObjectKind::Object, None);
+        enabled.components = ItemComponents::from_values_unowned(Components {
+            list: vec![Component::UiConfig(UiConfig {
+                ui_enabled: true,
+                ..Default::default()
+            })],
+        })
+        .unwrap();
+        assert!(object_is_interactive_entity(&enabled));
+
+        let mut disabled = IsoObject::new(2, ObjectKind::Object, None);
+        disabled.components = ItemComponents::from_values_unowned(Components {
+            list: vec![Component::UiConfig(UiConfig {
+                ui_enabled: false,
+                ..Default::default()
+            })],
+        })
+        .unwrap();
+        assert!(!object_is_interactive_entity(&disabled));
+
+        let plain = IsoObject::new(3, ObjectKind::Object, None);
+        assert!(!object_is_interactive_entity(&plain));
+        drop((enabled, disabled, plain));
+        pz_inventory::component_host::drain_retired_components();
+    }
 }
