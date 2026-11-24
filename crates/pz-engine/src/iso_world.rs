@@ -248,6 +248,8 @@ pub struct IsoWorld {
     pub vehicles_runtime: Option<crate::world_vehicles::WorldVehicles>,
     /// Bullet ragdoll scripts, builder and active simulation tracking.
     pub ragdolls: Option<crate::world_ragdolls::WorldRagdolls>,
+    /// Live animal population manager (`AnimalPopulationManager`) and `IsoAnimal` instances.
+    pub animals: Option<crate::world_animals::WorldAnimals>,
     /// Errors of steps that failed without stopping the load (the
     /// original's `ExceptionLogger.logException` calls).
     pub errors: Vec<String>,
@@ -373,6 +375,7 @@ impl IsoWorld {
             models: None,
             vehicles_runtime: None,
             ragdolls: None,
+            animals: None,
             errors: Vec::new(),
         }
     }
@@ -863,7 +866,7 @@ impl IsoWorld {
         // TODO(port): `selectedDebugScenario` start location.
         // `MapCollisionData.init` and `ZombiePopulationManager.init`.
         self.init_population(&sb, &game_mode, last_stand, no_save);
-        // TODO(port): `AnimalPopulationManager.init`.
+        self.init_animals(lua, no_save);
         // Pathfinding: `PolygonalMap2.instance.init(metaGrid)`.
         let pf = with_world(|w| {
             w.meta_grid

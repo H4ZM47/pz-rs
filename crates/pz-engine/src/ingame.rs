@@ -497,6 +497,7 @@ impl GameState for IngameState {
                 cx.retired_models.push(models);
             }
             w.reset_vehicles();
+            w.reset_animals();
             w.stop();
         }
         // TODO(port): `ModelManager.Reset`, `ZombieSpawnRecorder.quit`,
