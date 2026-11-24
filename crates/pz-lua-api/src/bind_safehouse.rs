@@ -27,6 +27,16 @@ pub fn install_safehouses(list: Vec<SafeHouseRect>) {
     SAFEHOUSES.with(|s| *s.borrow_mut() = list);
 }
 
+/// True if `(x, y)` lies inside any installed safehouse rectangle
+/// (`SafeHouse.getSafeHouse(sq) != null`).
+pub fn contains_square(x: i32, y: i32) -> bool {
+    SAFEHOUSES.with(|s| {
+        s.borrow()
+            .iter()
+            .any(|&[sx, sy, sw, sh]| x >= sx && x < sx + sw && y >= sy && y < sy + sh)
+    })
+}
+
 pub(crate) fn register(thread: &mut Thread) {
     let class = expose_class(thread, CLASS, Some("java.lang.Object"));
     // getSafeHouse(IsoGridSquare): isSafeHouse(square, null, false), which
