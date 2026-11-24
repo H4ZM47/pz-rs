@@ -13,6 +13,7 @@ use std::rc::Rc;
 pub struct FrameSim {
     pub game_time: Rc<RefCell<GameTime>>,
     hearing_players: pz_lua_api::bind_audio::HearingPlayers,
+    zomboid_globals: pz_characters::character::ZomboidGlobals,
     input: std::cell::OnceCell<pz_player_input::EnginePlayerInput>,
     /// `Core.bDebug`.
     pub debug: bool,
@@ -60,6 +61,7 @@ impl FrameSim {
             FrameSim {
                 game_time: game_time.clone(),
                 hearing_players: pz_lua_api::bind_audio::HearingPlayers::capture(),
+                zomboid_globals: pz_lua_api::bind_character_sim::zomboid_globals(),
                 input: Default::default(),
                 debug,
                 game_mode,
@@ -92,6 +94,9 @@ impl FrameSim {
 pub(crate) struct PlayerSim<'a>(&'a FrameSim);
 
 impl SimContext for PlayerSim<'_> {
+    fn zomboid_globals(&self) -> &pz_characters::character::ZomboidGlobals {
+        self.0.zomboid_globals()
+    }
     fn hydro_power_on(&self) -> bool { self.0.hydro_power_on() }
     fn lore_hearing(&self) -> i32 { self.0.lore_hearing() }
     fn is_listener_in_range(&self, x: f32, y: f32, range: f32) -> bool { self.0.is_listener_in_range(x, y, range) }
@@ -189,6 +194,9 @@ impl SimContext for PlayerSim<'_> {
 }
 
 impl SimContext for FrameSim {
+    fn zomboid_globals(&self) -> &pz_characters::character::ZomboidGlobals {
+        &self.zomboid_globals
+    }
     fn hydro_power_on(&self) -> bool { pz_lua_api::bind_world::power::hydro_power_on() }
     fn lore_hearing(&self) -> i32 {
         pz_lua_api::bind_sandbox::current_double("ZombieLore.Hearing").unwrap_or(2.0) as i32
@@ -428,5 +436,47 @@ mod tests {
 
         pz_core::debug::debug_options().borrow_mut().set_boolean(key, false);
         assert!(!debug_on.debug_always_trip_over_fence());
+    }
+
+    #[test]
+    fn zomboid_globals_load_reaches_frame_sim_player_sim_and_item_env() {
+        use pz_inventory::context::ItemContext;
+        struct Restore(Option<pz_characters::character::ZomboidGlobals>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                pz_lua_api::bind_character_sim::set_zomboid_globals(self.0.take());
+            }
+        }
+        let _restore = Restore(None);
+
+        let env = pz_kahlua::TableRef::new();
+        let zg = pz_kahlua::TableRef::new();
+        zg.set_str("HungerIncrease", 0.0000096);
+        zg.set_str("ThirstIncrease", 0.0000080);
+        zg.set_str("FatigueIncrease", 0.0000345);
+        zg.set_str("StressDecrease", 0.00003);
+        zg.set_str("ImobileEnduranceIncrease", 0.000031);
+        zg.set_str("EquippedOrWornEncumbranceMultiplier", 0.3);
+        zg.set_str("CorpseSicknessFilterDrainMultiplier", 0.3);
+        env.set_str("ZomboidGlobals", zg);
+
+        let loaded = pz_lua_api::bind_character_sim::load_zomboid_globals(&env);
+        assert_eq!(loaded.hunger_increase, 0.0000096);
+        assert_eq!(loaded.stress_reduction, 0.00003);
+        assert_eq!(loaded.imobile_endurance_reduce, 0.000031);
+        assert_eq!(loaded.sitting_endurance_multiplier, 5.0);
+        assert_eq!(loaded.equipped_or_worn_encumbrance_multiplier, 0.3);
+
+        let sim = FrameSim::capture();
+        assert_eq!(sim.zomboid_globals().hunger_increase, 0.0000096);
+        assert_eq!(sim.player_context().zomboid_globals().thirst_increase, 0.0000080);
+        assert_eq!(
+            sim.player_context()
+                .zomboid_globals()
+                .corpse_sickness_filter_drain_multiplier,
+            0.3
+        );
+        let item_env = pz_lua_api::bind_items::GameItemEnv::new(None);
+        assert_eq!(item_env.equipped_or_worn_encumbrance_multiplier(), 0.3);
     }
 }
