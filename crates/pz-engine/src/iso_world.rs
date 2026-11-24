@@ -727,8 +727,8 @@ impl IsoWorld {
             bf.thumpers_required = opt_int(&s, "ZombieLore.FenceThumpersRequired");
             bf.damage_multiplier = multiplier;
         }
-        // TODO(port): `ObjectRenderEffects.init`,
-        // `WorldConverter.instance.convert` (and its `worldVersionError`).
+        pz_lua_api::bind_object_render_effects::init();
+        // TODO(port): `WorldConverter.instance.convert` (and its `worldVersionError`).
         // `SandboxOptions.handleOldZombiesFile2()`.
         self.handle_old_zombies_file2(&sb);
         // `GameTime.init()` then `GameTime.load()`.
@@ -790,7 +790,8 @@ impl IsoWorld {
             }
             _ => None,
         };
-        // TODO(port): `FishSchoolManager.init`; `WorldMarkers.instance.init`;
+        pz_lua_api::hud::world_markers::with_markers(|m| m.init());
+        // TODO(port): `FishSchoolManager.init`;
         // `GameEntityManager.Init`.
         // `PersistentOutfits.instance.init()`.
         self.outfit_names = pz_lua_api::bind_zombie_outfits::init_persistent_outfits(

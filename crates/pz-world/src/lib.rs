@@ -33,6 +33,7 @@ pub mod meta_save;
 pub mod meta_zones;
 pub mod nav_streets;
 pub mod object_containers;
+pub mod object_render_effects;
 pub mod object_mod_data;
 pub mod object_slot;
 pub mod objects;
