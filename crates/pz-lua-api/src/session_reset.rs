@@ -26,6 +26,7 @@ pub fn reset_session_bindings() {
     crate::bind_body::reset_session_handles();
     crate::bind_nutrition::reset_session_handles();
     crate::bind_characters::reset_session_handles();
+    crate::bind_animals::reset();
     crate::bind_scripts::reset_session_handles();
     crate::bind_registry::reset_session_handles();
     crate::bind_item_visual::reset_session_handles();
