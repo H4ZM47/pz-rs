@@ -2480,6 +2480,97 @@ fn fill_square_environment(
     Ok(())
 }
 
+/// Live [`pz_pathfind::square_bits::SquareBitsHooks`] wired to loaded
+/// barricades (`pz_world::ObjectHooks`), campfire/farming global objects,
+/// `BentFences`, and `SafeHouse` rectangles.
+pub(crate) struct EngineBitsHooks<'a> {
+    objects: pz_world::ObjectHooks<'a>,
+    sprites: &'a IsoSpriteManager,
+}
+
+impl<'a> EngineBitsHooks<'a> {
+    pub(crate) fn new(cell: &'a IsoCell, sprites: &'a IsoSpriteManager) -> Self {
+        Self {
+            objects: pz_world::ObjectHooks::new(cell, sprites),
+            sprites,
+        }
+    }
+
+    fn sprite_name<'b>(&'b self, obj: &'b pz_world::IsoObject) -> Option<&'b str> {
+        if let Some(idx) = obj.sprite.tile_projection() {
+            let n = self.sprites.sprites[idx].name();
+            if !n.is_empty() {
+                return Some(n);
+            }
+        }
+        if let Some(pz_world::objects::SpriteName::Str(s)) = &obj.sprite_name {
+            if !s.is_empty() {
+                return Some(s.as_str());
+            }
+        }
+        None
+    }
+}
+
+fn global_object_at(
+    name: &str,
+    x: i32,
+    y: i32,
+    z: i32,
+) -> Option<Rc<pz_lua_api::global_objects::GlobalObject>> {
+    use pz_lua_api::global_objects::{system_by_name, Side};
+    for side in [Side::Client, Side::Server] {
+        if let Some(sys) = system_by_name(side, name) {
+            if let Ok(Some(obj)) = sys.get_object_at(x, y, z) {
+                return Some(obj);
+            }
+        }
+    }
+    None
+}
+
+impl pz_pathfind::square_bits::SquareBitsHooks for EngineBitsHooks<'_> {
+    fn is_barricaded(&self, sq: &pz_world::IsoGridSquare, obj: &pz_world::IsoObject) -> bool {
+        self.objects.object_barricaded(sq, obj)
+    }
+
+    fn has_lit_campfire(&self, sq: &pz_world::IsoGridSquare) -> bool {
+        if let Some(obj) = global_object_at("campfire", sq.x, sq.y, sq.z) {
+            if matches!(obj.mod_data.get_str("isLit"), pz_kahlua::Value::Bool(true)) {
+                return true;
+            }
+        }
+        sq.objects.iter().any(|slot| {
+            slot.owner_slot().try_borrow().is_ok_and(|o| {
+                matches!(o.kind, pz_world::ObjectKind::Fire(ref f) if f.perm && !f.smoke)
+            })
+        })
+    }
+
+    fn has_farming_plant(&self, sq: &pz_world::IsoGridSquare) -> bool {
+        global_object_at("farming", sq.x, sq.y, sq.z).is_some()
+    }
+
+    fn bent_fences_enabled(&self) -> bool {
+        pz_lua_api::bind_bent_fences::shared_bent_fences()
+            .try_borrow()
+            .is_ok_and(|bf| bf.is_enabled())
+    }
+
+    fn is_unbent_object(&self, _sq: &pz_world::IsoGridSquare, obj: &pz_world::IsoObject) -> bool {
+        let Some(name) = self.sprite_name(obj) else {
+            return false;
+        };
+        pz_lua_api::bind_bent_fences::shared_bent_fences()
+            .try_borrow()
+            .is_ok_and(|bf| bf.is_unbent_sprite(name))
+    }
+
+    fn in_safehouse(&self, sq: &pz_world::IsoGridSquare) -> bool {
+        pz_lua_api::bind_safehouse::contains_square(sq.x, sq.y)
+    }
+}
+
 /// `PathfindNative.addChunkToWorld(chunk)`.
 fn add_chunk_to_pathfinder(
     h: &mut pz_pathfind::host::PathHost,
@@ -2493,8 +2584,7 @@ fn add_chunk_to_pathfinder(
     let Some(chunk) = cell.chunks.get(&(wx, wy)) else {
         return;
     };
-    // TODO(port): `ObjectHooks` for thumpables, barricades and doors.
-    let hooks = pz_pathfind::square_bits::DefaultBitsHooks;
+    let hooks = EngineBitsHooks::new(cell, sprites);
     match pz_pathfind::square_bits::SquareBits::new(sprites, meta, cell, &hooks) {
         Ok(bits) => h.service_mut().add_chunk_to_world(chunk, load_id, &bits),
         Err(e) => eprintln!("ERROR: PathfindNative.addChunkToWorld: {e}"),
@@ -2532,7 +2622,7 @@ impl QueuedPathfind {
             let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_ref()) else {
                 return;
             };
-            let bits_hooks = pz_world::ObjectHooks::new(cell, sprites);
+            let bits_hooks = EngineBitsHooks::new(cell, sprites);
             let mut m = pz_pathfind::mutation_hooks::PathfindMutationHooks {
                 service: h.service_mut(),
                 sprites,
@@ -3262,5 +3352,64 @@ mod quit_save_tests {
                 fail_prefix
             );
         }
+    }
+
+    #[test]
+    fn engine_bits_hooks_reports_campfire_farming_bent_fences_and_safehouse() {
+        use pz_pathfind::square_bits::SquareBitsHooks;
+        use pz_world::objects::{IsoObject, ObjectKind, SpriteName};
+        use pz_world::{IsoCell, IsoChunk, IsoGridSquare, IsoSpriteManager};
+        use pz_world_states::{BentFences, FenceTileDef};
+
+        pz_lua_api::bind_safehouse::install_safehouses(vec![[10, 20, 5, 5]]);
+        let mut bf = BentFences::new(2, 1.0);
+        let stages = vec![
+            (0, vec!["fencing_01_8".to_string()]),
+            (1, vec!["fencing_01_9".to_string()]),
+        ];
+        bf.add_fence_tiles(
+            1,
+            &[FenceTileDef {
+                dir: Some(pz_world::IsoDirections::N),
+                health: 100,
+                stages: Some(stages),
+                collapsed: None,
+                debris: None,
+                collapsed_offset: 0,
+                collapsed_size_x: 0,
+                collapsed_size_y: 0,
+                do_smash: false,
+            }],
+        );
+        *pz_lua_api::bind_bent_fences::shared_bent_fences().borrow_mut() = bf;
+
+        let sprites = IsoSpriteManager::new(pz_world::sprite::test_tables());
+        let mut cell = IsoCell::default();
+        let mut chunk = IsoChunk::new(1, 2);
+        let mut sq = IsoGridSquare::new(11, 21, 0);
+        sq.objects
+            .push(IsoObject::new(1, ObjectKind::Fire(pz_world::fire::IsoFire::permanent()), None).into());
+        let mut unbent = IsoObject::new(2, ObjectKind::Object, None);
+        unbent.sprite_name = Some(SpriteName::Str("fencing_01_8".to_string()));
+        let mut bent = IsoObject::new(3, ObjectKind::Object, None);
+        bent.sprite_name = Some(SpriteName::Str("fencing_01_9".to_string()));
+        chunk.set_square(3, 5, 0, Some(sq.into()));
+        cell.chunks.insert((1, 2), chunk);
+
+        let sq_ref = cell.get_grid_square(11, 21, 0).unwrap();
+        let sq_b = sq_ref.borrow();
+        let hooks = super::EngineBitsHooks::new(&cell, &sprites);
+        assert!(hooks.has_lit_campfire(&sq_b));
+        assert!(hooks.in_safehouse(&sq_b));
+        assert!(hooks.bent_fences_enabled());
+        assert!(hooks.is_unbent_object(&sq_b, &unbent));
+        assert!(!hooks.is_unbent_object(&sq_b, &bent));
+
+        let outside = IsoGridSquare::new(50, 50, 0);
+        assert!(!hooks.in_safehouse(&outside));
+        assert!(!hooks.has_lit_campfire(&outside));
+
+        pz_lua_api::bind_safehouse::install_safehouses(Vec::new());
+        *pz_lua_api::bind_bent_fences::shared_bent_fences().borrow_mut() = BentFences::default();
     }
 }

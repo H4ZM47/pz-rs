@@ -130,6 +130,20 @@ impl BentFences {
         self.thumpers_required >= 1
     }
 
+    /// True if `sprite_name` is a stage-0 (unbent) tile of any registered
+    /// bendable fence definition (`BentFences.isUnbentObject`).
+    pub fn is_unbent_sprite(&self, sprite_name: &str) -> bool {
+        let Some(indices) = self.fence_map.get(sprite_name) else {
+            return false;
+        };
+        indices.iter().any(|&idx| {
+            self.entries
+                .get(idx)
+                .and_then(|e| e.stage(0))
+                .is_some_and(|tiles| tiles.iter().any(|t| t == sprite_name))
+        })
+    }
+
     /// `addFenceTiles(version, tiles)`.
     pub fn add_fence_tiles(&mut self, _version: i32, tiles: &[FenceTileDef]) {
         for d in tiles {
