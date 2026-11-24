@@ -171,6 +171,99 @@ impl<I: 'static> GameCharacter<I> {
         self.sync_fall_vars();
     }
 
+    /// `IsoGameCharacter.updateFalling()`: apply gravity when unsupported,
+    /// track `fall_time` and `last_fall_speed`, and invoke [`Self::do_land`]
+    /// on reaching a solid floor (or ground level `z = 0` when no basement
+    /// square exists below).
+    pub fn update_falling(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() {
+            return;
+        }
+        if self.vars.climbing
+            || self.vars.ragdoll_fall
+            || self.path.vehicle.is_some()
+            || self.vars.no_clip
+            || self.vars.destroyed
+        {
+            self.vars.falling = false;
+            self.vars.fall_time = 0.0;
+            self.vars.last_fall_speed = 0.0;
+            return;
+        }
+        let supported = |s: &super::state::SquareInfo| {
+            s.solid_floor || s.has_stairs || s.sloped_surface
+        };
+        let xi = self.vars.x.floor() as i32;
+        let yi = self.vars.y.floor() as i32;
+        let zi = self.vars.z.floor() as i32;
+        let cur_sq = cx.world.square(xi, yi, zi);
+        if let Some(ref sq) = cur_sq {
+            if supported(sq) && self.vars.z <= zi as f32 + 0.05 {
+                let impact = self.vars.last_fall_speed;
+                let was_falling = self.vars.falling || impact >= is_falling_threshold();
+                if !sq.has_stairs && !sq.sloped_surface {
+                    self.vars.z = zi as f32;
+                    self.vars.last_z = self.vars.z;
+                }
+                self.vars.falling = false;
+                self.vars.fall_time = 0.0;
+                self.vars.last_fall_speed = 0.0;
+                if was_falling {
+                    self.do_land(impact, cx);
+                }
+                return;
+            }
+        }
+        // Do not start falling into unloaded void at or below ground level 0
+        // when no square exists at this level or directly below.
+        if cur_sq.is_none() && cx.world.square(xi, yi, zi - 1).is_none() && self.vars.z <= 0.0 {
+            self.vars.falling = false;
+            self.vars.fall_time = 0.0;
+            self.vars.last_fall_speed = 0.0;
+            return;
+        }
+        let dt = cx.ctx.time_delta();
+        if dt <= 0.0 {
+            return;
+        }
+        self.vars.fall_time += dt;
+        self.vars.last_fall_speed += ISO_FALL_ACCELERATION * dt;
+        let prev_z = self.vars.z;
+        let new_z = prev_z - self.vars.last_fall_speed * dt;
+        let top_lvl = prev_z.floor() as i32;
+        let bot_lvl = new_z.floor() as i32;
+        let mut landed: Option<f32> = None;
+        for lvl in (bot_lvl..=top_lvl).rev() {
+            if (lvl as f32) <= prev_z
+                && new_z <= (lvl as f32)
+                && cx.world.square(xi, yi, lvl).as_ref().is_some_and(supported)
+            {
+                landed = Some(lvl as f32);
+                break;
+            }
+        }
+        if landed.is_none() && new_z <= 0.0 && cx.world.square(xi, yi, -1).is_none() {
+            landed = Some(0.0);
+        }
+        if let Some(land_z) = landed {
+            let impact = self.vars.last_fall_speed;
+            self.vars.z = land_z;
+            self.vars.last_z = land_z;
+            self.vars.falling = false;
+            self.vars.fall_time = 0.0;
+            self.vars.last_fall_speed = 0.0;
+            if let Some(sq) = cx.world.square(xi, yi, land_z as i32) {
+                self.path.current_square = Some((sq.x, sq.y, sq.z));
+            }
+            self.do_land(impact, cx);
+        } else {
+            self.vars.z = new_z;
+            self.vars.last_z = new_z;
+            self.vars.falling =
+                self.vars.last_fall_speed >= is_falling_threshold() || self.vars.fall_time > 0.0;
+        }
+    }
+
     /// `DoLand(impactIsoSpeed)`: nothing while climbing or in a ragdoll
     /// fall, else the impact of a fall.
     pub fn do_land(&mut self, impact_iso_speed: f32, cx: &mut StateCx<'_, I>) {
@@ -773,5 +866,84 @@ mod tests {
         assert_eq!(events(&ctx), [format!("{:?}", SimEvent::CharacterDeath), format!("{:?}", SimEvent::StopAllActionQueue), format!("{:?}", SimEvent::FadeIn(0.5))]);
         drop(cx);
         assert!(w.floor.put.is_empty());
+    }
+
+    #[test]
+    fn update_falling_accelerates_and_lands_with_do_land() {
+        struct TwoFloorWorld {
+            floor: Floor,
+            z0_solid: bool,
+            z2_solid: bool,
+        }
+        impl StateWorld<()> for TwoFloorWorld {
+            fn square(&self, x: i32, y: i32, z: i32) -> Option<super::super::state::SquareInfo> {
+                match z {
+                    0 => Some(super::super::state::SquareInfo {
+                        x,
+                        y,
+                        z,
+                        solid_floor: self.z0_solid,
+                        ..Default::default()
+                    }),
+                    1 | 2 => Some(super::super::state::SquareInfo {
+                        x,
+                        y,
+                        z,
+                        solid_floor: z == 2 && self.z2_solid,
+                        ..Default::default()
+                    }),
+                    _ => None,
+                }
+            }
+            fn floor_sprite_name(&self, sq: (i32, i32, i32)) -> Option<String> {
+                self.floor.floor_sprite_name(sq)
+            }
+            fn floor(&mut self) -> Option<&mut dyn pz_inventory::floor_drop::FloorWorld> {
+                self.floor.floor()
+            }
+        }
+
+        let (sm, mut chars) = body_fixture();
+        let ctx = Ctx::default();
+        let mut w = TwoFloorWorld {
+            floor: Floor::default(),
+            z0_solid: true,
+            z2_solid: true,
+        };
+        let mut c = player(&sm, &mut chars);
+        c.vars.x = 4.5;
+        c.vars.y = 5.5;
+        c.vars.z = 2.0;
+        c.path.current_square = Some((4, 5, 2));
+
+        // Supported on z=2: does not fall.
+        {
+            let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+            c.update_falling(&mut cx);
+        }
+        assert_eq!(c.vars.z, 2.0);
+        assert!(!c.vars.falling);
+        assert_eq!(c.vars.fall_time, 0.0);
+
+        // Floor removed at z=2: falls until landing at z=0 with hard fall impact.
+        w.z2_solid = false;
+        let mut saw_airborne = false;
+        for _ in 0..240 {
+            let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+            c.update_falling(&mut cx);
+            if c.vars.falling {
+                saw_airborne = true;
+            }
+            if saw_airborne && !c.vars.falling {
+                break;
+            }
+        }
+        assert!(saw_airborne, "expected character to become airborne");
+        assert_eq!(c.vars.z, 0.0);
+        assert!(!c.vars.falling);
+        assert_eq!(c.vars.fall_time, 0.0);
+        assert_eq!(c.vars.last_fall_speed, 0.0);
+        assert!(c.fall_damage.is_damaging_fall());
+        assert!(c.fall_damage.is_hard_fall());
     }
 }

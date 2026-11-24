@@ -1653,6 +1653,8 @@ impl<I: 'static> GameCharacter<I> {
         let had_hit_reaction = !self.vars.hit_reaction.is_empty();
         self.moving_postupdate(cx);
         if cx.has_host_error() { return; }
+        self.update_falling(cx);
+        if cx.has_host_error() { return; }
         // postUpdateAnimating: the animation player is the animation's;
         // the action context runs here.
         self.update_action_context(cx);

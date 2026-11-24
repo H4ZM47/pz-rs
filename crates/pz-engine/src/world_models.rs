@@ -61,6 +61,13 @@ struct Appearance {
     simple_weapon: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+struct EquippedTextures {
+    primary: Option<pz_character_model::items::ItemTextureInit>,
+    secondary: Option<pz_character_model::items::ItemTextureInit>,
+    attached: Vec<pz_character_model::items::ItemTextureInit>,
+}
+
 struct CharacterModel {
     female: bool,
     zombie: bool,
@@ -69,6 +76,7 @@ struct CharacterModel {
     player: AnimationPlayer,
     animator: AdvancedAnimator,
     appearance: Option<Appearance>,
+    equipped_textures: EquippedTextures,
     slot: Option<ModelSlot>,
     jobs: Option<Vec<SmartTextureJob>>,
     lights: HashMap<usize, PlayerLightData>,
@@ -175,6 +183,7 @@ impl WorldModels {
                 player,
                 animator,
                 appearance: None,
+                equipped_textures: EquippedTextures::default(),
                 slot: None,
                 jobs: None,
                 lights: HashMap::new(),
@@ -432,6 +441,7 @@ impl WorldModels {
                 player,
                 animator,
                 appearance: None,
+                equipped_textures: EquippedTextures::default(),
                 slot: None,
                 jobs: None,
                 lights: HashMap::new(),
@@ -582,6 +592,67 @@ fn release_textures(textures: &mut Vec<Texture>, combiner: &mut dyn Combiner) {
     }
 }
 
+fn equipped_textures(e: &EquippedModels<'_>) -> EquippedTextures {
+    let primary = e
+        .action
+        .as_ref()
+        .and_then(|a| a.primary_item.as_ref())
+        .or(e.primary.as_ref())
+        .map(HeldItem::texture_init);
+    let secondary = e
+        .action
+        .as_ref()
+        .and_then(|a| a.secondary_item.as_ref())
+        .or(e.secondary.as_ref())
+        .map(HeldItem::texture_init);
+    let attached = e.attached.iter().map(|a| a.item.texture_init()).collect();
+    EquippedTextures {
+        primary,
+        secondary,
+        attached,
+    }
+}
+
+/// `IsoGameCharacter.postUpdateEquippedTextures`: refresh dirty hand/attached
+/// item textures (blood, fluid, tint) in-place via `refresh_texture_init`
+/// without rebuilding the character's `ModelSlot` or body composite.
+fn refresh_equipped_textures(
+    slot: &mut ModelSlot,
+    prev: &EquippedTextures,
+    next: &EquippedTextures,
+    simple_weapon: bool,
+) {
+    if simple_weapon {
+        return;
+    }
+    if next.primary != prev.primary {
+        if let (Some(idx), Some(init)) = (slot.primary_hand, next.primary) {
+            if let Some(inst) = slot.instances.get_mut(idx) {
+                inst.refresh_texture_init(init);
+            }
+        }
+    }
+    if next.secondary != prev.secondary {
+        if let (Some(idx), Some(init)) = (slot.secondary_hand, next.secondary) {
+            if let Some(inst) = slot.instances.get_mut(idx) {
+                inst.refresh_texture_init(init);
+            }
+        }
+    }
+    for (idx, init) in slot
+        .attached_models
+        .iter()
+        .copied()
+        .zip(next.attached.iter().copied())
+    {
+        if let Some(inst) = slot.instances.get_mut(idx) {
+            if inst.texture_init != Some(init) {
+                inst.refresh_texture_init(init);
+            }
+        }
+    }
+}
+
 fn equipment_key(
     e: &EquippedModels<'_>,
     scripts: &dyn pz_character_model::model_tree::ModelScripts,
@@ -596,7 +667,6 @@ fn equipment_key(
                 h.item.id,
                 h.try_static_model(scripts)?,
                 h.try_static_model_exception(scripts)?,
-                h.texture_init(),
                 h.visual.as_ref(),
                 h.replacement_primary_hand(),
                 h.replacement_second_hand(),
@@ -814,7 +884,14 @@ fn rebuild_if_changed(
         simple_clothing,
         simple_weapon,
     };
+    let textures = equipped_textures(&equipped);
     if model.appearance.as_ref() == Some(&appearance) {
+        if model.equipped_textures != textures {
+            if let Some(slot) = model.slot.as_mut() {
+                refresh_equipped_textures(slot, &model.equipped_textures, &textures, simple_weapon);
+            }
+            model.equipped_textures = textures;
+        }
         return Ok(());
     }
     let body_visuals: Vec<ResolvedItemVisual> = hv
@@ -872,6 +949,7 @@ fn rebuild_if_changed(
         retire_slot(old, retired);
     }
     model.appearance = Some(appearance);
+    model.equipped_textures = textures;
     model.jobs = Some(jobs.jobs);
     Ok(())
 }
@@ -921,5 +999,43 @@ mod mod_data_tests {
         ));
         drop(guard);
         assert_eq!(key().unwrap(), second);
+    }
+
+    #[test]
+    fn equipped_blood_change_refreshes_texture_init_without_changing_structural_key() {
+        let mut template = pz_inventory::ItemTemplate::new(
+            pz_inventory::ItemClass::Weapon,
+            "Base",
+            "BloodyAxe",
+        );
+        template.static_model = Some("Base.Axe".into());
+        let item = pz_inventory::shared::try_new_item(pz_inventory::InventoryItem::create(
+            Rc::new(template),
+            1,
+        ))
+        .unwrap();
+        let scripts: HashMap<String, pz_character_model::data::ModelScriptRef> = HashMap::new();
+        let (key_clean, tex_clean) = {
+            let body = item.borrow();
+            let eq = EquippedModels {
+                primary: Some(HeldItem::new(&body)),
+                ..Default::default()
+            };
+            (equipment_key(&eq, &scripts).unwrap(), equipped_textures(&eq))
+        };
+        if let pz_inventory::item::ItemKind::Weapon(w) = &mut item.borrow_mut().kind {
+            w.blood_level = 0.75;
+        }
+        let (key_bloody, tex_bloody) = {
+            let body = item.borrow();
+            let eq = EquippedModels {
+                primary: Some(HeldItem::new(&body)),
+                ..Default::default()
+            };
+            (equipment_key(&eq, &scripts).unwrap(), equipped_textures(&eq))
+        };
+        assert_eq!(key_clean, key_bloody);
+        assert_ne!(tex_clean, tex_bloody);
+        assert_eq!(tex_bloody.primary.unwrap().blood_level, 0.75);
     }
 }
