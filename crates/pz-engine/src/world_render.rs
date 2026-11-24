@@ -1262,8 +1262,6 @@ pub(crate) fn collect_object_outlines(
     let blink_alpha = pz_lua_api::bind_core::shared_core()
         .try_borrow()
         .map_or(1.0, |c| c.blink_alpha);
-    let ui = pz_lua_api::bind_character_sim::outline::ui_frame_times();
-    let ui_now = (ui.render, ui.update);
     for chunk in inputs {
         for (_, squares) in &chunk.levels {
             for rsq in squares.iter().flatten() {
@@ -1295,7 +1293,7 @@ pub(crate) fn collect_object_outlines(
                         continue;
                     };
                     let handle = slot.ref_handle();
-                    let Ok(mut obj) = handle.try_borrow_mut() else {
+                    let Ok(obj) = handle.try_borrow() else {
                         continue;
                     };
                     if !obj.outline.is_on(player, render_hl) || obj.sprite_model_name.is_some() {
@@ -1329,7 +1327,11 @@ pub(crate) fn collect_object_outlines(
                             color,
                         ));
                     }
-                    obj.outline.render_last(player, render_hl, ui_now);
+                    // A static object keeps its outline: only
+                    // `IsoMovingObject.renderlast` clears one (`IsoObject`
+                    // inherits the empty `GameEntity.renderlast`), and
+                    // `FBORenderObjectOutline` keeps the object registered
+                    // until Lua unsets it.
                 }
             }
         }

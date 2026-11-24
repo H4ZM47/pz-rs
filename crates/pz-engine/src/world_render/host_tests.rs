@@ -227,7 +227,7 @@ fn surface_passes_read_current_lua_quality_settings() {
 }
 
 #[test]
-fn collect_object_outlines_emits_sprite_overlay_attached_and_clears_after_render_last() {
+fn collect_object_outlines_emits_sprite_overlay_attached_and_keeps_static_highlights() {
     use pz_iso_render::frame::ChunkInput;
     use pz_iso_render::world::{
         AttachedSprite, ObjectKind as RenderKind, Overlay, RenderObject, RenderSquare, SpriteInfo,
@@ -296,7 +296,11 @@ fn collect_object_outlines_emits_sprite_overlay_attached_and_clears_after_render
     super::collect_object_outlines(&inputs, &cell, 0, &cam, &mut out);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].textures.len(), 3);
-    // Non-UI highlight is cleared by render_last after drawing.
+    // A static object's highlight outlives the frame, even when it was set
+    // outside the UI: only moving objects clear theirs in renderlast.
     let cell_sq = cell.get_grid_square(2, 3, 0).unwrap();
-    assert!(!cell_sq.borrow().objects[0].borrow().outline.is_on(0, true));
+    assert!(cell_sq.borrow().objects[0].borrow().outline.is_on(0, true));
+    let mut again = Vec::new();
+    super::collect_object_outlines(&inputs, &cell, 0, &cam, &mut again);
+    assert_eq!(again.len(), 1);
 }
