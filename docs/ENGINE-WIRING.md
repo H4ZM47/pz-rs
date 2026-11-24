@@ -1451,15 +1451,16 @@ registered):
       use), also in `StatesFire.mutation`. `WorldCall::FireManager` /
       `FireStopSound` from a fire removed by other code (Lua, mutations)
       go to `IsoFireManager::remove` / `sounds.remove_fire`.
-- [ ] Fire sound slots (#FIRE-REST): `FireSoundHooks::fire_slot_play` /
+- [x] Fire sound slots (#FIRE-REST): `FireSoundHooks::fire_slot_play` /
       `fire_slot_stop` drive 20 emitters (`FMODSoundEmitter` +
       `ParameterFireSize`); `FireHooks::listener_distance_sq` is
-      `FMODParameterUtils.getClosestListenerDistanceSquared`.
-- [ ] Heat sources (#FIRE-REST): add/resize/remove the cell's
-      `IsoHeatSource`s from `IsoFire::heat_source` (permanent fires, in
-      `fire_updated` / `fire_removed`), `IsoFireplace::heat_source()` and
-      `IsoBarbecue::heat_source()` after each hearth update; their
-      `running_sound()` loops on the object's emitter.
+      `FMODParameterUtils.getClosestListenerDistanceSquared` (wired in
+      `pz-engine/src/world_fire.rs` + `world_update.rs`).
+- [ ] Heat sources (#FIRE-REST): permanent-fire `IsoHeatSource`s from
+      `IsoFire::heat_source` (in `fire_updated` / `fire_removed`) and
+      `CharacterEnvironment::heat_sources` feed are wired in
+      `world_fire.rs` + `world_update.rs`; still open: `IsoFireplace::heat_source()`
+      and `IsoBarbecue::heat_source()` + hearth `running_sound()` loop.
 - [ ] Hutch burning (#FIRE-REST): `FireHooks::hutch_release_contents`
       runs `releaseAllAnimals` + `dropAllEggs` of the hutch object.
 - [ ] Fire fighting (#FIRE-REST): the put-out action uses
@@ -1508,9 +1509,10 @@ registered):
       corpses, thumpables, `test_collide_adjacent_mover`, `hoppable_actions`, `fence_climb` (pz-world-states implements all three), `rustle_vegetation` (render effects, draws
       `Rand`), hoppables (`collided_with_hoppables`: fence climbing)
       (#74/#75).
-- [ ] Character fire: `StateWorld::character_fire` runs
+- [x] Character fire: `StateWorld::character_fire` runs
       `pz_characters::character::fire::update_character_fire` with the
-      world's `IsoFireManager`/`FireWorld` (#89).
+      world's `IsoFireManager`/`FireWorld` via `EngineStates::fire()`
+      in `pz-engine/src/world_update.rs` + `world_fire.rs` (#89).
 - [ ] States collision (#95): `StatesEngine::collide_mover` (`CollideMoverInfo::of(chr, path)`
       plus the sit-on-furniture square and `adef.canClimbFences`),
       `hoppable_actions` → `setThumpTarget` / `climbOverFence`; after a

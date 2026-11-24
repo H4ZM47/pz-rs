@@ -192,17 +192,19 @@ impl IngameState {
             // TODO(port): `ScriptManager.instance.update()`.
             if let Some(w) = cx.world.as_mut() {
                 w.update_world_sounds(hearing);
-                // TODO(port): `RainManager.isRaining()`. `UpdateStuff`
-                // wraps `IsoFireManager.Update` in its own
-                // `catch (Exception)`: an `Err` is logged (`update_fire`
-                // does) and the frame goes on.
+                let raining = pz_lua_api::bind_climate::shared_game_time()
+                    .borrow()
+                    .climate
+                    .is_raining();
                 let _ = w.update_fire(
                     &sim,
                     pz_world::fire::FireSettings {
                         fire_spread,
-                        raining: false,
+                        raining,
                         tutorial,
                     },
+                    hearing,
+                    Some(cx.lua),
                 );
                 // TODO(port): `RainManager.Update`, `Meta.instance.update`,
                 // `VirtualZombieManager.instance.update`.
@@ -511,9 +513,11 @@ impl GameState for IngameState {
         }
         // TODO(port): `IsoMarkers.instance.reset()`.
         pz_lua_api::bind_search_mode::reset();
-        // `ZomboidRadio.getInstance().Reset()` and `IsoWaveSignal.Reset()`.
+        // `ZomboidRadio.getInstance().Reset()`, `IsoWaveSignal.Reset()`, and
+        // `IsoFireManager.Reset()`.
         if let Some(w) = cx.world.as_mut() {
             w.reset_radio();
+            w.reset_fire();
         }
         // TODO(port): `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,

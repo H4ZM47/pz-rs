@@ -221,6 +221,7 @@ pub struct IsoWorld {
     pub action_groups: pz_characters::character::state::ActionGroups,
     /// `IsoFireManager`.
     pub fire: pz_world::fire::IsoFireManager,
+    pub fire_state: crate::world_fire::WorldFireState,
     pub fire_flags: Option<pz_world::fire::manager::FireFlags>,
     /// Each local player's `IsoPlayer.sqlId` (its `localPlayers` row; -1
     /// before its first save).
@@ -359,6 +360,7 @@ impl IsoWorld {
                 game_dir.join("media"),
             ),
             fire: pz_world::fire::IsoFireManager::new(),
+            fire_state: crate::world_fire::WorldFireState::default(),
             fire_flags: None,
             door_tables: None,
             player_sql_ids: [-1; 4],
